@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--link-preview-with-call-link-in-another-call",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1356,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

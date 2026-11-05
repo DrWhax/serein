@@ -1,0 +1,31 @@
+{
+ "id": "components-forwardmessagemodal--with-a-contact",
+ "theme": "light",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   420,
+   243,
+   360,
+   414
+  ],
+  [
+   429,
+   243,
+   342,
+   414
+  ]
+ ]
+}

@@ -1,0 +1,582 @@
+{
+ "cjpeg_odd97x61_arith.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_baselineq1.jpg": {
+  "height": 61,
+  "rgbMD5": "d05cf3c92a47db6fe9df87fbf62fe6ef",
+  "width": 97
+ },
+ "cjpeg_odd97x61_gray.jpg": {
+  "height": 61,
+  "rgbMD5": "c008cc92276aac6a4748797ea4f85d6d",
+  "width": 97
+ },
+ "cjpeg_odd97x61_opt.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_prog.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_prog1x1.jpg": {
+  "height": 61,
+  "rgbMD5": "367cd50d5c8b5fcd1af1baeb5bd2b212",
+  "width": 97
+ },
+ "cjpeg_odd97x61_progrestart.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_q100.jpg": {
+  "height": 61,
+  "rgbMD5": "ee5784e66fb901bb97be436875fc74a6",
+  "width": 97
+ },
+ "cjpeg_odd97x61_q5.jpg": {
+  "height": 61,
+  "rgbMD5": "e6432cf67bae92826c216b9442cf05d6",
+  "width": 97
+ },
+ "cjpeg_odd97x61_restart1.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_restart7B.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_rgb.jpg": {
+  "height": 61,
+  "rgbMD5": "26bd31487f292ca170c06356b7057db5",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s1x1.jpg": {
+  "height": 61,
+  "rgbMD5": "367cd50d5c8b5fcd1af1baeb5bd2b212",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s1x2.jpg": {
+  "height": 61,
+  "rgbMD5": "a60f1ac214a98193389f34b265b9442d",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s1x4.jpg": {
+  "height": 61,
+  "rgbMD5": "9b9c4bce33989fb1ddf16a5013db5ca1",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s2x1.jpg": {
+  "height": 61,
+  "rgbMD5": "b3a05ddf1dd7d72ed05dad618944c755",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s2x2.jpg": {
+  "height": 61,
+  "rgbMD5": "5fb769050b200082b08386e51fbf14ca",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s3x2.jpg": {
+  "height": 61,
+  "rgbMD5": "23fa34ed492988782d8869c86e9b33e8",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s4x1.jpg": {
+  "height": 61,
+  "rgbMD5": "146433b2a531ec7680adaa4506d5e413",
+  "width": 97
+ },
+ "cjpeg_odd97x61_s4x2.jpg": {
+  "height": 61,
+  "rgbMD5": "c3682939e7585c367c8296d7f0e16f30",
+  "width": 97
+ },
+ "cjpeg_testorig_arith.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_baselineq1.jpg": {
+  "height": 149,
+  "rgbMD5": "68c2ab78b7480a94d9cefe4dd291f98f",
+  "width": 227
+ },
+ "cjpeg_testorig_gray.jpg": {
+  "height": 149,
+  "rgbMD5": "a7623700f862fc6406a4588fe1417e44",
+  "width": 227
+ },
+ "cjpeg_testorig_opt.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_prog.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_prog1x1.jpg": {
+  "height": 149,
+  "rgbMD5": "64b79f5ece223a99d45e42ec6fcc4b76",
+  "width": 227
+ },
+ "cjpeg_testorig_progrestart.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_q100.jpg": {
+  "height": 149,
+  "rgbMD5": "6ccd483e9231783a90388689a47b0acd",
+  "width": 227
+ },
+ "cjpeg_testorig_q5.jpg": {
+  "height": 149,
+  "rgbMD5": "e45854f50a961e20f462a50b1401bc86",
+  "width": 227
+ },
+ "cjpeg_testorig_restart1.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_restart7B.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_rgb.jpg": {
+  "height": 149,
+  "rgbMD5": "e03397a86667315ac588165ce3162087",
+  "width": 227
+ },
+ "cjpeg_testorig_s1x1.jpg": {
+  "height": 149,
+  "rgbMD5": "64b79f5ece223a99d45e42ec6fcc4b76",
+  "width": 227
+ },
+ "cjpeg_testorig_s1x2.jpg": {
+  "height": 149,
+  "rgbMD5": "6794a2fa8b3f0410a064e0c942ee5210",
+  "width": 227
+ },
+ "cjpeg_testorig_s1x4.jpg": {
+  "height": 149,
+  "rgbMD5": "3d95be5560d8aa7da855ed742ea807fa",
+  "width": 227
+ },
+ "cjpeg_testorig_s2x1.jpg": {
+  "height": 149,
+  "rgbMD5": "b48ec011275c3cfd97c90bca64e48a5c",
+  "width": 227
+ },
+ "cjpeg_testorig_s2x2.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "cjpeg_testorig_s3x2.jpg": {
+  "height": 149,
+  "rgbMD5": "7834459893ff9b0738fd98fef220e36e",
+  "width": 227
+ },
+ "cjpeg_testorig_s4x1.jpg": {
+  "height": 149,
+  "rgbMD5": "ed33dccc55623c712c737059fd621cf0",
+  "width": 227
+ },
+ "cjpeg_testorig_s4x2.jpg": {
+  "height": 149,
+  "rgbMD5": "0d8712678d79448015689798e5112074",
+  "width": 227
+ },
+ "exif_Landscape_0.jpg": {
+  "height": 1200,
+  "rgbMD5": "63ad38188cbd32619b3775b47171762d",
+  "width": 1800
+ },
+ "exif_Landscape_1.jpg": {
+  "height": 1200,
+  "rgbMD5": "8f5eda9bbcac3230202861cd6b4a10fd",
+  "width": 1800
+ },
+ "exif_Landscape_2.jpg": {
+  "height": 1200,
+  "rgbMD5": "88b211acf1855fd8fc52c58293ca0b80",
+  "width": 1800
+ },
+ "exif_Landscape_3.jpg": {
+  "height": 1200,
+  "rgbMD5": "0181c02d5085993b1a827a94c9f5e195",
+  "width": 1800
+ },
+ "exif_Landscape_4.jpg": {
+  "height": 1200,
+  "rgbMD5": "b18411330146a0170a0a54555bdde560",
+  "width": 1800
+ },
+ "exif_Landscape_5.jpg": {
+  "height": 1800,
+  "rgbMD5": "692e6578e82d78ec804dabbc487d6c0d",
+  "width": 1200
+ },
+ "exif_Landscape_6.jpg": {
+  "height": 1800,
+  "rgbMD5": "71cef8d1411739c9544df5479d9836f7",
+  "width": 1200
+ },
+ "exif_Landscape_7.jpg": {
+  "height": 1800,
+  "rgbMD5": "0e0e01b029771dc43762b777047b8954",
+  "width": 1200
+ },
+ "exif_Landscape_8.jpg": {
+  "height": 1800,
+  "rgbMD5": "bbafd92e01dde430bf1311a3a868ac6e",
+  "width": 1200
+ },
+ "exif_Portrait_0.jpg": {
+  "height": 1800,
+  "rgbMD5": "8c0556f860d7a15121a2eb35995873f2",
+  "width": 1200
+ },
+ "exif_Portrait_1.jpg": {
+  "height": 1800,
+  "rgbMD5": "fa2849397f9fdec61ec15a5a24043071",
+  "width": 1200
+ },
+ "exif_Portrait_2.jpg": {
+  "height": 1800,
+  "rgbMD5": "29cb9ba2bcc133d7b5829714354a0e03",
+  "width": 1200
+ },
+ "exif_Portrait_3.jpg": {
+  "height": 1800,
+  "rgbMD5": "93664a3db1015e9abf0d2b66941dd3e9",
+  "width": 1200
+ },
+ "exif_Portrait_4.jpg": {
+  "height": 1800,
+  "rgbMD5": "c3be796ae4f2a6aece2cb78d428810ae",
+  "width": 1200
+ },
+ "exif_Portrait_5.jpg": {
+  "height": 1200,
+  "rgbMD5": "c6c4385119672886066cc3a7d5526d1a",
+  "width": 1800
+ },
+ "exif_Portrait_6.jpg": {
+  "height": 1200,
+  "rgbMD5": "776b929ef044190cfb78adb435ac9575",
+  "width": 1800
+ },
+ "exif_Portrait_7.jpg": {
+  "height": 1200,
+  "rgbMD5": "411955231d49be4ca433baa2b80dc8b6",
+  "width": 1800
+ },
+ "exif_Portrait_8.jpg": {
+  "height": 1200,
+  "rgbMD5": "59dbe7e2aba499ec8b31b0f423defb5b",
+  "width": 1800
+ },
+ "ljt_monkey12.jpg": {
+  "height": 227,
+  "rgbMD5": "c12fac4cd6b71635bab7347a758729de",
+  "width": 149
+ },
+ "ljt_testimgari.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "ljt_testimgint.jpg": {
+  "height": 149,
+  "rgbMD5": "e45cae64d67139e9cf236b569a283000",
+  "width": 227
+ },
+ "ljt_testorig.jpg": {
+  "height": 149,
+  "rgbMD5": "058c077208b6d9e0a8fb0a5565241c7f",
+  "width": 227
+ },
+ "pillow_app13-multiple.jpg": {
+  "height": 160,
+  "rgbMD5": "b4b9344ccf593fba8754684508313b5c",
+  "width": 256
+ },
+ "pillow_app13.jpg": {
+  "height": 4,
+  "rgbMD5": "a3712674854ec904ba553e00c0365ea7",
+  "width": 4
+ },
+ "pillow_broken_exif_dpi.jpg": {
+  "height": 100,
+  "rgbMD5": "e09a8269b6100bd36c685e378ebf906c",
+  "width": 100
+ },
+ "pillow_empty_gps_ifd.jpg": {
+  "height": 10,
+  "rgbMD5": "c4dbe1ef87136dc7f469c538992021be",
+  "width": 10
+ },
+ "pillow_exif-200dpcm.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_exif-72dpi-int.jpg": {
+  "height": 450,
+  "rgbMD5": "c15bb92fe07e092afbe3a693d5dc1654",
+  "width": 500
+ },
+ "pillow_exif-dpi-zerodivision.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_exif-ifd-offset.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_exif_gps.jpg": {
+  "height": 8,
+  "rgbMD5": "b7dd5e0194ee0ac08a4b802cb73d867f",
+  "width": 8
+ },
+ "pillow_exif_gps_typeerror.jpg": {
+  "height": 531,
+  "rgbMD5": "3a4131691ae5afa469fdf5e9795f98ec",
+  "width": 800
+ },
+ "pillow_exif_typeerror.jpg": {
+  "height": 531,
+  "rgbMD5": "3a4131691ae5afa469fdf5e9795f98ec",
+  "width": 800
+ },
+ "pillow_flower.jpg": {
+  "height": 360,
+  "rgbMD5": "9ea2adb36134da7a1feaf3c5ec0dd67d",
+  "width": 480
+ },
+ "pillow_flower2.jpg": {
+  "height": 225,
+  "rgbMD5": "c16e7b9795c474db9e006dab57a14ae8",
+  "width": 300
+ },
+ "pillow_hopper.jpg": {
+  "height": 128,
+  "rgbMD5": "a66cca1f1c445a08f537fabaa463025e",
+  "width": 128
+ },
+ "pillow_hopper_16bit_qtables.jpg": {
+  "height": 128,
+  "rgbMD5": "a8dc47a5ffeb67d478716f69c1360184",
+  "width": 128
+ },
+ "pillow_hopper_bad_exif.jpg": {
+  "height": 500,
+  "rgbMD5": "9d99cb284591b58e190f41ae71085863",
+  "width": 500
+ },
+ "pillow_hopper_gray.jpg": {
+  "height": 128,
+  "rgbMD5": "b3551ace030ec685976cb955b20b4947",
+  "width": 128
+ },
+ "pillow_hopper_orientation_2.jpg": {
+  "height": 128,
+  "rgbMD5": "35ba9220dc4f2fffd6c73cd5a0faf046",
+  "width": 128
+ },
+ "pillow_hopper_orientation_3.jpg": {
+  "height": 128,
+  "rgbMD5": "ef97327a32f51f268a190f9f1a39ec05",
+  "width": 128
+ },
+ "pillow_hopper_orientation_4.jpg": {
+  "height": 128,
+  "rgbMD5": "d47a269c0c10f038091d22c1d336cb0e",
+  "width": 128
+ },
+ "pillow_hopper_orientation_5.jpg": {
+  "height": 128,
+  "rgbMD5": "91cb42b869816bd89ddc3c29cb5adc50",
+  "width": 128
+ },
+ "pillow_hopper_orientation_6.jpg": {
+  "height": 128,
+  "rgbMD5": "48b5a522467b1be43283436db3a0a38a",
+  "width": 128
+ },
+ "pillow_hopper_orientation_7.jpg": {
+  "height": 128,
+  "rgbMD5": "5fe7af20bba49e8cd961291ade33d7a2",
+  "width": 128
+ },
+ "pillow_hopper_orientation_8.jpg": {
+  "height": 128,
+  "rgbMD5": "b4eac9e0ff7e0261eb5b14211a395fb8",
+  "width": 128
+ },
+ "pillow_icc-after-SOF.jpg": {
+  "height": 10,
+  "rgbMD5": "4aa09c46db228e7f610ad440cd89c103",
+  "width": 10
+ },
+ "pillow_icc_profile_big.jpg": {
+  "height": 250,
+  "rgbMD5": "e6075c34059134bb6ce6cae67f8a7c0a",
+  "width": 425
+ },
+ "pillow_imageops_pad_h_0.jpg": {
+  "height": 256,
+  "rgbMD5": "6c0ecd3c88f8279c7b45ad6f40f62e8b",
+  "width": 512
+ },
+ "pillow_imageops_pad_h_1.jpg": {
+  "height": 256,
+  "rgbMD5": "1287b2bdb68eed14db001bfb0dfe568d",
+  "width": 512
+ },
+ "pillow_imageops_pad_h_2.jpg": {
+  "height": 256,
+  "rgbMD5": "7c3fb65a517aa87ade4f095484b2920d",
+  "width": 512
+ },
+ "pillow_imageops_pad_v_0.jpg": {
+  "height": 512,
+  "rgbMD5": "7cf8ac726d7510a86c4046399eee80fb",
+  "width": 256
+ },
+ "pillow_imageops_pad_v_1.jpg": {
+  "height": 512,
+  "rgbMD5": "184c975a3f993456549b68f1e7579c7a",
+  "width": 256
+ },
+ "pillow_imageops_pad_v_2.jpg": {
+  "height": 512,
+  "rgbMD5": "2dd94ec93f5ef4863bdcc8a878b88e94",
+  "width": 256
+ },
+ "pillow_invalid-exif-without-x-resolution.jpg": {
+  "height": 200,
+  "rgbMD5": "5d7249d2e0cf62b760a4ba74deb58c5c",
+  "width": 300
+ },
+ "pillow_invalid-exif.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_iptc.jpg": {
+  "height": 480,
+  "rgbMD5": "f3d6f610fdb387c83141c5ca89084f48",
+  "width": 640
+ },
+ "pillow_iptc_roundUp.jpg": {
+  "height": 480,
+  "rgbMD5": "f3d6f610fdb387c83141c5ca89084f48",
+  "width": 640
+ },
+ "pillow_jfif_unit_cm.jpg": {
+  "height": 1,
+  "rgbMD5": "693e9af84d3dfcc71e640e005bdc5e2e",
+  "width": 1
+ },
+ "pillow_jpeg_ff00_header.jpg": {
+  "height": 225,
+  "rgbMD5": "c16e7b9795c474db9e006dab57a14ae8",
+  "width": 300
+ },
+ "pillow_junk_jpeg_header.jpg": {
+  "height": 768,
+  "rgbMD5": "2100bf06951a2bffb8613356e6164d6e",
+  "width": 1024
+ },
+ "pillow_multiple_exif.jpg": {
+  "height": 1,
+  "rgbMD5": "693e9af84d3dfcc71e640e005bdc5e2e",
+  "width": 1
+ },
+ "pillow_no-dpi-in-exif.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_orientation_rectangle.jpg": {
+  "height": 1,
+  "rgbMD5": "4e3c3eb615534e185dff7b6f33fa7136",
+  "width": 2
+ },
+ "pillow_photoshop-200dpi-broken.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_photoshop-200dpi.jpg": {
+  "height": 200,
+  "rgbMD5": "e0224b9b141abdb9c8362c113f2d38bd",
+  "width": 200
+ },
+ "pillow_pil_sample_cmyk.jpg": {
+  "height": 100,
+  "rgbMD5": "13fd114a583647a6a323d6b590482d12",
+  "width": 100
+ },
+ "pillow_pil_sample_rgb.jpg": {
+  "height": 100,
+  "rgbMD5": "a441691f1500f3eeebf04998954518e4",
+  "width": 100
+ },
+ "pillow_rgb.jpg": {
+  "height": 100,
+  "rgbMD5": "f57e47b18c2a076af55d70ddd1d13863",
+  "width": 100
+ },
+ "pillow_sugarshack_bad_mpo_header.jpg": {
+  "height": 480,
+  "rgbMD5": "53cc8d3bbe659c21c469ecb0257c4a69",
+  "width": 640
+ },
+ "pillow_truncated_app14.jpg": {
+  "height": 100,
+  "rgbMD5": "a441691f1500f3eeebf04998954518e4",
+  "width": 100
+ },
+ "pillow_truncated_exif_dpi.jpg": {
+  "height": 640,
+  "rgbMD5": "68f24f051da780163f37e9443770cb74",
+  "width": 480
+ },
+ "pillow_truncated_jpeg.jpg": {
+  "height": 100,
+  "rgbMD5": "c4314321f73e5322f2fd7b6cac1a927e",
+  "width": 100
+ },
+ "pillow_ultrahdr.jpg": {
+  "height": 2688,
+  "rgbMD5": "a8b39041cdf9fa113f0ede564ad5edc0",
+  "width": 1512
+ },
+ "pillow_xmp_no_prefix.jpg": {
+  "height": 1,
+  "rgbMD5": "693e9af84d3dfcc71e640e005bdc5e2e",
+  "width": 1
+ },
+ "pillow_xmp_padded.jpg": {
+  "height": 1,
+  "rgbMD5": "693e9af84d3dfcc71e640e005bdc5e2e",
+  "width": 1
+ }
+}

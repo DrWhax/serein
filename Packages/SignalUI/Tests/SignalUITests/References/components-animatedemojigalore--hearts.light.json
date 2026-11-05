@@ -1,0 +1,17 @@
+{
+ "id": "components-animatedemojigalore--hearts",
+ "theme": "light",
+ "width": 1128,
+ "height": 1344,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  72,
+  0
+ ]
+}

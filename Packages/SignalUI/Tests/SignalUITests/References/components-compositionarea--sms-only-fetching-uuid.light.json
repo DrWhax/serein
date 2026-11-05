@@ -1,0 +1,17 @@
+{
+ "id": "components-compositionarea--sms-only-fetching-uuid",
+ "theme": "light",
+ "width": 1168,
+ "height": 57,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

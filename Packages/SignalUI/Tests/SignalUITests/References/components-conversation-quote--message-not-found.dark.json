@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-quote--message-not-found",
+ "theme": "dark",
+ "width": 1168,
+ "height": 292,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-callingnotification--declined-incoming-video-call",
+ "theme": "dark",
+ "width": 1168,
+ "height": 78,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

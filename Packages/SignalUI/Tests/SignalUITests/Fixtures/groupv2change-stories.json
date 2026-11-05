@@ -1,0 +1,2131 @@
+{
+ "multiple": [
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "title",
+      "newTitle": "Saturday Running"
+     },
+     {
+      "type": "avatar",
+      "removed": false
+     },
+     {
+      "type": "description",
+      "description": "This is a long description.\n\nWe need a dialog to view it all!\n\nIt has a link to https://example.com"
+     },
+     {
+      "type": "member-add",
+      "aci": "OUR_ACI"
+     },
+     {
+      "type": "description",
+      "description": "Another description"
+     },
+     {
+      "type": "member-privilege",
+      "aci": "OUR_ACI",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "create": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "create"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "create"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "create"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "title": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "title",
+      "newTitle": "Saturday Running"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "title",
+      "newTitle": "Saturday Running"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "title",
+      "newTitle": "Saturday Running"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "title"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "title"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "title"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "avatar": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "avatar",
+      "removed": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "avatar",
+      "removed": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "avatar",
+      "removed": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "avatar",
+      "removed": true
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "avatar",
+      "removed": true
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "avatar",
+      "removed": true
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "access-attributes": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-attributes",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "access-members": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-members",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "access-invite-link": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "access-invite-link",
+      "newPrivilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-add": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_B",
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-add-from-invited": [
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_B",
+      "inviter": "CONTACT_C"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "text": "ACI accepts PNI invite (X joined the group)"
+  },
+  {
+   "change": {
+    "from": "OUR_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "pni": "OUR_PNI",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "pni": "OUR_PNI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A",
+      "pni": "CONTACT_A_PNI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "text": "ACI accepts PNI invite, the old way (X added X to group)"
+  },
+  {
+   "change": {
+    "from": "OUR_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A_PNI",
+    "details": [
+     {
+      "type": "member-add-from-invite",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-add-from-link": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add-from-link",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-add-from-link",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add-from-link",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-add-from-admin-approval": [
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "member-add-from-admin-approval",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add-from-admin-approval",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-add-from-admin-approval",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "member-add-from-admin-approval",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-add-from-admin-approval",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-remove": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_B",
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-remove",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "member-privilege": [
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "OUR_ACI",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "OUR_ACI",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 2
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "OUR_ACI",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "OUR_ACI",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "member-privilege",
+      "aci": "CONTACT_A",
+      "newPrivilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "pending-add-one": [
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-add-one",
+      "serviceId": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-add-one",
+      "serviceId": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-add-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_B",
+    "details": [
+     {
+      "type": "pending-add-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-add-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "pending-add-many": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-add-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "pending-remove-one": [
+  {
+   "change": {
+    "from": "INVITEE_A",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "INVITEE_A",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "INVITEE_A",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_B",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "OUR_ACI",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "CONTACT_B",
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_C",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A",
+      "inviter": "CONTACT_B"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_B",
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "serviceId": "INVITEE_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "text": "no from field or invitee"
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-one",
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "text": "no from field, invitee, or inviter"
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-one"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "pending-remove-many": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1,
+      "inviter": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 5
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "pending-remove-many",
+      "count": 1
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "admin-approval-add": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "admin-approval-add-one",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-add-one",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "admin-approval-remove": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "admin-approval-remove-one",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "admin-approval-remove-one",
+      "aci": "OUR_ACI"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "admin-approval-remove-one",
+      "aci": "CONTACT_A"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "admin-approval-bounce": [
+  {
+   "text": "Should show button:"
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {
+    "groupMemberships": [
+     {
+      "aci": "CONTACT_C",
+      "isAdmin": false
+     }
+    ],
+    "groupBannedMemberships": [
+     "CONTACT_B"
+    ]
+   }
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {
+    "groupMemberships": [
+     {
+      "aci": "CONTACT_C",
+      "isAdmin": false
+     }
+    ],
+    "groupBannedMemberships": [
+     "CONTACT_B"
+    ]
+   }
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "text": "Would show button, but we're not admin:"
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {
+    "areWeAdmin": false,
+    "groupName": "Group 1"
+   }
+  },
+  {
+   "text": "Would show button, but user is a group member:"
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {
+    "groupMemberships": [
+     {
+      "aci": "CONTACT_A",
+      "isAdmin": false
+     }
+    ]
+   }
+  },
+  {
+   "text": "Would show button, but user is already banned:"
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 1,
+      "isApprovalPending": false
+     }
+    ]
+   },
+   "opts": {
+    "groupBannedMemberships": [
+     "CONTACT_A"
+    ]
+   }
+  },
+  {
+   "text": "Open request"
+  },
+  {
+   "change": {
+    "from": "CONTACT_A",
+    "details": [
+     {
+      "type": "admin-approval-bounce",
+      "aci": "CONTACT_A",
+      "times": 4,
+      "isApprovalPending": true
+     }
+    ]
+   },
+   "opts": {
+    "groupBannedMemberships": []
+   }
+  }
+ ],
+ "group-link-add": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 1
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "group-link-add",
+      "privilege": 3
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "group-link-reset": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "group-link-reset"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "group-link-reset"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "group-link-reset"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "group-link-remove": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "group-link-remove"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "group-link-remove"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "group-link-remove"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "description-remove": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "removed": true,
+      "type": "description"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "removed": true,
+      "type": "description"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "removed": true,
+      "type": "description"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "description-change": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "description",
+      "description": "This is a long description.\n\nWe need a dialog to view it all!\n\nIt has a link to https://example.com"
+     }
+    ]
+   },
+   "opts": {
+    "groupName": "We do hikes 🌲"
+   }
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "description",
+      "description": "This is a long description.\n\nWe need a dialog to view it all!\n\nIt has a link to https://example.com"
+     }
+    ]
+   },
+   "opts": {
+    "groupName": "We do hikes 🌲"
+   }
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "description",
+      "description": "This is a long description.\n\nWe need a dialog to view it all!\n\nIt has a link to https://example.com"
+     }
+    ]
+   },
+   "opts": {
+    "groupName": "We do hikes 🌲"
+   }
+  }
+ ],
+ "announcement-group-change": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": true
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": true
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": true
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": false
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "announcements-only",
+      "announcementsOnly": false
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "group-terminated": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "terminated"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "from": "ADMIN_A",
+    "details": [
+     {
+      "type": "terminated"
+     }
+    ]
+   },
+   "opts": {}
+  },
+  {
+   "change": {
+    "details": [
+     {
+      "type": "terminated"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ],
+ "summary": [
+  {
+   "change": {
+    "from": "OUR_ACI",
+    "details": [
+     {
+      "type": "summary"
+     }
+    ]
+   },
+   "opts": {}
+  }
+ ]
+}

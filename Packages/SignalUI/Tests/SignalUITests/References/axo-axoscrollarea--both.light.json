@@ -1,0 +1,17 @@
+{
+ "id": "axo-axoscrollarea--both",
+ "theme": "light",
+ "width": 1168,
+ "height": 3096,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

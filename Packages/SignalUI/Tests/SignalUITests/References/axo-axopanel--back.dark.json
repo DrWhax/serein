@@ -1,0 +1,17 @@
+{
+ "id": "axo-axopanel--back",
+ "theme": "dark",
+ "width": 1200,
+ "height": 164,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

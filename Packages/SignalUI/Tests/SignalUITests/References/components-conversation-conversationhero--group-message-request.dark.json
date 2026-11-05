@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationhero--group-message-request",
+ "theme": "dark",
+ "width": 1168,
+ "height": 266,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

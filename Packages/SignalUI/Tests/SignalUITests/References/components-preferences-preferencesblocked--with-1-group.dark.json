@@ -1,0 +1,17 @@
+{
+ "id": "components-preferences-preferencesblocked--with-1-group",
+ "theme": "dark",
+ "width": 1168,
+ "height": 284,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

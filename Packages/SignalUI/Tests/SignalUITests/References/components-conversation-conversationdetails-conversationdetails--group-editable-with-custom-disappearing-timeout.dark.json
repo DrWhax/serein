@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-conversationdetails--group-editable-with-custom-disappearing-timeout",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1104,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

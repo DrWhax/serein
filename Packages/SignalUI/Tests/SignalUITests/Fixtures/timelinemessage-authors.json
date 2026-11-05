@@ -1,0 +1,82 @@
+{
+ "admin-deleted-pending": [
+  "Milford Friesen"
+ ],
+ "admin-deleted-with-error": [
+  "Sim Larson",
+  "Sarah Barrows"
+ ],
+ "admin-deleted-with-error-can-retry": [
+  "Sim Larson",
+  "Sarah Barrows"
+ ],
+ "avatar-in-group": [
+  "Laisha Boehm"
+ ],
+ "badge-in-group": [
+  "Celia Barton"
+ ],
+ "collapsing-text-only-group-messages": [
+  "Celia Barton"
+ ],
+ "deleted-by-admin": [
+  "Celia Barton"
+ ],
+ "deleted-with-expire-timer": [
+  "Celia Barton"
+ ],
+ "gif-in-a-group": [
+  "Celia Barton"
+ ],
+ "label-in-group": [
+  "Celia Barton"
+ ],
+ "label-in-group-with-long-name": [
+  "Long long long long long long long long long long long name"
+ ],
+ "label-in-group-with-long-name-and-long-message": [
+  "Long long long long long long long long long long long name"
+ ],
+ "link-preview-in-group": [
+  "Celia Barton"
+ ],
+ "link-preview-with-call-link-in-current-call": [
+  "Celia Barton"
+ ],
+ "link-preview-with-long-word": [
+  "Celia Barton"
+ ],
+ "link-preview-with-quote": [
+  "Celia Barton"
+ ],
+ "poll": [
+  "Celia Barton"
+ ],
+ "poll-animation-playground": [
+  "Celia Barton"
+ ],
+ "poll-long-text": [
+  "Celia Barton"
+ ],
+ "poll-multiple-choice": [
+  "Celia Barton"
+ ],
+ "poll-multiple-choice-with-votes": [
+  "Celia Barton"
+ ],
+ "poll-terminated": [
+  "Celia Barton"
+ ],
+ "poll-with-pending-votes": [
+  "Celia Barton"
+ ],
+ "poll-with-votes": [
+  "Celia Barton"
+ ],
+ "quote": [
+  "Quoter Dude"
+ ],
+ "tap-to-view-image-in-group": [
+  "Celia Barton"
+ ]
+}

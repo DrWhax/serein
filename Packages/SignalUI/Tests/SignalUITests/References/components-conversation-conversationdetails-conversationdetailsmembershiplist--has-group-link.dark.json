@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-conversationdetailsmembershiplist--has-group-link",
+ "theme": "dark",
+ "width": 1168,
+ "height": 344,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

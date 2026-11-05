@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationheader--group-conversation-in-another-call",
+ "theme": "light",
+ "width": 1168,
+ "height": 72,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

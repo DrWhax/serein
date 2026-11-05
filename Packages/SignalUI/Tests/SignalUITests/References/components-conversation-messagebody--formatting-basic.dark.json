@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-messagebody--formatting-basic",
+ "theme": "dark",
+ "width": 1168,
+ "height": 121,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

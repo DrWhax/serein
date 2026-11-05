@@ -1,0 +1,17 @@
+{
+ "id": "axo-axobadge--max",
+ "theme": "dark",
+ "width": 1168,
+ "height": 18,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

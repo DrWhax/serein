@@ -1,0 +1,17 @@
+{
+ "id": "axo-axostackedbutton--basic",
+ "theme": "dark",
+ "width": 56,
+ "height": 120,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  572,
+  16
+ ]
+}

@@ -1,0 +1,275 @@
+[
+ {
+  "text": "https://www.signal.org",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 0,
+    "lastIndex": 22,
+    "text": "https://www.signal.org",
+    "url": "https://www.signal.org"
+   }
+  ]
+ },
+ {
+  "text": "you should see this: https://www.signal.org - it is good. Also: https://placekitten.com!",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 21,
+    "lastIndex": 43,
+    "text": "https://www.signal.org",
+    "url": "https://www.signal.org"
+   },
+   {
+    "schema": "https:",
+    "index": 64,
+    "lastIndex": 87,
+    "text": "https://placekitten.com",
+    "url": "https://placekitten.com"
+   }
+  ]
+ },
+ {
+  "text": "👍https://www.signal.org😎",
+  "matches": []
+ },
+ {
+  "text": "https://example.com ⚠️ 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ https://example.com",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 0,
+    "lastIndex": 19,
+    "text": "https://example.com",
+    "url": "https://example.com"
+   },
+   {
+    "schema": "https:",
+    "index": 60,
+    "lastIndex": 79,
+    "text": "https://example.com",
+    "url": "https://example.com"
+   }
+  ]
+ },
+ {
+  "text": "I am fond of cats",
+  "matches": []
+ },
+ {
+  "text": "smailto:someone@somewhere.com - ftp://something.com - //local/share - \\localshare",
+  "matches": [
+   {
+    "schema": "mailto:",
+    "index": 0,
+    "lastIndex": 29,
+    "text": "smailto:someone@somewhere.com",
+    "url": "mailto:smailto:someone@somewhere.com"
+   },
+   {
+    "schema": "ftp:",
+    "index": 32,
+    "lastIndex": 51,
+    "text": "ftp://something.com",
+    "url": "ftp://something.com"
+   }
+  ]
+ },
+ {
+  "text": "I love example.com. I also love кц.рф. I also love مثال.تونس. But I do not love test.example.",
+  "matches": [
+   {
+    "schema": "",
+    "index": 7,
+    "lastIndex": 18,
+    "text": "example.com",
+    "url": "http://example.com"
+   },
+   {
+    "schema": "",
+    "index": 32,
+    "lastIndex": 37,
+    "text": "кц.рф",
+    "url": "http://кц.рф"
+   },
+   {
+    "schema": "",
+    "index": 51,
+    "lastIndex": 60,
+    "text": "مثال.تونس",
+    "url": "http://مثال.تونس"
+   }
+  ]
+ },
+ {
+  "text": "Download at http://signal.org",
+  "matches": [
+   {
+    "schema": "http:",
+    "index": 12,
+    "lastIndex": 29,
+    "text": "http://signal.org",
+    "url": "http://signal.org"
+   }
+  ]
+ },
+ {
+  "text": "mail me at a.b@example.org, ok?",
+  "matches": [
+   {
+    "schema": "mailto:",
+    "index": 11,
+    "lastIndex": 26,
+    "text": "a.b@example.org",
+    "url": "mailto:a.b@example.org"
+   }
+  ]
+ },
+ {
+  "text": "see www.example.co.uk/path?q=1#frag.",
+  "matches": [
+   {
+    "schema": "",
+    "index": 4,
+    "lastIndex": 35,
+    "text": "www.example.co.uk/path?q=1#frag",
+    "url": "http://www.example.co.uk/path?q=1#frag"
+   }
+  ]
+ },
+ {
+  "text": "http://user:pw@host.com/x",
+  "matches": [
+   {
+    "schema": "http:",
+    "index": 0,
+    "lastIndex": 25,
+    "text": "http://user:pw@host.com/x",
+    "url": "http://user:pw@host.com/x"
+   }
+  ]
+ },
+ {
+  "text": "(https://example.com/a_(b))",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 1,
+    "lastIndex": 26,
+    "text": "https://example.com/a_(b)",
+    "url": "https://example.com/a_(b)"
+   }
+  ]
+ },
+ {
+  "text": "go to example.com/foo.",
+  "matches": [
+   {
+    "schema": "",
+    "index": 6,
+    "lastIndex": 21,
+    "text": "example.com/foo",
+    "url": "http://example.com/foo"
+   }
+  ]
+ },
+ {
+  "text": "ip 192.168.0.1 and http://10.0.0.1:8080/x",
+  "matches": [
+   {
+    "schema": "http:",
+    "index": 19,
+    "lastIndex": 41,
+    "text": "http://10.0.0.1:8080/x",
+    "url": "http://10.0.0.1:8080/x"
+   }
+  ]
+ },
+ {
+  "text": "xn--80ak6aa92e.com is IDN",
+  "matches": [
+   {
+    "schema": "",
+    "index": 0,
+    "lastIndex": 18,
+    "text": "xn--80ak6aa92e.com",
+    "url": "http://xn--80ak6aa92e.com"
+   }
+  ]
+ },
+ {
+  "text": "https://example.com/\"quoted\"",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 0,
+    "lastIndex": 28,
+    "text": "https://example.com/\"quoted\"",
+    "url": "https://example.com/\"quoted\""
+   }
+  ]
+ },
+ {
+  "text": "trailing!!! https://a.com/b!!!",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 12,
+    "lastIndex": 27,
+    "text": "https://a.com/b",
+    "url": "https://a.com/b"
+   }
+  ]
+ },
+ {
+  "text": "a.com,b.org;c.net",
+  "matches": [
+   {
+    "schema": "",
+    "index": 0,
+    "lastIndex": 5,
+    "text": "a.com",
+    "url": "http://a.com"
+   },
+   {
+    "schema": "",
+    "index": 6,
+    "lastIndex": 11,
+    "text": "b.org",
+    "url": "http://b.org"
+   },
+   {
+    "schema": "",
+    "index": 12,
+    "lastIndex": 17,
+    "text": "c.net",
+    "url": "http://c.net"
+   }
+  ]
+ },
+ {
+  "text": "<https://x.com>",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 1,
+    "lastIndex": 14,
+    "text": "https://x.com",
+    "url": "https://x.com"
+   }
+  ]
+ },
+ {
+  "text": "https://x.com/path\nnext",
+  "matches": [
+   {
+    "schema": "https:",
+    "index": 0,
+    "lastIndex": 18,
+    "text": "https://x.com/path",
+    "url": "https://x.com/path"
+   }
+  ]
+ }
+]

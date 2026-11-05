@@ -1,0 +1,17 @@
+{
+ "id": "axo-items-axoitem--icon-avatar",
+ "theme": "light",
+ "width": 1168,
+ "height": 910,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  24
+ ]
+}

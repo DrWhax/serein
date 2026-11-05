@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--will-expire-but-still-sending",
+ "theme": "dark",
+ "width": 1168,
+ "height": 368,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

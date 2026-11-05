@@ -1,0 +1,25 @@
+{
+ "id": "components-installscreen-installscreenupdatedialog--1-no-dialog-not-checking-for-updates",
+ "theme": "light",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   456,
+   388,
+   288,
+   124
+  ]
+ ]
+}

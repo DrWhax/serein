@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-conversationdetails--in-another-call-group",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1036,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

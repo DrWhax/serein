@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--attachment-too-big-with-image-and-text",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1982,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

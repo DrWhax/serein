@@ -1,0 +1,17 @@
+{
+ "id": "components-installscreen-installscreenlinkinprogressstep--default",
+ "theme": "light",
+ "width": 1168,
+ "height": 916,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

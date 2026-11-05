@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-imagegrid--two-images",
+ "theme": "dark",
+ "width": 1168,
+ "height": 155,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

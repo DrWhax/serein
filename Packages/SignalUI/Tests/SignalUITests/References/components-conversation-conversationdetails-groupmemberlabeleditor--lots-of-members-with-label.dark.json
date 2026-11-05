@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-groupmemberlabeleditor--lots-of-members-with-label",
+ "theme": "dark",
+ "width": 1168,
+ "height": 2407,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

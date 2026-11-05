@@ -1,0 +1,25 @@
+{
+ "id": "components-conversation-aboutcontactmodal--no-messages",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   440,
+   243.81,
+   320,
+   412.36
+  ]
+ ]
+}

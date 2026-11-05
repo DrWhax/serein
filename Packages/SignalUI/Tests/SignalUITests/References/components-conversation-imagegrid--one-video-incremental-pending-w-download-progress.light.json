@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-imagegrid--one-video-incremental-pending-w-download-progress",
+ "theme": "light",
+ "width": 1168,
+ "height": 230,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

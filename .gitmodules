@@ -1,0 +1,9 @@
+[submodule "vendor/libsignal"]
+	path = vendor/libsignal
+	url = https://github.com/signalapp/libsignal.git
+[submodule "vendor/ringrtc"]
+	path = vendor/ringrtc
+	url = https://github.com/signalapp/ringrtc.git
+[submodule "vendor/GRDB.swift"]
+	path = vendor/GRDB.swift
+	url = https://github.com/groue/GRDB.swift.git

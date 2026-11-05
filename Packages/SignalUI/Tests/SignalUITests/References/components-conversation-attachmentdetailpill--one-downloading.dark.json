@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-attachmentdetailpill--one-downloading",
+ "theme": "dark",
+ "width": 82,
+ "height": 32,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  6,
+  6
+ ]
+}

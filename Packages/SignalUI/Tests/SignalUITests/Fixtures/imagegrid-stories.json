@@ -1,0 +1,1558 @@
+{
+ "6-images": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-image": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-image-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-image-too-large-to-display": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 10000,
+     "height": 10000,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "enormous.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+     "screenshot": {
+      "path": "something",
+      "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+      "contentType": "image/png",
+      "height": 1200,
+      "width": 800
+     }
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-not-downloaded-not-pending": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-pending-w-download-queued": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-download-progress-not-pending": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-incremental-not-downloaded-not-pending": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]",
+     "incrementalMac": "something",
+     "chunkSize": 100
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-incremental-pending-w-download-queued": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "incrementalMac": "something",
+     "chunkSize": 100,
+     "fileName": "sax.png",
+     "pending": true,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-incremental-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "incrementalMac": "something",
+     "chunkSize": 100,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "one-video-incremental-download-progress-not-pending": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "incrementalMac": "something",
+     "chunkSize": 100,
+     "fileName": "sax.png",
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images-one-too-large-without-thumbnail": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 10000,
+     "height": 10000,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "enormous.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images-one-too-large-with-thumbnail": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 10000,
+     "height": 10000,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "enormous.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]",
+     "thumbnail": {
+      "contentType": "image/jpeg",
+      "height": 100,
+      "path": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+      "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png",
+      "width": 100,
+      "size": 128
+     }
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images-incremental-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]",
+     "incrementalMac": "something",
+     "chunkSize": 100
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "two-images-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "three-images": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "three-images-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "three-images-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "four-images": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "four-images-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "four-images-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "five-images": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "five-images-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "five-images-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "6-images-pending-w-download-progress": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "url": "/fixtures/tina-rolf-269345-unsplash.jpg"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 600,
+     "size": 1000000,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "pending": true,
+     "totalDownloaded": 300000,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "6-images-one-incremental-need-download": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 600,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "incrementalMac": "something",
+     "chunkSize": 100,
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "mixed-content-types": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 112,
+     "height": 112,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "pixabay-Soap-Bubble-7141.mp4",
+     "screenshot": {
+      "height": 112,
+      "width": 112,
+      "size": 128000,
+      "url": "/fixtures/kitten-4-112-112.jpg",
+      "contentType": "image/jpeg",
+      "path": "originalpath"
+     },
+     "url": "/fixtures/pixabay-Soap-Bubble-7141.mp4"
+    },
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    },
+    {
+     "contentType": "text/plain",
+     "width": 800,
+     "height": 600,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "lorem-ipsum.txt",
+     "url": "/fixtures/lorem-ipsum.txt"
+    },
+    {
+     "contentType": "audio/mp3",
+     "width": 800,
+     "height": 600,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "incompetech-com-Agnus-Dei-X.mp3",
+     "url": "/fixtures/incompetech-com-Agnus-Dei-X.mp3"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "eight-images-not-downloaded": [
+  {
+   "attachments": [
+    {
+     "contentType": "video/mp4",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "sticker": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/webp",
+     "width": 512,
+     "height": 512,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sticker.webp",
+     "url": "/fixtures/512x515-thumbs-up-lincoln.webp"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": true,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 128,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "content-above-and-below": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": true,
+   "withContentBelow": true
+  }
+ ],
+ "bottom-overlay": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/png",
+     "width": 800,
+     "height": 1200,
+     "size": 10304,
+     "path": "ab/ablahblahblah",
+     "isPermanentlyUndownloadable": false,
+     "fileName": "sax.png",
+     "url": "/fixtures/freepngs-2cd43b_bed7d1327e88454487397574d87b64dc_mv2.png"
+    }
+   ],
+   "bottomOverlay": true,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ],
+ "download-pill": [
+  {
+   "attachments": [
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]",
+     "key": "+R9hNIYmxBakQ3jMe/sdIXkDKQewidDcgLp2Q74Y1gyxU/hPA2Kyz8oHtc40Gtd3Bp8hPOIS4/V5W/XkIl/bIg==",
+     "digest": "HvbPFfuq1WNQEbSBVI310b2WKJGtI5/Ih1kdOBJC7vU=",
+     "cdnKey": "mock-cdn-key",
+     "cdnNumber": 4000
+    },
+    {
+     "contentType": "image/jpeg",
+     "width": 3000,
+     "height": 1680,
+     "size": 10304,
+     "isPermanentlyUndownloadable": false,
+     "fileName": "tina-rolf-269345-unsplash.jpg",
+     "blurHash": "LDA,FDBnm+I=p{tkIUI;~UkpELV]",
+     "key": "+R9hNIYmxBakQ3jMe/sdIXkDKQewidDcgLp2Q74Y1gyxU/hPA2Kyz8oHtc40Gtd3Bp8hPOIS4/V5W/XkIl/bIg==",
+     "digest": "HvbPFfuq1WNQEbSBVI310b2WKJGtI5/Ih1kdOBJC7vU=",
+     "cdnKey": "mock-cdn-key",
+     "cdnNumber": 4000
+    }
+   ],
+   "bottomOverlay": false,
+   "direction": "incoming",
+   "i18n": "i18n",
+   "isSticker": false,
+   "showVisualAttachment": "action:showVisualAttachment",
+   "startDownload": "action:startDownload",
+   "cancelDownload": "action:cancelDownload",
+   "stickerSize": 0,
+   "withContentAbove": false,
+   "withContentBelow": false
+  }
+ ]
+}

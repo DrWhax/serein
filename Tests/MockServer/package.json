@@ -1,0 +1,10 @@
+{
+  "name": "signalsafe-mock-server-harness",
+  "private": true,
+  "description": "Runs Signal-Desktop/packages/mock-server (built by Tools/build-mock-server.sh) for SignalCore integration tests, driven over stdin/stdout JSON lines.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "dependencies": {
+    "@signalapp/mock-server": "file:.mock-server"
+  }
+}

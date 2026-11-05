@@ -1,0 +1,17 @@
+{
+ "id": "components-fun-funemoji--inline",
+ "theme": "light",
+ "width": 1168,
+ "height": 60,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

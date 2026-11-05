@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timeline--empty-just-hero",
+ "theme": "dark",
+ "width": 1168,
+ "height": 7,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

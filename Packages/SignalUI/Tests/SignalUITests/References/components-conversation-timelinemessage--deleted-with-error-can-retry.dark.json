@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--deleted-with-error-can-retry",
+ "theme": "dark",
+ "width": 1168,
+ "height": 260,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

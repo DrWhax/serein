@@ -1,0 +1,17 @@
+{
+ "id": "components-leftpanebanner--defaults",
+ "theme": "light",
+ "width": 1168,
+ "height": 74,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  20
+ ]
+}

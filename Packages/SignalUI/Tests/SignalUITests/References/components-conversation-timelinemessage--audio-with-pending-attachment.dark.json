@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--audio-with-pending-attachment",
+ "theme": "dark",
+ "width": 1168,
+ "height": 476,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

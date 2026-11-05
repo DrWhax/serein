@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-callingnotification--two-outgoing-direct-calls-back-to-back",
+ "theme": "dark",
+ "width": 1168,
+ "height": 114,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

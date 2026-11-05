@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-mediagallery-mediagallery--populated",
+ "theme": "dark",
+ "width": 1200,
+ "height": 2763,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

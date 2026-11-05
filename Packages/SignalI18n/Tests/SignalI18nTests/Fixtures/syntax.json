@@ -1,0 +1,1067 @@
+{
+ "errors": [
+  {
+   "m": "{",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{ ",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{}",
+   "kind": "EMPTY_ARGUMENT",
+   "offset": 0
+  },
+  {
+   "m": "{ }",
+   "kind": "EMPTY_ARGUMENT",
+   "offset": 0
+  },
+  {
+   "m": "{name",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{name ",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{name,",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{name, }",
+   "kind": "EXPECT_ARGUMENT_TYPE",
+   "offset": 7
+  },
+  {
+   "m": "{name foo}",
+   "kind": "MALFORMED_ARGUMENT",
+   "offset": 0
+  },
+  {
+   "m": "{,}",
+   "kind": "MALFORMED_ARGUMENT",
+   "offset": 0
+  },
+  {
+   "m": "{name,,}",
+   "kind": "EXPECT_ARGUMENT_TYPE",
+   "offset": 6
+  },
+  {
+   "m": "{name, foo}",
+   "kind": "INVALID_ARGUMENT_TYPE",
+   "offset": 7
+  },
+  {
+   "m": "{name, number,}",
+   "kind": "EXPECT_ARGUMENT_STYLE",
+   "offset": 14
+  },
+  {
+   "m": "{name, number, }",
+   "kind": "EXPECT_ARGUMENT_STYLE",
+   "offset": 15
+  },
+  {
+   "m": "{name, number, 'percent}",
+   "kind": "UNCLOSED_QUOTE_IN_ARGUMENT_STYLE",
+   "offset": 16
+  },
+  {
+   "m": "{name, number, ::}",
+   "kind": "INVALID_NUMBER_SKELETON",
+   "offset": 15
+  },
+  {
+   "m": "{name, number, ::currency/}",
+   "kind": "INVALID_NUMBER_SKELETON",
+   "offset": 15
+  },
+  {
+   "m": "{name, date, ::}",
+   "kind": "EXPECT_DATE_TIME_SKELETON",
+   "offset": 0
+  },
+  {
+   "m": "{n, plural}",
+   "kind": "EXPECT_SELECT_ARGUMENT_OPTIONS",
+   "offset": 10
+  },
+  {
+   "m": "{n, plural one {a}}",
+   "kind": "EXPECT_SELECT_ARGUMENT_OPTIONS",
+   "offset": 10
+  },
+  {
+   "m": "{n, plural,}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_SELECTOR",
+   "offset": 11
+  },
+  {
+   "m": "{n, plural, one {a}}",
+   "kind": "MISSING_OTHER_CLAUSE",
+   "offset": 19
+  },
+  {
+   "m": "{n, plural, other {a} other {b}}",
+   "kind": "DUPLICATE_PLURAL_ARGUMENT_SELECTOR",
+   "offset": 22
+  },
+  {
+   "m": "{n, plural, =1 {a} =1 {b} other {c}}",
+   "kind": "DUPLICATE_PLURAL_ARGUMENT_SELECTOR",
+   "offset": 19
+  },
+  {
+   "m": "{n, plural, one a}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_SELECTOR_FRAGMENT",
+   "offset": 16
+  },
+  {
+   "m": "{n, plural, one {a} other {b}",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{n, plural, other {a}",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{n, plural, offset 1 other {a}}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE",
+   "offset": 18
+  },
+  {
+   "m": "{n, plural, offset: other {a}}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE",
+   "offset": 20
+  },
+  {
+   "m": "{n, plural, offset:x other {a}}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_OFFSET_VALUE",
+   "offset": 19
+  },
+  {
+   "m": "{n, plural, offset:99999999999999999 other {a}}",
+   "kind": "INVALID_PLURAL_ARGUMENT_OFFSET_VALUE",
+   "offset": 19
+  },
+  {
+   "m": "{n, plural, = {a} other {b}}",
+   "kind": "EXPECT_PLURAL_ARGUMENT_SELECTOR",
+   "offset": 13
+  },
+  {
+   "m": "{n, plural, =99999999999999999 {a} other {b}}",
+   "kind": "INVALID_PLURAL_ARGUMENT_SELECTOR",
+   "offset": 13
+  },
+  {
+   "m": "{n, select, =1 {a} other {b}}",
+   "kind": "EXPECT_SELECT_ARGUMENT_SELECTOR",
+   "offset": 12
+  },
+  {
+   "m": "{n, select, a {x}}",
+   "kind": "MISSING_OTHER_CLAUSE",
+   "offset": 17
+  },
+  {
+   "m": "{n, select, a {x} a {y} other {z}}",
+   "kind": "DUPLICATE_SELECT_ARGUMENT_SELECTOR",
+   "offset": 18
+  },
+  {
+   "m": "{n, select,}",
+   "kind": "EXPECT_SELECT_ARGUMENT_SELECTOR",
+   "offset": 11
+  },
+  {
+   "m": "{n, selectordinal, one {a}}",
+   "kind": "MISSING_OTHER_CLAUSE",
+   "offset": 26
+  },
+  {
+   "m": "<b>",
+   "kind": "UNCLOSED_TAG",
+   "offset": 0
+  },
+  {
+   "m": "<b>text",
+   "kind": "UNCLOSED_TAG",
+   "offset": 0
+  },
+  {
+   "m": "<b>text</i>",
+   "kind": "UNMATCHED_CLOSING_TAG",
+   "offset": 9
+  },
+  {
+   "m": "<b>text</b",
+   "kind": "INVALID_TAG",
+   "offset": 7
+  },
+  {
+   "m": "<b>text</ b>",
+   "kind": "INVALID_TAG",
+   "offset": 7
+  },
+  {
+   "m": "</b>",
+   "kind": "UNMATCHED_CLOSING_TAG",
+   "offset": 0
+  },
+  {
+   "m": "a </b> c",
+   "kind": "UNMATCHED_CLOSING_TAG",
+   "offset": 2
+  },
+  {
+   "m": "<b>x</b>y</i>",
+   "kind": "UNMATCHED_CLOSING_TAG",
+   "offset": 9
+  },
+  {
+   "m": "<b x>y</b>",
+   "kind": "INVALID_TAG",
+   "offset": 0
+  },
+  {
+   "m": "<b>{n}</b",
+   "kind": "INVALID_TAG",
+   "offset": 6
+  },
+  {
+   "m": "<b>{n, plural, other {x}}",
+   "kind": "UNCLOSED_TAG",
+   "offset": 0
+  },
+  {
+   "m": "{n, plural, other {<b>x}}",
+   "kind": "UNCLOSED_TAG",
+   "offset": 19
+  },
+  {
+   "m": "{n, plural, other {x</b>}}",
+   "kind": "UNMATCHED_CLOSING_TAG",
+   "offset": 20
+  },
+  {
+   "m": "<b>a}</b>",
+   "kind": "UNCLOSED_TAG",
+   "offset": 0
+  },
+  {
+   "m": "{n, plural, other {{m, select, other {x}}}",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 0
+  },
+  {
+   "m": "{n, number, a{b}c}",
+   "ok": true
+  },
+  {
+   "m": "{n, plural, one {a} other {b}} {",
+   "kind": "EXPECT_ARGUMENT_CLOSING_BRACE",
+   "offset": 31
+  },
+  {
+   "m": "{😀}",
+   "ok": true
+  }
+ ],
+ "cases": [
+  {
+   "m": "It''s {name}'s",
+   "a": {
+    "name": "Ann"
+   },
+   "s": "It's Ann's",
+   "r": [
+    [
+     "t",
+     "It's Ann's",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "'{literal}' and '{'",
+   "a": {},
+   "s": "{literal} and {",
+   "r": [
+    [
+     "t",
+     "{literal} and {",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "a '<b>' c",
+   "a": {},
+   "s": "a <b> c",
+   "r": [
+    [
+     "t",
+     "a <b> c",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "x'y",
+   "a": {},
+   "s": "x'y",
+   "r": [
+    [
+     "t",
+     "x'y",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "'",
+   "a": {},
+   "s": "'",
+   "r": [
+    [
+     "t",
+     "'",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "''",
+   "a": {},
+   "s": "'",
+   "r": [
+    [
+     "t",
+     "'",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, other {'#' is #}}",
+   "a": {
+    "n": 3
+   },
+   "s": "# is 3",
+   "r": [
+    [
+     "t",
+     "# is 3",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "# outside",
+   "a": {},
+   "s": "# outside",
+   "r": [
+    [
+     "t",
+     "# outside",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, one {# '{x}'} other {#}}",
+   "a": {
+    "n": 1
+   },
+   "s": "1 {x}",
+   "r": [
+    [
+     "t",
+     "1 {x}",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, offset:1 =0 {nobody} =1 {only {name}} one {{name} and # other} other {{name} and # others}}",
+   "a": {
+    "n": 0,
+    "name": "Al"
+   },
+   "s": "nobody",
+   "r": [
+    [
+     "t",
+     "nobody",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, offset:1 =0 {nobody} =1 {only {name}} one {{name} and # other} other {{name} and # others}}",
+   "a": {
+    "n": 1,
+    "name": "Al"
+   },
+   "s": "only Al",
+   "r": [
+    [
+     "t",
+     "only Al",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, offset:1 =0 {nobody} =1 {only {name}} one {{name} and # other} other {{name} and # others}}",
+   "a": {
+    "n": 2,
+    "name": "Al"
+   },
+   "s": "Al and 1 other",
+   "r": [
+    [
+     "t",
+     "Al and 1 other",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, offset:1 =0 {nobody} =1 {only {name}} one {{name} and # other} other {{name} and # others}}",
+   "a": {
+    "n": 5,
+    "name": "Al"
+   },
+   "s": "Al and 4 others",
+   "r": [
+    [
+     "t",
+     "Al and 4 others",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}",
+   "a": {
+    "n": 1
+   },
+   "s": "1st",
+   "r": [
+    [
+     "t",
+     "1st",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}",
+   "a": {
+    "n": 22
+   },
+   "s": "22nd",
+   "r": [
+    [
+     "t",
+     "22nd",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}",
+   "a": {
+    "n": 13
+   },
+   "s": "13th",
+   "r": [
+    [
+     "t",
+     "13th",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}",
+   "a": {
+    "n": 103
+   },
+   "s": "103rd",
+   "r": [
+    [
+     "t",
+     "103rd",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, =0 {none} =1 {one exactly} one {one-ish} other {# many}}",
+   "a": {
+    "n": 1
+   },
+   "s": "one exactly",
+   "r": [
+    [
+     "t",
+     "one exactly",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, =+1 {plus} other {#}}",
+   "a": {
+    "n": 1
+   },
+   "s": "1",
+   "r": [
+    [
+     "t",
+     "1",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, =01 {zero-one} other {#}}",
+   "a": {
+    "n": 1
+   },
+   "s": "1",
+   "r": [
+    [
+     "t",
+     "1",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, =-1 {minus} other {#}}",
+   "a": {
+    "n": -1
+   },
+   "s": "minus",
+   "r": [
+    [
+     "t",
+     "minus",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, one {a} other {b}}",
+   "a": {
+    "n": "1"
+   },
+   "s": "a",
+   "r": [
+    [
+     "t",
+     "a",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, one {a} other {#}}",
+   "a": {
+    "n": "abc"
+   },
+   "s": "NaN",
+   "r": [
+    [
+     "t",
+     "NaN",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, number}",
+   "a": {
+    "n": "12.5"
+   },
+   "s": "12.5",
+   "r": [
+    [
+     "t",
+     "12.5",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 1e+21
+   },
+   "s": "1e+21",
+   "r": [
+    [
+     "t",
+     "1e+21",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 0.000001
+   },
+   "s": "0.000001",
+   "r": [
+    [
+     "t",
+     "0.000001",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 1e-7
+   },
+   "s": "1e-7",
+   "r": [
+    [
+     "t",
+     "1e-7",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 123.456
+   },
+   "s": "123.456",
+   "r": [
+    [
+     "t",
+     "123.456",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 0
+   },
+   "s": "0",
+   "r": [
+    [
+     "t",
+     "0",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n}",
+   "a": {
+    "n": 0
+   },
+   "s": "0",
+   "r": [
+    [
+     "t",
+     "0",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{a} {b}",
+   "a": {
+    "a": 1.5,
+    "b": "x"
+   },
+   "s": "1.5 x",
+   "r": [
+    [
+     "t",
+     "1.5 x",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, number, percent}",
+   "a": {
+    "n": 0.5
+   },
+   "s": "50%",
+   "r": [
+    [
+     "t",
+     "50%",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, number, integer}",
+   "a": {
+    "n": 2.5
+   },
+   "s": "3",
+   "r": [
+    [
+     "t",
+     "3",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, number, foo}",
+   "a": {
+    "n": 1234.5678
+   },
+   "s": "1,234.568",
+   "r": [
+    [
+     "t",
+     "1,234.568",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{x, select, a {A} b {B {n, plural, one {# one} other {# other}}} other {O}}",
+   "a": {
+    "x": "b",
+    "n": 1
+   },
+   "s": "B 1 one",
+   "r": [
+    [
+     "t",
+     "B 1 one",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{x, select, a {A} other {O}}",
+   "a": {
+    "x": 5
+   },
+   "s": "O",
+   "r": [
+    [
+     "t",
+     "O",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{x, select, 5 {five} other {O}}",
+   "a": {
+    "x": 5
+   },
+   "s": "five",
+   "r": [
+    [
+     "t",
+     "five",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, other {<b>#</b> items}}",
+   "a": {
+    "n": 1234
+   },
+   "s": "1,234 items",
+   "r": [
+    [
+     "t",
+     "1,234",
+     [
+      "b"
+     ]
+    ],
+    [
+     "t",
+     " items",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, one {{m, plural, one {# inner} other {# inners}} outer #} other {x}}",
+   "a": {
+    "n": 1,
+    "m": 3
+   },
+   "s": "3 inners outer 1",
+   "r": [
+    [
+     "t",
+     "3 inners outer 1",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "a <b>bold <i>both</i></b> c",
+   "a": {},
+   "s": "a bold both c",
+   "r": [
+    [
+     "t",
+     "a ",
+     []
+    ],
+    [
+     "t",
+     "bold ",
+     [
+      "b"
+     ]
+    ],
+    [
+     "t",
+     "both",
+     [
+      "b",
+      "i"
+     ]
+    ],
+    [
+     "t",
+     " c",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "<b></b>",
+   "a": {},
+   "s": "",
+   "r": []
+  },
+  {
+   "m": "<b>x</b><b>y</b>",
+   "a": {},
+   "s": "xy",
+   "r": [
+    [
+     "t",
+     "x",
+     [
+      "b"
+     ]
+    ],
+    [
+     "t",
+     "y",
+     [
+      "b"
+     ]
+    ]
+   ]
+  },
+  {
+   "m": "<br/> and <br />",
+   "a": {},
+   "s": "<br/> and <br/>",
+   "r": [
+    [
+     "t",
+     "<br/> and <br/>",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "a < b and c<1",
+   "a": {},
+   "s": "a < b and c<1",
+   "r": [
+    [
+     "t",
+     "a < b and c<1",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "<a-b.c_d1>x</a-b.c_d1>",
+   "a": {},
+   "s": "x",
+   "r": [
+    [
+     "t",
+     "x",
+     [
+      "a-b.c_d1"
+     ]
+    ]
+   ]
+  },
+  {
+   "m": "{ name }",
+   "a": {
+    "name": "spaced"
+   },
+   "s": "spaced",
+   "r": [
+    [
+     "t",
+     "spaced",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{\tname\n}",
+   "a": {
+    "name": "tabbed"
+   },
+   "s": "tabbed",
+   "r": [
+    [
+     "t",
+     "tabbed",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{name‎}",
+   "a": {
+    "name‎": "lrm"
+   },
+   "s": "lrm",
+   "r": [
+    [
+     "t",
+     "lrm",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, one {a}other{b}}",
+   "a": {
+    "n": 2
+   },
+   "s": "b",
+   "r": [
+    [
+     "t",
+     "b",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n,plural,one{a}other{b}}",
+   "a": {
+    "n": 1
+   },
+   "s": "a",
+   "r": [
+    [
+     "t",
+     "a",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "}",
+   "a": {},
+   "s": "}",
+   "r": [
+    [
+     "t",
+     "}",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "a}b",
+   "a": {},
+   "s": "a}b",
+   "r": [
+    [
+     "t",
+     "a}b",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, number, ::percent}",
+   "a": {
+    "n": 1
+   },
+   "s": "100%",
+   "r": [
+    [
+     "t",
+     "100%",
+     []
+    ]
+   ]
+  },
+  {
+   "m": "{n, plural, other {}}",
+   "a": {
+    "n": 1
+   },
+   "s": "",
+   "r": []
+  },
+  {
+   "m": "{v}",
+   "a": {
+    "v": ""
+   },
+   "s": "",
+   "r": []
+  },
+  {
+   "m": "😀 {n} 😀",
+   "a": {
+    "n": "é"
+   },
+   "s": "😀 é 😀",
+   "r": [
+    [
+     "t",
+     "😀 é 😀",
+     []
+    ]
+   ]
+  }
+ ]
+}

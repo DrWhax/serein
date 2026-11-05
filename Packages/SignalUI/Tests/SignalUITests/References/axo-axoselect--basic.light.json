@@ -1,0 +1,17 @@
+{
+ "id": "axo-axoselect--basic",
+ "theme": "light",
+ "width": 1168,
+ "height": 424,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

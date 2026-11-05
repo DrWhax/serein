@@ -1,0 +1,17 @@
+{
+ "id": "components-button--aria-label",
+ "theme": "dark",
+ "width": 1168,
+ "height": 23,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

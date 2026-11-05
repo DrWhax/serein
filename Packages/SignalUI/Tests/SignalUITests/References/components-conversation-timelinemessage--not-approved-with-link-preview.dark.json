@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--not-approved-with-link-preview",
+ "theme": "dark",
+ "width": 1168,
+ "height": 2304,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

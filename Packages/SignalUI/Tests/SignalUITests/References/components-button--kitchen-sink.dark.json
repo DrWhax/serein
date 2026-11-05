@@ -1,0 +1,17 @@
+{
+ "id": "components-button--kitchen-sink",
+ "theme": "dark",
+ "width": 1168,
+ "height": 2262,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

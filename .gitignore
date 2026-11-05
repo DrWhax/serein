@@ -1,0 +1,13 @@
+# upstream reference clone (separate repo, cloned manually)
+/Signal-Desktop/
+# build output
+.build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+/vendor/libsignal/target/
+/vendor/ringrtc/target/
+/vendor/ringrtc/out/
+.bbs.db
+.DS_Store
+.cache/

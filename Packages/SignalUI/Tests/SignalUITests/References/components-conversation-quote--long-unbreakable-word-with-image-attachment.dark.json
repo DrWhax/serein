@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-quote--long-unbreakable-word-with-image-attachment",
+ "theme": "dark",
+ "width": 1168,
+ "height": 74,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

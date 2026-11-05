@@ -1,0 +1,25 @@
+{
+ "id": "components-groupv2joindialog--with-one-member",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   440,
+   307,
+   320,
+   286
+  ]
+ ]
+}

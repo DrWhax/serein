@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-imagegrid--five-images-pending-w-download-progress",
+ "theme": "dark",
+ "width": 1168,
+ "height": 251,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

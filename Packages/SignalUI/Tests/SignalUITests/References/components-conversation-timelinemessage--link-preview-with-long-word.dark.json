@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--link-preview-with-long-word",
+ "theme": "dark",
+ "width": 1168,
+ "height": 2440,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

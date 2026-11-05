@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timeline--with-active-message-request-without-payments",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1072,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

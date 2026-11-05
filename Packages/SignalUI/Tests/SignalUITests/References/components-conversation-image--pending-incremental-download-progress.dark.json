@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-image--pending-incremental-download-progress",
+ "theme": "dark",
+ "width": 1168,
+ "height": 200,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "axo-items-axolist--with-description",
+ "theme": "light",
+ "width": 1200,
+ "height": 278,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

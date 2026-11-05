@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-quote--voice-message-only",
+ "theme": "dark",
+ "width": 1168,
+ "height": 54,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

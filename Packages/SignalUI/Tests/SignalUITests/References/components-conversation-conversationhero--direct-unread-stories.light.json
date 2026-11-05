@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationhero--direct-unread-stories",
+ "theme": "light",
+ "width": 1168,
+ "height": 177,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

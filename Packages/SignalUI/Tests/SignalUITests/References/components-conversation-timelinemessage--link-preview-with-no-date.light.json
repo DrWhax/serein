@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--link-preview-with-no-date",
+ "theme": "light",
+ "width": 1168,
+ "height": 2304,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-toastmanager--basic-usage",
+ "theme": "light",
+ "width": 1168,
+ "height": 884,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

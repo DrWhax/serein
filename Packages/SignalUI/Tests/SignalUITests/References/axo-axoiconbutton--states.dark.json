@@ -1,0 +1,17 @@
+{
+ "id": "axo-axoiconbutton--states",
+ "theme": "dark",
+ "width": 1168,
+ "height": 156,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

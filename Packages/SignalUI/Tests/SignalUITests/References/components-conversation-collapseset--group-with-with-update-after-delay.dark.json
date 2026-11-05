@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-collapseset--group-with-with-update-after-delay",
+ "theme": "dark",
+ "width": 1168,
+ "height": 120,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  26
+ ]
+}

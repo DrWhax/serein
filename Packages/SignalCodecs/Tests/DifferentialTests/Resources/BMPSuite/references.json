@@ -1,0 +1,248 @@
+{
+ "b/badbitcount.bmp": [],
+ "b/badbitssize.bmp": [],
+ "b/baddens1.bmp": [],
+ "b/baddens2.bmp": [],
+ "b/badfilesize.bmp": [],
+ "b/badheadersize.bmp": [],
+ "b/badpalettesize.bmp": [],
+ "b/badplanes.bmp": [],
+ "b/badrle.bmp": [],
+ "b/badrle4.bmp": [],
+ "b/badrle4bis.bmp": [],
+ "b/badrle4ter.bmp": [],
+ "b/badrlebis.bmp": [],
+ "b/badrleter.bmp": [],
+ "b/badwidth.bmp": [],
+ "b/pal8badindex.bmp": [],
+ "b/reallybig.bmp": [],
+ "b/rgb16-880.bmp": [
+  "rgb16-880.png"
+ ],
+ "b/rletopdown.bmp": [],
+ "b/shortfile.bmp": [],
+ "g/pal1.bmp": [
+  "pal1.png"
+ ],
+ "g/pal1bg.bmp": [
+  "pal1bg.png"
+ ],
+ "g/pal1wb.bmp": [
+  "pal1.png"
+ ],
+ "g/pal4.bmp": [
+  "pal4.png"
+ ],
+ "g/pal4gs.bmp": [
+  "pal4gs.png"
+ ],
+ "g/pal4rle.bmp": [
+  "pal4.png"
+ ],
+ "g/pal8-0.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8gs.bmp": [
+  "pal8gs.png"
+ ],
+ "g/pal8nonsquare.bmp": [
+  "pal8nonsquare-v.png",
+  "pal8nonsquare-e.png"
+ ],
+ "g/pal8os2.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8rle.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8topdown.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8v4.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8v5.bmp": [
+  "pal8.png"
+ ],
+ "g/pal8w124.bmp": [
+  "pal8w124.png"
+ ],
+ "g/pal8w125.bmp": [
+  "pal8w125.png"
+ ],
+ "g/pal8w126.bmp": [
+  "pal8w126.png"
+ ],
+ "g/rgb16-565.bmp": [
+  "rgb16-565.png"
+ ],
+ "g/rgb16-565pal.bmp": [
+  "rgb16-565.png"
+ ],
+ "g/rgb16.bmp": [
+  "rgb16.png"
+ ],
+ "g/rgb16bfdef.bmp": [
+  "rgb16.png"
+ ],
+ "g/rgb24.bmp": [
+  "rgb24.png"
+ ],
+ "g/rgb24pal.bmp": [
+  "rgb24.png"
+ ],
+ "g/rgb32.bmp": [
+  "rgb24.png"
+ ],
+ "g/rgb32bf.bmp": [
+  "rgb24.png"
+ ],
+ "g/rgb32bfdef.bmp": [
+  "rgb24.png"
+ ],
+ "q/pal1huffmsb.bmp": [
+  "pal1.png"
+ ],
+ "q/pal1p1.bmp": [
+  "pal1p1.png"
+ ],
+ "q/pal2.bmp": [
+  "pal2.png"
+ ],
+ "q/pal2color.bmp": [
+  "pal2color.png"
+ ],
+ "q/pal4rlecut.bmp": [
+  "pal4rlecut.png",
+  "pal4rlecut-0.png",
+  "pal4rlecut-b.png"
+ ],
+ "q/pal4rletrns.bmp": [
+  "pal4rletrns.png",
+  "pal4rletrns-0.png",
+  "pal4rletrns-b.png"
+ ],
+ "q/pal8offs.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2-hs.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2-sz.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2sp.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2v2-16.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2v2-40sz.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2v2-sz.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8os2v2.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8oversizepal.bmp": [
+  "pal8.png"
+ ],
+ "q/pal8rlecut.bmp": [
+  "pal8rlecut.png",
+  "pal8rlecut-0.png",
+  "pal8rlecut-b.png"
+ ],
+ "q/pal8rletrns.bmp": [
+  "pal8rletrns.png",
+  "pal8rletrns-0.png",
+  "pal8rletrns-b.png"
+ ],
+ "q/rgb16-231.bmp": [
+  "rgb16-231.png"
+ ],
+ "q/rgb16-3103.bmp": [
+  "rgb16-3103.png"
+ ],
+ "q/rgb16faketrns.bmp": [
+  "rgb16.png",
+  "rgb16faketrns.png"
+ ],
+ "q/rgb24jpeg.bmp": [
+  "rgb24.jpg"
+ ],
+ "q/rgb24largepal.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb24lprof.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb24png.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb24prof.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb24prof2.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb24rle24.bmp": [
+  "pal8.png"
+ ],
+ "q/rgb32-111110.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb32-7187.bmp": [
+  "rgb32-7187.png"
+ ],
+ "q/rgb32-xbgr.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgb32fakealpha.bmp": [
+  "rgb24.png",
+  "fakealpha.png"
+ ],
+ "q/rgb32h52.bmp": [
+  "rgb24.png"
+ ],
+ "q/rgba16-1924.bmp": [
+  "rgba16-1924.png"
+ ],
+ "q/rgba16-4444.bmp": [
+  "rgba16-4444.png"
+ ],
+ "q/rgba16-5551.bmp": [
+  "rgba16-5551.png"
+ ],
+ "q/rgba32-1.bmp": [
+  "rgba32.png"
+ ],
+ "q/rgba32-1010102.bmp": [
+  "rgba32-1010102.png"
+ ],
+ "q/rgba32-2.bmp": [
+  "rgba32.png"
+ ],
+ "q/rgba32-61754.bmp": [
+  "rgba32-61754.png"
+ ],
+ "q/rgba32-81284.bmp": [
+  "rgba32-81284.png"
+ ],
+ "q/rgba32abf.bmp": [
+  "rgba32.png"
+ ],
+ "q/rgba32h56.bmp": [
+  "rgba32.png"
+ ],
+ "q/rgba64.bmp": [
+  "rgba32.png"
+ ],
+ "x/ba-bm.bmp": [
+  "pal8.png"
+ ]
+}

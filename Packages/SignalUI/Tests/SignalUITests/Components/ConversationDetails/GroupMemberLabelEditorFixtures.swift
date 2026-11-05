@@ -1,0 +1,48 @@
+// Generated from the GroupMemberLabelEditor captures' DOM: the members with labels, in order,
+// as (title, kitten fixture, isAdmin, label emoji or "", label string).
+
+enum GroupMemberLabelEditorFixtures {
+    static let few: [(String, Int, Bool, String, String)] = [
+        ("Regan Murazik", 3, true, "🏠", "Label number long long long long long long long long long 0"),
+        ("Nyah Stroman", 2, true, "⚫", "Label member 1"),
+        ("Arvid Smitham", 1, true, "❤️", "Label number long long long long long long long long long 2"),
+    ]
+    static let lots: [(String, Int, Bool, String, String)] = [
+        ("Regan Murazik", 3, true, "🏠", "Label number long long long long long long long long long 0"),
+        ("Nyah Stroman", 2, true, "⚫", "Label member 1"),
+        ("Arvid Smitham", 1, true, "❤️", "Label number long long long long long long long long long 2"),
+        ("Ray Barton", 2, true, "2️⃣", "Label member 3"),
+        ("Carmine Hane", 3, true, "😵‍💫", "Label number long long long long long long long long long 4"),
+        ("Lyla Ward", 3, true, "🏠", "Label member 5"),
+        ("Sienna Ernser", 1, true, "🚲", "Label number long long long long long long long long long 6"),
+        ("Natalie Auer", 1, false, "🚲", "Label member 7"),
+        ("Selmer Donnelly", 1, false, "🐱", "Label number long long long long long long long long long 8"),
+        ("Lon VonRueden", 2, false, "🤍", "Label member 9"),
+        ("Casandra Renner", 1, false, "🤍", "Label number long long long long long long long long long 10"),
+        ("Lucinda Veum", 1, false, "🎊", "Label member 11"),
+        ("Franco Adams", 1, false, "🎊", "Label number long long long long long long long long long 12"),
+        ("Janice Dach", 3, false, "🥂", "Label member 13"),
+        ("Otilia Durgan", 3, false, "🚲", "Label number long long long long long long long long long 14"),
+        ("Arielle Kozey", 2, false, "🎊", "Label member 15"),
+        ("Hilbert Keebler", 1, false, "🐶", "Label number long long long long long long long long long 16"),
+        ("Ruthe Bahringer", 2, false, "2️⃣", "Label member 17"),
+        ("Oren Rosenbaum", 1, false, "❤️", "Label number long long long long long long long long long 18"),
+        ("Eugene Kuhlman", 2, false, "⚫", "Label member 19"),
+        ("Genesis Pacocha", 2, false, "🏠", "Label number long long long long long long long long long 20"),
+        ("Forest Vandervort", 2, false, "🏠", "Label member 21"),
+        ("Davion Waters", 3, false, "❤️", "Label number long long long long long long long long long 22"),
+        ("Ronaldo Krajcik", 2, false, "🫥", "Label member 23"),
+        ("Dolores Johns", 1, false, "🫥", "Label number long long long long long long long long long 24"),
+        ("Adelia Christiansen", 3, false, "🐱", "Label member 25"),
+        ("Ardella Thompson", 1, false, "🥂", "Label number long long long long long long long long long 26"),
+        ("Alize Walter", 2, false, "➕", "Label member 27"),
+        ("Richmond Hartmann", 1, false, "❤️", "Label number long long long long long long long long long 28"),
+        ("Lempi Dibbert", 3, false, "2️⃣", "Label member 29"),
+        ("Dion McClure", 2, false, "🚲", "Label number long long long long long long long long long 30"),
+        ("Kali Christiansen", 3, false, "❤️", "Label member 31"),
+        ("Enrico Kulas", 1, false, "2️⃣", "Label number long long long long long long long long long 32"),
+        ("Stephany Shanahan", 3, false, "🫥", "Label member 33"),
+        ("Ceasar Koss", 3, false, "➕", "Label number long long long long long long long long long 34"),
+        ("Tristian Kohler", 2, false, "🥂", "Label member 35"),
+    ]
+}

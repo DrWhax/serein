@@ -1,0 +1,25 @@
+{
+ "id": "components-groupmemberlabelinfomodal--cannot-add-label",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   440,
+   344,
+   320,
+   212
+  ]
+ ]
+}

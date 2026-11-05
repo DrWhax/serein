@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-conversationdetails--as-admin",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1169,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-preferences--nav-tabs-collapsed-with-exclamation-without-donations",
+ "theme": "dark",
+ "width": 1200,
+ "height": 567,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

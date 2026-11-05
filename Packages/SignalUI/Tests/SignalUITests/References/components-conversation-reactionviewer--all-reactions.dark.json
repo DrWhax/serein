@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-reactionviewer--all-reactions",
+ "theme": "dark",
+ "width": 1168,
+ "height": 320,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-mediagallery-mediagriditem--missing-image",
+ "theme": "dark",
+ "width": 1168,
+ "height": 32,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

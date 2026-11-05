@@ -1,0 +1,17 @@
+{
+ "id": "axo-items-axoswitchitem--symbol",
+ "theme": "dark",
+ "width": 1168,
+ "height": 37,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

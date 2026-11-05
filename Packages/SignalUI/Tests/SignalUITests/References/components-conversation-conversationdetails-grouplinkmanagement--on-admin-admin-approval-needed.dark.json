@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-conversationdetails-grouplinkmanagement--on-admin-admin-approval-needed",
+ "theme": "dark",
+ "width": 1168,
+ "height": 257,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-unsupportedosdialog--iterations",
+ "theme": "dark",
+ "width": 1168,
+ "height": 436,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

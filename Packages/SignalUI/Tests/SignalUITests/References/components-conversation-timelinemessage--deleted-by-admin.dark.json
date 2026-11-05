@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--deleted-by-admin",
+ "theme": "dark",
+ "width": 1168,
+ "height": 279,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

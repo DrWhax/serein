@@ -1,0 +1,17 @@
+{
+ "id": "components-conversationlist--contact-checkboxes",
+ "theme": "dark",
+ "width": 1168,
+ "height": 350,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

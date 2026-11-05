@@ -1,0 +1,17 @@
+{
+ "id": "components-avatareditor--no-avatar-contact",
+ "theme": "dark",
+ "width": 1168,
+ "height": 333,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,110 @@
+diff --git a/rust/bridge/shared/testing/src/lib.rs b/rust/bridge/shared/testing/src/lib.rs
+index 7502154..ffb7986 100644
+--- a/rust/bridge/shared/testing/src/lib.rs
++++ b/rust/bridge/shared/testing/src/lib.rs
+@@ -25,7 +25,7 @@ pub mod convert;
+ pub mod crypto;
+ pub mod message_backup;
+ pub mod net;
+-#[cfg(feature = "node")]
++#[cfg(any(feature = "node", feature = "ffi"))]  // SignalSafe: also for the FFI local-test-server export
+ pub mod net_env;
+ pub mod protocol;
+ pub mod types;
+diff --git a/rust/bridge/shared/testing/src/net.rs b/rust/bridge/shared/testing/src/net.rs
+index 9691291..5b99616 100644
+--- a/rust/bridge/shared/testing/src/net.rs
++++ b/rust/bridge/shared/testing/src/net.rs
+@@ -180,6 +180,39 @@ fn TESTING_ConnectionManager_newLocalOverride(
+     )
+ }
+ 
++/// SignalSafe: FFI-exported variant of `TESTING_ConnectionManager_newLocalOverride`
++/// (which is Node-only) so Swift integration tests can talk to the mock server.
++#[bridge_fn(jni = false, node = false)]
++fn TESTING_ConnectionManager_newLocalOverrideForFfi(
++    userAgent: String,
++    chatPort: u16,
++    cdsiPort: u16,
++    svr2Port: u16,
++    svrBPort: u16,
++    rootCertificateDer: &[u8],
++    httpVersion: u8,
++) -> ConnectionManager {
++    let nz = |p: u16| NonZeroU16::new(p).expect("non-zero port");
++    let ports = net_env::LocalhostEnvPortConfig {
++        chat_port: nz(chatPort),
++        cdsi_port: nz(cdsiPort),
++        svr2_port: nz(svr2Port),
++        svrb_port: nz(svrBPort),
++    };
++    let http_version = match httpVersion {
++        1 => HttpVersion::Http1_1,
++        2 => HttpVersion::Http2,
++        _ => panic!("invalid HTTP version {httpVersion}"),
++    };
++    let env = net_env::localhost_test_env_with_ports(ports, rootCertificateDer, http_version);
++    ConnectionManager::new_from_static_environment(
++        env,
++        userAgent.as_str(),
++        Default::default(),
++        BuildVariant::Production,
++    )
++}
++
+ #[bridge_fn]
+ fn TESTING_ConnectionManager_isUsingProxy(manager: &ConnectionManager) -> i32 {
+     match manager.is_using_proxy() {
+diff --git a/swift/Sources/LibSignalClient/Net.swift b/swift/Sources/LibSignalClient/Net.swift
+index f3a4c42..7ca7a58 100644
+--- a/swift/Sources/LibSignalClient/Net.swift
++++ b/swift/Sources/LibSignalClient/Net.swift
+@@ -74,6 +74,27 @@ public class Net {
+         )
+     }
+ 
++    /// SignalSafe: a `Net` that talks to a local test server (Signal's mock server)
++    /// instead of a Signal environment. Testing only.
++    internal init(environment: Environment, connectionManager: ConnectionManager) {
++        self.environment = environment
++        self.asyncContext = TokioAsyncContext()
++        self.connectionManager = connectionManager
++    }
++
++    public static func localTestServer(userAgent: String, chatPort: UInt16, rootCertificateDer: Data) -> Net {
++        let handle = rootCertificateDer.withUnsafeBorrowedBuffer { der in
++            failOnError {
++                try invokeFnReturningValueByPointer(.init()) {
++                    signal_testing_connection_manager_new_local_override_for_ffi(
++                        $0, userAgent, chatPort, 9, 9, 9, der, 2
++                    )
++                }
++            }
++        }
++        return Net(environment: .staging, connectionManager: ConnectionManager(owned: NonNull(handle)!))
++    }
++
+     /// Sets the proxy host to be used for all new connections (until overridden).
+     ///
+     /// Sets a server to be used to proxy all new outgoing connections. The proxy can be
+diff --git a/swift/Sources/SignalFfi/signal_ffi_testing.h b/swift/Sources/SignalFfi/signal_ffi_testing.h
+index 73ac0a1..833892c 100644
+--- a/swift/Sources/SignalFfi/signal_ffi_testing.h
++++ b/swift/Sources/SignalFfi/signal_ffi_testing.h
+@@ -1938,6 +1938,16 @@ SignalFfiError* signal_testing_confirm_totp_key_tests(
+ SignalFfiError* signal_testing_confirm_username_tests(
+   SignalOwnedBufferOfGrpcTestCaseBridgedFfi* out
+ );
++SignalFfiError* signal_testing_connection_manager_new_local_override_for_ffi(
++  SignalMutPointerConnectionManager* out,
++  const int8_t* user_agent,
++  uint16_t chat_port,
++  uint16_t cdsi_port,
++  uint16_t svr2_port,
++  uint16_t svr_b_port,
++  SignalBorrowedBuffer root_certificate_der,
++  uint8_t http_version
++);
+ SignalFfiError* signal_testing_connection_manager_is_using_proxy(
+   int32_t* out,
+   SignalConstPointerConnectionManager manager

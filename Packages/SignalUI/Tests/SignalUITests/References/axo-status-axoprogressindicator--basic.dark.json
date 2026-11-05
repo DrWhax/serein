@@ -1,0 +1,17 @@
+{
+ "id": "axo-status-axoprogressindicator--basic",
+ "theme": "dark",
+ "width": 1168,
+ "height": 24,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

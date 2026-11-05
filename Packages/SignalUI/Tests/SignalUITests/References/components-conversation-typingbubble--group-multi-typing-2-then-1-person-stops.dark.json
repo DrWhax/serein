@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-typingbubble--group-multi-typing-2-then-1-person-stops",
+ "theme": "dark",
+ "width": 1168,
+ "height": 44,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-stagedlinkpreview--no-image-long-title-without-description",
+ "theme": "dark",
+ "width": 1168,
+ "height": 74,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

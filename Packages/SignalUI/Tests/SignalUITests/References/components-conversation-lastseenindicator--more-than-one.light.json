@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-lastseenindicator--more-than-one",
+ "theme": "light",
+ "width": 1168,
+ "height": 82,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

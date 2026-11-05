@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-timelinemessage--label-in-group-with-long-name-and-long-message",
+ "theme": "light",
+ "width": 1168,
+ "height": 389,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

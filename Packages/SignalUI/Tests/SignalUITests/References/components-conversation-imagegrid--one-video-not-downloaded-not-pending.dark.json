@@ -1,0 +1,17 @@
+{
+ "id": "components-conversation-imagegrid--one-video-not-downloaded-not-pending",
+ "theme": "dark",
+ "width": 1168,
+ "height": 230,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}
