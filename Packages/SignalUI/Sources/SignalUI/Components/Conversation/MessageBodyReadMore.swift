@@ -2,6 +2,7 @@
 // to `displayLimit` (800) UTF-16 units at a grapheme boundary (graphemeAndLinkAwareSlice: not
 // below 900, and never inside a link), with "Read more" adding 3000 more.
 
+import SignalText
 import SwiftUI
 
 public struct MessageBodyReadMore: View {

@@ -35,6 +35,10 @@ let package = Package(
         .package(path: "../../vendor/libsignal"),
         .package(path: "../../vendor/GRDB.swift"),
         .package(url: "https://github.com/apple/swift-protobuf.git", exact: "1.39.0"),
+        .package(path: "../SignalMediaService"),
+        .package(path: "../SignalCodecs"),
+        .package(path: "../SignalText"),
+        .package(path: "../SignalRingRTC"),
     ],
     targets: [
         .target(
@@ -49,13 +53,23 @@ let package = Package(
                 .product(name: "LibSignalClient", package: "libsignal"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "SignalText", package: "SignalText"),
+                // The media service's interface only: decoders never link into SignalCore.
+                .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                // Calling (ringrtc through our C ABI; not a media parser).
+                .product(name: "SignalRingRTC", package: "SignalRingRTC"),
             ],
             swiftSettings: strict,
             linkerSettings: [.unsafeFlags(["-L", ffiDir])]
         ),
         .testTarget(
             name: "SignalCoreTests",
-            dependencies: ["SignalCore", "SignalProtos", .product(name: "LibSignalClient", package: "libsignal")],
+            dependencies: ["SignalCore", "SignalProtos", .product(name: "LibSignalClient", package: "libsignal"),
+                           .product(name: "SignalRingRTC", package: "SignalRingRTC"),
+                           .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                           .product(name: "SignalMediaDecoder", package: "SignalMediaService"),
+                           .product(name: "EncodePNG", package: "SignalCodecs"), .product(name: "CodecCore", package: "SignalCodecs")],
+            resources: [.copy("Resources")],
             swiftSettings: memorySafety,
             linkerSettings: [.unsafeFlags(["-L", ffiDir])]
         ),

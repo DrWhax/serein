@@ -34,7 +34,7 @@ const RASTERISE = [
 ];
 /// Intrinsic sizes for SVGs that only have a viewBox (the size they are drawn at).
 const SIZES = {};
-const COPY = ['donate-heart.png'];
+const COPY = ['donate-heart.png', 'giphy-attribution.png'];
 
 await mkdir(out, { recursive: true });
 const browser = await chromium.launch({ args: ['--force-color-profile=srgb', '--disable-lcd-text'] });

@@ -7,6 +7,7 @@
 // Subset: the author is body-2-medium's weight in the paragraph's size (runs share one size).
 
 import SignalI18n
+import SignalText
 import SwiftUI
 
 /// The `textAttachment` fields MessageBody reads (`pending`, downloadability, `wasTooBig`).

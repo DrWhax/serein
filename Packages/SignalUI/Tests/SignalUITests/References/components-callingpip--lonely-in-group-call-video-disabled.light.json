@@ -1,0 +1,17 @@
+{
+ "id": "components-callingpip--lonely-in-group-call-video-disabled",
+ "theme": "light",
+ "width": 247,
+ "height": 501,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  953,
+  53
+ ]
+}

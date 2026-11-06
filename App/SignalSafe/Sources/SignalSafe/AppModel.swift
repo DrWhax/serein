@@ -12,6 +12,10 @@ import SignalUI
     /// `preferredLeftPaneWidth` item (default 320 upstream).
     var preferredLeftPaneWidth: CGFloat = 320
     var isShowingShortcutGuide = false
+    /// Calls tab: the history search, the missed-calls filter and the new-call search.
+    var callsHistoryQuery = ""
+    var callsMissedOnly = false
+    var newCallQuery = ""
     var isFullScreen = false
     /// ZoomFactorService: factor = 1.2^level, level steps of 1, reset to 0.
     var zoomLevel: Double = 0

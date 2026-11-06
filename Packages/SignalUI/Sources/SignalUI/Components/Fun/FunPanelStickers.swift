@@ -46,8 +46,11 @@ public struct FunPanelStickers: View {
     let recents: [FunStickerItem]
     let isFavoriteStickersEnabled: Bool
     let showAddStickerPackButton: Bool
-    let onSelectSticker: (FunStickerItem) -> Void
+    var onSelectSticker: (FunStickerItem) -> Void
     let onAddStickerPack: () -> Void
+    /// The media editor's "Featured" section: the analog and digital time stickers.
+    var showTimeStickers = false
+    var onSelectTimeSticker: (_ analog: Bool) -> Void = { _ in }
     @State private var searchInput = ""
     @State private var selected: FunStickersSection?
     @Environment(\.i18n) var i18n
@@ -100,6 +103,7 @@ public struct FunPanelStickers: View {
                 ScrollViewReader { proxy in
                     FunScroller {
                         VStack(alignment: .leading, spacing: 20) {
+                            if showTimeStickers && searchInput.trimmingCharacters(in: .whitespaces).isEmpty { featuredSection }
                             ForEach(sections, id: \.id) { s in sectionView(s) }
                         }
                     }
@@ -129,6 +133,29 @@ public struct FunPanelStickers: View {
             }
         }
         .id(s.id)
+    }
+
+    var featuredSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FunGridHeader(title: i18n("icu:FunPanelStickers__SectionTitle--Featured")) { EmptyView() }
+            HStack(spacing: 0) {
+                ForEach([true, false], id: \.self) { analog in
+                    FunItemButton(label: analog ? "analog" : "digital") { onSelectTimeSticker(analog) } content: {
+                        TimeStickerPreview(analog: analog).frame(width: 68, height: 68)
+                    }
+                    .frame(width: Self.cell, height: Self.cell)
+                }
+            }
+        }
+        .id(FunStickersSection.featured)
+    }
+
+    /// With the media editor's time stickers.
+    public func timeStickers(_ onSelect: @escaping (_ analog: Bool) -> Void) -> FunPanelStickers {
+        var p = self
+        p.showTimeStickers = true
+        p.onSelectTimeSticker = onSelect
+        return p
     }
 
     var subNav: some View {
@@ -245,4 +272,38 @@ public struct FunStickerPicker: View {
     let panel: FunPanelStickers
     public init(panel: FunPanelStickers) { self.panel = panel }
     public var body: some View { FunPopoverDialog { panel } }
+}
+
+/// `DigitalTimeSticker` / `AnalogTimeSticker` (FunPanelStickers.scss): a 512-unit box, the
+/// time in 256-unit white Hatsuishi (16 units up), or the Arabic dial with its hour (16 × 112)
+/// and minute (16 × 176) hands rotated about the centre.
+struct TimeStickerPreview: View {
+    let analog: Bool
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { t in
+            Canvas { ctx, size in
+                var c = ctx
+                c.scaleBy(x: size.width / 512, y: size.height / 512)
+                if analog {
+                    let time = AnalogTime(date: t.date)
+                    SignalIconDrawing.draw("analog-time/Arabic", in: CGRect(x: 0, y: 0, width: 512, height: 512), ctx: c)
+                    for (deg, name, h) in [(time.hour, "hour", 112.0), (time.minute, "minute", 176.0)] {
+                        var r = c
+                        r.translateBy(x: 256, y: 256)
+                        r.rotate(by: .degrees(deg))
+                        SignalIconDrawing.draw("analog-time/Arabic-\(name)", in: CGRect(x: -8, y: -h, width: 16, height: h), ctx: r)
+                    }
+                } else {
+                    let f = DateFormatter()
+                    f.setLocalizedDateFormatFromTemplate("jmm")
+                    let text = f.string(from: t.date)
+                    c.withCGContext { cg in
+                        cg.translateBy(x: 256, y: 256 - 16)
+                        MediaEditorText.draw(text, fontSize: 256, fontName: DigitalClockLayout.timeFont, fill: RGBA(1, 1, 1), stroke: nil, background: nil, in: cg)
+                    }
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
 }

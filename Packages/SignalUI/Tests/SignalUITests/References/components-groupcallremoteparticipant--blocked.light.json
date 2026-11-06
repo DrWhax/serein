@@ -1,0 +1,17 @@
+{
+ "id": "components-groupcallremoteparticipant--blocked",
+ "theme": "light",
+ "width": 800,
+ "height": 120,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -23,6 +23,16 @@ public struct ConversationJob: Codable, Sendable {
         case viewedSync = "ViewedSync"
         case resend = "Resend"
         case syncRequest = "SyncRequest"
+        case fetchLatest = "FetchLatest"
+        case stickerPackSync = "StickerPackSync"
+        case modifierSend = "ModifierSend"
+    }
+
+    /// SyncMessage.StickerPackOperation
+    public struct StickerPackOperation: Codable, Sendable {
+        public var packId: String
+        public var packKey: String
+        public var install: Bool
     }
 
     public var type: Kind
@@ -36,8 +46,12 @@ public struct ConversationJob: Codable, Sendable {
     public var timestamp: UInt64?
     public var ratchetKey: String?
     public var wasSenderKey: Bool?
-    // SyncRequest
+    // SyncRequest; FetchLatest (SyncMessage.FetchLatest.Type raw values)
     public var requestTypes: [Int]?
+    // StickerPackSync
+    public var stickerPack: StickerPackOperation?
+    // ModifierSend: a serialized Content
+    public var content: String?
 
     public static let queueType = "conversation"
 
@@ -54,4 +68,6 @@ public struct ConversationJob: Codable, Sendable {
              ratchetKey: ratchetKey?.base64EncodedString(), wasSenderKey: wasSenderKey)
     }
     public static func syncRequest(_ types: [Int]) -> Self { Self(type: .syncRequest, requestTypes: types) }
+    /// `getFetchManifestSyncMessage` and friends: tells our other devices to refetch.
+    public static func fetchLatest(_ types: [Int]) -> Self { Self(type: .fetchLatest, requestTypes: types) }
 }

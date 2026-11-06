@@ -101,8 +101,15 @@ async function openStory(id, theme) {
     await page.evaluate(() => window.SignalContext?._skipAnimation?.());
   }
   // CAPTURE_CLICK=<text>: stories behind a harness button ("Activate"): press it first.
+  // CAPTURE_CLICK_PAGE=1: the target is in a portal (a popover), outside the story root.
   if (process.env.CAPTURE_CLICK) {
-    await page.locator('#storybook-root').getByText(process.env.CAPTURE_CLICK, { exact: true }).first().click();
+    const scope = process.env.CAPTURE_CLICK_PAGE ? page : page.locator('#storybook-root');
+    await scope.getByText(process.env.CAPTURE_CLICK, { exact: true }).first().click();
+  }
+  // CAPTURE_FOCUS=<selector>: then focus this element (where the panel's autofocus would be).
+  if (process.env.CAPTURE_FOCUS) {
+    await page.waitForSelector(process.env.CAPTURE_FOCUS);
+    await page.focus(process.env.CAPTURE_FOCUS);
   }
   await page.waitForTimeout(Number(process.env.CAPTURE_SETTLE_MS ?? 150));   // CAPTURE_SETTLE_MS: stories that render asynchronously
 }
@@ -111,7 +118,12 @@ async function openStory(id, theme) {
 // portal (Radix dialog / alert dialog / popper: menus, popovers, tooltips) are captured
 // as the whole viewport, with the portal elements' rects recorded.
 async function componentBox() {
-  return page.evaluate(() => {
+  return page.evaluate((viewport) => {
+    // CAPTURE_VIEWPORT=1: full-window components portalled outside the root (MediaEditor).
+    if (viewport) {
+      const bg = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g).map(Number);
+      return { x: 0, y: 0, width: innerWidth, height: innerHeight, background: bg.length === 3 ? [...bg, 1] : bg, portals: [[0, 0, innerWidth, innerHeight]] };
+    }
     const portals = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[data-radix-popper-content-wrapper],[role=tooltip],.module-modal-host__width-container,#lightbox')]
       .filter((e) => !document.querySelector('#storybook-root').contains(e))
       .map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
@@ -133,7 +145,7 @@ async function componentBox() {
     const w = Math.max(...rects.map((r) => r.right)) - x, h = Math.max(...rects.map((r) => r.bottom)) - y;
     const bg = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g).map(Number);
     return { x, y, width: w, height: h, background: bg.length === 3 ? [...bg, 1] : bg };
-  });
+  }, !!process.env.CAPTURE_VIEWPORT);
 }
 
 // Compact DOM + computed style dump for porting.

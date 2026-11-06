@@ -114,6 +114,26 @@ struct AudioWaveformBars: View {
 }
 
 struct MessageAudio: View {
+    /// `toggleIsPlaying`
+    func toggleIsPlaying() {
+        let isPlaying = active?.playing ?? false
+        if !isPlaying {
+            if active != nil { controls?.setIsPlaying(true) } else if let controls { controls.playMessage(0) } else { onPlay?() }
+        } else {
+            controls?.setIsPlaying(false)
+        }
+    }
+
+    /// `updatePosition`
+    func updatePosition(_ position: Double) {
+        if let active {
+            controls?.setPosition(position)
+            if !active.playing { controls?.setIsPlaying(true) }
+            return
+        }
+        if let controls { controls.playMessage(position) } else { onPlay?() }
+    }
+
     let attachment: MessageAttachment
     let waveform: AudioWaveform?
     let direction: MessageDirection
@@ -124,6 +144,8 @@ struct MessageAudio: View {
     let onPlay: (() -> Void)?
     let kickOffDownload: (() -> Void)?
     let cancelDownload: (() -> Void)?
+    var active: AudioActive? = nil
+    var controls: AudioControls? = nil
     @Environment(\.i18n) var i18n
     @Environment(\.colorScheme) var scheme
 
@@ -140,7 +162,9 @@ struct MessageAudio: View {
     var body: some View {
         let incoming = direction == .incoming
         let state = self.state
-        let duration = waveform.map { max($0.duration, 1e-23) } ?? 1e-23
+        let duration = active?.duration ?? waveform.map { max($0.duration, 1e-23) } ?? 1e-23
+        let isPlaying = active?.playing ?? false
+        let currentTime = active?.currentTime ?? 0
         let peaks = waveform.map { waveformToPeaks($0.waveform, barCount: Self.barCount) } ?? Array(repeating: 0, count: Self.barCount)
         let mod: PlaybackButton.Mod
         let label: String
@@ -148,9 +172,10 @@ struct MessageAudio: View {
         case .computing: (mod, label) = (.computing, i18n("icu:MessageAudio--pending"))
         case .pending: (mod, label) = (.downloading, i18n("icu:MessageAudio--pending"))
         case .notDownloaded: (mod, label) = (.notDownloaded, i18n("icu:MessageAudio--download"))
-        case .normal: (mod, label) = (.play, i18n("icu:MessageAudio--play"))
+        case .normal: (mod, label) = isPlaying ? (.pause, i18n("icu:MessageAudio--pause")) : (.play, i18n("icu:MessageAudio--play"))
         }
-        let countdown = state == .notDownloaded || state == .pending || duration < 1 ? formatFileSize(attachment.size) : durationToPlaybackText(duration)
+        let countDown = max(0, duration - currentTime)
+        let countdown = state == .notDownloaded || state == .pending || duration < 1 ? formatFileSize(attachment.size) : durationToPlaybackText(countDown)
         let separator = incoming ? AxoColor(light: LegacyColor.blackAlpha20, dark: LegacyColor.whiteAlpha20) : AxoColor(LegacyColor.whiteAlpha20)
         return VStack(alignment: .leading, spacing: 0) {
             // __button-and-waveform: row, centred, 5px below
@@ -159,16 +184,18 @@ struct MessageAudio: View {
                     switch state {
                     case .pending: cancelDownload?()
                     case .notDownloaded: kickOffDownload?()
-                    case .normal: onPlay?()
+                    case .normal: toggleIsPlaying()
                     case .computing: break
                     }
                 }
                 .padding(.trailing, 12)
-                AudioWaveformBars(peaks: peaks, barMinHeight: state == .normal ? 4 : 2, barMaxHeight: 20, currentTime: 0, duration: duration,
-                                  incoming: incoming)
-                    .accessibilityElement()
-                    .accessibilityLabel(i18n("icu:MessageAudio--slider"))
-                    .accessibilityValue(durationToPlaybackText(0))
+                WaveformScrubber(peaks: peaks, currentTime: currentTime, duration: duration, barMinHeight: state == .normal ? 4 : 2,
+                                 barMaxHeight: 20, incoming: incoming,
+                                 onClick: { ratio in if state == .normal { updatePosition(ratio) } },
+                                 onScrub: { amountInSeconds in
+                                     // `handleWaveformScrub`, as upstream (see WaveformScrubber).
+                                     updatePosition(min(max(0, currentTime / duration + amountInSeconds / duration), duration))
+                                 })
             }
             .padding(.bottom, 5)
             // __metadata: the countdown, the unplayed dot, and the message metadata
@@ -185,6 +212,11 @@ struct MessageAudio: View {
                             .frame(width: 6, height: 6)
                             .frame(width: 14, alignment: .leading)
                             .accessibilityHidden(true)
+                    }
+                    // Always laid out (38px), scaled to nothing unless playing.
+                    PlaybackRateButton(playbackRate: active?.playbackRate ?? 1, variant: incoming ? .messageIncoming : .messageOutgoing,
+                                       visible: isPlaying && !played) {
+                        if let active { controls?.setPlaybackRate(PlaybackRateButton.nextPlaybackRate(active.playbackRate)) }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

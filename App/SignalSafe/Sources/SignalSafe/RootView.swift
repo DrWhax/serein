@@ -16,6 +16,8 @@ struct RootView: View {
                     if tab == .chats {
                         ChatsTab(selectedConversationId: nil) { leftPane } renderConversationView: { _ in EmptyView() } renderMiniPlayer: { EmptyView() }
                             .background(AxoColor.surfacePrimary)
+                    } else if tab == .calls {
+                        callsTab.background(AxoColor.surfacePrimary)
                     } else {
                         HStack(spacing: 0) {
                             NavSidebar(title: title(tab), navTabsCollapsed: model.navTabsCollapsed,
@@ -60,6 +62,32 @@ struct RootView: View {
                         savePreferredLeftPaneWidth: { model.preferredLeftPaneWidth = $0 },
                         navTabsCollapsed: model.navTabsCollapsed, onToggleNavTabsCollapse: { model.navTabsCollapsed = $0 },
                         listActions: actions)
+    }
+
+    /// The Calls tab over demo call history (SignalCore's CallHistory is not wired in yet);
+    /// the search and the missed filter run over the demo rows as the app's SQL query will.
+    var callsTab: some View {
+        let now = Date()
+        let items = DemoData.calls(now: now).filter { item in
+            let q = model.callsHistoryQuery.trimmingCharacters(in: .whitespaces).lowercased()
+            return (q.isEmpty || item.conversation.title.lowercased().contains(q)) && (!model.callsMissedOnly || item.wasMissedForDemo)
+        }
+        let people = DemoData.conversations(now: now).chats.map {
+            CallsNewCallConversation(conversation: CallingConversation(id: $0.id, title: $0.title, color: $0.avatar.color ?? "A100"), isGroup: false)
+        }.filter { model.newCallQuery.isEmpty || $0.conversation.title.lowercased().contains(model.newCallQuery.lowercased()) }
+        return CallsTab(preferredLeftPaneWidth: model.preferredLeftPaneWidth, navTabsCollapsed: model.navTabsCollapsed, hasAnyAdminCallLinks: false,
+                        hasActiveCall: false, callsListItems: items, historyQuery: $model.callsHistoryQuery, missedOnly: $model.callsMissedOnly,
+                        newCallConversations: people, newCallQuery: $model.newCallQuery, actions: {
+                            var a = CallsTabActions()
+                            a.onToggleNavTabsCollapse = { model.navTabsCollapsed = $0 }
+                            a.savePreferredLeftPaneWidth = { model.preferredLeftPaneWidth = $0 }
+                            return a
+                        }()) { _, group, close in
+            CallLinkDetails(callLink: CallLinkInfo(name: "Book club", rootKey: "bpmc-mrgn-hntf-mffd-mndd-xbxk-zmgq-qszg", isAdmin: true),
+                            callHistoryGroup: group, onDeleteCallLink: close)
+        } renderConversationDetails: { _, _ in
+            EmptyView()
+        }
     }
 
     func title(_ tab: NavTab) -> String {

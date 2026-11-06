@@ -3,8 +3,11 @@
 // Stopgap until libFuzzer is available (Xcode's toolchain lacks the fuzzer
 // runtime; the swift.org toolchain has it). Run under AddressSanitizer:
 //
-//   swift run -c release -Xswiftc -sanitize=address codec-fuzz png <corpus-dir> [iterations] [seed]
-//   swift run ... codec-fuzz png <corpus-dir> --dump <seed> <iteration> <out-file>   # reproduce a crash
+//   swift run -c release -Xswiftc -sanitize=address codec-fuzz <target> <corpus-dir> [iterations] [seed]
+//   swift run ... codec-fuzz <target> <corpus-dir> --dump <seed> <iteration> <out-file>   # reproduce a crash
+//
+// Targets: png (PngSuite); mp4, h264, aac, mp3 (Media.swift; seeds from
+// Tests/DifferentialTests/Resources/{MP4,H264,AAC,MP3}).
 //
 // Every input is derived from (seed, iteration), so a crash report of the form
 // "seed S iteration N" is enough to regenerate the exact input with --dump.
@@ -92,21 +95,65 @@ func input(seed: UInt64, iteration: Int, corpus: [[UInt8]]) -> [UInt8] {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 3, args[1] == "png" else {
-    print("usage: codec-fuzz png <corpus-dir> [iterations] [seed] | png <corpus-dir> --dump <seed> <iteration> <out>")
+let targets = ["png", "mp4", "h264", "aac", "mp3"]
+guard args.count >= 3, targets.contains(args[1]) else {
+    print("usage: codec-fuzz <\(targets.joined(separator: "|"))> <corpus-dir> [iterations] [seed] | <target> <corpus-dir> --dump <seed> <iteration> <out>")
     exit(2)
 }
+let target = args[1]
 let dir = URL(fileURLWithPath: args[2])
-let corpus: [[UInt8]] = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
-    .filter { $0.hasSuffix(".png") }
-    .map { [UInt8](try Data(contentsOf: dir.appendingPathComponent($0))) }
-guard !corpus.isEmpty else { print("empty corpus"); exit(2) }
 
 var limits = DecodeLimits()
 limits.maxPixels = 4 * 1024 * 1024  // keep each run fast; limits themselves are tested elsewhere
 
+/// One target: how many seeds, an input for (seed, iteration) as bytes (for --dump), and a run.
+struct Target {
+    var seeds: Int
+    var input: (UInt64, Int) -> [UInt8]
+    var run: (UInt64, Int) -> String
+}
+
+func rng(_ seed: UInt64, _ it: Int) -> SplitMix64 { SplitMix64(state: seed ^ UInt64(it) &* 0x2545_F491_4F6C_DD1D) }
+
+func unitTarget(_ seeds: [UnitSeed], run: @escaping ([[UInt8]], UnitSeed.Context) -> String) -> Target {
+    func units(_ s: UInt64, _ it: Int) -> ([[UInt8]], UnitSeed.Context) {
+        var r = rng(s, it)
+        let seed = seeds.randomElement(using: &r)!
+        return (MediaFuzz.mutateUnits(seed, corpus: seeds, rng: &r), seed.context)
+    }
+    // --dump writes the units length-prefixed (u32be) for inspection.
+    return Target(seeds: seeds.count, input: { s, it in
+        units(s, it).0.flatMap { u in [UInt8(u.count >> 24 & 0xFF), UInt8(u.count >> 16 & 0xFF), UInt8(u.count >> 8 & 0xFF), UInt8(u.count & 0xFF)] + u }
+    }, run: { s, it in let (u, c) = units(s, it); return run(u, c) })
+}
+
+let t: Target
+switch target {
+case "png":
+    let corpus: [[UInt8]] = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+        .filter { $0.hasSuffix(".png") }
+        .map { [UInt8](try Data(contentsOf: dir.appendingPathComponent($0))) }
+    t = Target(seeds: corpus.count, input: { input(seed: $0, iteration: $1, corpus: corpus) }, run: { s, it in
+        do { _ = try PNGDecoder.decode(input(seed: s, iteration: it, corpus: corpus), limits: limits); return "decoded" } catch { return (error as? ParseFailure)?.rule ?? "\(error)" }
+    })
+case "mp4":
+    let corpus = MediaFuzz.files(dir, [".mp4", ".m4a"])
+    func mp4Input(_ s: UInt64, _ it: Int) -> [UInt8] {
+        var r = rng(s, it)
+        return MediaFuzz.mutateMP4(corpus.randomElement(using: &r)!, corpus: corpus, rng: &r)
+    }
+    t = Target(seeds: corpus.count, input: mp4Input, run: { MediaFuzz.runMP4(mp4Input($0, $1)) })
+case "h264":
+    t = unitTarget(MediaFuzz.h264Seeds(MediaFuzz.files(dir, [".mp4"])), run: MediaFuzz.runH264)
+case "aac":
+    t = unitTarget(MediaFuzz.aacSeeds(MediaFuzz.files(dir, [".aac", ".m4a"])), run: MediaFuzz.runAAC)
+default:
+    t = unitTarget(MediaFuzz.mp3Seeds(MediaFuzz.files(dir, [".mp3"])), run: MediaFuzz.runMP3)
+}
+guard t.seeds > 0 else { print("empty corpus"); exit(2) }
+
 if args.count >= 7 && args[3] == "--dump" {
-    let bytes = input(seed: UInt64(args[4])!, iteration: Int(args[5])!, corpus: corpus)
+    let bytes = t.input(UInt64(args[4])!, Int(args[5])!)
     try Data(bytes).write(to: URL(fileURLWithPath: args[6]))
     print("wrote \(bytes.count) bytes")
     exit(0)
@@ -114,22 +161,17 @@ if args.count >= 7 && args[3] == "--dump" {
 
 let iterations = args.count > 3 ? Int(args[3])! : 100_000
 let seed = args.count > 4 ? UInt64(args[4])! : UInt64(Date().timeIntervalSince1970)
-print("codec-fuzz png: \(corpus.count) seeds, \(iterations) iterations, seed \(seed)")
+print("codec-fuzz \(target): \(t.seeds) seeds, \(iterations) iterations, seed \(seed)")
 // Line-buffer stdout so a crash still leaves the last "seed/iteration" line.
 unsafe setvbuf(stdout, nil, _IOLBF, 0)
 
 var outcomes: [String: Int] = [:]
 let started = Date()
+let every = target == "png" ? 1_000 : 50
 for it in 0..<iterations {
     // Printed before each run so that a crash leaves "seed/iteration" on stdout.
-    if it % 1_000 == 0 { print("seed \(seed) iteration \(it)") }
-    let bytes = input(seed: seed, iteration: it, corpus: corpus)
-    do {
-        _ = try PNGDecoder.decode(bytes, limits: limits)
-        outcomes["decoded", default: 0] += 1
-    } catch {
-        outcomes[error.rule, default: 0] += 1
-    }
+    if it % every == 0 { print("seed \(seed) iteration \(it)") }
+    outcomes[t.run(seed, it), default: 0] += 1
 }
 let rate = Double(iterations) / Date().timeIntervalSince(started)
 print("done: \(iterations) inputs, \(Int(rate.rounded()))/s, no crashes")

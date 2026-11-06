@@ -79,16 +79,25 @@ public struct FunSubNavListBox<ID: Hashable>: View {
         self.onSelect = onSelect
     }
 
+    /// CSS `flex: 1` (basis 0): the space left after the paddings is shared equally between
+    /// the items' content boxes, which never get narrower than their 32px button.
+    static func contentWidth(count: Int, total: CGFloat = FunMetrics.dialogWidth) -> CGFloat {
+        guard count > 0 else { return 32 }
+        return max(32, (total - CGFloat(2 * count + 10)) / CGFloat(count))
+    }
+
     public var body: some View {
+        let w = Self.contentWidth(count: items.count)
         HStack(spacing: 0) {
             ForEach(items.indices, id: \.self) { i in
                 FunSubNavItemButton(icon: items[i].icon, label: items[i].label, isSelected: items[i].id == selected) { onSelect(items[i].id) }
+                    .frame(width: w, alignment: .leading)
                     .padding(.vertical, 1)
                     .padding(.leading, i == 0 ? 6 : 1)
                     .padding(.trailing, i == items.count - 1 ? 6 : 1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
         .accessibilityElement(children: .contain)
     }
@@ -120,12 +129,17 @@ struct FunSubNavItemButton: View {
 /// elevation-1 shade hints at the top and bottom while there is more to scroll that way.
 public struct FunScroller<Content: View>: View {
     let content: Content
+    /// Called when the content first scrolls away from the top.
+    let onScrolledFromTop: (() -> Void)?
     @State private var atTop = true
     @State private var atBottom = false
     @Environment(\.axoStaticRendering) var staticRendering
     @Environment(\.colorScheme) var scheme
 
-    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+    public init(onScrolledFromTop: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+        self.onScrolledFromTop = onScrolledFromTop
+        self.content = content()
+    }
 
     public var body: some View {
         let inner = content.padding(.leading, 12).padding(.trailing, 1)
@@ -138,6 +152,7 @@ public struct FunScroller<Content: View>: View {
                     .onScrollGeometryChange(for: [Bool].self) { g in
                         [g.contentOffset.y <= 0, g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 0.5]
                     } action: { _, v in
+                        if !v[0] { onScrolledFromTop?() }
                         atTop = v[0]
                         atBottom = v[1]
                     }

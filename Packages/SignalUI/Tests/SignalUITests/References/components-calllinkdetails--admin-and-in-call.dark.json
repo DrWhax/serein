@@ -1,0 +1,17 @@
+{
+ "id": "components-calllinkdetails--admin-and-in-call",
+ "theme": "dark",
+ "width": 1168,
+ "height": 552,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

@@ -1,0 +1,25 @@
+{
+ "id": "components-calllinkeditmodal--in-another-call",
+ "theme": "light",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   440,
+   264.09,
+   320,
+   371.81
+  ]
+ ]
+}

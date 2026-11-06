@@ -131,10 +131,21 @@ enum Snapshot {
     /// (or a documented per-story `maxRatio` where Chromium's shaper cannot be matched).
     @MainActor
     @discardableResult
-    static func assertMatches(_ view: some View, story id: String, theme: String, maxRatio: Double? = nil,
+    /// `ignoring`: rects (CSS px, in the capture) showing Chromium's fake camera stream, which
+    /// cannot be reproduced; the reference's pixels are used there.
+    static func assertMatches(_ view: some View, story id: String, theme: String, maxRatio: Double? = nil, ignoring: [CGRect] = [],
                               sourceLocation: SourceLocation = #_sourceLocation) throws -> SnapshotResult {
         let (info, expected) = try reference(id, theme)
-        let actual = try render(view, info: info)
+        var actual = try render(view, info: info)
+        if !ignoring.isEmpty, actual.width == expected.width, actual.height == expected.height {
+            var px = actual.rgba
+            for r in ignoring {
+                let x0 = max(0, Int((r.minX * info.scale).rounded(.down))), x1 = min(actual.width, Int((r.maxX * info.scale).rounded(.up)))
+                let y0 = max(0, Int((r.minY * info.scale).rounded(.down))), y1 = min(actual.height, Int((r.maxY * info.scale).rounded(.up)))
+                for y in y0..<max(y0, y1) { for x in x0..<max(x0, x1) { for c in 0..<4 { px[(y * actual.width + x) * 4 + c] = expected.rgba[(y * expected.width + x) * 4 + c] } } }
+            }
+            actual = PixelBuffer(width: actual.width, height: actual.height, rgba: px)
+        }
         guard actual.width == expected.width, actual.height == expected.height else {
             Issue.record("\(id).\(theme): size \(actual.width)×\(actual.height) ≠ reference \(expected.width)×\(expected.height)",
                          sourceLocation: sourceLocation)

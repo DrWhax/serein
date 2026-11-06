@@ -25,12 +25,14 @@ let package = Package(
     dependencies: [
         .package(path: "../SignalCodecs"),
         .package(path: "../SignalI18n"),
+        .package(path: "../SignalText"),
     ],
     targets: [
         .target(
             name: "SignalUI",
             dependencies: [
                 .product(name: "SignalI18n", package: "SignalI18n"),
+                .product(name: "SignalText", package: "SignalText"),
                 // Trusted bundled images only (Resources/Images); untrusted media is decoded in
                 // the sandboxed SignalMediaDecoder service.
                 .product(name: "ImagePNG", package: "SignalCodecs"),
@@ -38,6 +40,8 @@ let package = Package(
                 // Trusted constant blurhashes only (Attachment defaultBlurHash); a message's own
                 // blurhash arrives decoded from the media service.
                 .product(name: "Blurhash", package: "SignalCodecs"),
+                // The media editor's export (pixels it drew itself; an encoder, not a parser).
+                .product(name: "EncodeJPEG", package: "SignalCodecs"),
             ],
             resources: [.copy("Resources/Fonts"), .copy("Resources/Images"), .copy("Resources/country-display-names.json"), .copy("Resources/locale-display-names.json"), .copy("Resources/available-locales.json"), .copy("Resources/emoji-data.json")],
             swiftSettings: strict

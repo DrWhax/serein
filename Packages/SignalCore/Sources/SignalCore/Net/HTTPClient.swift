@@ -75,6 +75,24 @@ public struct HTTPClient: Sendable {
         "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
     }
 
+    /// `send`, also returning the response headers (lower-cased names).
+    public func sendWithHeaders(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
+                                accept: Set<Int> = []) async throws -> (status: Int, body: Data, headers: [String: String]) {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }
+        guard data.count <= maxResponseBytes else { throw HTTPError.tooLarge(data.count) }
+        guard (200..<300).contains(http.statusCode) || accept.contains(http.statusCode) else {
+            throw HTTPError.status(http.statusCode, body: data)
+        }
+        var out: [String: String] = [:]
+        for (k, v) in http.allHeaderFields { if let k = k as? String, let v = v as? String { out[k.lowercased()] = v } }
+        return (http.statusCode, data, out)
+    }
+
     /// Performs a request; non-2xx statuses other than those in `accept` throw `HTTPError.status`.
     public func send(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                      accept: Set<Int> = []) async throws -> (status: Int, body: Data) {

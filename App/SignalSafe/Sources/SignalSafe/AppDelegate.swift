@@ -15,6 +15,7 @@ import SwiftUI
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AxoFonts.register()
+        CallingLink.smokeTestIfRequested()
         let options = MainMenu.Options(platform: "darwin", isProduction: true, includeSetup: model.appView == .installer)
         NSApp.mainMenu = MainMenu.build(MainMenu.template(options, i18n: i18n)) { [weak self] in self?.perform($0) }
         createWindow()

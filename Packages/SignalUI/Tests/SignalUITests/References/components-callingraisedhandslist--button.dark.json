@@ -1,0 +1,17 @@
+{
+ "id": "components-callingraisedhandslist--button",
+ "theme": "dark",
+ "width": 55,
+ "height": 48,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  836
+ ]
+}

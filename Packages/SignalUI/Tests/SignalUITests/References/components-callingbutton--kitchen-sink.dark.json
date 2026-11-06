@@ -1,0 +1,17 @@
+{
+ "id": "components-callingbutton--kitchen-sink",
+ "theme": "dark",
+ "width": 1168,
+ "height": 792,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

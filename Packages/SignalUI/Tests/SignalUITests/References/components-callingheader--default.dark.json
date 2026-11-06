@@ -1,0 +1,17 @@
+{
+ "id": "components-callingheader--default",
+ "theme": "dark",
+ "width": 84,
+ "height": 36,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  1092,
+  32
+ ]
+}

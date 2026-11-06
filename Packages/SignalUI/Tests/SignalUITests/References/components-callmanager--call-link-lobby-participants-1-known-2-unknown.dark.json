@@ -1,0 +1,25 @@
+{
+ "id": "components-callmanager--call-link-lobby-participants-1-known-2-unknown",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   0,
+   493,
+   1200,
+   327
+  ]
+ ]
+}

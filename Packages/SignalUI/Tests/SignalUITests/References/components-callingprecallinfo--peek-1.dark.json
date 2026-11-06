@@ -1,0 +1,17 @@
+{
+ "id": "components-callingprecallinfo--peek-1",
+ "theme": "dark",
+ "width": 1168,
+ "height": 134,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

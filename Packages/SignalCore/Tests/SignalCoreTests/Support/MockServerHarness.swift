@@ -16,6 +16,7 @@ struct MockServerReady: Decodable, Sendable {
     var certificateAuthority: String
     var serverTrustRoots: [String]
     var serverPublicParams: String
+    var genericServerPublicParams: String
     var phone: Account
     var alice: Account
 
@@ -114,6 +115,29 @@ actor MockServerHarness {
         let id = nextId
         nextId += 1
         var message: [String: Any] = args
+        message["id"] = id
+        message["cmd"] = cmd
+        let line = try JSONSerialization.data(withJSONObject: message) + Data("\n".utf8)
+        return try await withCheckedThrowingContinuation { continuation in
+            pending[id] = continuation
+            do { try stdin.write(contentsOf: line) } catch {
+                pending.removeValue(forKey: id)
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    /// `call` with arbitrary JSON arguments (nested literals of mixed types), serialized up front.
+    @discardableResult
+    nonisolated func callJSON(_ cmd: String, _ args: [String: Any]) async throws -> Data {
+        let json = try JSONSerialization.data(withJSONObject: args)
+        return try await callRaw(cmd, json: json)
+    }
+
+    func callRaw(_ cmd: String, json: Data) async throws -> Data {
+        let id = nextId
+        nextId += 1
+        var message = (try JSONSerialization.jsonObject(with: json) as? [String: Any]) ?? [:]
         message["id"] = id
         message["cmd"] = cmd
         let line = try JSONSerialization.data(withJSONObject: message) + Data("\n".utf8)

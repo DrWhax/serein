@@ -1,0 +1,17 @@
+{
+ "id": "components-groupcallremoteparticipant--hand-raised-first-of-many",
+ "theme": "dark",
+ "width": 144,
+ "height": 144,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  4,
+  4
+ ]
+}

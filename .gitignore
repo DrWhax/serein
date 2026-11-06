@@ -11,3 +11,4 @@ DerivedData/
 .bbs.db
 .DS_Store
 .cache/
+Packages/SignalRingRTC/rust/target/

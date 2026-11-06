@@ -1,0 +1,17 @@
+{
+ "id": "components-incomingcallbar--incoming-group-call-calling-you-and-1-other",
+ "theme": "dark",
+ "width": 1184,
+ "height": 70,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  22
+ ]
+}

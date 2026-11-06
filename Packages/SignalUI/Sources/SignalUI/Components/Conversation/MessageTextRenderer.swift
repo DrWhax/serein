@@ -8,6 +8,7 @@
 //
 // Taps resolve to a `MessageTextAction` (CSSText runs carry it as their action string).
 
+import SignalText
 import SwiftUI
 
 /// `RenderLocation`

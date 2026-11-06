@@ -4,6 +4,7 @@
 import Foundation
 import GRDB
 import LibSignalClient
+import SignalProtos
 import Testing
 @testable import SignalCore
 
@@ -125,7 +126,12 @@ extension LinkedClient {
             try await c.messenger.sendTyping(to: c.aliceAci, started: false)
             #expect(try await c.server.decode(ReceivedTyping.self, "waitForTyping", ["account": "alice"]).action == "stopped")
             // Typing messages are never written to the send log.
-            #expect(try await c.database.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM sendLogPayloads WHERE timestamp = ?", arguments: [Int64(t1)]) } == 0)
+            // (Other sends can share the millisecond, so look at what was logged.)
+            let logged = try await c.database.pool.read { db in
+                try Data.fetchAll(db, sql: "SELECT proto FROM sendLogPayloads WHERE timestamp = ?", arguments: [Int64(t1)])
+            }
+            let typing = try logged.filter { if case .typingMessage? = try Signalservice_Content(serializedBytes: $0).content { true } else { false } }
+            #expect(typing.isEmpty)
 
             let t2 = TestClock.next()
             try await c.server.call("sendTyping", ["from": "alice", "action": "started", "timestamp": t2])

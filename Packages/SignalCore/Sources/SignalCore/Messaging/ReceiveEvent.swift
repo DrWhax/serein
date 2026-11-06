@@ -2,6 +2,7 @@
 // needed by Phase 2a; each case is emitted only after its database commit).
 
 import Foundation
+import SignalProtos
 
 public enum ReceiptKind: String, Sendable { case delivery, read, viewed }
 
@@ -22,7 +23,25 @@ public enum ReceiveEvent: Sendable, Equatable {
     case senderKeyDistribution(sender: String, senderDevice: UInt32, distributionId: UUID)
     case serverDeliveryReceipt(timestamp: UInt64)
     case other(kind: String, sender: String)
+    /// A CallMessage (calling signalling) for CallingService; never stored.
+    case callMessage(CallMessageEnvelope)
+    /// Call history, call log or call link changes from a sync message were stored.
+    case callHistoryChanged
+    /// A message carried a Groups v2 context: bring the group up to `revision` (GroupsService.update).
+    case groupContext(masterKey: Data, revision: Int, groupChange: Data?, sender: String, timestamp: UInt64)
     /// Envelope dropped (decryption or validation failed); state changes were rolled back.
     case failed(serverGuid: String, reason: String)
     case queueEmpty
+}
+
+/// A received CallMessage with what `RingRTC.handleCallingMessage` needs.
+public struct CallMessageEnvelope: Sendable, Equatable {
+    public var sender: String
+    public var senderDevice: UInt32
+    public var destinationIsPni: Bool
+    public var timestamp: UInt64
+    public var serverTimestamp: UInt64
+    public var receivedAt: Int64
+    public var serverGuid: String
+    public var message: Signalservice_CallMessage
 }

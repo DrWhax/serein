@@ -111,6 +111,50 @@ public final class ProfileService: Sendable {
         return result
     }
 
+    /// A member's ExpiringProfileKeyCredential (needed to add them to a group with a
+    /// presentation): cached on the conversation as `profileKeyCredential` +
+    /// `profileKeyCredentialExpiration`, else fetched with a versioned profile request carrying a
+    /// credential request (`credentialType=expiringProfileKey`). nil without a profile key.
+    public func expiringCredential(_ aci: String, serverPublicParams: Data, now: Date = Date()) async throws -> ExpiringProfileKeyCredential? {
+        let (profileKey, cached): (Data?, Data?) = try await database.pool.read { db in
+            if aci == self.account.aci {
+                let stored = try Items.get(db, "profileKey", as: String.self).flatMap { Data(base64Encoded: $0) }
+                let key = self.account.profileKey ?? stored
+                let c = (try Items.get(db, "profileKeyCredential", as: String.self)).flatMap { Data(base64Encoded: $0) }
+                return (key, c)
+            }
+            guard let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ? AND type = 'private'", arguments: [aci])
+                .map(MessageStore.jsonObject) else { return (nil, nil) }
+            return ((json["profileKey"] as? String).flatMap { Data(base64Encoded: $0) }, (json["profileKeyCredential"] as? String).flatMap { Data(base64Encoded: $0) })
+        }
+        if let cached, let c = try? ExpiringProfileKeyCredential(contents: cached), c.expirationTime > now.addingTimeInterval(3600) { return c }
+        guard let profileKey, profileKey.count == 32 else { return nil }
+        let userId = try Aci.parseFrom(serviceIdString: aci)
+        let key = try ProfileKey(contents: profileKey)
+        let ops = ClientZkProfileOperations(serverPublicParams: try ServerPublicParams(contents: serverPublicParams))
+        let context = try ops.createProfileKeyCredentialRequestContext(userId: userId, profileKey: key)
+        let version = String(decoding: try key.getProfileKeyVersion(userId: userId).serialize(), as: UTF8.self)
+        let path = "/v1/profile/\(aci)/\(version)/\(try context.getRequest().serialize().hexString)?credentialType=expiringProfileKey"
+        let body = try await socket.authenticatedRequest("GET", path)
+        struct R: Decodable { var credential: String? }
+        guard let response = try JSONDecoder().decode(R.self, from: body).credential.flatMap({ Data(base64Encoded: $0) }) else { return nil }
+        let credential = try ops.receiveExpiringProfileKeyCredential(profileKeyCredentialRequestContext: context,
+                                                                     profileKeyCredentialResponse: ExpiringProfileKeyCredentialResponse(contents: response), now: now)
+        let b64 = credential.serialize().base64EncodedString(), expiration = Int64(credential.expirationTime.timeIntervalSince1970 * 1000)
+        try await database.pool.write { db in
+            if aci == self.account.aci {
+                try Items.set(db, "profileKeyCredential", b64)
+            } else {
+                let id = try MessageStore.privateConversation(db, serviceId: aci)
+                try MessageStore.updateConversationJSON(db, conversationId: id) { json in
+                    json["profileKeyCredential"] = b64
+                    json["profileKeyCredentialExpiration"] = expiration
+                }
+            }
+        }
+        return credential
+    }
+
     func store(_ db: Database, _ p: Profile) throws {
         if p.serviceId != account.aci {
             // A changed identity key is accepted like on send (keychange notification, sessions archived).

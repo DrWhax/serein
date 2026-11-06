@@ -21,7 +21,9 @@ import Testing
 
             // ContactRecord
             let a = try await c.conversationJSON(serviceId: c.aliceAci)
-            #expect(a["profileName"] as? String == "Alice" && a["profileFamilyName"] as? String == "Liddell")
+            // The record seeds the name on a first sync and asks for a profile fetch, which has the
+            // last word: alice's real profile has no family name.
+            #expect(a["profileName"] as? String == "Alice" && a["profileFamilyName"] == nil)
             #expect(a["systemGivenName"] as? String == "Ally" && a["note"] as? String == "met at the tea party")
             #expect(a["profileKey"] as? String == alice.profileKey)
             #expect(a["profileSharing"] as? Bool == true && a["markedUnread"] as? Bool == true && a["isArchived"] as? Bool == false)
@@ -43,7 +45,9 @@ import Testing
             }
             let g = try MessageStore.jsonObject(groupJSON)
             #expect(g["masterKey"] as? String == groupMasterKey.base64EncodedString())
-            #expect(g["isArchived"] as? Bool == true && g["profileSharing"] as? Bool == true)
+            // Archived in its GroupV2Record, but pinned by the AccountRecord: mergeAccountRecord
+            // un-archives pinned conversations.
+            #expect(g["isArchived"] as? Bool == false && g["isPinned"] as? Bool == true && g["profileSharing"] as? Bool == true)
             #expect(g["muteExpiresAt"] as? Int64 == 4_102_444_800_000)
 
             // AccountRecord
@@ -74,7 +78,8 @@ import Testing
             let updated = try await c.server.json("updateStorageState", ["archiveAlice": true])
             let version = try #require(updated["version"] as? Int)
             try await c.eventually("manifest \(version) applied") { db in
-                try Items.get(db, "manifestVersion", as: Int.self) == version
+                // ≥: a pending upload of ours may land right after the phone's write (409, merge, retry).
+                try Items.get(db, "manifestVersion", as: Int.self) ?? 0 >= version
             }
             #expect(try await c.conversationJSON(serviceId: c.aliceAci)["isArchived"] as? Bool == true)
         }
@@ -82,17 +87,17 @@ import Testing
 
     @Test func keyDerivations() throws {
         let master = Data(repeating: 1, count: 32)
-        let storageKey = StorageServiceReader.deriveStorageKey(masterKey: master)
+        let storageKey = StorageService.deriveStorageKey(masterKey: master)
         #expect(storageKey == SignalCrypto.hmacSHA256(key: master, Data("Storage Service Encryption".utf8)))
         // libsignal's SVR-key derivation names the same key.
         let svrStorageKey = try SvrKey(contents: master).deriveStorageServiceKey()
         #expect(storageKey == svrStorageKey)
         let raw = Data(repeating: 9, count: 16)
-        #expect(try StorageServiceReader.itemKey(storageKey: storageKey, recordIkm: nil, raw: raw)
+        #expect(try StorageService.itemKey(storageKey: storageKey, recordIkm: nil, raw: raw)
                 == SignalCrypto.hmacSHA256(key: storageKey, Data("Item_\(raw.base64EncodedString())".utf8)))
         let ikm = Data(repeating: 3, count: 32)
         let expectedItemKey = try hkdf(outputLength: 32, inputKeyMaterial: ikm, salt: Data(), info: Data("20240801_SIGNAL_STORAGE_SERVICE_ITEM_".utf8) + raw)
-        #expect(try StorageServiceReader.itemKey(storageKey: storageKey, recordIkm: ikm, raw: raw) == expectedItemKey)
+        #expect(try StorageService.itemKey(storageKey: storageKey, recordIkm: ikm, raw: raw) == expectedItemKey)
     }
 }
 
@@ -132,15 +137,19 @@ import Testing
 
     @Test func attachmentCipher() throws {
         let plain = Data("contact blob".utf8)
-        let (blob, key, digest) = try AttachmentCipher.encrypt(plain)
+        let key = AttachmentCipher.generateKeys()
+        let e = try AttachmentCipher.encrypt(plain, keys: key)
+        let (blob, digest) = (e.blob, e.digest)
         #expect(try AttachmentCipher.decrypt(blob, key: key, digest: digest, size: plain.count) == plain)
         var bad = blob
         bad[20] ^= 1
-        #expect(throws: AttachmentError.badDigest) { try AttachmentCipher.decrypt(bad, key: key, digest: digest, size: nil) }
-        #expect(throws: AttachmentError.badMAC) { try AttachmentCipher.decrypt(bad, key: key, digest: SignalCrypto.sha256(bad), size: nil) }
+        // Upstream checks the MAC first, then the digest.
+        #expect(throws: AttachmentError.badMAC) { try AttachmentCipher.decrypt(bad, key: key, digest: digest, size: nil) }
+        #expect(throws: AttachmentError.badDigest) { try AttachmentCipher.decrypt(blob, key: key, digest: SignalCrypto.sha256(bad), size: nil) }
         #expect(throws: AttachmentError.missingDigest) { try AttachmentCipher.decrypt(blob, key: key, digest: nil, size: nil) }
-        #expect(throws: AttachmentError.sizeMismatch(expected: 100, actual: plain.count)) {
-            try AttachmentCipher.decrypt(blob, key: key, digest: digest, size: 100)
+        // Padded to 541 bytes: a size past the padded plaintext is an error.
+        #expect(throws: AttachmentError.sizeMismatch(expected: 10_000, actual: 541)) {
+            try AttachmentCipher.decrypt(blob, key: key, digest: digest, size: 10_000)
         }
     }
 }

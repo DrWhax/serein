@@ -1,0 +1,17 @@
+{
+ "id": "components-callinglobby--group-call-with-4-peeked-participants-participants-list",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

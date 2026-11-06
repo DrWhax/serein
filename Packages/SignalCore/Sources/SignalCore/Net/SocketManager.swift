@@ -114,6 +114,30 @@ public actor SocketManager {
         return try Self.check(response)
     }
 
+    /// `getAttachmentUploadForm` (libsignal's typed Attachments/GetUploadForm).
+    public func uploadForm(size: Int) async throws -> UploadForm {
+        guard let chat = authenticated else { throw ChatRequestError.notConnected }
+        return try await chat.getUploadForm(uploadSize: UInt64(size))
+    }
+
+    /// `sendMulti` (MessagesAnonymous/SendMultiRecipientMessage): a sealed-sender multi-recipient
+    /// payload authorised by a group send token.
+    public func sendMultiRecipient(_ payload: Data, timestamp: UInt64, token: Data, online: Bool, urgent: Bool) async throws -> [ServiceId] {
+        let response = try await unauthenticatedConnection().sendMultiRecipientMessage(
+            payload, timestamp: timestamp, auth: .groupSend(try GroupSendFullToken(contents: token)), onlineOnly: online, urgent: urgent)
+        return response.unregisteredIds
+    }
+
+    /// The raw response (any status), for requests that use headers such as ETags.
+    public func authenticatedResponse(_ method: String, _ path: String, headers: [String: String] = [:], json: Data? = nil) async throws
+        -> ChatResponse
+    {
+        guard let chat = authenticated else { throw ChatRequestError.notConnected }
+        var h = headers
+        if json != nil { h["content-type"] = "application/json" }
+        return try await chat.send(ChatRequest(method: method, pathAndQuery: path, headers: h, body: json, timeout: 30))
+    }
+
     public func disconnect() async {
         stopped = true
         reconnectTask?.cancel()

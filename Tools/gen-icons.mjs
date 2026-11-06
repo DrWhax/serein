@@ -81,6 +81,7 @@ for (const f of files) {
     if (!c || c === 'none') return null;
     if (c === 'black') c = '#000';
     if (c === 'white') c = '#fff';
+    if (c === 'red') c = '#f00';
     const m = c.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
     if (!m) throw new Error(`avatar colour ${c}`);
     const x = m[1].length === 3 ? m[1].split('').map((ch) => ch + ch).join('') : m[1];
@@ -132,13 +133,16 @@ for (const f of files) {
     if (!c || c === 'none') return null;
     if (c === 'black') c = '#000';
     if (c === 'white') c = '#fff';
+    if (c === 'red') c = '#f00';
     const m = c.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
     if (!m) throw new Error(`illustration colour ${c}`);
     const x = m[1].length === 3 ? m[1].split('').map((ch) => ch + ch).join('') : m[1];
     return opacity != null && +opacity !== 1 ? `RGBA(hex: 0x${x}, alpha: ${+opacity})` : `RGBA(hex: 0x${x})`;
   };
   const illustrations = ['tag_light', 'tag_dark', 'phone_40_color', 'phone_40_color_dark', 'usernames_40_color', 'usernames_40_color_dark', 'qr_codes_40_color', 'qr_codes_40_color_dark', 'macos-switch',
-    ...readdirSync(join(base, 'safety-tips')).filter((f) => f.endsWith('.svg')).sort().map((f) => 'safety-tips/' + f.replace(/\.svg$/, ''))];
+    ...readdirSync(join(base, 'safety-tips')).filter((f) => f.endsWith('.svg')).sort().map((f) => 'safety-tips/' + f.replace(/\.svg$/, '')),
+    // The media editor's analog clock stickers (dials and hands, drawn scaled).
+    ...readdirSync(join(base, 'analog-time')).filter((f) => f.endsWith('.svg')).sort().map((f) => 'analog-time/' + f.replace(/\.svg$/, ''))];
   for (const file of illustrations) {
     let svg = readFileSync(join(base, file + '.svg'), 'utf8');
     svg = svg.replace(/<defs>[\s\S]*?<\/defs>/g, (defs) => {

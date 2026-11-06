@@ -92,6 +92,9 @@ public struct MessageProps {
     /// `isVoiceMessagePlayed`
     public var isVoiceMessagePlayed = false
     public var playAudio: (() -> Void)?
+    /// The playing audio, when it is this message's (upstream's `active`).
+    public var activeAudio: AudioActive?
+    public var audioControls: AudioControls?
     public var reactions: [MessageReaction] = []
     public var toggleReactionViewer: (() -> Void)?
     /// `showEditHistoryModal`: makes the metadata's "Edited" a button.
@@ -483,7 +486,8 @@ public struct Message: View {
             MessageAudio(attachment: first, waveform: first.audioWaveform, direction: props.direction, played: props.isVoiceMessagePlayed,
                          withContentAbove: quoteModel != nil || shouldRenderAuthor, withContentBelow: hasText,
                          metadata: metadataPlacement == .notRendered ? nil : metadata, onPlay: props.playAudio,
-                         kickOffDownload: props.kickOffAttachmentDownload, cancelDownload: props.cancelAttachmentDownload)
+                         kickOffDownload: props.kickOffAttachmentDownload, cancelDownload: props.cancelAttachmentDownload,
+                         active: props.activeAudio, controls: props.audioControls)
         }
         if let story = props.storyReplyContext {
             // `#renderStoryReplyContext`: "Reacted to …" over the story quote for reactions.

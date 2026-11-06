@@ -27,6 +27,19 @@ EXT
 openssl x509 -req -in "$certs/csr.pem" -CA "$certs/ca-cert.pem" -CAkey "$certs/ca-key.pem" -passin pass:password \
   -CAserial "$certs/ca-cert.srl" -days 397 -sha256 -extfile "$ext" -out "$certs/cert.pem"
 cat "$certs/cert.pem" "$certs/ca-cert.pem" > "$certs/full-cert.pem"
+# A second leaf for the link-preview test site the harness serves behind its CONNECT proxy
+# (link previews refuse localhost and other excluded names, so it uses *.signalsafe.app).
+cat > "$certs/preview-ext.cnf" <<'EXT'
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:*.signalsafe.app,DNS:signalsafe.app
+EXT
+openssl x509 -req -in "$certs/csr.pem" -CA "$certs/ca-cert.pem" -CAkey "$certs/ca-key.pem" -passin pass:password \
+  -CAserial "$certs/ca-cert.srl" -days 397 -sha256 -extfile "$certs/preview-ext.cnf" -out "$certs/preview-cert.pem"
+# ringrtc reads a call link with GET {sfu}/v1/call-link (no trailing slash); the mock
+# registers '/v1/call-link/', so such reads fell through to the storage routes' auth (401).
+sed -i '' "s|get('/v1/call-link/'|get('/v1/call-link'|" "$dst/src/server/http.ts"
 # Pin every dependency to the exact version in upstream's pnpm-lock.yaml (workspace
 # links keep their published version), so npm resolves what upstream tests with.
 python3 -I - "$dst/package.json" Signal-Desktop/pnpm-lock.yaml <<'PY'

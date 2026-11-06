@@ -37,4 +37,27 @@ enum DemoData {
         let archived = [c("old", "Old Group", color: "A210", "Bye", minutesAgo: 60 * 24 * 400)]
         return (pinned, chats, archived)
     }
+
+    /// Demo call history for the Calls tab.
+    static func calls(now: Date) -> [CallsListItem] {
+        func item(_ id: String, _ title: String, _ color: String, _ type: CallType, _ direction: CallDirection, _ status: CallStatus, minutesAgo: Double,
+                  count: Int = 1, conversationType: AvatarConversationType = .direct) -> CallsListItem {
+            let at = now.addingTimeInterval(-minutesAgo * 60)
+            let group = CallHistoryGroup(type: type, direction: direction, status: status, timestamp: at,
+                                         children: (0..<count).map { .init(callId: "\(id)-\($0)", timestamp: at.addingTimeInterval(-Double($0) * 600)) })
+            return CallsListItem(id: id, peerId: id, group: group, conversation: CallingConversation(id: id, title: title, color: color,
+                                                                                                   conversationType: conversationType))
+        }
+        return [
+            item("c1", "Maya Johnson", "A130", .video, .incoming, .accepted, minutesAgo: 4),
+            item("c2", "Book club", "A190", .adhoc, .outgoing, .joined, minutesAgo: 35, conversationType: .callLink),
+            item("c3", "Liam Chen", "A110", .audio, .incoming, .missed, minutesAgo: 90, count: 2),
+            item("c4", "Weekend hike", "A150", .group, .outgoing, .accepted, minutesAgo: 60 * 26, conversationType: .group),
+            item("c5", "Sofia Rossi", "A170", .audio, .outgoing, .accepted, minutesAgo: 60 * 50),
+        ]
+    }
+}
+
+extension CallsListItem {
+    var wasMissedForDemo: Bool { group.direction == .incoming && group.status == .missed }
 }

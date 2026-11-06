@@ -7,6 +7,7 @@ import LibSignalClient
 import Synchronization
 import Testing
 import GRDB
+import SignalMediaDecoder
 @testable import SignalCore
 
 /// Step trace on stderr when SIGNALSAFE_TRACE is set (also enables mock-server debug logs).
@@ -49,9 +50,14 @@ struct LinkedClient: Sendable {
     let jobs: JobQueue
     let messenger: Messenger
     let profiles: ProfileService
-    let storage: StorageServiceReader
+    let storage: StorageService
     let contactSync: ContactSync
     let endpoints: ServiceEndpoints
+    let attachmentStore: AttachmentStore
+    let downloads: AttachmentDownloadManager
+    let groups: GroupsService
+    let stickers: StickerService
+    let groupCredentials: GroupCredentials
 
     var aliceAci: String { server.ready.alice.aci.lowercased() }
     var phoneAci: String { server.ready.phone.aci.lowercased() }
@@ -102,29 +108,61 @@ struct LinkedClient: Sendable {
         trace("link: linked as device \(account.deviceId)")
 
         let jobs = JobQueue(database: database, policy: RetryPolicy(maxAttempts: 5, baseDelay: .milliseconds(100), maxDelay: .seconds(2)))
-        let messenger = Messenger(account: account, database: database, socket: socket, trustRoots: server.ready.trustRoots, jobs: jobs)
         let endpoints = ServiceEndpoints.mockServer(port: server.ready.port, rootCertificateDER: server.ready.certificateAuthorityDER)
         let http = HTTPClient(rootCertificatesDER: endpoints.rootCertificatesDER)
-        let storage = StorageServiceReader(account: account, database: database, socket: socket, http: http, endpoints: endpoints)
+        let attachmentStore = try AttachmentStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("signalsafe-attachments-\(UUID())"))
+        let services = AttachmentServices(store: attachmentStore, uploader: AttachmentUploader(http: http, forms: socket), media: MediaDecoder())
+        let messenger = Messenger(account: account, database: database, socket: socket, trustRoots: server.ready.trustRoots, jobs: jobs,
+                                  attachments: services)
+        let downloads = AttachmentDownloadManager(db: database.pool, http: http, endpoints: endpoints, store: attachmentStore, media: MediaDecoder())
+        let groupCredentials = GroupCredentials(account: account, socket: socket, db: database.pool,
+                                                serverPublicParams: Data(base64Encoded: server.ready.serverPublicParams)!,
+                                                genericServerPublicParams: Data(base64Encoded: server.ready.genericServerPublicParams)!)
+        let groups = GroupsService(account: account, database: database,
+                                   api: GroupsAPI(http: http, endpoints: endpoints, credentials: groupCredentials), store: attachmentStore)
+        let storage = StorageService(account: account, database: database, socket: socket, http: http, endpoints: endpoints)
         let contactSync = ContactSync(database: database, http: http, endpoints: endpoints)
+        let stickers = StickerService(account: account, database: database, http: http, endpoints: endpoints, store: attachmentStore, media: MediaDecoder())
         await messenger.register()
+        await stickers.register(on: jobs)
         await storage.register(on: jobs)
         await contactSync.register(on: jobs)
         await jobs.start()
 
         let receiver = MessageReceiver(account: account, database: database, trustRoots: server.ready.trustRoots, jobs: jobs)
         let log = EventLog()
-        Task { for await e in receiver.events { await log.append(e) } }
+        Task {
+            for await e in receiver.events {
+                await log.append(e)
+                if case .message = e { await downloads.tick() }
+                if case .groupContext(let masterKey, let revision, let change, _, let timestamp) = e, let keys = try? GroupKeys(masterKey: masterKey) {
+                    do { try await groups.update(keys, newRevision: revision, groupChange: change, timestamp: timestamp) } catch {
+                        trace("group update failed: \(error)")
+                    }
+                    await log.append(.other(kind: "groupUpdated", sender: keys.groupIdBase64))
+                }
+            }
+        }
         try await socket.connect(listener: receiver)
         trace("link: authenticated socket up")
         try await linker.uploadOneTimePreKeys(for: account)
         trace("link: one-time keys uploaded")
         // The mock primary reports completion once the new device has uploaded keys for ACI and PNI.
         _ = try await primary.value
+        try await downloads.start()
+        let profileService = ProfileService(account: account, database: database, socket: socket)
+        let params = Data(base64Encoded: server.ready.serverPublicParams)!
+        await groups.configure(credentials: { aci in try await profileService.expiringCredential(aci, serverPublicParams: params) },
+                               sender: messenger.groupSender)
+        storage.setHooks(profileFetch: { ids in for id in ids { _ = try? await profileService.fetch(id) } },
+                         groupUpdate: { keys in
+                             for mk in keys { if let k = try? GroupKeys(masterKey: mk) { _ = try? await groups.update(k) } }
+                         })
         return LinkedClient(server: server, database: database, databaseURL: url, socket: socket, linker: linker, account: account,
                             receiver: receiver, log: log, net: net, jobs: jobs, messenger: messenger,
                             profiles: ProfileService(account: account, database: database, socket: socket),
-                            storage: storage, contactSync: contactSync, endpoints: endpoints)
+                            storage: storage, contactSync: contactSync, endpoints: endpoints, attachmentStore: attachmentStore, downloads: downloads,
+                            groups: groups, stickers: stickers, groupCredentials: groupCredentials)
     }
 
     /// Polls the database until `check` holds.
@@ -144,6 +182,15 @@ struct LinkedClient: Sendable {
         return try MessageStore.jsonObject(try #require(json))
     }
 
+    /// We share our profile with alice (an accepted chat: her media downloads by itself).
+    func acceptAlice() async throws {
+        let aci = aliceAci
+        try await database.pool.write { db in
+            let id = try MessageStore.privateConversation(db, serviceId: aci)
+            try MessageStore.updateConversationJSON(db, conversationId: id) { $0["profileSharing"] = true }
+        }
+    }
+
     func messageJSON(sentAt: UInt64) async throws -> [String: Any] {
         let json = try await database.pool.read { db in
             try String.fetchOne(db, sql: "SELECT json FROM messages WHERE sent_at = ?", arguments: [Int64(sentAt)])
@@ -152,9 +199,13 @@ struct LinkedClient: Sendable {
     }
 
     func close() async {
+        await downloads.stop()
         await jobs.stop()
         await socket.disconnect()
         await server.stop()
+        // Test databases and attachment folders are temporary: remove them.
+        for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: databaseURL.path + suffix) }
+        try? FileManager.default.removeItem(at: attachmentStore.root)
     }
 }
 

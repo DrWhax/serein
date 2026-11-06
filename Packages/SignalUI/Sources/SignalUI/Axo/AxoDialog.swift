@@ -237,8 +237,12 @@ public enum AxoDialog {
         let forceMaxHeight: Bool
         let inner: Inner
         @Environment(\.axoDialogParts) var parts
-        public init(padding: BodyPadding = .lg, maxHeight: CGFloat = 440, forceMaxHeight: Bool = false, @ViewBuilder content: () -> Inner) {
+        /// The scrollbar gutter on each edge where the capture shows a classic (11px) one.
+        let gutter: CGFloat
+        public init(padding: BodyPadding = .lg, maxHeight: CGFloat = 440, forceMaxHeight: Bool = false, gutter: CGFloat = 0,
+                    @ViewBuilder content: () -> Inner) {
             self.padding = padding
+            self.gutter = gutter
             self.maxHeight = maxHeight
             self.forceMaxHeight = forceMaxHeight
             inner = content()
@@ -256,8 +260,8 @@ public enum AxoDialog {
             // room: the captures of scrolling bodies (AxoDialog LongContent,
             // NewlyCreatedGroupInvitedContactsDialog ManyContacts) keep the plain padding.
             HeightLimited(maxHeight: maxHeight) {
-                content(0)
-                AxoScrollContainer { content(0) }
+                content(gutter)
+                AxoScrollContainer { content(gutter) }
             }
             .frame(minHeight: forceMaxHeight ? maxHeight : nil, alignment: .top)
         }

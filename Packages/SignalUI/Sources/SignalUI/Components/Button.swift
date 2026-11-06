@@ -65,8 +65,20 @@ public struct LegacyButton: View {
         public var paddingInline: CGFloat?
         public var radius: CGFloat?
         public var textColor: AxoColor?
+        /// A fixed border-box height (the label centred in it).
+        public var height: CGFloat?
+        /// A fixed border-box width (`style={{ width }}`).
+        public var width: CGFloat?
+        /// font-size / line-height overrides (the weight stays the size's).
+        public var fontSize: CGFloat?
+        public var lineHeight: CGFloat?
         public init(fontWeight: Int? = nil, paddingBlock: CGFloat? = nil, background: AxoColor? = nil, paddingInline: CGFloat? = nil,
-                    radius: CGFloat? = nil, textColor: AxoColor? = nil) {
+                    radius: CGFloat? = nil, textColor: AxoColor? = nil, height: CGFloat? = nil, width: CGFloat? = nil, fontSize: CGFloat? = nil,
+                    lineHeight: CGFloat? = nil) {
+            self.height = height
+            self.width = width
+            self.fontSize = fontSize
+            self.lineHeight = lineHeight
             self.fontWeight = fontWeight
             self.paddingBlock = paddingBlock
             self.background = background
@@ -93,6 +105,8 @@ public struct LegacyButton: View {
     var textStyle: CSSTextStyle {
         var style = baseTextStyle
         if let w = overrides.fontWeight { style.fontName = AxoFonts.interName(weight: w) }
+        if let f = overrides.fontSize { style.size = f }
+        if let l = overrides.lineHeight { style.lineHeight = l }
         return style
     }
 
@@ -131,6 +145,7 @@ public struct LegacyButton: View {
             }
             .cssTextColor(disabled || discouraged ? style.disabled : overrides.textColor ?? style.label)
             .padding(padding)
+            .frame(width: overrides.width, height: overrides.height)
         }
         .buttonStyle(LegacyButtonStyle(background: overrides.background ?? style.background,
                                        pressed: overrides.background ?? (disabled || discouraged ? style.background : style.pressed),

@@ -1,6 +1,7 @@
 // ts/components/Select.dom.stories.tsx and ts/components/fun/FunEmojiPicker.dom.stories.tsx
 // (the picker open under its trigger, beside the story's skin-tone Select).
 
+import Foundation
 import SwiftUI
 import Testing
 @testable import SignalUI
@@ -82,5 +83,26 @@ import Testing
                 .offset(x: 12, y: 44)
         }
         try Snapshot.assertMatches(stage, story: "components-fun-funpicker--default", theme: theme)
+    }
+
+    /// FunPicker `Default` with the GIFs tab clicked (CAPTURE_CLICK=GIFs CAPTURE_CLICK_PAGE=1):
+    /// MOCK_GIFS_PAGINATED_ONE_PAGE's 30 GIFs, whose 1-byte files never play (empty cells).
+    @Test(arguments: ["light", "dark"])
+    func funPickerGifs(theme: String) throws {
+        let media = FunGifMedia(url: URL(string: "https://media2.giphy.com/media/x/200w.mp4")!, width: 200, height: 178)
+        let page = FunGifsPage(next: nil, gifs: (0 ..< 30).map {
+            FunGifItem(id: "\($0)", title: "", description: "", previewMedia: media, attachmentMedia: FunGifMedia(url: media.url, width: 480, height: 418))
+        })
+        let source = FunGifsDataSource(trending: { _, _ in page }, search: { _, _, _ in page }, previewPlayer: { _ in nil })
+        let stage = PortalStage {
+            CSSText("Open FunPicker", style: LegacyType.body1(), wrap: .nowrap)
+        } modal: {
+            FunPicker(tab: .constant(.gifs)) { EmptyView() } stickers: { EmptyView() } gifs: {
+                FunPanelGifs(recentGifs: [], source: source, prefetched: page)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .offset(x: 12, y: 44)
+        }
+        try Snapshot.assertMatches(stage, story: "components-fun-funpicker--default--gifs", theme: theme)
     }
 }

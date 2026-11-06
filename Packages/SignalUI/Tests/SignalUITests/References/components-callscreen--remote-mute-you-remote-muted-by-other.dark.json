@@ -1,0 +1,17 @@
+{
+ "id": "components-callscreen--remote-mute-you-remote-muted-by-other",
+ "theme": "dark",
+ "width": 1200,
+ "height": 7559,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ]
+}

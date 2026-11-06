@@ -264,7 +264,7 @@ public enum JPEGGrammar {
     // MARK: APPn
 
     /// APP1 "Exif\0\0" → TIFF IFD0 → tag 0x0112 Orientation (SHORT, count 1, 1..8).
-    static func exifOrientation(_ body: ByteSlice) -> Int? {
+    public static func exifOrientation(_ body: ByteSlice) -> Int? {
         var c = body.cursor()
         guard (try? c.expect(Array("Exif".utf8) + [0, 0], "Exif")) != nil else { return nil }
         let tiff = c.rest()

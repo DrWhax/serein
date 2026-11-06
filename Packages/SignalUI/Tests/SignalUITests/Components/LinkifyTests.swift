@@ -4,6 +4,7 @@
 import Foundation
 import Testing
 @testable import SignalUI
+@testable import SignalText
 
 struct LinkifyOracleCase: Decodable {
     struct M: Decodable, Equatable { let schema: String; let index: Int; let lastIndex: Int; let text: String; let url: String }

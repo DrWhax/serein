@@ -77,6 +77,7 @@ extension MessageStore {
             WHERE conversationId = ? AND type = 'incoming' AND readStatus = ? ORDER BY received_at
             """, arguments: [conversationId, ReadStatus.unread.rawValue])
         var targets: [ReceiptTarget] = []
+        try ConversationState.startTimers(db, messageIds: rows.map { $0["id"] }, at: now())
         for row in rows {
             let id: String = row["id"]
             try setRead(db, messageId: id, .read)
@@ -108,6 +109,7 @@ extension MessageStore {
     static func applyReadSync(_ db: Database, sender: String, timestamp: UInt64, viewed: Bool) throws -> String? {
         guard let id = try find(db, author: sender, sentAt: timestamp) else { return nil }
         try setRead(db, messageId: id, viewed ? .viewed : .read)
+        try ConversationState.startTimers(db, messageIds: [id], at: now())
         if let conversationId = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) {
             let unread = try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?",
                                           arguments: [conversationId, ReadStatus.unread.rawValue]) ?? 0
@@ -116,8 +118,14 @@ extension MessageStore {
         return id
     }
 
+    /// `enableProfileSharing` (not via storage sync): a change is captured for storage.
     static func setProfileSharing(_ db: Database, conversationId: String) throws {
-        try updateConversationJSON(db, conversationId: conversationId) { $0["profileSharing"] = true }
+        var changed = false
+        try updateConversationJSON(db, conversationId: conversationId) { json in
+            changed = json["profileSharing"] as? Bool != true
+            json["profileSharing"] = true
+        }
+        if changed { try StorageWriteBack.conversationChanged(db, conversationId: conversationId) }
     }
 
     /// Stores a contact's profile key (DataMessage.profileKey, contact/storage sync).

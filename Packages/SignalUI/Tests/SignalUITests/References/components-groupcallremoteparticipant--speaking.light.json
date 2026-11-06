@@ -1,0 +1,17 @@
+{
+ "id": "components-groupcallremoteparticipant--speaking",
+ "theme": "light",
+ "width": 1072,
+ "height": 144,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  4,
+  4
+ ]
+}

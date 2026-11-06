@@ -679,8 +679,11 @@ struct CSSTextLayout {
                     let fit = CTTypesetterSuggestClusterBreak(typesetter, start, Double(maxWidth + tolerance))
                     let forced = (start..<min(start + n, length)).contains { CSSLineBreak.isNewline(units[$0]) }
                     if !forced {
+                        // Before the suggested break when that overflows (no ordinary break
+                        // opportunity fits), else up to it.
+                        let floor = n > fit ? start : start + n
                         var b = start + fit
-                        while b > start + n {
+                        while b > floor {
                             if breakAll.contains(b) { n = b - start; break }
                             b -= 1
                         }

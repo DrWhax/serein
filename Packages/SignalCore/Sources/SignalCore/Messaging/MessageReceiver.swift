@@ -269,10 +269,16 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             events.append(.typing(sender: d.sender, started: t.action == .started, timestamp: t.timestamp, groupId: t.hasGroupID ? t.groupID : nil))
         case .editMessage(let edit):
             guard edit.hasDataMessage else { throw ReceiveError.invalidEnvelope("EditMessage without dataMessage") }
-            guard let id = try MessageStore.applyEdit(db, author: d.sender, targetSentAt: edit.targetSentTimestamp, newBody: edit.dataMessage.body,
-                                                      editSentAt: edit.dataMessage.timestamp)
-            else { throw ReceiveError.invalidEnvelope("edit target \(edit.targetSentTimestamp) not found") }
-            events.append(.edit(messageId: id, sender: d.sender, targetTimestamp: edit.targetSentTimestamp, body: edit.dataMessage.body))
+            let conversation = edit.dataMessage.hasGroupV2 && edit.dataMessage.groupV2.hasMasterKey
+                ? try MessageStore.groupConversation(db, masterKey: edit.dataMessage.groupV2.masterKey).id
+                : try MessageStore.privateConversation(db, serviceId: d.sender)
+            let ctx = ModifierContext(sender: d.sender, timestamp: edit.dataMessage.timestamp, serverTimestamp: e.serverTimestamp, conversationId: conversation,
+                                      source: .someoneElse)
+            let pending = PendingModifier(kind: .edit, targetAuthor: d.sender, targetSentAt: edit.targetSentTimestamp, context: ctx,
+                                          payload: try edit.serializedBytes(), storedAt: MessageStore.now())
+            if let id = try MessageModifiers.apply(db, pending, ourAci: account.aci) {
+                events.append(.edit(messageId: id, sender: d.sender, targetTimestamp: edit.targetSentTimestamp, body: edit.dataMessage.body))
+            }
         case .decryptionErrorMessage(let bytes):
             let dem = try DecryptionErrorMessage(bytes: bytes)
             // Only errors about a message this device sent can be answered from our send log.
@@ -284,7 +290,13 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             }
             events.append(.decryptionErrorReported(sender: d.sender, senderDevice: d.senderDevice, timestamp: dem.timestamp, deviceId: dem.deviceId))
         case .storyMessage: events.append(.other(kind: "story", sender: d.sender))
-        case .callMessage: events.append(.other(kind: "call", sender: d.sender))
+        case .callMessage(let call):
+            // Signalling is handled by CallingService (handleCallingMessage); nothing is stored.
+            let destination = Self.destination(e) ?? account.aci
+            events.append(.callMessage(CallMessageEnvelope(sender: d.sender, senderDevice: d.senderDevice,
+                                                           destinationIsPni: pniStore.map { destination == $0.ourServiceId } ?? false,
+                                                           timestamp: e.clientTimestamp, serverTimestamp: e.serverTimestamp, receivedAt: MessageStore.now(),
+                                                           serverGuid: e.serverGuid, message: call)))
         case .nullMessage: events.append(.other(kind: "null", sender: d.sender))
         case .none:
             if !c.hasSenderKeyDistributionMessage && !c.hasPniSignatureMessage { throw ReceiveError.invalidEnvelope("empty Content") }
@@ -299,26 +311,100 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         if try MessageStore.find(db, author: d.sender, sentAt: m.timestamp) != nil { return [] }   // duplicate
         let conversation: String
         var groupId: Data? = nil
+        var events: [ReceiveEvent] = []
         if m.hasGroupV2, m.groupV2.hasMasterKey {
+            guard m.groupV2.masterKey.count == 32 else { throw ReceiveError.invalidEnvelope("bad group master key") }
             let g = try MessageStore.groupConversation(db, masterKey: m.groupV2.masterKey)
             conversation = g.id
             groupId = g.groupId
+            events.append(.groupContext(masterKey: m.groupV2.masterKey, revision: Int(m.groupV2.revision),
+                                        groupChange: m.groupV2.hasGroupChange ? m.groupV2.groupChange : nil, sender: d.sender, timestamp: m.timestamp))
+            // A group update (a change and nothing else) is not a chat message (`isGroupUpdate`).
+            if m.groupV2.hasGroupChange && m.body.isEmpty && m.attachments.isEmpty && !m.hasQuote && !m.hasSticker && m.contact.isEmpty {
+                if m.hasProfileKey { try MessageStore.setProfileKey(db, serviceId: d.sender, m.profileKey) }
+                return events
+            }
         } else {
             conversation = try MessageStore.privateConversation(db, serviceId: d.sender)
         }
+        // Blocked contacts and groups (MessageReceiver isBlocked / isGroupBlocked): dropped.
+        if try MessageModifiers.isBlocked(db, conversationId: conversation, sender: d.sender) { return [] }
         if m.hasProfileKey { try MessageStore.setProfileKey(db, serviceId: d.sender, m.profileKey) }
+        let isGroupMessage = m.hasGroupV2 && m.groupV2.hasMasterKey
+        // Timer and profile-key updates are not chat messages.
+        if m.flags & ConversationState.expirationTimerUpdateFlag != 0 {
+            try ConversationState.applyIncomingTimer(db, conversationId: conversation, seconds: m.expireTimer, version: m.expireTimerVersion, from: d.sender,
+                                                     sentAt: m.timestamp, isGroup: isGroupMessage, isUpdate: true)
+            return events + [.other(kind: "timerUpdate:\(m.timestamp)", sender: d.sender)]
+        }
+        if m.flags & ConversationState.profileKeyUpdateFlag != 0 { return events + [.other(kind: "profileKeyUpdate:\(m.timestamp)", sender: d.sender)] }
+        if m.hasExpireTimer || m.hasExpireTimerVersion {
+            try ConversationState.applyIncomingTimer(db, conversationId: conversation, seconds: m.expireTimer, version: m.expireTimerVersion, from: d.sender,
+                                                     sentAt: m.timestamp, isGroup: isGroupMessage, isUpdate: false)
+        }
+        let ctx = ModifierContext(sender: d.sender, timestamp: m.timestamp, serverTimestamp: e.serverTimestamp, conversationId: conversation, source: .someoneElse)
+        let mods = try MessageModifiers.modifiers(of: m, context: ctx)
+        if !mods.isEmpty {
+            for mod in mods { try MessageModifiers.apply(db, mod, ourAci: account.aci) }
+            // A pin also makes a message of its own (the notification), others none.
+            return events + [.other(kind: "modifier:\(m.timestamp)", sender: d.sender)]
+        }
+        var extra: [String: Any] = [:]
+        if m.isViewOnce { extra["isViewOnce"] = true }
+        if m.hasPollCreate, let poll = MessageModifiers.pollJSON(m.pollCreate) { extra["poll"] = poll }
         let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "incoming", body: m.body, sentAt: m.timestamp,
                                                    source: d.sender, sourceDevice: d.senderDevice, serverGuid: e.serverGuid,
-                                                   serverTimestamp: e.serverTimestamp, unidentified: d.sealed))
+                                                   serverTimestamp: e.serverTimestamp, unidentified: d.sealed, extra: extra))
+        try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
+                                                  attachments: m.attachments)
+        if m.hasSticker {
+            try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp), messageType: "incoming", m.sticker)
+        }
+        try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp), messageType: "incoming",
+                                       body: m.body, m.preview)
+        // The message's own timer starts when it is read.
+        try ConversationState.setMessageTimer(db, messageId: id, seconds: m.expireTimer, startedAt: nil)
+        try MessageModifiers.applyPending(db, author: d.sender, sentAt: m.timestamp, ourAci: account.aci)
         // Delivery receipt (Desktop sends one for every delivered message), committed with the message.
         try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: ConversationJob.receipts(
             .delivery, [ReceiptTarget(messageId: id, conversationId: conversation, senderAci: d.sender, timestamp: m.timestamp)]))
-        return [.message(messageId: id, conversationId: conversation, sender: d.sender, senderDevice: d.senderDevice, timestamp: m.timestamp,
-                         body: m.body, sealed: d.sealed, groupId: groupId ?? d.groupId)]
+        return events + [.message(messageId: id, conversationId: conversation, sender: d.sender, senderDevice: d.senderDevice, timestamp: m.timestamp,
+                                  body: m.body, sealed: d.sealed, groupId: groupId ?? d.groupId)]
     }
 
     func handleSyncMessage(_ s: Signalservice_SyncMessage, _ d: Decrypted, _ db: Database) throws -> [ReceiveEvent] {
         var events: [ReceiveEvent] = []
+        if case .viewOnceOpen(let v)? = s.content, let author = MessageModifiers.aci(v.senderAciBinary, v.senderAci) {
+            let ctx = ModifierContext(sender: account.aci, timestamp: v.timestamp, serverTimestamp: 0, conversationId: "", source: .sync)
+            try MessageModifiers.apply(db, PendingModifier(kind: .viewOnceOpen, targetAuthor: author, targetSentAt: v.timestamp, context: ctx,
+                                                           payload: Data(), storedAt: MessageStore.now()), ourAci: account.aci)
+            events.append(.sync(kind: "viewOnceOpen", senderDevice: d.senderDevice))
+        }
+        if case .messageRequestResponse(let r)? = s.content, let type = MessageRequestResponse(rawValue: r.type.rawValue) {
+            var conversation: String? = nil
+            if r.hasGroupID {
+                conversation = try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE groupId = ?", arguments: [r.groupID.base64EncodedString()])
+            } else if let aci = MessageModifiers.aci(r.threadAciBinary, r.threadAci) {
+                conversation = try MessageStore.privateConversation(db, serviceId: aci)
+            }
+            if let conversation { try ConversationState.applyResponse(db, conversationId: conversation, type, ourAci: account.aci) }
+            events.append(.sync(kind: "messageRequestResponse", senderDevice: d.senderDevice))
+        }
+        if case .verified(let v)? = s.content {
+            try Identity.applyVerifiedSync(db, v, account: account)
+            events.append(.sync(kind: "verified", senderDevice: d.senderDevice))
+        }
+        if case .deleteForMe(let dfm)? = s.content {
+            try DeleteForMe.apply(db, dfm, ourAci: account.aci)
+            events.append(.sync(kind: "deleteForMe", senderDevice: d.senderDevice))
+        }
+        // StickerPackOperation (install / remove on another of our devices).
+        for op in s.stickerPackOperation where op.packID.count == 16 {
+            try JobQueue.insert(db, queueType: StickerPackOperationJob.queueType,
+                                payload: StickerPackOperationJob(packId: op.packID.hexString, packKey: op.packKey.base64EncodedString(),
+                                                                 install: op.type == .install))
+            events.append(.sync(kind: "stickerPackOperation", senderDevice: d.senderDevice))
+        }
         for r in s.read {
             guard let sender = Self.serviceIdString(binary: r.hasSenderAciBinary ? r.senderAciBinary : nil, string: r.hasSenderAci ? r.senderAci : nil) else { continue }
             _ = try MessageStore.applyReadSync(db, sender: sender, timestamp: r.timestamp, viewed: false)
@@ -351,20 +437,48 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 try Items.set(db, "masterKey", k.master.base64EncodedString())
             }
             if k.hasMediaRootBackupKey { try Items.set(db, "backupMediaRootKey", k.mediaRootBackupKey.base64EncodedString()) }
+            // `syncAfterNewKey`: storage written under the new key is fetched again.
+            if k.hasAccountEntropyPool || k.hasMaster { try JobQueue.insert(db, queueType: StorageService.queueType, payload: StorageService.Job()) }
             return events + [.sync(kind: "keys", senderDevice: d.senderDevice)]
         case .fetchLatest(let f):
-            if f.type == .storageManifest { try JobQueue.insert(db, queueType: StorageServiceReader.queueType, payload: StorageServiceReader.Job()) }
+            if f.type == .storageManifest { try JobQueue.insert(db, queueType: StorageService.queueType, payload: StorageService.Job()) }
             return events + [.sync(kind: "fetchLatest", senderDevice: d.senderDevice)]
+        case .callEvent(let ce):
+            // `onCallEventSync`: a call on another of our devices (updateCallHistoryFromRemoteEvent).
+            if let details = try? CallHistoryProto.details(ce, eventSource: "onCallEventSync", eventTimestamp: MessageStore.now()) {
+                try CallHistoryStore.apply(db, details)
+            }
+            return events + [.callHistoryChanged, .sync(kind: "callEvent", senderDevice: d.senderDevice)]
+        case .callLogEvent(let le):
+            try CallHistoryStore.applyLogEvent(db, le, now: MessageStore.now())
+            return events + [.callHistoryChanged, .sync(kind: "callLogEvent", senderDevice: d.senderDevice)]
+        case .callLinkUpdate(let u):
+            // `onCallLinkUpdateSync`
+            // (Type DELETE was superseded by the storage service.)
+            guard u.hasRootKey, u.rootKey.count >= 16 else { return events + [.sync(kind: "callLinkUpdate", senderDevice: d.senderDevice)] }
+            try CallLinkStore.applyUpdateSync(db, rootKey: u.rootKey, adminKey: u.hasAdminPasskey && !u.adminPasskey.isEmpty ? u.adminPasskey : nil,
+                                              now: MessageStore.now())
+            return events + [.callHistoryChanged, .sync(kind: "callLinkUpdate", senderDevice: d.senderDevice)]
         case .blocked(let b):
-            try Items.set(db, "blocked", b.numbers)
-            try Items.set(db, "blocked-uuids", b.acisBinary.compactMap { Self.serviceIdString(binary: $0, string: nil) } + b.acis)
-            try Items.set(db, "blocked-groups", b.groupIds.map { $0.base64EncodedString() })
+            try BlockedList.numbers.replaceAll(db, b.numbers)
+            try BlockedList.serviceIds.replaceAll(db, b.acisBinary.compactMap { Self.serviceIdString(binary: $0, string: nil) } + b.acis)
+            try BlockedList.groups.replaceAll(db, b.groupIds.map { $0.base64EncodedString() })
             return events + [.sync(kind: "blocked", senderDevice: d.senderDevice)]
         case .sent(let sent):
-            guard sent.hasMessage else { return [.sync(kind: sent.hasEditMessage ? "sentEdit" : "sent", senderDevice: d.senderDevice)] }
-            let m = sent.message
             let destination = Self.serviceIdString(binary: sent.hasDestinationServiceIDBinary ? sent.destinationServiceIDBinary : nil,
                                                    string: sent.hasDestinationServiceID ? sent.destinationServiceID : nil)
+            if sent.hasEditMessage, sent.editMessage.hasDataMessage {
+                let em = sent.editMessage.dataMessage
+                let conv = em.hasGroupV2 && em.groupV2.hasMasterKey ? try MessageStore.groupConversation(db, masterKey: em.groupV2.masterKey).id
+                    : try destination.map { try MessageStore.privateConversation(db, serviceId: $0) } ?? ""
+                let ctx = ModifierContext(sender: account.aci, timestamp: em.timestamp, serverTimestamp: 0, conversationId: conv, source: .sync)
+                try MessageModifiers.apply(db, PendingModifier(kind: .edit, targetAuthor: account.aci, targetSentAt: sent.editMessage.targetSentTimestamp,
+                                                               context: ctx, payload: try sent.editMessage.serializedBytes(), storedAt: MessageStore.now()),
+                                           ourAci: account.aci)
+                return [.sync(kind: "sentEdit", senderDevice: d.senderDevice)]
+            }
+            guard sent.hasMessage else { return [.sync(kind: "sent", senderDevice: d.senderDevice)] }
+            let m = sent.message
             let conversation: String
             if m.hasGroupV2, m.groupV2.hasMasterKey {
                 conversation = try MessageStore.groupConversation(db, masterKey: m.groupV2.masterKey).id
@@ -374,6 +488,17 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 throw ReceiveError.invalidEnvelope("sent transcript without destination")
             }
             if try MessageStore.find(db, author: account.aci, sentAt: sent.timestamp) != nil { return [] }
+            if m.flags & ConversationState.expirationTimerUpdateFlag != 0 {
+                try ConversationState.applyIncomingTimer(db, conversationId: conversation, seconds: m.expireTimer, version: m.expireTimerVersion,
+                                                         from: account.aci, sentAt: sent.timestamp, isGroup: m.hasGroupV2, isUpdate: true)
+                return [.sync(kind: "sentTimer", senderDevice: d.senderDevice)]
+            }
+            let syncCtx = ModifierContext(sender: account.aci, timestamp: sent.timestamp, serverTimestamp: 0, conversationId: conversation, source: .sync)
+            let syncMods = try MessageModifiers.modifiers(of: m, context: syncCtx)
+            if !syncMods.isEmpty {
+                for mod in syncMods { try MessageModifiers.apply(db, mod, ourAci: account.aci) }
+                return [.sync(kind: "sentModifier", senderDevice: d.senderDevice)]
+            }
             var sendState: [String: Any] = [:]
             if let destination, !(m.hasGroupV2) {
                 sendState[conversation] = ["status": "Sent", "updatedAt": MessageStore.now()]
@@ -383,7 +508,18 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                        source: account.aci, sourceDevice: d.senderDevice, serverGuid: nil, serverTimestamp: nil,
                                                        unidentified: false,
                                                        extra: ["sendStateByConversationId": sendState,
-                                                               "expirationStartTimestamp": sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp]))
+                                                               "expirationStartTimestamp": sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp]
+                                                           .merging(m.isViewOnce ? ["isViewOnce": true] : [:]) { a, _ in a }
+                                                           .merging(m.hasPollCreate ? ["poll": MessageModifiers.pollJSON(m.pollCreate) as Any] : [:]) { a, _ in a }))
+            if m.hasSticker {
+                try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing", m.sticker)
+            }
+            try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing",
+                                           body: m.body, m.preview)
+            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), attachments: m.attachments)
+            try ConversationState.setMessageTimer(db, messageId: id, seconds: m.expireTimer,
+                                                  startedAt: Int64(sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp))
+            try MessageModifiers.applyPending(db, author: account.aci, sentAt: sent.timestamp, ourAci: account.aci)
             return [.sentTranscript(messageId: id, conversationId: conversation, destination: destination ?? "", timestamp: sent.timestamp, body: m.body)]
         case .some(let other):
             return events + [.sync(kind: String(describing: other).components(separatedBy: "(").first ?? "unknown", senderDevice: d.senderDevice)]

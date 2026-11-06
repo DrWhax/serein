@@ -1,0 +1,199 @@
+diff --git a/Package.swift b/Package.swift
+index 2d9d5c1..b3e2019 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -37,7 +37,7 @@ let package = Package(
+             name: "LibSignalClient",
+             dependencies: ["SignalFfi"],
+             path: "swift/Sources/LibSignalClient",
+-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")],
++            swiftSettings: [.enableExperimentalFeature("StrictConcurrency"), .define("SIGNAL_MEDIA_SUPPORTED")],
+             linkerSettings: [
+                 .linkedLibrary("stdc++", .when(platforms: [.linux]))
+             ]
+diff --git a/swift/Sources/LibSignalClient/Media.swift b/swift/Sources/LibSignalClient/Media.swift
+index b2babb8..c9fb906 100644
+--- a/swift/Sources/LibSignalClient/Media.swift
++++ b/swift/Sources/LibSignalClient/Media.swift
+@@ -8,6 +8,23 @@
+ import Foundation
+ import SignalFfi
+ 
++/// The sanitizer currently simply checks the validity of a WebP file input, so that passing a malformed file to an
++/// unsafe parser can be avoided.
++///
++/// - Parameters:
++///  - input: A WebP format input stream.
++///
++/// - Throws:
++///  - `SignalError.ioError`: If an IO error on the input occurs.
++///  - `SignalError.invalidMediaInput` If the input could not be parsed because it was invalid.
++///  - `SignalError.unsupportedMediaInput` If the input could not be parsed because it's unsupported in some way.
++public func sanitizeWebp(input: SignalInputStream) throws {
++    try withInputStream(input) { ffiInput in
++        try checkError(signal_webp_sanitizer_sanitize(ffiInput))
++    }
++}
++
++// SignalSafe: updated to the typed-handle API (SignalMutPointerSanitizedMetadata).
+ /// "Sanitize" an MP4 input.
+ ///
+ /// Currently the sanitizer always performs the following functions:
+@@ -43,41 +60,24 @@ import SignalFfi
+ ///  - `SignalError.invalidMediaInput` If the input could not be parsed because it was invalid.
+ ///  - `SignalError.unsupportedMediaInput` If the input could not be parsed because it's unsupported in some way.
+ public func sanitizeMp4(input: SignalInputStream, len: UInt64) throws -> SanitizedMetadata {
+-    return try withInputStream(input) { ffiInput in
+-        try invokeFnReturningNativeHandle {
++    let handle = try withInputStream(input) { ffiInput in
++        try invokeFnReturningValueByPointer(.init()) {
+             signal_mp4_sanitizer_sanitize($0, ffiInput, len)
+         }
+     }
++    return SanitizedMetadata(owned: NonNull(handle)!)
+ }
+ 
+-/// "Sanitize" a WebP input.
+-///
+-/// The sanitizer currently simply checks the validity of a WebP file input, so that passing a malformed file to an
+-/// unsafe parser can be avoided.
+-///
+-/// - Parameters:
+-///  - input: A WebP format input stream.
+-///
+-/// - Throws:
+-///  - `SignalError.ioError`: If an IO error on the input occurs.
+-///  - `SignalError.invalidMediaInput` If the input could not be parsed because it was invalid.
+-///  - `SignalError.unsupportedMediaInput` If the input could not be parsed because it's unsupported in some way.
+-public func sanitizeWebp(input: SignalInputStream) throws {
+-    try withInputStream(input) { ffiInput in
+-        try checkError(signal_webp_sanitizer_sanitize(ffiInput))
+-    }
+-}
+-
+-public class SanitizedMetadata: ClonableHandleOwner<OpaquePointer?> {
++public class SanitizedMetadata: ClonableHandleOwner<SignalMutPointerSanitizedMetadata>, @unchecked Sendable {
+     override internal class func cloneNativeHandle(
+-        _ newHandle: inout OpaquePointer?,
+-        currentHandle: OpaquePointer?
++        _ newHandle: inout SignalMutPointerSanitizedMetadata,
++        currentHandle: SignalConstPointerSanitizedMetadata
+     ) -> SignalFfiErrorRef? {
+         return signal_sanitized_metadata_clone(&newHandle, currentHandle)
+     }
+ 
+-    override internal class func destroyNativeHandle(_ handle: OpaquePointer) -> SignalFfiErrorRef? {
+-        return signal_sanitized_metadata_destroy(handle)
++    override internal class func destroyNativeHandle(_ handle: NonNull<SignalMutPointerSanitizedMetadata>) -> SignalFfiErrorRef? {
++        return signal_sanitized_metadata_destroy(handle.pointer)
+     }
+ 
+     /// The sanitized metadata, or nil if it didn't need to be sanitized.
+@@ -85,7 +85,7 @@ public class SanitizedMetadata: ClonableHandleOwner<OpaquePointer?> {
+         let metadata = withNativeHandle { nativeHandle in
+             failOnError {
+                 try invokeFnReturningData {
+-                    signal_sanitized_metadata_get_metadata($0, nativeHandle)
++                    signal_sanitized_metadata_get_metadata($0, nativeHandle.const())
+                 }
+             }
+         }
+@@ -98,7 +98,7 @@ public class SanitizedMetadata: ClonableHandleOwner<OpaquePointer?> {
+         return withNativeHandle { nativeHandle in
+             failOnError {
+                 try invokeFnReturningInteger {
+-                    signal_sanitized_metadata_get_data_offset($0, nativeHandle)
++                    signal_sanitized_metadata_get_data_offset($0, nativeHandle.const())
+                 }
+             }
+         }
+@@ -109,11 +109,33 @@ public class SanitizedMetadata: ClonableHandleOwner<OpaquePointer?> {
+         return withNativeHandle { nativeHandle in
+             failOnError {
+                 try invokeFnReturningInteger {
+-                    signal_sanitized_metadata_get_data_len($0, nativeHandle)
++                    signal_sanitized_metadata_get_data_len($0, nativeHandle.const())
+                 }
+             }
+         }
+     }
+ }
+ 
++extension SignalMutPointerSanitizedMetadata: SignalMutPointer {
++    public typealias ConstPointer = SignalConstPointerSanitizedMetadata
++
++    public init(untyped: OpaquePointer?) {
++        self.init(raw: untyped)
++    }
++
++    public func toOpaque() -> OpaquePointer? {
++        self.raw
++    }
++
++    public func const() -> SignalConstPointerSanitizedMetadata {
++        return SignalConstPointerSanitizedMetadata(raw: self.raw)
++    }
++}
++
++extension SignalConstPointerSanitizedMetadata: SignalConstPointer {
++    public func toOpaque() -> OpaquePointer? {
++        self.raw
++    }
++}
++
+ #endif
+diff --git a/swift/build_ffi.sh b/swift/build_ffi.sh
+index 72e189d..3f28431 100755
+--- a/swift/build_ffi.sh
++++ b/swift/build_ffi.sh
+@@ -104,6 +104,8 @@ export CFLAGS_aarch64_apple_ios_macabi="--target=arm64-apple-ios-macabi ${CFLAGS
+ export CFLAGS_x86_64_apple_ios_macabi="--target=x86_64-apple-ios-macabi ${CFLAGS:-}"
+ 
+ FEATURES=()
++# SignalSafe: WebpSanitizer / Mp4Sanitizer for outgoing media.
++FEATURES+=("signal-media")
+ if [[ "${CARGO_BUILD_TARGET:-}" != "aarch64-apple-ios" ]]; then
+   FEATURES+=("libsignal-bridge-testing")
+ fi
+--- a/swift/Sources/SignalFfi/signal_ffi.h
++++ b/swift/Sources/SignalFfi/signal_ffi.h
+@@ -7204,6 +7204,39 @@
+ typedef SignalBytestringArray SignalStringArray;
+ typedef SignalConstPointerFfiSyncInputStreamStruct SignalConstPointerFfiInputStreamStruct;
+ 
++/* SignalSafe (libsignal-media.patch): from the signal-media feature, absent from the generated header. */
++SignalFfiError *signal_webp_sanitizer_sanitize(SignalConstPointerFfiSyncInputStreamStruct input);
++typedef struct SignalSanitizedMetadata SignalSanitizedMetadata;
++typedef struct {
++  SignalSanitizedMetadata* raw;
++} SignalMutPointerSanitizedMetadata;
++typedef struct {
++  const SignalSanitizedMetadata* raw;
++} SignalConstPointerSanitizedMetadata;
++SignalFfiError* signal_mp4_sanitizer_sanitize(
++  SignalMutPointerSanitizedMetadata* out,
++  SignalConstPointerFfiInputStreamStruct input,
++  uint64_t len
++);
++SignalFfiError* signal_sanitized_metadata_clone(
++  SignalMutPointerSanitizedMetadata* new_obj,
++  SignalConstPointerSanitizedMetadata obj
++);
++SignalFfiError* signal_sanitized_metadata_destroy(
++  SignalMutPointerSanitizedMetadata p
++);
++SignalFfiError* signal_sanitized_metadata_get_metadata(
++  SignalOwnedBuffer* out,
++  SignalConstPointerSanitizedMetadata sanitized
++);
++SignalFfiError* signal_sanitized_metadata_get_data_offset(
++  uint64_t* out,
++  SignalConstPointerSanitizedMetadata sanitized
++);
++SignalFfiError* signal_sanitized_metadata_get_data_len(
++  uint64_t* out,
++  SignalConstPointerSanitizedMetadata sanitized
++);
+ typedef SignalFfiIdentityKeyStoreStruct SignalIdentityKeyStore;
+ typedef SignalFfiKyberPreKeyStoreStruct SignalKyberPreKeyStore;
+ typedef SignalFfiPreKeyStoreStruct SignalPreKeyStore;

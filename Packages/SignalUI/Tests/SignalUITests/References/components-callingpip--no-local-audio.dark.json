@@ -1,0 +1,17 @@
+{
+ "id": "components-callingpip--no-local-audio",
+ "theme": "dark",
+ "width": 224,
+ "height": 460,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  976,
+  94
+ ]
+}

@@ -4,6 +4,8 @@
 #   integration tests can use Signal's mock server (testing only; not used by the app).
 #   libsignal-aes-cbc.patch: bridges signal_crypto AES-256-CBC to Swift (Aes256Cbc), so
 #   SignalCore needs no CommonCrypto pointer code under -strict-memory-safety.
+#   libsignal-media.patch: builds the signal-media feature (WebpSanitizer, Mp4Sanitizer) and
+#   compiles its Swift API (SIGNAL_MEDIA_SUPPORTED); used on outgoing stickers and media.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 for p in Tools/vendor-patches/*.patch; do

@@ -11,6 +11,8 @@ let package = Package(
     dependencies: [
         .package(path: "../../Packages/SignalUI"),
         .package(path: "../../Packages/SignalI18n"),
+        .package(path: "../../Packages/SignalCore"),
+        .package(path: "../../Packages/SignalRingRTC"),
     ],
     targets: [
         .executableTarget(
@@ -18,6 +20,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SignalUI", package: "SignalUI"),
                 .product(name: "SignalI18n", package: "SignalI18n"),
+                .product(name: "SignalCore", package: "SignalCore"),
+                .product(name: "SignalRingRTC", package: "SignalRingRTC"),
             ],
             swiftSettings: [
                 .strictMemorySafety(),

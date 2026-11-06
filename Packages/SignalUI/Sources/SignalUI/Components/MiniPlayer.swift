@@ -10,21 +10,33 @@ import SwiftUI
 
 public enum PlayerState: String, Sendable { case loading, playing, paused }
 
-/// `PlaybackRateButton` (variant `mini-player`): "1×" … in body-2 bold 11px on a 38×18 chip.
+/// `PlaybackRateButton`: "1×" … in body-2 bold 11px on a 38×18 chip; variants `mini-player`,
+/// `message-incoming`, `message-outgoing`.
 public struct PlaybackRateButton: View {
+    public enum Variant: Sendable { case miniPlayer, messageIncoming, messageOutgoing }
     /// `playbackRates`, cycled by `nextPlaybackRate`.
     public static let rates: [Double] = [1, 1.5, 2, 0.5]
     public static func nextPlaybackRate(_ rate: Double) -> Double { rates[((rates.firstIndex(of: rate) ?? -1) + 1) % rates.count] }
 
     let playbackRate: Double
     let visible: Bool
+    let variant: Variant
     let onClick: () -> Void
     @Environment(\.i18n) var i18n
 
-    public init(playbackRate: Double, visible: Bool = true, onClick: @escaping () -> Void) {
+    public init(playbackRate: Double, variant: Variant = .miniPlayer, visible: Bool = true, onClick: @escaping () -> Void) {
         self.playbackRate = playbackRate
+        self.variant = variant
         self.visible = visible
         self.onClick = onClick
+    }
+
+    var colors: (text: AxoColor, background: AxoColor) {
+        switch variant {
+        case .messageOutgoing: (AxoColor(LegacyColor.whiteAlpha80), AxoColor(LegacyColor.whiteAlpha20))
+        case .miniPlayer, .messageIncoming:
+            (AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray25), AxoColor(light: LegacyColor.blackAlpha08, dark: LegacyColor.whiteAlpha08))
+        }
     }
 
     var label: String {
@@ -39,11 +51,13 @@ public struct PlaybackRateButton: View {
     public var body: some View {
         SwiftUI.Button(action: onClick) {
             CSSText(label + "×", style: LegacyType.inter(11, 18, -0.03, weight: 700), wrap: .nowrap, alignment: .center,
-                    color: AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray25))
+                    color: colors.text)
                 .frame(width: 38, height: 18)
-                .background(AxoColor(light: LegacyColor.blackAlpha08, dark: LegacyColor.whiteAlpha08), in: RoundedRectangle(cornerRadius: 4))
+                .background(colors.background, in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
+        // `margin-block: -2px` (the mini player's flex row centres it either way).
+        .padding(.vertical, variant == .miniPlayer ? 0 : -2)
         .scaleEffect(visible ? 1 : 0)
         .animation(.spring(response: 0.25, dampingFraction: 0.6), value: visible)
         .accessibilityLabel(label)
