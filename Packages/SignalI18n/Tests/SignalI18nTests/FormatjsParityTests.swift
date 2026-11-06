@@ -53,7 +53,7 @@ import Testing
         let fixture = try Fixtures.load(MessageFixture.self, "messages-en.json")
         let keys = try MessageCatalog.bundled.keys()
         #expect(Set(fixture.cases.map(\.k)) == Set(keys))
-        #expect(keys.count == 3109)
+        #expect(keys.count == 3191)      // 3109 app + 82 sticker creator
     }
 }
 

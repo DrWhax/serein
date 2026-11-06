@@ -81,6 +81,7 @@ public final class DeviceLinker: Sendable {
             "fetchesMessages": true,
             "registrationId": aciReg,
             "name": try DeviceNameCipher.encrypt(options.deviceName, identityPublicKey: aciIdentity.publicKey).base64EncodedString(),
+            "capabilities": Self.capabilities(optionalPhoneNumber: !m.hasNumber || m.number.isEmpty),
         ]
         if pniIdentity != nil { attributes["pniRegistrationId"] = pniReg }
         var body: [String: Any] = [
@@ -120,6 +121,12 @@ public final class DeviceLinker: Sendable {
 
     /// Uploads the one-time EC and Kyber pre-keys (`PUT /v2/keys?identity=aci|pni`).
     /// Needs the authenticated socket (SocketManager.connect) to be up.
+    /// ts/util/getCapabilities.std.ts (no PIN on a linked device, so no `storage`). The server
+    /// refuses (422) a new device that lacks capabilities the account's devices already have.
+    static func capabilities(optionalPhoneNumber: Bool) -> [String: Bool] {
+        ["attachmentBackfill": false, "spqr": true, "usernameChangeSyncMessage": true, "optionalPhoneNumber": optionalPhoneNumber]
+    }
+
     public func uploadOneTimePreKeys(for account: Account) async throws {
         for (identity, store) in [("aci", account.aciStore()), ("pni", account.pniStore())] {
             guard let store else { continue }

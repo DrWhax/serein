@@ -29,6 +29,10 @@ public struct PendingInvites: View {
     let approvePendingMembership: (String) -> Void
     let revokePendingMemberships: ([String]) -> Void
     @State private var tab = "requests"
+    /// Banned members (not in upstream Desktop, which shows bans only as group changes): shown
+    /// under the requests, with Unban for admins. Set with `banned(_:unban:)`.
+    var bannedMembers: [PendingMember] = []
+    var unban: (String) -> Void = { _ in }
     @Environment(\.i18n) var i18n
     @Environment(\.axoModalStack) var modals
 
@@ -111,6 +115,28 @@ public struct PendingInvites: View {
         }
     }
 
+    /// The banned members, with Unban (admins); hidden when there are none.
+    public func banned(_ members: [PendingMember], unban: @escaping (String) -> Void) -> PendingInvites {
+        var c = self
+        c.bannedMembers = members
+        c.unban = unban
+        return c
+    }
+
+    @ViewBuilder var bannedList: some View {
+        if !bannedMembers.isEmpty {
+            ConversationDetailsList(label: "Banned") {
+                ForEach(bannedMembers) { m in
+                    row(m) {
+                        if areWeAdmin {
+                            AxoItem.IconAction(label: "Unban \(m.avatar.title)", variant: .subtleDestructive, symbol: "x") { unban(m.id) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var invites: some View {
         AxoList.Group {
             if !invitedByUs.isEmpty {
@@ -155,7 +181,13 @@ public struct PendingInvites: View {
                     AxoTabs.Trigger(value: "requests", i18n("icu:PendingInvites--tab-requests", ["count": .number(Double(pendingApprovalMemberships.count))]))
                     AxoTabs.Trigger(value: "pending", i18n("icu:PendingInvites--tab-invites", ["count": .number(Double(inviteCount))]))
                 }
-                AxoTabs.Content(value: "requests") { requests.padding(.top, 14) }
+                AxoTabs.Content(value: "requests") {
+                    VStack(spacing: 0) {
+                        requests
+                        bannedList
+                    }
+                    .padding(.top, 14)
+                }
                 AxoTabs.Content(value: "pending") { invites.padding(.top, 6) }
             }
         }

@@ -89,6 +89,8 @@ public struct CompositionAreaActions {
     public var openShareContactDialog: () -> Void = {}
     public var startRecording: () -> Void = {}
     public var discardEditMessage: () -> Void = {}
+    /// `maybeEditMessage` (↑ in an empty composer): returns whether editing started.
+    public var onEditLastMessage: (() -> Bool)?
     public var showGV2MigrationDialog: () -> Void = {}
     public var cancelJoinRequest: () -> Void = {}
     public var showConversation: (String) -> Void = { _ in }
@@ -264,6 +266,10 @@ public struct CompositionArea: View {
                 CompositionInput(text: $text, large: large && !viewOnce, disabled: m.isDisabled, isActive: m.isActive,
                                  showViewOnceButton: m.showViewOnceToggle, isViewOnceActive: viewOnce,
                                  onToggleViewOnce: actions.onToggleViewOnce, onSubmit: actions.onSubmit)
+                    .environment(\.composerKeys, ComposerKeys(
+                        // `hasDraft` (text, attachments, a quote) keeps ↑ for the caret.
+                        arrowUp: m.draftAttachments.isEmpty && m.quote == nil && !m.isEditingMessage ? actions.onEditLastMessage : nil,
+                        escape: m.isEditingMessage ? { actions.discardEditMessage(); return true } : nil))
                     .padding(.horizontal, 6)
                     .frame(maxWidth: .infinity)
                     .layoutPriority(1)
@@ -379,7 +385,8 @@ public struct FunPickerButton: View {
         }
         .axoPopper(id: id, isPresented: isOpen && picker != nil,
                    placement: AxoPopper.Placement(side: .top, align: .start, sideOffset: 4, collisionPadding: 6), dismiss: { isOpen = false }) {
-            picker
+            // The picker closes itself after a pick (`\.axoMenuClose`).
+            picker.environment(\.axoMenuClose, AxoMenuAction(run: { isOpen = false }))
         }
     }
 }

@@ -143,7 +143,7 @@ enum MessageStore {
         let rank = ["Delivered": 1, "Read": 2, "Viewed": 3]
         var updated = 0
         for t in timestamps {
-            let rows = try Row.fetchAll(db, sql: "SELECT id, json FROM messages WHERE type = 'outgoing' AND sent_at = ?", arguments: [Int64(t)])
+            let rows = try Row.fetchAll(db, sql: "SELECT id, json FROM messages WHERE type IN ('outgoing', 'story') AND sent_at = ?", arguments: [Int64(t)])
             for row in rows {
                 var json = try jsonObject(row["json"])
                 var states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]

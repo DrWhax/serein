@@ -1,0 +1,17 @@
+{
+ "id": "components-mystories--failed-sent-story",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1306,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

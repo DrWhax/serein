@@ -5,7 +5,8 @@
 public import CodecCore
 
 public enum PNGEncoder {
-    public static func encode(_ image: PixelBuffer, options: Deflate.Options = Deflate.Options()) -> [UInt8] {
+    /// - Parameter dotsPerInch: written as a pHYs chunk (`changeDpiBlob`), when given.
+    public static func encode(_ image: PixelBuffer, options: Deflate.Options = Deflate.Options(), dotsPerInch: Int? = nil) -> [UInt8] {
         let w = image.width, h = image.height
         var opaque = true, grey = true
         for i in stride(from: 0, to: image.rgba.count, by: 4) {
@@ -66,6 +67,11 @@ public enum PNGEncoder {
             out += be32(crc.value)
         }
         chunk("IHDR", be32(UInt32(w)) + be32(UInt32(h)) + [8, colorType, 0, 0, 0])
+        if let dpi = dotsPerInch, dpi > 0 {
+            // Pixels per metre (unit 1), as changeDpiBlob: round(dpi / 0.0254).
+            let ppm = UInt32((Double(dpi) / 0.0254).rounded())
+            chunk("pHYs", be32(ppm) + be32(ppm) + [1])
+        }
         let z = ZlibWriter.compress(raw, options: options)
         var off = 0
         repeat {

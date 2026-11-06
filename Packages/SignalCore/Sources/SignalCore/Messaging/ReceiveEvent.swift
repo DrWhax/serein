@@ -23,6 +23,10 @@ public enum ReceiveEvent: Sendable, Equatable {
     case senderKeyDistribution(sender: String, senderDevice: UInt32, distributionId: UUID)
     case serverDeliveryReceipt(timestamp: UInt64)
     case other(kind: String, sender: String)
+    /// A story arrived (or our other device sent one).
+    case story(storyId: String, conversationId: String, sender: String, timestamp: UInt64)
+    /// A reply or reaction to a story.
+    case storyReply(messageId: String, storyId: String, conversationId: String, sender: String)
     /// A CallMessage (calling signalling) for CallingService; never stored.
     case callMessage(CallMessageEnvelope)
     /// Call history, call log or call link changes from a sync message were stored.

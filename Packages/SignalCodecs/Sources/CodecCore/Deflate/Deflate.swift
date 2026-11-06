@@ -313,3 +313,11 @@ public enum ZlibWriter {
         return out
     }
 }
+
+/// Huffman code construction shared by the encoders (Deflate, VP8L).
+public enum HuffmanCodeBuilder {
+    /// Length-limited code lengths (package-merge); one used symbol gets length 1.
+    public static func lengths(_ freq: [Int], maxBits: Int) -> [UInt8] { Deflate.Huffman.lengths(freq, maxBits: maxBits) }
+    /// Canonical codes, bit-reversed for LSB-first writers.
+    public static func codes(_ lengths: [UInt8]) -> [UInt32] { Deflate.Huffman.codes(lengths) }
+}

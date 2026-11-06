@@ -151,6 +151,7 @@ public enum MP4Demuxer {
         for b in boxes {
             switch b.type {
             case t("avc1"), t("avc3"): out.append(try parseAVCEntry(b, limits: limits, count: &count))
+            case t("hvc1"), t("hev1"): out.append(try parseHEVCEntry(b, limits: limits, count: &count))
             case t("mp4a"): out.append(try parseMP4AEntry(b, limits: limits, count: &count))
             default: out.append(.unsupported(b.type))
             }
@@ -195,6 +196,54 @@ public enum MP4Demuxer {
         // High-profile extension (chroma_format, bit depths, SPS ext) may follow; not needed here.
         return AVCDecoderConfiguration(profile: profile, compatibility: compat, level: level, nalLengthSize: lengthSize,
                                        sequenceParameterSets: sps, pictureParameterSets: pps)
+    }
+
+    static func parseHEVCEntry(_ b: Box, limits: MP4Limits, count: inout Int) throws(ParseFailure) -> SampleEntry {
+        var c = b.body.cursor()
+        try c.skip(6 + 2 + 16, "VisualSampleEntry.reserved")
+        let width = Int(try c.u16be("VisualSampleEntry.width")), height = Int(try c.u16be("VisualSampleEntry.height"))
+        try c.skip(4 + 4 + 4 + 2 + 32 + 2 + 2, "VisualSampleEntry.rest")
+        let kids = try BoxGrammar.children(c.rest(), topLevel: false, limits: limits, count: &count)
+        guard let hvcC = kids.first(where: { $0.type == t("hvcC") }) else { throw ParseFailure(offset: b.offset, rule: "hvc1", reason: .mismatch(expected: "hvcC")) }
+        return .hevc(fourCC: b.type, width: width, height: height, config: try parseHvcC(hvcC.body))
+    }
+
+    /// HEVCDecoderConfigurationRecord (ISO/IEC 14496-15 8.3.3.1).
+    public static func parseHvcC(_ body: ByteSlice) throws(ParseFailure) -> HEVCDecoderConfiguration {
+        var c = body.cursor()
+        _ = try c.u8("hvcC.configurationVersion", require: "1") { $0 == 1 }
+        let pb = try c.u8("hvcC.general_profile")
+        try c.skip(4 + 6, "hvcC.compatibility_and_constraints")
+        let level = Int(try c.u8("hvcC.general_level_idc"))
+        try c.skip(2 + 1, "hvcC.min_spatial_segmentation_and_parallelism")
+        let chroma = Int(try c.u8("hvcC.chromaFormat") & 3)
+        let luma = Int(try c.u8("hvcC.bitDepthLumaMinus8") & 7) + 8
+        let chromaDepth = Int(try c.u8("hvcC.bitDepthChromaMinus8") & 7) + 8
+        try c.skip(2, "hvcC.avgFrameRate")
+        let lengthSize = Int(try c.u8("hvcC.lengthSizeMinusOne") & 3) + 1
+        guard lengthSize != 3 else { throw c.fail("hvcC.lengthSizeMinusOne", .invalid("3-byte NAL lengths")) }
+        let arrays = Int(try c.u8("hvcC.numOfArrays"))
+        var vps: [ByteSlice] = [], sps: [ByteSlice] = [], pps: [ByteSlice] = []
+        for _ in 0..<arrays {
+            let type = Int(try c.u8("hvcC.array.NAL_unit_type") & 0x3F)
+            let n = Int(try c.u16be("hvcC.array.numNalus"))
+            guard n <= 64 else { throw c.fail("hvcC.array.numNalus", .limitExceeded("\(n) NAL units")) }
+            for _ in 0..<n {
+                let len = Int(try c.u16be("hvcC.nal.length"))
+                guard len >= 2 else { throw c.fail("hvcC.nal", .invalid("shorter than its header")) }
+                let nal = try c.bytes(len, "hvcC.nal")
+                switch type {
+                case 32: vps.append(nal)
+                case 33: sps.append(nal)
+                case 34: pps.append(nal)
+                default: break    // SEI and others: not needed to decode
+                }
+            }
+        }
+        guard !sps.isEmpty, !pps.isEmpty else { throw c.fail("hvcC", .invalid("no SPS or PPS")) }
+        return HEVCDecoderConfiguration(profileSpace: Int(pb >> 6), tier: Int(pb >> 5) & 1, profileIdc: Int(pb & 0x1F), levelIdc: level,
+                                        chromaFormat: chroma, bitDepthLuma: luma, bitDepthChroma: chromaDepth, nalLengthSize: lengthSize,
+                                        videoParameterSets: vps, sequenceParameterSets: sps, pictureParameterSets: pps)
     }
 
     static func parseMP4AEntry(_ b: Box, limits: MP4Limits, count: inout Int) throws(ParseFailure) -> SampleEntry {

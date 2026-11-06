@@ -151,7 +151,14 @@ public enum FormatTimestamp {
         let f = DateFormatter()
         f.locale = loc
         f.timeZone = timeZone
-        f.dateFormat = DateFormatter.dateFormat(fromTemplate: template, options: 0, locale: loc)
+        var pattern = DateFormatter.dateFormat(fromTemplate: template, options: 0, locale: loc) ?? template
+        // A date + time skeleton: Apple's ICU joins the two with CLDR's "atTime" glue
+        // ("Jan 12, 1970 'at' 1:27 AM"); Chromium's Intl.DateTimeFormat uses the standard
+        // medium glue "{1}, {0}" ("Jan 12, 1970, 1:27 AM").
+        if template.contains(where: { "jhHk".contains($0) }) && template.contains(where: { "dMy".contains($0) }) {
+            pattern = pattern.replacing(#/ '[^']+' /#, with: ", ")
+        }
+        f.dateFormat = pattern
         return f.string(from: date).replacingOccurrences(of: "\u{202F}", with: " ")
     }
 

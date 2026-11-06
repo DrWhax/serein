@@ -12,3 +12,4 @@ DerivedData/
 .DS_Store
 .cache/
 Packages/SignalRingRTC/rust/target/
+App/SignalSafe/Resources/Sounds/

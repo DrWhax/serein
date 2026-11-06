@@ -57,7 +57,7 @@ public struct LeftPaneArchiveHelper: LeftPaneHelper {
 
     public func searchInput(_ ctx: LeftPaneContext) -> AnyView? {
         guard let searchConversation else { return nil }
-        return AnyView(LeftPaneSearchInput(searchTerm: .constant(searchTerm), searchConversation: searchConversation,
+        return AnyView(LeftPaneSearchInput(searchTerm: Binding(get: { searchTerm }, set: { ctx.updateSearchTerm($0) }), searchConversation: searchConversation,
                                            isSearchingGlobally: isSearchingGlobally, clearSearchQuery: ctx.clearSearchQuery,
                                            endConversationSearch: ctx.endConversationSearch, endSearch: ctx.endSearch))
     }

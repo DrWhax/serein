@@ -59,7 +59,8 @@ public struct GroupSender: Sendable {
         var normal = targets.filter { t in !senderKeyTargets.contains { $0.0 == t } }
         var viaSenderKey: [String] = []
         var unregistered: [String] = []
-        if senderKeyTargets.count >= 2, let endorsements {
+        // Group stories go to each member (sealed, `story=true`).
+        if senderKeyTargets.count >= 2, let endorsements, !payload.story {
             do {
                 (viaSenderKey, unregistered) = try await sendViaSenderKey(payload, keys: keys, conversationId: conversationId,
                                                                           devices: senderKeyTargets, endorsements: endorsements, messageIds: messageIds)

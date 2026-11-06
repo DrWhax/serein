@@ -126,6 +126,11 @@ public struct MessageProps {
     /// `textAttachment.isPermanentlyUndownloadable`: the long body can't be fetched any more.
     public var textAttachmentUndownloadable = false
     public var kickOffBodyDownload: (() -> Void)?
+    /// TimelineMessage: the hover buttons, the bubble's context menu and double-click reply
+    /// (nil outside the timeline).
+    public var actions: TimelineMessageActions?
+    /// The looping player of a GIF (an MP4 with the GIF flag), once its file is here.
+    public var gifPlayer: VideoPlaybackEngine?
 
     public init(id: String, direction: MessageDirection, author: Author, text: String?, timestamp: Date) {
         self.id = id
@@ -163,6 +168,24 @@ struct SelectModeWrapper: ViewModifier {
     }
 }
 
+/// The message row with actions: `.module-message:hover` shows the buttons (the whole row
+/// is the hover area), and double-clicking it replies.
+struct MessageRowActions: ViewModifier {
+    let actions: TimelineMessageActions?
+    @Binding var hovering: Bool
+
+    func body(content: Content) -> some View {
+        if let actions {
+            content
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+                .simultaneousGesture(TapGesture(count: 2).onEnded { actions.reply?() })
+        } else {
+            content
+        }
+    }
+}
+
 /// `storyReplyContext`
 public struct StoryReplyContext: Sendable, Hashable {
     public var authorTitle: String
@@ -186,8 +209,12 @@ public struct Message: View {
     @Environment(\.conversationListNow) var fixedNow
     /// `.module-message` padding-inline (0 in EditHistoryMessagesModal).
     @Environment(\.messagePaddingInline) var paddingInline
+    @Environment(\.messageShrinkWrapped) var shrinkWrapped
     @Environment(\.timeZone) var timeZone
     @Environment(\.colorScheme) var colorScheme
+    @State private var hovering = false
+    @State private var menu = MessageMenuState()
+    @Environment(\.messageMenuAlwaysVisible) var menuAlwaysVisible
 
     public init(props: MessageProps) { self.props = props }
 
@@ -316,7 +343,18 @@ public struct Message: View {
     }
 
     /// The bubble's content width (its width minus the 12px padding on each side).
-    var contentWidth: CGFloat { (gridWidth ?? maxWidth) - 24 }
+    var contentWidth: CGFloat {
+        let base = (gridWidth ?? maxWidth) - 24
+        guard shrinkWrapped, gridWidth == nil, let text = props.text, !text.isEmpty else { return base }
+        // Shrink-wrapped (StoryViewsNRepliesModal's flex-end rows): the max-width's
+        // `calc(100% − 38px)` resolves against the message's own max-content width, which
+        // reserves only the avatar column (28 + 8px, or nothing) for those 38px. The bubble ends
+        // up that much short of its text + metadata spacer, which wraps the metadata.
+        let deficit: CGFloat = 38 - (props.conversationType == .group && props.direction == .incoming ? 36 : 0)
+        let spacer = metadataPlacement == .inlineWithText ? metadata.width(i18n: i18n, now: fixedNow ?? .now, timeZone: timeZone).rounded(.up) : nil
+        let natural = CSSTextLayout.make(runs: [Emojify.run(text)] + spacerRuns(spacer), Self.textStyle, wrap: .nowrap, maxWidth: nil, colors: nil).width
+        return min(base, max(0, natural - deficit))
+    }
 
     public var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -329,6 +367,7 @@ public struct Message: View {
             if props.direction == .incoming || props.isSignalConversation { Spacer(minLength: 0) }
         }
         .padding(.horizontal, paddingInline)
+        .modifier(MessageRowActions(actions: props.isSelectMode ? nil : props.actions, hovering: $hovering))
         // --select-mode: incoming messages move aside (translate 16 + 22px) for the checkbox.
         .offset(x: props.isSelectMode && props.direction == .incoming ? 38 : 0)
         .modifier(SelectModeWrapper(isSelectMode: props.isSelectMode, isSelected: props.isSelected,
@@ -361,6 +400,39 @@ public struct Message: View {
         }
     }
 
+    /// The actions' menu entries (`shouldShowAdditional`: the body overflows).
+    var menuEntries: [TimelineMessageActions.Entry] {
+        props.actions?.entries(i18n, shouldShowAdditional: MessageBodyReadMore.doesOverflow(props.text ?? ""),
+                               openReactionPicker: { menu.reactionPicker = true }) ?? []
+    }
+
+    /// `#renderContainer`'s `maybeWrapWithContextMenu` (right-click the bubble for the menu)
+    /// and `renderMenu` beside it — on the bubble's own box, not the row's max-width frame.
+    @ViewBuilder func withActions(_ bubble: some View) -> some View {
+        if props.actions != nil && !props.isSelectMode {
+            AxoContextMenu.Root(location: $menu.contextMenu) { bubble } items: { MessageContextMenuItems(entries: menuEntries) }
+                .overlay(alignment: props.direction == .incoming ? .trailing : .leading) { menuButtons }
+        } else {
+            bubble
+        }
+    }
+
+    /// `renderMenu`: beside the bubble, 8px off (`--incoming` padding-inline-start, `--outgoing`
+    /// padding-inline-end), centred on it; shown while the row is hovered or a menu is open.
+    @ViewBuilder var menuButtons: some View {
+        if let actions = props.actions, !props.isSelectMode, !props.isSignalConversation {
+            let incoming = props.direction == .incoming
+            // A zero-width anchor on the bubble's outer edge; the buttons run outwards from it.
+            Color.clear.frame(width: 0)
+                .overlay(alignment: incoming ? .leading : .trailing) {
+                    MessageMenuButtons(direction: props.direction, actions: actions, entries: menuEntries, state: $menu)
+                        .fixedSize()
+                        .padding(incoming ? .leading : .trailing, 8)
+                        .opacity(hovering || menu.anyOpen || menuAlwaysVisible ? 1 : 0)
+                }
+        }
+    }
+
     var avatar: some View {
         Group {
             if props.shouldCollapseBelow {
@@ -382,8 +454,14 @@ public struct Message: View {
         props.isSticker && props.quote == nil && (props.attachments.first.map { !$0.isPermanentlyUndownloadable } ?? false)
     }
 
-    /// `.module-message__container`
+    /// `.module-message__container` in the row (at most `maxWidth`, at its side).
     var container: some View {
+        withActions(bubbleBox)
+            .frame(maxWidth: maxWidth, alignment: props.isSignalConversation ? .center : props.direction == .outgoing ? .trailing : .leading)
+    }
+
+    /// The bubble itself, its own size.
+    var bubbleBox: some View {
         let shape = UnevenRoundedRectangle(cornerRadii: radii)
         return ShrinkToFitBlock {
             VStack(alignment: .leading, spacing: 0) {
@@ -415,7 +493,6 @@ public struct Message: View {
             if isShowingImage && metadataPlacement == .bottom { metadata.padding(.trailing, 12).padding(.bottom, 9 + bubbleBottomMargin) }
         }
         .frame(width: gridWidth)
-        .frame(maxWidth: maxWidth, alignment: props.isSignalConversation ? .center : props.direction == .outgoing ? .trailing : .leading)
     }
 
     /// `#renderContents` (the default case): quote, attachment, text and metadata.
@@ -462,7 +539,8 @@ public struct Message: View {
                 if props.attachments[0].isGIF {
                     MessageGIF(attachment: props.attachments[0], forceTapToPlay: props.forceTapToPlay, blurHashDark: props.theme.map { $0 == .dark },
                                showVisualAttachment: props.showLightbox.map { f in { f(0) } }, startDownload: props.kickOffAttachmentDownload,
-                               cancelDownload: props.cancelAttachmentDownload, showMediaNoLongerAvailableToast: props.showMediaNoLongerAvailableToast)
+                               cancelDownload: props.cancelAttachmentDownload, showMediaNoLongerAvailableToast: props.showMediaNoLongerAvailableToast,
+                               player: props.gifPlayer)
                 } else {
             ImageGrid(attachments: props.attachments, direction: props.direction, bottomOverlay: metadataPlacement != .notRendered,
                       shouldCollapseAbove: props.shouldCollapseAbove, shouldCollapseBelow: props.shouldCollapseBelow,
@@ -821,4 +899,6 @@ extension EnvironmentValues {
 extension EnvironmentValues {
     /// `.module-message { padding-inline }`: 16px in the timeline.
     @Entry public var messagePaddingInline: CGFloat = 16
+    /// The message is sized to its content (a flex-end row), not to the timeline's width.
+    @Entry public var messageShrinkWrapped = false
 }

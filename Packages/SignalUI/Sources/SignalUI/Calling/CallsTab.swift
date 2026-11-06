@@ -284,13 +284,12 @@ public struct CallsList: View {
                             onClear: { query = "" })
                 MissedFilterToggle(pressed: $missedOnly)
             }
-            ScrollView(.vertical) {
+            StaticAwareScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(rows, id: \.self) { row($0) }
                 }
                 .padding(.leading, 11).padding(.trailing, 5)
             }
-            .scrollIndicators(.automatic)
             .scrollDisabled(items == nil || empty)
         }
         .overlay {
@@ -432,7 +431,7 @@ public struct CallsNewCall: View {
                 .frame(maxWidth: .infinity)
                 Spacer(minLength: 0)
             } else {
-                ScrollView(.vertical) {
+                StaticAwareScrollView {
                     LazyVStack(spacing: 0) {
                         if !direct.isEmpty {
                             header(i18n("icu:contactsHeader"))

@@ -53,6 +53,30 @@ public struct Thumbnail: Codable, Equatable, Sendable {
     }
 }
 
+/// An image's first frame for display (EXIF orientation applied), scaled to fit within
+/// `maxDimension` — pixels only, so the app never parses an image format itself.
+public struct DisplayImage: Codable, Equatable, Sendable {
+    public var width: Int
+    public var height: Int
+    /// RGBA8, straight alpha, width × height × 4 bytes.
+    public var rgba: Data
+    /// The decoded image's size before scaling.
+    public var originalWidth: Int
+    public var originalHeight: Int
+    public init(width: Int, height: Int, rgba: Data, originalWidth: Int, originalHeight: Int) {
+        self.width = width
+        self.height = height
+        self.rgba = rgba
+        self.originalWidth = originalWidth
+        self.originalHeight = originalHeight
+    }
+    public func validated(maxDimension: Int) throws -> DisplayImage {
+        guard (1...maxDimension).contains(width), (1...maxDimension).contains(height), (1...16384).contains(originalWidth),
+              (1...16384).contains(originalHeight), rgba.count == width * height * 4 else { throw MediaProcessingError.invalidResult }
+        return self
+    }
+}
+
 /// `MediaQualityLevels` (ts/util/scaleImageToLevel.preload.ts).
 public enum MediaQualityLevel: Int, Codable, Sendable, CaseIterable {
     case one = 1, two = 2, three = 3
@@ -124,12 +148,60 @@ public struct LinkPreviewHTML: Codable, Equatable, Sendable {
     }
 }
 
+/// A sticker for the sticker creator (`processImage`): a 512px WebP of a still image (contained,
+/// centred on transparency), or an animated PNG as given; or why it can't be one.
+public struct StickerImage: Codable, Equatable, Sendable {
+    public static let size = 512
+    public static let minSize = 10
+    public static let maxBytes = 300 * 1024
+
+    /// The `StickerCreator--Toasts--…` reason a file was refused.
+    public enum Refusal: String, Codable, Sendable {
+        case errorProcessing = "StickerCreator--Toasts--errorProcessing"
+        case tooLarge = "StickerCreator--Toasts--tooLarge"
+        case notSquare = "StickerCreator--Toasts--APNG--notSquare"
+        case dimensionsTooSmall = "StickerCreator--Toasts--APNG--dimensionsTooSmall"
+        case dimensionsTooLarge = "StickerCreator--Toasts--APNG--dimensionsTooLarge"
+        case animated = "StickerCreator--Toasts--animated"
+    }
+
+    public var data: Foundation.Data
+    public var contentType: String
+    public var refusal: Refusal?
+    /// The sticker's pixels (RGBA8, previewWidth × previewHeight) for the creator to show.
+    public var previewWidth: Int
+    public var previewHeight: Int
+    public var previewRGBA: Foundation.Data
+
+    public init(data: Foundation.Data, contentType: String, refusal: Refusal? = nil, previewWidth: Int = 0, previewHeight: Int = 0,
+                previewRGBA: Foundation.Data = Foundation.Data()) {
+        self.data = data
+        self.contentType = contentType
+        self.refusal = refusal
+        self.previewWidth = previewWidth
+        self.previewHeight = previewHeight
+        self.previewRGBA = previewRGBA
+    }
+
+    public func validated() throws -> StickerImage {
+        if refusal != nil { return StickerImage(data: Foundation.Data(), contentType: "", refusal: refusal) }
+        guard !data.isEmpty, data.count <= Self.maxBytes, ["image/webp", "image/png"].contains(contentType),
+              (1...Self.size).contains(previewWidth), (1...Self.size).contains(previewHeight),
+              previewRGBA.count == previewWidth * previewHeight * 4 else { throw MediaProcessingError.invalidResult }
+        return self
+    }
+}
+
 /// The media decoder service.
 public protocol MediaProcessing: Sendable {
+    /// The sticker creator's conversion of a dropped image.
+    func stickerImage(_ bytes: Data) async throws -> StickerImage
     /// Link-preview HTML (at most 1000 KiB) → its metadata, nil without a title.
     func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML?
     func imageInfo(_ bytes: Data) async throws -> ImageInfo
     func thumbnail(_ bytes: Data, size: Int) async throws -> Thumbnail
+    /// The first frame, fitted within `maxDimension` (1…4096), as RGBA for the timeline.
+    func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage
     /// `scaleImageToLevel`. Callers skip GIFs and non-images (`canBeTranscoded`).
     func scaleForSending(_ bytes: Data, contentType: String, level: MediaQualityLevel) async throws -> ScaledImage
     /// The file without its metadata (Exif / XMP / IPTC / comments in images, user data and

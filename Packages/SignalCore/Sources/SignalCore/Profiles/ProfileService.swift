@@ -34,11 +34,22 @@ public final class ProfileService: Sendable {
     let account: Account
     let database: SignalDatabase
     let socket: SocketManager
+    /// Where profile avatars come from (CDN0) and go (the local store, encrypted at rest).
+    struct Avatars: Sendable {
+        var http: HTTPClient
+        var cdn0: URL
+        var store: AttachmentStore
+    }
+    let avatars: Avatars?
+    /// Avatars larger than this are not downloaded (upstream caps uploads at 5 MiB).
+    static let maxAvatarBytes = 10 << 20
 
-    public init(account: Account, database: SignalDatabase, socket: SocketManager) {
+    public init(account: Account, database: SignalDatabase, socket: SocketManager, http: HTTPClient? = nil, cdn0: URL? = nil,
+                store: AttachmentStore? = nil) {
         self.account = account
         self.database = database
         self.socket = socket
+        if let http, let cdn0, let store { avatars = Avatars(http: http, cdn0: cdn0, store: store) } else { avatars = nil }
     }
 
     struct Response: Decodable {
@@ -89,7 +100,7 @@ public final class ProfileService: Sendable {
         let capabilities = ((try JSONSerialization.jsonObject(with: body) as? [String: Any])?["capabilities"] as? [String: Any] ?? [:])
             .compactMapValues { $0 as? Bool }
 
-        guard let identityBytes = Data(base64Encoded: r.identityKey), let identity = try? IdentityKey(bytes: identityBytes) else {
+        guard let identityBytes = Data(lenientBase64: r.identityKey), let identity = try? IdentityKey(bytes: identityBytes) else {
             throw ProfileError.invalidResponse("identityKey")
         }
         var profile = Profile(serviceId: serviceId, identityKey: identity, sealedSender: .disabled, capabilities: capabilities)
@@ -108,7 +119,50 @@ public final class ProfileService: Sendable {
 
         let result = profile
         try await database.pool.write { db in try self.store(db, result) }
+        if let url = result.avatarPath, let profileKey { try? await fetchAvatar(serviceId: serviceId, url: url, profileKey: profileKey) }
         return result
+    }
+
+    /// `setAndMaybeFetchProfileAvatar`: download only for accepted chats and people in a group
+    /// with us; keep the stored file while the URL is unchanged; decrypt with the profile key
+    /// (AES-256-GCM) and store encrypted at rest as `profileAvatar` {url, path, localKey, …}.
+    func fetchAvatar(serviceId: String, url: String, profileKey: Data) async throws {
+        guard let avatars else { return }
+        let ourAci = account.aci
+        let decision = try await database.pool.read { db -> (conversationId: String, download: Bool)? in
+            guard let row = try Row.fetchOne(db, sql: "SELECT id, json FROM conversations WHERE serviceId = ? AND type = 'private'", arguments: [serviceId])
+            else { return nil }
+            let id: String = row["id"]
+            let json = try MessageStore.jsonObject(row["json"])
+            if let existing = json["profileAvatar"] as? [String: Any], existing["url"] as? String == url, existing["localKey"] != nil {
+                return (id, false)
+            }
+            let accepted = try ConversationState.isAccepted(db, conversationId: id, ourAci: ourAci, ignoreEmptyConvo: true)
+            if serviceId == ourAci || accepted {
+                return (id, true)
+            }
+            let inGroup = try String.fetchOne(db, sql: """
+                SELECT 1 FROM conversations, json_each(conversations.json, '$.membersV2') AS m
+                WHERE conversations.type = 'group' AND coalesce(json_extract(conversations.json, '$.left'), 0) = 0
+                  AND json_extract(m.value, '$.aci') = ? LIMIT 1
+                """, arguments: [serviceId]) != nil
+            return (id, inGroup)
+        }
+        guard let decision, decision.download else { return }
+        let (_, blob) = try await avatars.http.send("GET", avatars.cdn0.appendingPathComponent(url))
+        guard blob.count <= Self.maxAvatarBytes else { throw ProfileError.invalidResponse("avatar too large") }
+        let image = try SignalCrypto.aes256GCMDecrypt(key: profileKey, blob)
+        let saved = try avatars.store.storeLocally(image)
+        let old = try await database.pool.write { db -> String? in
+            var previous: String?
+            try MessageStore.updateConversationJSON(db, conversationId: decision.conversationId) { json in
+                previous = (json["profileAvatar"] as? [String: Any])?["path"] as? String
+                json["profileAvatar"] = ["url": url, "path": saved.path, "localKey": saved.localKey.base64EncodedString(), "hash": saved.plaintextHash,
+                                         "size": image.count]
+            }
+            return previous
+        }
+        if let old, old != saved.path { try? avatars.store.delete(old) }
     }
 
     /// A member's ExpiringProfileKeyCredential (needed to add them to a group with a
@@ -178,7 +232,9 @@ public final class ProfileService: Sendable {
             }
             json["about"] = p.about
             json["aboutEmoji"] = p.aboutEmoji
-            json["profileAvatar"] = p.avatarPath.map { ["path": $0] }
+            // The CDN path; the downloaded file is `profileAvatar` (fetchAvatar). No avatar: drop it.
+            json["remoteAvatarUrl"] = p.avatarPath
+            if p.avatarPath == nil { json["profileAvatar"] = nil }
             json["sealedSender"] = p.sealedSender.rawValue
             json["capabilities"] = p.capabilities
             json["profileLastFetchedAt"] = now

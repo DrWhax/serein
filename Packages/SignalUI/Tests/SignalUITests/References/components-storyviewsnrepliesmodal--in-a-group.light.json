@@ -1,0 +1,31 @@
+{
+ "id": "components-storyviewsnrepliesmodal--in-a-group",
+ "theme": "light",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  250,
+  250,
+  250,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   820,
+   480,
+   360,
+   400
+  ],
+  [
+   820,
+   480,
+   360,
+   400
+  ]
+ ]
+}

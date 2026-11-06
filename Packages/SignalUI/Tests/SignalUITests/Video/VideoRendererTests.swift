@@ -49,6 +49,71 @@ import Testing
         }
     }
 
+    /// The shader's HDR → SDR path, on the CPU (BT.2020 limited range, HLG or PQ).
+    func expectedHDR(_ y: Double, _ u: Double, _ v: Double, pq: Bool) -> [Double] {
+        let cb = (u - 128) / 255, cr = (v - 128) / 255, l = (y - 16) / 219, k = 255.0 / 224
+        var rgb = [l + 1.4746 * k * cr, l - 0.16455 * k * cb - 0.57135 * k * cr, l + 1.8814 * k * cb].map { min(max($0, 0), 1) }
+        var lin: [Double]
+        if pq {
+            let m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875
+            lin = rgb.map { let e = pow($0, 1 / m2); return pow(max(e - c1, 0) / (c2 - c3 * e), 1 / m1) * 10000 / 203 }
+        } else {
+            let a = 0.17883277, b = 0.28466892, c = 0.55991073
+            let scene = rgb.map { $0 <= 0.5 ? $0 * $0 * 3 / 12 : (exp(($0 - c) / a) + b) / 12 }
+            let ys = 0.2627 * scene[0] + 0.6780 * scene[1] + 0.0593 * scene[2]
+            lin = scene.map { $0 * pow(max(ys, 1e-6), 0.2) * 1000 / 203 }
+        }
+        let lumIn = 0.2627 * lin[0] + 0.6780 * lin[1] + 0.0593 * lin[2]
+        let lumOut = lumIn <= 0.8 ? lumIn : 0.8 + 0.2 * (1 - exp(-(lumIn - 0.8) / 0.2))
+        lin = lin.map { $0 * (lumIn > 0 ? lumOut / lumIn : 0) }
+        let m = [[1.6605, -0.5876, -0.0728], [-0.1246, 1.1329, -0.0083], [-0.0182, -0.1006, 1.1187]]
+        rgb = (0..<3).map { i in pow(min(max(m[i][0] * lin[0] + m[i][1] * lin[1] + m[i][2] * lin[2], 0), 1), 1 / 2.4) }
+        return rgb.map { $0 * 255 }
+    }
+
+    @Test func hdrToSDR() throws {
+        for transfer in [18, 16] {
+            for (yy, u, v) in [(16, 128, 128), (180, 128, 128), (235, 128, 128), (120, 90, 200), (150, 170, 60)] as [(UInt8, UInt8, UInt8)] {
+                var f = uniform(16, 16, y: yy, u: u, v: v, full: false, matrix: 9)
+                f.transfer = transfer
+                let px = try render(f, rotation: 0, width: 16, height: 16)
+                let e = expectedHDR(Double(yy), Double(u), Double(v), pq: transfer == 16)
+                for c in 0 ..< 3 { #expect(abs(Double(px[8 * 64 + 32 + c]) - e[c]) <= 2.5, "transfer \(transfer) Y \(yy) U \(u) V \(v): \(px[8 * 64 + 32 ..< 8 * 64 + 35]) vs \(e)") }
+            }
+        }
+        // HLG reference white (75 %) is shown near SDR white, black stays black.
+        var white = uniform(16, 16, y: 180, u: 128, v: 128, full: false, matrix: 9)
+        white.transfer = 18
+        #expect(try render(white, rotation: 0, width: 16, height: 16)[8 * 64 + 32] >= 240)
+        #expect(VideoRenderer.colour(matrix: 9, transfer: 18, height: 1080) == .hlg && VideoRenderer.colour(matrix: 1, transfer: 1, height: 1080) == .bt709)
+    }
+
+    /// 10-bit planes (two bytes per sample) render as their 8-bit equivalent (code / 4), for SDR
+    /// and HDR transfers, and keep the in-between steps 8-bit cannot hold.
+    @Test func tenBitPlanes() throws {
+        func le(_ v: Int, _ n: Int) -> [UInt8] { (0..<n).flatMap { _ in [UInt8(v & 0xFF), UInt8(v >> 8)] } }
+        func deep(_ y: Int, _ u: Int, _ v: Int, transfer: Int) -> VideoPlanes {
+            VideoPlanes(width: 16, height: 16, y: le(y, 256), u: le(u, 64), v: le(v, 64), fullRange: false, matrix: 9, time: 0, transfer: transfer, bitDepth: 10)
+        }
+        for transfer in [1, 18, 16] {
+            for (yy, u, v) in [(16, 128, 128), (180, 128, 128), (235, 128, 128), (120, 90, 200)] as [(UInt8, UInt8, UInt8)] {
+                var eight = uniform(16, 16, y: yy, u: u, v: v, full: false, matrix: 9)
+                eight.transfer = transfer
+                let a = try render(eight, rotation: 0, width: 16, height: 16)
+                let b = try render(deep(Int(yy) * 4, Int(u) * 4, Int(v) * 4, transfer: transfer), rotation: 0, width: 16, height: 16)
+                for c in 0 ..< 3 { #expect(abs(Int(a[8 * 64 + 32 + c]) - Int(b[8 * 64 + 32 + c])) <= 1, "transfer \(transfer) Y \(yy): \(a[8 * 64 + 32 + c]) vs \(b[8 * 64 + 32 + c])") }
+            }
+        }
+        // Halfway between two 8-bit greys (HLG, where steps are coarse): between their renders.
+        var lo = uniform(16, 16, y: 150, u: 128, v: 128, full: false, matrix: 9), hi = uniform(16, 16, y: 151, u: 128, v: 128, full: false, matrix: 9)
+        lo.transfer = 18
+        hi.transfer = 18
+        let mid = try render(deep(602, 512, 512, transfer: 18), rotation: 0, width: 16, height: 16)[8 * 64 + 32]
+        #expect(try render(lo, rotation: 0, width: 16, height: 16)[8 * 64 + 32] <= mid && mid <= (try render(hi, rotation: 0, width: 16, height: 16)[8 * 64 + 32]))
+        // Two bytes per sample are required.
+        #expect(!VideoPlanes(width: 16, height: 16, y: le(64, 128), u: le(512, 64), v: le(512, 64), fullRange: false, matrix: 9, time: 0, bitDepth: 10).isValid)
+    }
+
     /// Quadrants of different grey (TL 40, TR 100, BL 160, BR 220) rotated and letterboxed.
     @Test(arguments: [0, 90, 180, 270])
     func rotationAndFit(rotation: Int) throws {

@@ -58,6 +58,11 @@ public struct LeftPaneContext {
     public var removeSelectedContact: (String) -> Void = { _ in }
     public var startSettingGroupMetadata: () -> Void = {}
     public var createGroup: () -> Void = {}
+    /// The More actions menu: chat folder settings (add a folder, or edit them), and the
+    /// notification profile submenu's items.
+    public var onChatFoldersOpenSettings: () -> Void = {}
+    public var hasAnyCurrentCustomChatFolders = false
+    public var renderNotificationProfilesMenu: () -> AnyView = { AnyView(EmptyView()) }
     public init(i18n: Localizer) { self.i18n = i18n }
 }
 
@@ -162,7 +167,7 @@ public struct LeftPane: View {
                    savePreferredLeftPaneWidth: savePreferredLeftPaneWidth, otherTabsUnreadCount: otherTabsUnreadCount) {
             AxoIconButton.Root(label: i18n("icu:newConversation"), variant: .impliedSecondary, size: .sm, symbol: "compose",
                                action: context.startComposing)
-            AxoIconButton.Root(label: i18n("icu:LeftPane__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more")
+            LeftPaneMoreActions(context: context)
         } content: {
             LeftPaneContent(helper: helper, context: context, dialogs: dialogs, listActions: listActions)
         }
@@ -215,5 +220,29 @@ struct LeftPaneEmptyView<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         VStack(spacing: 12) { content }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+
+/// The header's ⋯ (LeftPane.dom.tsx): archived chats, chat folders, notification profile.
+struct LeftPaneMoreActions: View {
+    let context: LeftPaneContext
+    @State private var open = false
+    @Environment(\.i18n) var i18n
+
+    var body: some View {
+        AxoDropdownMenu.Root(isOpen: $open) {
+            AxoIconButton.Root(label: i18n("icu:LeftPane__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more") {}
+        } items: {
+            AxoDropdownMenu.Item(i18n("icu:avatarMenuViewArchive"), symbol: "archive", action: context.showArchivedConversations)
+            if context.hasAnyCurrentCustomChatFolders {
+                AxoDropdownMenu.Item(i18n("icu:LeftPane__MoreActionsMenu__FolderSettings"), symbol: "folder-settings", action: context.onChatFoldersOpenSettings)
+            } else {
+                AxoDropdownMenu.Item(i18n("icu:LeftPane__MoreActionsMenu__AddChatFolder"), symbol: "folder-plus", action: context.onChatFoldersOpenSettings)
+            }
+            AxoDropdownMenu.Sub(AxoDropdownMenu.SubTrigger(i18n("icu:NotificationProfileMenuItem"), symbol: "moon")) {
+                context.renderNotificationProfilesMenu()
+            }
+        }
     }
 }

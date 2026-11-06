@@ -104,6 +104,11 @@ const summarizeSync = (sync) => {
       body: c.sent.message?.body ?? null,
       sticker: c.sent.message?.sticker ? { packId: Buffer.from(c.sent.message.sticker.packId).toString('hex'), stickerId: c.sent.message.sticker.stickerId } : null,
       unidentified: (c.sent.unidentifiedStatus ?? []).map((u) => u.unidentified === true),
+      storyText: c.sent.storyMessage?.attachment?.textAttachment?.text ?? null,
+      storyRecipients: (c.sent.storyMessageRecipients ?? []).map((r) => ({
+        serviceId: aciFromBinary(r.destinationServiceIdBinary) ?? r.destinationServiceId, lists: r.distributionListIds ?? [],
+        isAllowedToReply: r.isAllowedToReply === true })),
+      storyContext: c.sent.message?.storyContext ? Number(c.sent.message.storyContext.sentTimestamp) : null,
     };
   }
   if (c.request) out.requestType = c.request.type;
@@ -136,6 +141,9 @@ function buildDataMessage(spec, timestamp) {
   if (spec.pinMessage) m.pinMessage = { targetAuthorAciBinary: aciBin(spec.pinMessage.targetAuthor), targetSentTimestamp: T(spec.pinMessage.targetSentTimestamp),
     pinDuration: spec.pinMessage.seconds ? { pinDurationSeconds: spec.pinMessage.seconds } : { pinDurationForever: true } };
   if (spec.unpinMessage) m.unpinMessage = { targetAuthorAciBinary: aciBin(spec.unpinMessage.targetAuthor), targetSentTimestamp: T(spec.unpinMessage.targetSentTimestamp) };
+  if (spec.quote) m.quote = { id: T(spec.quote.id), authorAci: null, authorAciBinary: aciBin(spec.quote.author), text: spec.quote.text ?? null,
+    attachments: (spec.quote.attachments ?? []).map((a) => ({ contentType: a.contentType ?? null, fileName: a.fileName ?? null, thumbnail: null })),
+    bodyRanges: [], type: 0 };
   if (spec.isViewOnce) m.isViewOnce = true;
   if (spec.expireTimer != null) { m.expireTimer = spec.expireTimer; m.expireTimerVersion = spec.expireTimerVersion ?? 1; }
   if (spec.flags != null) m.flags = spec.flags;
@@ -151,6 +159,8 @@ const summarizeData = (d) => ({
   pollTerminate: d.pollTerminate ? { targetSentTimestamp: Number(d.pollTerminate.targetSentTimestamp) } : null,
   pinMessage: d.pinMessage ? { targetSentTimestamp: Number(d.pinMessage.targetSentTimestamp) } : null,
   unpinMessage: d.unpinMessage ? { targetSentTimestamp: Number(d.unpinMessage.targetSentTimestamp) } : null,
+  quote: d.quote ? { id: Number(d.quote.id), author: aciFromBinary(d.quote.authorAciBinary), text: d.quote.text ?? null,
+    attachments: (d.quote.attachments ?? []).map((a) => ({ contentType: a.contentType ?? null, fileName: a.fileName ?? null, hasThumbnail: !!a.thumbnail })) } : null,
   isViewOnce: !!d.isViewOnce, expireTimer: d.expireTimer ?? null, expireTimerVersion: d.expireTimerVersion ?? null, flags: d.flags ?? null,
 });
 const account = (name) => {
@@ -456,6 +466,33 @@ const commands = {
         fileName: a.fileName ?? null, width: a.width ?? null, height: a.height ?? null, blurHash: a.blurHash ?? null,
       })),
     };
+  },
+  // A text story from a contact (1:1, or to a group the harness knows).
+  async sendStory({ from = 'alice', text, timestamp, allowsReplies = true, color = 4285041620, groupId }) {
+    const sender = account(from);
+    const group = groupId ? groups.get(groupId) : null;
+    const storyMessage = {
+      profileKey: sender.profileKey.serialize(),
+      group: group ? { masterKey: group.masterKey, revision: group.revision, groupChange: null } : null,
+      attachment: { textAttachment: { text, textStyle: 1, textForegroundColor: null, textBackgroundColor: null, preview: null, background: { color } } },
+      allowsReplies, bodyRanges: [],
+    };
+    await sender.sendRaw(needDesktop(), wrap({ storyMessage }), { timestamp });
+    return {};
+  },
+  async waitForStory({ account: name = 'alice', timeout = 15000 }) {
+    const e = await withTimeout(account(name).waitForStory(), timeout, `story to ${name}`);
+    const t = e.storyMessage.attachment?.textAttachment;
+    return { text: t?.text ?? null, color: t?.background?.color ?? null, allowsReplies: e.storyMessage.allowsReplies === true,
+      hasGroup: e.storyMessage.group != null, hasFile: e.storyMessage.attachment?.fileAttachment != null, envelopeType: e.envelopeType,
+      source: e.source?.aci ?? null };
+  },
+  // A reply to one of our stories (storyContext), optionally a reaction.
+  async sendStoryReply({ from = 'alice', storyAuthor, storyTimestamp, text = '', emoji, timestamp }) {
+    const message = { ...dataMessage(text, timestamp), storyContext: { authorAci: null, authorAciBinary: aciBin(storyAuthor), sentTimestamp: BigInt(storyTimestamp) } };
+    if (emoji) message.reaction = { emoji, remove: false, targetAuthorAci: null, targetAuthorAciBinary: aciBin(storyAuthor), targetSentTimestamp: BigInt(storyTimestamp) };
+    await account(from).sendRaw(needDesktop(), wrap({ dataMessage: message }), { timestamp });
+    return {};
   },
   async waitForReceipt({ account: name, timeout = 15000 }) {
     const e = await withTimeout(account(name).waitForReceipt(), timeout, `receipt to ${name}`);

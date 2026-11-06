@@ -52,8 +52,8 @@ public final class Messenger: Sendable {
     /// Queues a message with attachments: each is encrypted at rest now (with its dimensions
     /// and blurhash from the media service for images) and uploaded by the send job.
     @discardableResult
-    public func sendMessage(_ body: String, attachments outgoing: [OutgoingAttachment], preview: LinkPreviewDraft? = nil, to serviceId: String,
-                            timestamp: UInt64? = nil) async throws
+    public func sendMessage(_ body: String, attachments outgoing: [OutgoingAttachment], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
+                            to serviceId: String, timestamp: UInt64? = nil) async throws
         -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -66,6 +66,7 @@ public final class Messenger: Sendable {
         }
         let prepared = preparing
         let previewImage = try await preparePreviewImage(preview)
+        let quoteThumbnail = await prepareQuoteThumbnail(quoting)
         let id = try await database.pool.write { db -> String in
             let conversationId = try MessageStore.privateConversation(db, serviceId: serviceId)
             // `maybeApplyUniversalTimer`: a new chat starts with the universal timer.
@@ -78,7 +79,8 @@ public final class Messenger: Sendable {
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: conversationId, type: "outgoing", body: body, sentAt: sentAt, source: self.account.aci,
                 sourceDevice: self.account.deviceId, serverGuid: nil, serverTimestamp: nil, unidentified: false,
-                extra: ["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]]))
+                extra: try Self.outgoingExtra(db, ["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]],
+                                              quoting: quoting, ourAci: self.account.aci)))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
                 for (i, a) in prepared.enumerated() {
@@ -88,6 +90,7 @@ public final class Messenger: Sendable {
                 try MessageAttachments.updateMessageFlags(db, messageId: messageId)
             }
             if let preview { try Self.storeOutgoingPreview(db, messageId: messageId, conversationId: conversationId, sentAt: Int64(sentAt), preview, previewImage) }
+            try Self.storeQuoteThumbnail(db, quoteThumbnail, messageId: messageId, conversationId: conversationId, sentAt: sentAt)
             try MessageStore.setProfileSharing(db, conversationId: conversationId)
             try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: ConversationJob.normalMessage(conversationId: conversationId, messageId: messageId))
             return messageId
@@ -162,8 +165,8 @@ public final class Messenger: Sendable {
 
     /// Queues a message to a Groups v2 conversation (members from the stored group state).
     @discardableResult
-    public func sendGroupMessage(_ body: String, attachments outgoing: [OutgoingAttachment] = [], preview: LinkPreviewDraft? = nil, masterKey: Data,
-                                 timestamp: UInt64? = nil)
+    public func sendGroupMessage(_ body: String, attachments outgoing: [OutgoingAttachment] = [], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
+                                 masterKey: Data, timestamp: UInt64? = nil)
         async throws -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -176,6 +179,7 @@ public final class Messenger: Sendable {
         }
         let prepared = preparing
         let previewImage = try await preparePreviewImage(preview)
+        let quoteThumbnail = await prepareQuoteThumbnail(quoting)
         let keys = try GroupKeys(masterKey: masterKey)
         let ourAci = account.aci
         let id = try await database.pool.write { db -> String in
@@ -187,7 +191,8 @@ public final class Messenger: Sendable {
             }
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: group.conversationId, type: "outgoing", body: body, sentAt: sentAt, source: ourAci, sourceDevice: self.account.deviceId,
-                serverGuid: nil, serverTimestamp: nil, unidentified: false, extra: ["sendStateByConversationId": states]))
+                serverGuid: nil, serverTimestamp: nil, unidentified: false,
+                extra: try Self.outgoingExtra(db, ["sendStateByConversationId": states], quoting: quoting, ourAci: ourAci)))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
                 for (i, a) in prepared.enumerated() {
@@ -199,6 +204,7 @@ public final class Messenger: Sendable {
             if let preview {
                 try Self.storeOutgoingPreview(db, messageId: messageId, conversationId: group.conversationId, sentAt: Int64(sentAt), preview, previewImage)
             }
+            try Self.storeQuoteThumbnail(db, quoteThumbnail, messageId: messageId, conversationId: group.conversationId, sentAt: sentAt)
             try JobQueue.insert(db, queueType: ConversationJob.queueType,
                                 payload: ConversationJob.normalMessage(conversationId: group.conversationId, messageId: messageId))
             return messageId
@@ -226,6 +232,7 @@ public final class Messenger: Sendable {
         if let sticker = try await uploadSticker(messageId: messageId) { data.sticker = sticker }
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }
+        if let quote = try await quoteProto(messageId: messageId) { data.quote = quote }
         try await stampTimer(&data, messageId: messageId)
         var content = Signalservice_Content()
         content.dataMessage = data
@@ -278,6 +285,7 @@ public final class Messenger: Sendable {
         if let sticker = try await uploadSticker(messageId: messageId) { data.sticker = sticker }
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }
+        if let quote = try await quoteProto(messageId: messageId) { data.quote = quote }
         try await stampTimer(&data, messageId: messageId)
         var content = Signalservice_Content()
         content.dataMessage = data
@@ -290,7 +298,13 @@ public final class Messenger: Sendable {
         try await database.pool.write { db in
             try MessageStore.markSent(db, messageId: messageId, conversationId: conversationId, unidentified: result.sealed ? [serviceId] : [])
         }
-        try await sendTranscript(data, destination: serviceId, timestamp: sentAt, sealed: result.sealed, messageId: messageId)
+        // The recipient has it: a failed transcript to our other devices must not fail (and
+        // resend) the message. Upstream logs it; the devices catch up from storage and receipts.
+        do {
+            try await sendTranscript(data, destination: serviceId, timestamp: sentAt, sealed: result.sealed, messageId: messageId)
+        } catch {
+            SignalClient.diagnose("sync transcript failed: \(String(describing: error).prefix(120))")
+        }
     }
 
     /// `uploadAttachment` for every attachment of an outgoing message that has no usable CDN

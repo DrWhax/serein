@@ -13,6 +13,9 @@ public struct Checkbox: View {
     let name: String
     let onChange: (Bool) -> Void
     let onClick: (() -> Void)?
+    /// A custom render (StoriesSettingsModal's CheckboxRender): the description in body-1
+    /// gray-60 / gray-25 at the end of the label's row instead of under it.
+    var descriptionBeside = false
 
     public init(label: String, description: String? = nil, name: String, checked: Bool = false, disabled: Bool = false, isRadio: Bool = false,
                 onChange: @escaping (Bool) -> Void, onClick: (() -> Void)? = nil) {
@@ -24,6 +27,13 @@ public struct Checkbox: View {
         self.isRadio = isRadio
         self.onChange = onChange
         self.onClick = onClick
+    }
+
+    /// `descriptionBeside`
+    public func descriptionBeside(_ value: Bool = true) -> Checkbox {
+        var copy = self
+        copy.descriptionBeside = value
+        return copy
     }
 
     func toggle() {
@@ -38,9 +48,23 @@ public struct Checkbox: View {
         HStack(alignment: .center, spacing: 20) {
             NativeCheckbox(checked: checked, disabled: disabled, isRadio: isRadio, toggle: toggle)
             // <label>: the label, then .Checkbox__description (font-subtitle, label-secondary)
-            VStack(alignment: .leading, spacing: 0) {
-                CSSText(label, type: .bodyLarge)
-                CSSText(description ?? "", style: LegacyType.subtitle(), color: .labelSecondary)
+            Group {
+                if descriptionBeside {
+                    HStack(alignment: .center, spacing: 0) {
+                        CSSText(label, type: .bodyLarge)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.trailing, 8)
+                        if let description {
+                            CSSText(description, style: LegacyType.body1(), wrap: .nowrap,
+                                    color: AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray25))
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        CSSText(label, type: .bodyLarge)
+                        CSSText(description ?? "", style: LegacyType.subtitle(), color: .labelSecondary)
+                    }
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { toggle() }

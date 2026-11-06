@@ -18,12 +18,16 @@ public enum FunMetrics {
 /// `.FunPopover__Dialog`
 public struct FunPopoverDialog<Content: View>: View {
     let content: Content
+    @Environment(\.axoStaticRendering) var staticRendering
     public init(@ViewBuilder content: () -> Content) { self.content = content() }
     static var shadow: [AxoShadowLayer] { [AxoShadowLayer(inset: false, x: 0, y: 8, blur: 20, spread: 0, color: LegacyColor.blackAlpha30)] }
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: 8)
         content
+            // `$Fun__BgColor` (material-dialog, 90%) over `backdrop-filter: blur(12px)`: a
+            // material blurs what is behind (a uniform page in snapshots, so none there).
             .background(shape.fill(AxoColor.materialDialog))
+            .background { if !staticRendering { shape.fill(.ultraThinMaterial) } }
             .clipShape(shape)
             .cssBoxShadow(Self.shadow, in: shape)
     }
@@ -178,13 +182,17 @@ struct FunGridHeader<Trailing: View>: View {
         self.trailing = trailing()
     }
     var body: some View {
+        // `contain: strict`: a fixed 28px row; a long title wraps inside it and is clipped, it
+        // never widens the grid.
         HStack(spacing: 0) {
-            CSSText(title, style: LegacyType.body2(weight: 600), wrap: .nowrap, color: .labelSecondary)
+            CSSText(title, style: LegacyType.body2(weight: 600), color: .labelSecondary)
                 .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             trailing
         }
-        .frame(height: 28)
+        .frame(height: 28, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .clipped()
         .accessibilityAddTraits(.isHeader)
     }
 }

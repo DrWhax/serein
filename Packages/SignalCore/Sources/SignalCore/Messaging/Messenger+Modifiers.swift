@@ -126,6 +126,39 @@ extension Messenger {
         try await queueModifier(t, data: data, local: [admin ? .adminDelete : .delete: Data()])
     }
 
+    /// `getMessagesCanDeleteForEveryone`: whether every one of `messageIds` can be deleted for
+    /// everyone — ours, actually sent to someone, within the age limit; or, as a group admin,
+    /// anyone's within the admin limit (`needsAdminDelete`). `isDeletingOwnMessages`: all ours.
+    public func canDeleteForEveryone(_ messageIds: [String]) async throws -> (canDeleteForEveryone: Bool, needsAdminDelete: Bool, isDeletingOwnMessages: Bool) {
+        let ourAci = account.aci
+        return try await database.pool.read { db in
+            var can = !messageIds.isEmpty, admin = false, own = true
+            for id in messageIds {
+                guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, type, sent_at, sourceServiceId, json FROM messages WHERE id = ?",
+                                                 arguments: [id]) else { return (false, false, false) }
+                let json = (try? MessageStore.jsonObject(row["json"] ?? "{}")) ?? [:]
+                let outgoing = (row["type"] as String?) == "outgoing"
+                if !outgoing { own = false }
+                if json["deletedForEveryone"] as? Bool == true { can = false; continue }
+                let sentAt: Int64 = row["sent_at"] ?? 0
+                let age = abs(MessageStore.now() - ((json["serverTimestamp"] as? NSNumber)?.int64Value ?? sentAt))
+                if outgoing {
+                    let states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+                    let sent = states.values.contains { ($0["status"] as? String).flatMap(SendStatus.init(rawValue:)).map { $0.rank >= SendStatus.sent.rank } ?? false }
+                    let limit = try MessageModifiers.deleteMaxAge(db, admin: false)
+                    if !sent || age > limit { can = false }
+                } else {
+                    let conversationId: String = row["conversationId"]
+                    let limit = try MessageModifiers.deleteMaxAge(db, admin: true)
+                    guard let g = try GroupStore.load(db, conversationId: conversationId), g.state?.isAdmin(ourAci) == true, age <= limit
+                    else { can = false; continue }
+                    admin = true
+                }
+            }
+            return (can, can && admin, own)
+        }
+    }
+
     /// `deleteForMe`: removes the messages here and tells our other devices.
     public func deleteForMe(_ messageIds: [String]) async throws {
         let ourAci = account.aci

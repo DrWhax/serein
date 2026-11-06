@@ -17,11 +17,15 @@ public enum ReactionPickerPickerStyle: Sendable { case picker, menu }
 public struct ReactionPickerPicker<Content: View>: View {
     let isSomethingSelected: Bool
     let pickerStyle: ReactionPickerPickerStyle
+    /// Laid into a panel (StoryViewsNRepliesModal): no background, border or shadow, and the
+    /// buttons spread over the full width (`justify-content: space-between`).
+    let embedded: Bool
     let content: Content
 
-    public init(isSomethingSelected: Bool, pickerStyle: ReactionPickerPickerStyle, @ViewBuilder content: () -> Content) {
+    public init(isSomethingSelected: Bool, pickerStyle: ReactionPickerPickerStyle, embedded: Bool = false, @ViewBuilder content: () -> Content) {
         self.isSomethingSelected = isSomethingSelected
         self.pickerStyle = pickerStyle
+        self.embedded = embedded
         self.content = content()
     }
 
@@ -31,6 +35,18 @@ public struct ReactionPickerPicker<Content: View>: View {
     ] }
 
     public var body: some View {
+        if embedded {
+            SpaceBetweenRow { content }
+                .padding(.vertical, 3)
+                .padding(.horizontal, 7)
+                .environment(\.reactionPickerStyle, pickerStyle)
+                .environment(\.reactionPickerSomethingSelected, isSomethingSelected)
+        } else {
+            bar
+        }
+    }
+
+    var bar: some View {
         HStack(spacing: 0) { content }
             .padding(.vertical, 3)
             .padding(.horizontal, 7)
@@ -114,12 +130,20 @@ public struct ReactionPickerPickerEmojiButton: View {
 }
 
 public struct ReactionPicker: View {
+    /// `embedded`: see `ReactionPickerPicker`.
+    public func embedded(_ value: Bool = true) -> ReactionPicker {
+        var copy = self
+        copy.embedded = value
+        return copy
+    }
+
     let preferredReactionEmoji: [String]
     let selected: String?
     let autoFocus: Bool
     let onPick: (String) -> Void
     let onMore: () -> Void
     let onClose: (() -> Void)?
+    var embedded = false
     @State private var moreHovered = false
     @Environment(\.i18n) var i18n
 
@@ -138,7 +162,7 @@ public struct ReactionPicker: View {
 
     public var body: some View {
         let otherSelected = selected.map { !preferredReactionEmoji.contains($0) } ?? false
-        ReactionPickerPicker(isSomethingSelected: selected != nil, pickerStyle: .picker) {
+        ReactionPickerPicker(isSomethingSelected: selected != nil, pickerStyle: .picker, embedded: embedded) {
             ForEach(Array(preferredReactionEmoji.enumerated()), id: \.offset) { index, emoji in
                 ReactionPickerPickerEmojiButton(emoji: emoji, isSelected: emoji == selected, autoFocus: autoFocus && index == 0) { onPick(emoji) }
             }
@@ -162,6 +186,27 @@ public struct ReactionPicker: View {
             guard let onClose else { return .ignored }
             onClose()
             return .handled
+        }
+    }
+}
+
+/// A row whose items keep their size and share the free width between them
+/// (`display: flex; justify-content: space-between`).
+struct SpaceBetweenRow: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let natural = sizes.reduce(0) { $0 + $1.width }
+        return CGSize(width: proposal.width ?? natural, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let free = max(0, bounds.width - sizes.reduce(0) { $0 + $1.width })
+        let gap = subviews.count > 1 ? free / CGFloat(subviews.count - 1) : 0
+        var x = bounds.minX
+        for (s, size) in zip(subviews, sizes) {
+            s.place(at: CGPoint(x: x, y: bounds.midY - size.height / 2), proposal: ProposedViewSize(size))
+            x += size.width + gap
         }
     }
 }

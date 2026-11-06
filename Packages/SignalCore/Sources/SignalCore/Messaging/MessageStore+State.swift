@@ -65,6 +65,10 @@ extension MessageStore {
     static func markFailed(_ db: Database, messageId: String, error: String) throws {
         try updateJSON(db, messageId: messageId) { json in
             guard let conversationId = json["conversationId"] as? String else { return }
+            // Only recipients still pending fail: one that already got it stays Sent (or better).
+            let current = ((json["sendStateByConversationId"] as? [String: [String: Any]])?[conversationId]?["status"] as? String)
+                .flatMap(SendStatus.init(rawValue:))
+            guard current == nil || current == .pending || current == .failed else { return }
             setSendStatus(&json, conversationId: conversationId, .failed, force: true)
             json["errors"] = [["name": "SendError", "message": error]]
         }

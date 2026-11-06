@@ -29,6 +29,8 @@ public struct EditConversationAttributesModal: View {
     @State private var rawDescription: String
     @State private var editingAvatar = false
     @State private var avatar: AvatarData?
+    /// Decodes a picked photo (the app's media service); nil leaves the photo button inert.
+    var loadPhoto: ((URL) async -> RGBAImage?)?
     @State private var hasAvatarChanged = false
     @Environment(\.i18n) var i18n
 
@@ -96,6 +98,16 @@ public struct EditConversationAttributesModal: View {
                         hasAvatarChanged = true
                         editingAvatar = false
                     }
+                    if let loadPhoto {
+                        c.onPhotoPicked = { url in
+                            Task { @MainActor in
+                                guard let image = await loadPhoto(url) else { return }
+                                avatar = AvatarData(id: url.path, image: image)
+                                hasAvatarChanged = true
+                                editingAvatar = false
+                            }
+                        }
+                    }
                     return c
                 }())
             } else {
@@ -108,5 +120,14 @@ public struct EditConversationAttributesModal: View {
                 }
             }
         }
+    }
+}
+
+extension EditConversationAttributesModal {
+    /// With photo upload: `load` decodes the picked file for the preview.
+    public func photoLoader(_ load: @escaping (URL) async -> RGBAImage?) -> EditConversationAttributesModal {
+        var c = self
+        c.loadPhoto = load
+        return c
     }
 }

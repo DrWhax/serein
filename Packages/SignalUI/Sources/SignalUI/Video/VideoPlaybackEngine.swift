@@ -22,7 +22,8 @@ extension VideoFrameSource {
 @MainActor
 @Observable
 public final class VideoPlaybackEngine {
-    public static let queueTarget = 6
+    /// Frames kept queued: enough to ride out a slow (intra) picture at 30 fps.
+    public static let queueTarget = 12
     public static let batch = 4
 
     public private(set) var isPlaying = false
@@ -58,6 +59,8 @@ public final class VideoPlaybackEngine {
     @ObservationIgnored var anchorMedia = 0.0
     @ObservationIgnored var audioActive = false
     @ObservationIgnored var driver: Task<Void, Never>?
+    /// Refills the queue alongside the driver, so presenting never waits for a fetch.
+    @ObservationIgnored var prefetcher: Task<Void, Never>?
 
     /// `audio`: the engine playing the video's sound (loaded by the caller), the master clock.
     /// `now`/`autoDrive: false` let tests step the engine by hand.
@@ -128,6 +131,8 @@ public final class VideoPlaybackEngine {
         isPlaying = false
         driver?.cancel()
         driver = nil
+        prefetcher?.cancel()
+        prefetcher = nil
         if audioActive { audio?.pause() }
         audioActive = false
     }
@@ -196,7 +201,8 @@ public final class VideoPlaybackEngine {
         let gen = generation
         let t = mediaTime
         present(at: t)
-        if queue.count < Self.queueTarget && !sourceEnded { await fill(gen) }
+        // Driven by hand (tests): refill inline. Auto-driven: the prefetcher refills.
+        if !autoDrive && queue.count < Self.queueTarget && !sourceEnded { await fill(gen) }
         guard gen == generation, isPlaying else { return nil }
         // The last frame stays up until the duration (at most a second past it).
         let last = currentFrame?.time ?? 0
@@ -252,6 +258,17 @@ public final class VideoPlaybackEngine {
     }
 
     func startDriver() {
+        prefetcher?.cancel()
+        prefetcher = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.isPlaying else { return }
+                if self.queue.count < Self.queueTarget && !self.sourceEnded && !self.fetching {
+                    await self.fetch(self.generation)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(4))
+                }
+            }
+        }
         driver?.cancel()
         driver = Task { @MainActor [weak self] in
             while !Task.isCancelled {

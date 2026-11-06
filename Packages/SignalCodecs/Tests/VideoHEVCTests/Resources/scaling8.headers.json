@@ -1,0 +1,97 @@
+{
+"pps": [
+{
+"cu_qp_delta_enabled_flag": 1,
+"entropy_coding_sync_enabled_flag": 0,
+"init_qp_minus26": 0,
+"sign_data_hiding_enabled_flag": 1,
+"tiles_enabled_flag": 0,
+"transform_skip_enabled_flag": 0,
+"weighted_bipred_flag": 0,
+"weighted_pred_flag": 1
+}
+],
+"slices": [
+{
+"data_offset_bits_at_least": 34,
+"nal_unit_type": 20,
+"slice_qp_delta": 8,
+"slice_sao_luma_flag": 1,
+"slice_type": 2
+},
+{
+"data_offset_bits_at_least": 65,
+"five_minus_max_num_merge_cand": 2,
+"luma_log2_weight_denom": 7,
+"nal_unit_type": 1,
+"slice_pic_order_cnt_lsb": 2,
+"slice_qp_delta": 8,
+"slice_sao_luma_flag": 1,
+"slice_temporal_mvp_enabled_flag": 1,
+"slice_type": 1
+},
+{
+"data_offset_bits_at_least": 57,
+"five_minus_max_num_merge_cand": 2,
+"nal_unit_type": 0,
+"slice_pic_order_cnt_lsb": 1,
+"slice_qp_delta": 10,
+"slice_sao_luma_flag": 1,
+"slice_temporal_mvp_enabled_flag": 1,
+"slice_type": 0
+},
+{
+"collocated_ref_idx": 0,
+"data_offset_bits_at_least": 75,
+"five_minus_max_num_merge_cand": 2,
+"luma_log2_weight_denom": 7,
+"nal_unit_type": 1,
+"num_ref_idx_l0_active_minus1": 1,
+"slice_pic_order_cnt_lsb": 5,
+"slice_qp_delta": 8,
+"slice_sao_luma_flag": 1,
+"slice_temporal_mvp_enabled_flag": 1,
+"slice_type": 1
+},
+{
+"data_offset_bits_at_least": 67,
+"five_minus_max_num_merge_cand": 2,
+"nal_unit_type": 1,
+"num_ref_idx_l0_active_minus1": 1,
+"num_ref_idx_l1_active_minus1": 0,
+"slice_pic_order_cnt_lsb": 4,
+"slice_qp_delta": 9,
+"slice_sao_luma_flag": 1,
+"slice_temporal_mvp_enabled_flag": 1,
+"slice_type": 0
+},
+{
+"collocated_ref_idx": 0,
+"data_offset_bits_at_least": 70,
+"five_minus_max_num_merge_cand": 2,
+"nal_unit_type": 0,
+"num_ref_idx_l0_active_minus1": 1,
+"num_ref_idx_l1_active_minus1": 1,
+"slice_pic_order_cnt_lsb": 3,
+"slice_qp_delta": 10,
+"slice_sao_luma_flag": 1,
+"slice_temporal_mvp_enabled_flag": 1,
+"slice_type": 0
+}
+],
+"sps": [
+{
+"amp_enabled_flag": 0,
+"bit_depth_luma_minus8": 0,
+"log2_diff_max_min_luma_coding_block_size": 3,
+"log2_max_pic_order_cnt_lsb_minus4": 4,
+"log2_min_luma_coding_block_size_minus3": 0,
+"num_short_term_ref_pic_sets": 0,
+"pic_height_in_luma_samples": 64,
+"pic_width_in_luma_samples": 64,
+"sample_adaptive_offset_enabled_flag": 1,
+"scaling_list_enabled_flag": 1,
+"sps_temporal_mvp_enabled_flag": 1
+}
+]
+}

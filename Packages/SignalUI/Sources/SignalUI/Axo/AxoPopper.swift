@@ -200,9 +200,13 @@ extension View {
                           @ViewBuilder content: () -> some View) -> some View {
         let view = AnyView(content())
         let flippedView = hasFlipped ? AnyView(flipped()) : nil
-        return anchorPreference(key: AxoPopper.EntriesKey.self, value: .bounds) { anchor in
-            isPresented ? [AxoPopper.Entry(id: id, anchor: anchor, placement: placement, content: view, flipped: flippedView, arrow: arrow,
-                                           dismiss: dismiss)] : []
+        // transform, not set: a popper nested inside this one's trigger (a tooltip on a menu's
+        // button) keeps its entry.
+        return transformAnchorPreference(key: AxoPopper.EntriesKey.self, value: .bounds) { entries, anchor in
+            if isPresented {
+                entries.append(AxoPopper.Entry(id: id, anchor: anchor, placement: placement, content: view, flipped: flippedView, arrow: arrow,
+                                               dismiss: dismiss))
+            }
         }
     }
 
@@ -244,6 +248,11 @@ extension AxoPopper {
                             }
                         }
                     }
+                }
+                // Poppers declared inside popper content (a menu's submenu) are collected by a
+                // nested layer: this layer's own preferences never reach the host above.
+                .overlayPreferenceValue(AxoPopper.EntriesKey.self) { nested in
+                    if !nested.isEmpty { AnyView(Layer(entries: nested)) }
                 }
             }
         }

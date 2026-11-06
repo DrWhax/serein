@@ -282,7 +282,7 @@ public enum AxoDropdownMenu {
 /// Closes the open menu (Radix closes on item select).
 public struct AxoMenuAction: Sendable {
     var run: @Sendable @MainActor () -> Void = {}
-    @MainActor func callAsFunction() { run() }
+    @MainActor public func callAsFunction() { run() }
 }
 
 public struct AxoMenuRadio: Sendable {
@@ -292,5 +292,5 @@ public struct AxoMenuRadio: Sendable {
 
 extension EnvironmentValues {
     @Entry var axoMenuRadio = AxoMenuRadio(value: nil)
-    @Entry var axoMenuClose = AxoMenuAction()
+    @Entry public var axoMenuClose = AxoMenuAction()
 }

@@ -13,6 +13,7 @@ let package = Package(
         .package(path: "../../Packages/SignalI18n"),
         .package(path: "../../Packages/SignalCore"),
         .package(path: "../../Packages/SignalRingRTC"),
+        .package(path: "../../Packages/SignalMediaService"),
     ],
     targets: [
         .executableTarget(
@@ -22,6 +23,8 @@ let package = Package(
                 .product(name: "SignalI18n", package: "SignalI18n"),
                 .product(name: "SignalCore", package: "SignalCore"),
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
+                .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                "SignalSafeSystem",
             ],
             swiftSettings: [
                 .strictMemorySafety(),
@@ -29,5 +32,17 @@ let package = Package(
                 .treatAllWarnings(as: .error),
             ]
         ),
+        // macOS integration: display sleep during calls, screen security, login item,
+        // system notifications.
+        .target(
+            name: "SignalSafeSystem",
+            dependencies: [.product(name: "SignalCore", package: "SignalCore"), .product(name: "SignalI18n", package: "SignalI18n")],
+            swiftSettings: [
+                .strictMemorySafety(),
+                .treatWarning("StrictMemorySafety", as: .error),
+                .treatAllWarnings(as: .error),
+            ]
+        ),
+        .testTarget(name: "SignalSafeSystemTests", dependencies: ["SignalSafeSystem"]),
     ]
 )

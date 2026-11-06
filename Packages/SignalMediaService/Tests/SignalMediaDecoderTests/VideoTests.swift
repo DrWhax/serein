@@ -37,7 +37,9 @@ struct VideoServiceTests {
         #expect(mean < 3, "\(name): mean |Δ| \(mean)")
     }
 
-    @Test(arguments: refs.keys.sorted())
+    // One at a time: the service allows `VideoLimits.maxSessions` open videos and the other
+    // video suites run alongside.
+    @Test(.serialized, arguments: refs.keys.sorted())
     func sessionFramesMatchFFmpeg(name: String) async throws {
         let ref = Self.refs[name]!
         let d = MediaDecoder()
@@ -74,5 +76,60 @@ struct VideoServiceTests {
         // Audio-only MP4: no video track.
         let m4a = try Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("Resources/Audio/stereo_48000_96k.m4a"))
         await #expect(throws: MediaProcessingError.self) { try await d.posterFrame(m4a) }
+    }
+}
+
+/// HEVC Main10 HLG (an Android / iPhone HDR recording in miniature).
+@Suite struct HEVCVideoTests {
+    static let clip = Bundle.module.resourceURL!.appendingPathComponent("Resources/Video/hlg10.mp4")
+
+    @Test func hevcSessionsDecodeTagged() async throws {
+        let d = MediaDecoder()
+        let bytes = try Data(contentsOf: Self.clip)
+        let info = try await d.videoInfo(bytes)
+        #expect(info.width == 128 && info.height == 72)
+        let (session, _) = try await d.openVideo(bytes)
+        var frames: [VideoFrame] = []
+        while true {
+            let next = try await d.videoFrames(session, count: 4)
+            if next.isEmpty { break }
+            frames += try next.map { try $0.validated() }
+        }
+        #expect(frames.count == 6)
+        #expect(frames.allSatisfy { $0.matrix == 9 && $0.transfer == 18 && $0.width == 128 })
+        // Playback keeps the 10 bits: two bytes per sample, the luma of a real picture above 8-bit range.
+        #expect(frames.allSatisfy { $0.bitDepth == 10 && $0.y.count == 128 * 72 * 2 })
+        let first = frames[0].y
+        #expect(stride(from: 0, to: first.count, by: 2).contains { Int(first[$0]) | Int(first[$0 + 1]) << 8 > 255 })
+        // The flat wire format round-trips them.
+        #expect(try MediaXPCWire.decodeFrames(MediaXPCWire.encodeFrames(frames), maxFrames: 8) == frames)
+        #expect(zip(frames, frames.dropFirst()).allSatisfy { $0.time < $1.time })
+        try await d.seekVideo(session, to: 0)
+        #expect(try await d.videoFrames(session, count: 1).count == 1)
+        await d.closeVideo(session)
+        let poster = try await d.posterFrame(bytes)
+        #expect(poster.width == 128 && poster.height == 72 && poster.png.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47]))
+    }
+}
+
+/// Throughput of the service's video sessions (HEVC_SESSION=<mp4>): frames per second.
+@Suite struct VideoSessionSpeed {
+    @Test func throughput() async throws {
+        guard let path = ProcessInfo.processInfo.environment["HEVC_SESSION"] else { return }
+        let d = MediaDecoder()
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let (s, _) = try await d.openVideo(bytes)
+        let start = ContinuousClock.now
+        var n = 0
+        while n < 120 {
+            let f = try await d.videoFrames(s, count: 8)
+            if f.isEmpty { break }
+            let wire = MediaXPCWire.encodeFrames(f)
+            _ = try MediaXPCWire.decodeFrames(wire, maxFrames: VideoLimits.maxFramesPerRequest).map { try $0.validated() }
+            n += f.count
+        }
+        let t = ContinuousClock.now - start
+        await d.closeVideo(s)
+        print("session: \(n) frames in \(t) (\(Double(n) / (Double(t.components.seconds) + Double(t.components.attoseconds) / 1e18)) fps) incl. XPC encoding")
     }
 }

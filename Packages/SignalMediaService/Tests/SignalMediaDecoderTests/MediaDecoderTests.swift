@@ -54,3 +54,52 @@ import Testing
         await #expect(throws: MediaProcessingError.unsupportedFormat) { try await MediaDecoder().imageInfo(Data([1, 2, 3, 4])) }
     }
 }
+
+import CodecCore
+import EncodePNG
+
+@Suite struct StickerImageTests {
+    @Test func stillImageBecomesA512WebP() async throws {
+        var rgba = [UInt8](repeating: 0, count: 300 * 150 * 4)
+        for i in stride(from: 0, to: rgba.count, by: 4) { rgba[i] = 200; rgba[i + 3] = 255 }
+        let png = Data(PNGEncoder.encode(PixelBuffer(width: 300, height: 150, rgba: rgba)))
+        let sticker = try await MediaDecoder().stickerImage(png).validated()
+        #expect(sticker.contentType == "image/webp" && sticker.refusal == nil)
+        let (decoded, _) = try MediaDecoder.decode(sticker.data)
+        #expect(decoded.width == 512 && decoded.height == 512)
+        // Contained and centred: transparent above and below the 512×256 band.
+        #expect(decoded.rgba[3] == 0 && decoded.rgba[(256 * 512 + 256) * 4 + 3] == 255)
+    }
+
+    @Test func garbageIsRefused() async throws {
+        let s = try await MediaDecoder().stickerImage(Data([1, 2, 3])).validated()
+        #expect(s.refusal == .errorProcessing)
+    }
+}
+
+import Foundation
+
+/// The whole XPC path in process: an anonymous listener with the service's delegate, and the
+/// app's client connected to it.
+@Suite struct MediaXPCTests {
+    @Test func requestsRoundTripThroughXPC() async throws {
+        let listener = NSXPCListener.anonymous()
+        let delegate = MediaXPCListenerDelegate()
+        listener.delegate = delegate
+        listener.resume()
+        let endpoint = listener.endpoint
+        let client = MediaXPCClient(timeout: .seconds(10)) { NSXPCConnection(listenerEndpoint: endpoint) }
+        var rgba = [UInt8](repeating: 0, count: 40 * 20 * 4)
+        for i in stride(from: 0, to: rgba.count, by: 4) { rgba[i + 1] = 255; rgba[i + 3] = 255 }
+        let png = Data(PNGEncoder.encode(PixelBuffer(width: 40, height: 20, rgba: rgba)))
+        let info = try await client.imageInfo(png)
+        #expect(info.width == 40 && info.height == 20)
+        let shown = try await client.displayImage(png, maxDimension: 16)
+        #expect(shown.width == 16 && shown.height == 8 && shown.originalWidth == 40 && shown.rgba.count == 16 * 8 * 4)
+        #expect(Array(shown.rgba.prefix(4)) == [0, 255, 0, 255])
+        let sticker = try await client.stickerImage(png)
+        #expect(sticker.contentType == "image/webp")
+        await #expect(throws: MediaProcessingError.self) { try await client.imageInfo(Data([1, 2, 3])) }
+        listener.invalidate()
+    }
+}

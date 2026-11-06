@@ -1,0 +1,17 @@
+{
+ "id": "components-textattachment--solid-bg-text-bg",
+ "theme": "dark",
+ "width": 1168,
+ "height": 1280,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

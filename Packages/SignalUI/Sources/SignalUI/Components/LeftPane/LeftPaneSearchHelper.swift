@@ -51,7 +51,7 @@ public struct LeftPaneSearchHelper: LeftPaneHelper {
     var allEmpty: Bool { conversationResults.results.isEmpty && contactResults.results.isEmpty && messageResults.results.isEmpty }
 
     public func searchInput(_ ctx: LeftPaneContext) -> AnyView? {
-        AnyView(LeftPaneSearchInput(searchTerm: .constant(searchTerm), searchConversation: searchConversation, disabled: searchDisabled,
+        AnyView(LeftPaneSearchInput(searchTerm: Binding(get: { searchTerm }, set: { ctx.updateSearchTerm($0) }), searchConversation: searchConversation, disabled: searchDisabled,
                                     isSearchingGlobally: isSearchingGlobally, filterButtonEnabled: searchConversation == nil,
                                     filterPressed: filterByUnread, onFilterClick: ctx.updateFilterByUnread, clearSearchQuery: ctx.clearSearchQuery,
                                     endConversationSearch: ctx.endConversationSearch, endSearch: ctx.endSearch))

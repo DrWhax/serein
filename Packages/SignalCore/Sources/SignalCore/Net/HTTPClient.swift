@@ -32,10 +32,12 @@ public enum HTTPError: Error, Equatable {
     case status(Int, body: Data)
     case invalidResponse
     case tooLarge(Int)
+    /// Only https:// is allowed (the app's ATS exceptions would otherwise permit http to Signal hosts).
+    case insecureURL
 }
 
-/// Server-trust evaluation against pinned roots only.
-final class PinnedTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+/// Server-trust evaluation against pinned roots only; redirects must stay on https.
+final class PinnedTrustDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     let rootsDER: [Data]
     init(rootsDER: [Data]) { self.rootsDER = rootsDER }
 
@@ -54,6 +56,11 @@ final class PinnedTrustDelegate: NSObject, URLSessionDelegate, Sendable {
         // URLSession calls this off the main thread, where synchronous evaluation is allowed.
         let trusted = SecTrustEvaluateWithError(trust, nil)
         return trusted ? (.useCredential, URLCredential(trust: trust)) : (.cancelAuthenticationChallenge, nil)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        request.url?.scheme?.lowercased() == "https" ? request : nil
     }
 }
 
@@ -78,6 +85,7 @@ public struct HTTPClient: Sendable {
     /// `send`, also returning the response headers (lower-cased names).
     public func sendWithHeaders(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                                 accept: Set<Int> = []) async throws -> (status: Int, body: Data, headers: [String: String]) {
+        guard url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
@@ -96,6 +104,7 @@ public struct HTTPClient: Sendable {
     /// Performs a request; non-2xx statuses other than those in `accept` throw `HTTPError.status`.
     public func send(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                      accept: Set<Int> = []) async throws -> (status: Int, body: Data) {
+        guard url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body

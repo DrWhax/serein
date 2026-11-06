@@ -31,8 +31,12 @@ public struct OutgoingPayload: Sendable {
     public var contentHint: ContentHint
     public var urgent: Bool
     public var online: Bool
+    /// A story or story reply: sent sealed with `story=true`, which needs no access key.
+    public var story: Bool
 
-    public init(content: Signalservice_Content, timestamp: UInt64, contentHint: ContentHint = .resendable, urgent: Bool = true, online: Bool = false) {
+    public init(content: Signalservice_Content, timestamp: UInt64, contentHint: ContentHint = .resendable, urgent: Bool = true, online: Bool = false,
+                story: Bool = false) {
+        self.story = story
         self.content = content
         self.timestamp = timestamp
         self.contentHint = contentHint
@@ -72,8 +76,9 @@ public final class MessageSender: Sendable {
                      logged: Bool = true) async throws -> SendResult {
         let isSelf = serviceId == account.aci
         var accessKey: Data? = nil
-        if allowSealed && !isSelf { accessKey = try await database.pool.read { db in try Self.accessKey(db, serviceId: serviceId) } }
-        var certificate: SenderCertificate? = accessKey == nil ? nil : try await certificates.current()
+        let storySend = payload.story && !isSelf
+        if allowSealed && !isSelf && !storySend { accessKey = try await database.pool.read { db in try Self.accessKey(db, serviceId: serviceId) } }
+        var certificate: SenderCertificate? = accessKey == nil && !storySend ? nil : try await certificates.current()
         let proto = try payload.content.serializedBytes() as Data
         let padded = Self.pad(proto)
 
@@ -94,9 +99,11 @@ public final class MessageSender: Sendable {
             }
             let json = try JSONEncoder().encode(MessageList(messages: messages, timestamp: payload.timestamp,
                                                             online: payload.online && !isSelf, urgent: payload.urgent))
-            let path = "/v1/messages/\(serviceId)"
+            let path = "/v1/messages/\(serviceId)" + (storySend ? "?story=true" : "")
             do {
-                if let accessKey {
+                if storySend {
+                    _ = try await socket.unauthenticatedRequest("PUT", path, json: json, headers: [:])
+                } else if let accessKey {
                     _ = try await socket.unauthenticatedRequest("PUT", path, json: json,
                                                                 headers: ["unidentified-access-key": accessKey.base64EncodedString()])
                 } else {
@@ -109,7 +116,7 @@ public final class MessageSender: Sendable {
                                            recipient: serviceId, devices: sent, messageIds: messageIds)
                     }
                 }
-                return SendResult(serviceId: serviceId, devices: devices, sealed: accessKey != nil)
+                return SendResult(serviceId: serviceId, devices: devices, sealed: accessKey != nil || storySend)
             } catch let error as ChatRequestError {
                 switch (error.status, error) {
                 case (409, .http(_, _, let b)):
@@ -229,7 +236,7 @@ public final class MessageSender: Sendable {
 
     func process(_ db: Database, _ keys: KeysResponse, serviceId: String) throws {
         func bytes(_ s: String) throws -> Data {
-            guard let d = Data(base64Encoded: s) else { throw SendError.invalidKeysResponse("base64") }
+            guard let d = Data(lenientBase64: s) else { throw SendError.invalidKeysResponse("base64") }
             return d
         }
         let ctx = DatabaseStoreContext(db)
@@ -304,4 +311,12 @@ public final class MessageSender: Sendable {
 /// Upstream SEALED_SENDER (ts/types/SealedSender.std.ts).
 public enum SealedSenderMode: Int, Sendable {
     case unknown = 0, enabled = 1, disabled = 2, unrestricted = 3
+}
+
+extension Data {
+    /// Base64 with or without padding: the server's key adapters may omit it (upstream's
+    /// Bytes.fromBase64 accepts both).
+    init?(lenientBase64 s: String) {
+        self.init(base64Encoded: s + String(repeating: "=", count: (4 - s.count % 4) % 4))
+    }
 }

@@ -15,7 +15,7 @@ extension MessageStore {
     }
 
     static func storeIncomingAttachments(_ db: Database, messageId: String, conversationId: String, sentAt: Int64,
-                                         attachments: [Signalservice_AttachmentPointer]) throws {
+                                         attachments: [Signalservice_AttachmentPointer], type: MessageAttachmentType = .attachment) throws {
         guard !attachments.isEmpty else { return }
         let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? now()
         let settings = try AttachmentPolicy.autoDownload(db)
@@ -23,12 +23,12 @@ extension MessageStore {
         let accepted = try isAcceptedForDownloads(db, conversationId: conversationId)
         for (i, pointer) in attachments.enumerated() {
             var a = MessageAttachment(pointer: pointer)
-            let queue = accepted && AttachmentPolicy.shouldAutoDownload(a, type: .attachment, settings: settings, maxAutoDownload: maxAuto)
+            let queue = accepted && AttachmentPolicy.shouldAutoDownload(a, type: type, settings: settings, maxAutoDownload: maxAuto)
             a.pending = queue
-            let loc = MessageAttachments.Location(messageId: messageId, type: .attachment, order: i)
+            let loc = MessageAttachments.Location(messageId: messageId, type: type, order: i)
             try MessageAttachments.upsert(db, loc, conversationId: conversationId, sentAt: sentAt, receivedAt: receivedAt, messageType: "incoming", a)
             if queue {
-                try AttachmentDownloads.add(db, AttachmentDownloadJob(messageId: messageId, attachmentType: .attachment, signature: a.signature,
+                try AttachmentDownloads.add(db, AttachmentDownloadJob(messageId: messageId, attachmentType: type, signature: a.signature,
                                                                       receivedAt: receivedAt, sentAt: sentAt, attachment: a))
             }
         }

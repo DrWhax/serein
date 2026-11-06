@@ -30,7 +30,10 @@ public struct CompositionInput: View {
     /// `.CompositionTextArea__input` restyles the input as a borderless, square text area
     /// (the forward and GIF-send modals): 16px padding (36px at the end, for the floating emoji
     /// button), 100–300px tall, a 1px ultramarine border when focused.
-    public enum Variant: Sendable { case composer, textArea }
+    ///
+    /// `.StoryViewsNRepliesModal__input`: a gray-75 pill with a gray-75 border (focused or
+    /// not), at least 36px tall, its children (the emoji button) centred at the start.
+    public enum Variant: Sendable { case composer, textArea, storyReply }
     @Binding var text: String
     let variant: Variant
     let mentions: [ComposerMention]
@@ -42,9 +45,12 @@ public struct CompositionInput: View {
     let isViewOnceActive: Bool
     let onToggleViewOnce: () -> Void
     let onSubmit: () -> Void
+    /// `children`: drawn before the scroller (FunEmojiPickerButton).
+    var leading: AnyView?
     @State private var focused = false
     @Environment(\.i18n) var i18n
     @Environment(\.axoStaticRendering) var staticRendering
+    @Environment(\.composerKeys) var keys
 
     public init(text: Binding<String>, mentions: [ComposerMention] = [], placeholder: String? = nil, large: Bool = false, disabled: Bool = false,
                 isActive: Bool = true, showViewOnceButton: Bool = false, isViewOnceActive: Bool = false,
@@ -70,9 +76,30 @@ public struct CompositionInput: View {
     /// Focused on open while active (Quill focuses itself), shown as keyboard focus.
     var showsFocus: Bool { !disabled && !isViewOnceActive && (focused || (staticRendering && isActive)) }
 
+    /// `children`
+    public func leading(_ view: some View) -> CompositionInput {
+        var copy = self
+        copy.leading = AnyView(view)
+        return copy
+    }
+
+    var background: AxoColor {
+        switch variant {
+        case .textArea: AxoColor(RGBA(0, 0, 0, 0))
+        case .storyReply: AxoColor(LegacyColor.gray75)
+        case .composer: AxoColor.surfaceMessageIncoming
+        }
+    }
+
+    var borderColor: AxoColor {
+        if variant == .storyReply { return AxoColor(LegacyColor.gray75) }
+        return showsFocus ? AxoColor(LegacyColor.ultramarine) : AxoColor(RGBA(0, 0, 0, 0))
+    }
+
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: variant == .textArea ? 0 : 18)
         HStack(alignment: .center, spacing: 0) {
+            if let leading { leading }
             scroller
             if showViewOnceButton {
                 SwiftUI.Button(action: onToggleViewOnce) {
@@ -93,10 +120,11 @@ public struct CompositionInput: View {
                     .allowsHitTesting(false)
             }
         }
+        .frame(minHeight: variant == .storyReply ? 36 - 2 * Self.border : nil)
         .padding(Self.border)        // the 1px border (transparent unless focused)
-        .background(shape.fill(variant == .textArea ? AxoColor(RGBA(0, 0, 0, 0)) : AxoColor.surfaceMessageIncoming))
+        .background(shape.fill(background))
         .clipShape(shape)
-        .overlay(shape.strokeBorder(showsFocus ? AxoColor(LegacyColor.ultramarine) : AxoColor(RGBA(0, 0, 0, 0)), lineWidth: Self.border))
+        .overlay(shape.strokeBorder(borderColor, lineWidth: Self.border))
         .cssTextColor(.labelPrimary)
     }
 
@@ -148,7 +176,7 @@ public struct CompositionInput: View {
                 ScrollEndClip(minHeight: minH, maxHeight: maxH, fixedHeight: large ? maxH : nil, overflowBottomInset: pad.bottom + caretInset) { content }
             } else {
                 ComposerTextView(text: $text, placeholder: placeholder ?? i18n("icu:sendMessage"), disabled: disabled, autoFocus: isActive,
-                                 focused: $focused, onSubmit: onSubmit)
+                                 focused: $focused, onSubmit: onSubmit, keys: keys)
                     .padding(.leading, pad.leading).padding(.trailing, pad.trailing)
                     .frame(minHeight: minH - pad.top - pad.bottom, maxHeight: maxH - pad.top - pad.bottom)
                     .frame(height: large && !textArea ? maxH - pad.top - pad.bottom : nil)
@@ -205,6 +233,7 @@ struct ComposerTextView: NSViewRepresentable {
     let autoFocus: Bool
     @Binding var focused: Bool
     let onSubmit: () -> Void
+    var keys = ComposerKeys()
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -233,6 +262,12 @@ struct ComposerTextView: NSViewRepresentable {
         tv.isHorizontallyResizable = false
         tv.autoresizingMask = [.width]
         tv.allowsUndo = true
+        // Spell-check (NSSpellChecker underlines, suggestions in the context menu) as Chromium's
+        // spellchecker: no autocorrection, no grammar or text replacement.
+        tv.isContinuousSpellCheckingEnabled = context.environment.spellCheckEnabled
+        tv.isGrammarCheckingEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
         let style = LegacyType.body1()
         let para = NSMutableParagraphStyle()
         para.minimumLineHeight = style.lineHeight
@@ -249,6 +284,9 @@ struct ComposerTextView: NSViewRepresentable {
         guard let tv = scroll.documentView as? NSTextView else { return }
         if tv.string != text { tv.string = text }
         tv.isEditable = !disabled
+        if tv.isContinuousSpellCheckingEnabled != context.environment.spellCheckEnabled {
+            tv.isContinuousSpellCheckingEnabled = context.environment.spellCheckEnabled
+        }
         context.coordinator.parent = self
     }
 
@@ -270,6 +308,12 @@ struct ComposerTextView: NSViewRepresentable {
                 parent.onSubmit()
                 return true
             }
+            // ↑ in an empty composer: edit the last message (`onEditLastMessageShortcut`).
+            if selector == #selector(NSResponder.moveUp(_:)), textView.string.isEmpty, !textView.hasMarkedText(), let up = parent.keys.arrowUp {
+                return up()
+            }
+            // Escape: leave editing.
+            if selector == #selector(NSResponder.cancelOperation(_:)), let escape = parent.keys.escape { return escape() }
             return false
         }
     }
@@ -285,4 +329,26 @@ final class PlaceholderTextView: NSTextView {
         let attrs: [NSAttributedString.Key: Any] = [.font: style.ctFont as NSFont, .foregroundColor: NSColor.placeholderTextColor]
         (placeholder as NSString).draw(at: NSPoint(x: 0, y: 0), withAttributes: attrs)
     }
+}
+
+extension EnvironmentValues {
+    /// The "Enable spell check" setting (`spell-check`), read at launch as upstream applies it
+    /// on restart.
+    @Entry public var spellCheckEnabled = true
+}
+
+
+/// Composer keys beyond Return (CompositionArea's shortcuts): ↑ in an empty composer edits the
+/// last message, Escape leaves editing; each returns whether it handled the key.
+public struct ComposerKeys {
+    public var arrowUp: (() -> Bool)?
+    public var escape: (() -> Bool)?
+    public init(arrowUp: (() -> Bool)? = nil, escape: (() -> Bool)? = nil) {
+        self.arrowUp = arrowUp
+        self.escape = escape
+    }
+}
+
+extension EnvironmentValues {
+    @Entry public var composerKeys = ComposerKeys()
 }

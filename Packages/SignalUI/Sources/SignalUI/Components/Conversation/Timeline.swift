@@ -64,6 +64,7 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
     @State private var hasRecentlyScrolled = true
     @State private var visibleIds: [String] = []
     @State private var width: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @Environment(\.i18n) var i18n
     @Environment(\.viewportWidth) var viewportWidth
@@ -152,10 +153,11 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
                 rows(lazy: true)
                 if haveOldest { Spacer(minLength: 0) }
             }
-            .frame(minHeight: 0)
-            .containerRelativeFrame(.vertical, alignment: .top) { length, _ in length }
-            .fixedSize(horizontal: false, vertical: false)
+            // At least the viewport's height (short chats keep their layout), growing with the
+            // content so it scrolls. (An exact container-relative height made it unscrollable.)
+            .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .top)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom)
         .onScrollTargetVisibilityChange(idType: String.self) { visibleIds = $0 }

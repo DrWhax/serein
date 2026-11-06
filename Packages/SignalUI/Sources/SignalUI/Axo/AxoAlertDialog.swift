@@ -20,7 +20,9 @@ public enum AxoAlertDialog {
         let inner: Inner
         public init(@ViewBuilder content: () -> Inner) { inner = content() }
         public var body: some View {
+            // The w-72 panel's 240px text box, wrapped as Blink compares widths (1/64px).
             let content = VStack(alignment: .leading, spacing: 4) { inner }
+                .environment(\.cssTextWrapWidth, 288 - 2 * 24)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(EdgeInsets(top: 20, leading: 24, bottom: 0, trailing: 24))
             AxoDialog.HeightLimited(maxHeight: 440) {

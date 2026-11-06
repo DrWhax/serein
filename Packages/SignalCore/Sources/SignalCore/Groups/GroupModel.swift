@@ -43,10 +43,10 @@ public enum GroupRole {
 /// AccessControl.AccessRequired
 public enum GroupAccess {
     public static let unknown = 0, any = 1, member = 2, administrator = 3, unsatisfiable = 4
-    /// `isValidAccess`: members and attributes take MEMBER or ADMINISTRATOR.
-    static func isValid(_ a: Int) -> Bool { a == member || a == administrator }
-    /// `isValidLinkAccess`: ANY, ADMINISTRATOR or UNSATISFIABLE.
-    static func isValidLink(_ a: Int) -> Bool { a == any || a == administrator || a == unsatisfiable }
+    /// `isValidAccess`: MEMBER, ADMINISTRATOR or UNKNOWN (unset in older groups; DESKTOP-9868).
+    static func isValid(_ a: Int) -> Bool { a == member || a == administrator || a == unknown }
+    /// `isValidLinkAccess`: UNKNOWN, ANY, ADMINISTRATOR or UNSATISFIABLE.
+    static func isValidLink(_ a: Int) -> Bool { a == unknown || a == any || a == administrator || a == unsatisfiable }
 }
 
 public struct GroupMember: Codable, Equatable, Sendable {
@@ -262,7 +262,7 @@ public struct GroupCipher: Sendable {
         let a = GroupAccessControl(attributes: ac.attributes.rawValue, members: ac.members.rawValue, addFromInviteLink: ac.addFromInviteLink.rawValue,
                                    memberLabel: ac.memberLabel.rawValue)
         guard GroupAccess.isValid(a.attributes), GroupAccess.isValid(a.members), GroupAccess.isValidLink(a.addFromInviteLink),
-              GroupAccess.isValid(a.memberLabel) || a.memberLabel == GroupAccess.unknown
+              GroupAccess.isValid(a.memberLabel)
         else { throw GroupDecryptError.invalid("invalid access control") }
         s.accessControl = a
         s.revision = Int(g.version)

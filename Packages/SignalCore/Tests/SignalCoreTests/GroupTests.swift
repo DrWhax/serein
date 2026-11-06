@@ -272,3 +272,12 @@ import Testing
         }
     }
 }
+
+@Suite struct GroupAccessTests {
+    /// Older production groups leave access fields UNKNOWN (0); upstream accepts it (DESKTOP-9868).
+    @Test func unknownAccessIsValidLikeUpstream() {
+        #expect(GroupAccess.isValid(GroupAccess.unknown) && GroupAccess.isValid(GroupAccess.member) && GroupAccess.isValid(GroupAccess.administrator))
+        #expect(!GroupAccess.isValid(GroupAccess.any) && !GroupAccess.isValid(GroupAccess.unsatisfiable))
+        #expect(GroupAccess.isValidLink(GroupAccess.unknown) && GroupAccess.isValidLink(GroupAccess.unsatisfiable) && !GroupAccess.isValidLink(GroupAccess.member))
+    }
+}

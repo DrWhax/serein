@@ -1,0 +1,31 @@
+{
+ "id": "components-mystories--multi-list-stories",
+ "theme": "dark",
+ "width": 1200,
+ "height": 1486,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   1089.5,
+   112,
+   94.59,
+   28
+  ],
+  [
+   1136.3,
+   117,
+   1,
+   1
+  ]
+ ]
+}

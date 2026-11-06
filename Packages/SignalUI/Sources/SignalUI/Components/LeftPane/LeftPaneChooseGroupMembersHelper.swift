@@ -61,7 +61,7 @@ public struct LeftPaneChooseGroupMembersHelper: LeftPaneHelper {
     public func backAction(_ ctx: LeftPaneContext) -> (() -> Void)? { ctx.startComposing }
 
     public func searchInput(_ ctx: LeftPaneContext) -> AnyView? {
-        AnyView(SearchInput(value: .constant(searchTerm), placeholder: ctx.i18n("icu:contactSearchPlaceholder"), focusesOnAppear: true))
+        AnyView(SearchInput(value: Binding(get: { searchTerm }, set: { ctx.updateSearchTerm($0) }), placeholder: ctx.i18n("icu:contactSearchPlaceholder"), focusesOnAppear: true))
     }
 
     public func preRows(_ ctx: LeftPaneContext) -> AnyView? {

@@ -124,7 +124,7 @@ async function componentBox() {
       const bg = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g).map(Number);
       return { x: 0, y: 0, width: innerWidth, height: innerHeight, background: bg.length === 3 ? [...bg, 1] : bg, portals: [[0, 0, innerWidth, innerHeight]] };
     }
-    const portals = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[data-radix-popper-content-wrapper],[role=tooltip],.module-modal-host__width-container,#lightbox')]
+    const portals = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[data-radix-popper-content-wrapper],[role=tooltip],.module-modal-host__width-container,#lightbox,.StoryCreator')]
       .filter((e) => !document.querySelector('#storybook-root').contains(e))
       .map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
     if (portals.length) {
@@ -171,7 +171,7 @@ async function domDump() {
     };
     const root = document.querySelector('#storybook-root');
     const portalHosts = [...document.body.children].filter((c) => c !== root && c.tagName === 'DIV' && !c.className.toString().includes('sb-')
-      && c.querySelector('[role=dialog],[role=alertdialog],[data-radix-popper-content-wrapper],[role=tooltip],.module-modal-host__width-container,#lightbox'));
+      && c.querySelector('[role=dialog],[role=alertdialog],[data-radix-popper-content-wrapper],[role=tooltip],.module-modal-host__width-container,#lightbox,.StoryCreator'));
     return [...root.children, ...portalHosts].map(walk);
   });
 }

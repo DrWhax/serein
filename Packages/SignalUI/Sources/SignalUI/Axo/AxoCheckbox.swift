@@ -16,9 +16,12 @@ public enum AxoCheckbox {
         @Binding var checked: Bool
         let disabled: Bool
         let label: String?
+        let autoFocus: Bool
         @GestureState private var pressed = false
+        private var focus = AxoFocusState()
 
-        public init(variant: Variant, checked: Binding<Bool>, disabled: Bool = false, label: String? = nil) {
+        public init(variant: Variant, checked: Binding<Bool>, disabled: Bool = false, label: String? = nil, autoFocus: Bool = false) {
+            self.autoFocus = autoFocus
             self.variant = variant
             _checked = checked
             self.disabled = disabled
@@ -39,6 +42,12 @@ public enum AxoCheckbox {
             .background { shape.fill(fill) }
             .modifier(CheckboxShadow(checked: checked, disabled: disabled, shape: shape))
             .overlay { shape.strokeBorder(AxoColor.borderSecondary, lineWidth: 1) }
+            .axoFocusRing(!disabled && focus.visible(autoFocus: autoFocus), in: shape)
+            .focusable(!disabled, interactions: .activate)
+            .focusEffectDisabled()
+            .focused(focus.$focused)
+            .onChange(of: focus.focused) { _, now in if !now { focus.autoFocusConsumed = true } }
+            .onKeyPress(.space) { if !disabled { checked.toggle() }; return .handled }
             .contentShape(shape)
             .gesture(DragGesture(minimumDistance: 0).updating($pressed) { _, s, _ in s = !disabled }.onEnded { _ in
                 if !disabled { checked.toggle() }

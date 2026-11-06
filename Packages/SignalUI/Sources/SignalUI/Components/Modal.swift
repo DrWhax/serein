@@ -30,10 +30,17 @@ public struct ModalStrings: Sendable, Hashable {
 /// `<ModalHost>`: overlay plus the centred width container (max-width 360px, width 95%).
 public struct ModalHost<Content: View>: View {
     let onClose: (() -> Void)?
+    /// Where the overlay container (20px padding) puts the width container: centred, or an
+    /// edge/corner as a modal's own `.module-modal-host__overlay-container` rule sets it.
+    let alignment: Alignment
+    /// `.module-modal-host__width-container` max-width (360px; some modals override it).
+    let maxWidth: CGFloat
     let content: Content
 
-    public init(onClose: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    public init(onClose: (() -> Void)? = nil, alignment: Alignment = .center, maxWidth: CGFloat = 360, @ViewBuilder content: () -> Content) {
         self.onClose = onClose
+        self.alignment = alignment
+        self.maxWidth = maxWidth
         self.content = content()
     }
 
@@ -44,9 +51,9 @@ public struct ModalHost<Content: View>: View {
                 Rectangle().fill(AxoColor(LegacyColor.blackAlpha40))
                     .contentShape(Rectangle())
                     .onTapGesture { onClose?() }
-                ModalCentering {
+                ModalCentering(alignment: alignment) {
                     content
-                        .frame(width: min(360, (geo.size.width - 40) * 0.95))
+                        .frame(width: min(maxWidth, (geo.size.width - 40) * 0.95))
                         .environment(\.legacyModalMaxHeight, geo.size.height * 0.89)   // max-height: 89vh
                 }
             }
@@ -59,6 +66,8 @@ public struct ModalHost<Content: View>: View {
 /// Centres the width container (flex justify/align center). The modal is a composited
 /// layer (react-spring's `transform`), which Chromium snaps to whole CSS pixels.
 struct ModalCentering: Layout {
+    var alignment: Alignment = .center
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
     }
@@ -66,8 +75,12 @@ struct ModalCentering: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         for s in subviews {
             let size = s.sizeThatFits(ProposedViewSize(width: bounds.width, height: bounds.height))
-            s.place(at: CGPoint(x: bounds.minX + ((bounds.width - size.width) / 2).rounded(), y: bounds.minY + ((bounds.height - size.height) / 2).rounded()),
-                    proposal: ProposedViewSize(size))
+            func origin(_ free: CGFloat, _ start: Bool, _ end: Bool) -> CGFloat {
+                end ? free - 20 : start ? 20 : (free / 2).rounded()
+            }
+            let x = origin(bounds.width - size.width, alignment.horizontal == .leading, alignment.horizontal == .trailing)
+            let y = origin(bounds.height - size.height, alignment.vertical == .top, alignment.vertical == .bottom)
+            s.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(size))
         }
     }
 }
@@ -126,6 +139,10 @@ public struct ModalPage<Content: View, Footer: View>: View {
     /// The content moves the initial focus to one of its controls (a search input focused in
     /// an effect), so the header buttons do not keep it.
     var contentTakesFocus = false
+    /// A title given as a view (upstream's `title` is a ReactNode), in the `h1` slot.
+    var titleView: AnyView?
+    /// The padded body without its 16px bottom padding (SendStoryModal).
+    var bodyBottomPadding = true
     @Environment(\.legacyModalMaxHeight) var maxHeight
     @FocusState private var selfFocused: Bool
     @State private var autoFocusConsumed = false
@@ -148,7 +165,21 @@ public struct ModalPage<Content: View, Footer: View>: View {
         self.footer = footer()
     }
 
-    var hasHeader: Bool { hasXButton || title != nil || headerChildren != nil || onBackButtonClick != nil }
+    var hasHeader: Bool { hasXButton || title != nil || titleView != nil || headerChildren != nil || onBackButtonClick != nil }
+
+    /// Drops the padded body's bottom padding.
+    public func noBodyBottomPadding() -> ModalPage {
+        var copy = self
+        copy.bodyBottomPadding = false
+        return copy
+    }
+
+    /// `title` as a view.
+    public func titleView(_ view: some View) -> ModalPage {
+        var copy = self
+        copy.titleView = AnyView(view)
+        return copy
+    }
     /// `contentTakesFocus`
     public func contentTakesFocus(_ value: Bool = true) -> ModalPage {
         var copy = self
@@ -157,14 +188,14 @@ public struct ModalPage<Content: View, Footer: View>: View {
     }
 
     /// FocusScope autoFocus: nothing tabbable in the header → the modal itself is focused.
-    var focusesSelf: Bool { onBackButtonClick == nil && !hasXButton && !hasFooter }
+    var focusesSelf: Bool { onBackButtonClick == nil && !hasXButton && !hasFooter && !contentTakesFocus }
 
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: 8)
         ModalColumn(maxHeight: maxHeight) {
             if hasHeader { header } else { Color.clear.frame(height: 0) }
             ModalBody(hasHeader: hasHeader, hasFooter: hasFooter, headerDivider: hasHeaderDivider, footerDivider: hasFooterDivider,
-                      padded: padded) { content }
+                      padded: padded, bottomPadding: bodyBottomPadding) { content }
             if hasFooter { ModalButtonFooter { footer } } else { Color.clear.frame(height: 0) }
         }
         .cssTextColor(.labelPrimary)
@@ -195,7 +226,11 @@ public struct ModalPage<Content: View, Footer: View>: View {
                 if let onBackButtonClick {
                     ModalIconButton(icon: .chevronLeft, label: strings.back, autoFocus: !contentTakesFocus, flipsForRTL: true, action: onBackButtonClick)
                 }
-                if let title {
+                if let titleView {
+                    titleView
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.isHeader)
+                } else if let title {
                     CSSBlockText(title, style: LegacyType.body1(weight: 600), alignment: onBackButtonClick != nil ? .center : .start)
                         .frame(maxWidth: .infinity, alignment: onBackButtonClick != nil ? .center : .leading)
                         .accessibilityAddTraits(.isHeader)
@@ -308,11 +343,14 @@ struct ModalBody<Content: View>: View {
     let headerDivider: Bool
     let footerDivider: Bool
     let padded: Bool
+    var bottomPadding = true
     let content: Content
     @Environment(\.axoStaticRendering) var isStatic
     @State private var offset: CGFloat = 0
 
-    init(hasHeader: Bool, hasFooter: Bool, headerDivider: Bool, footerDivider: Bool, padded: Bool, @ViewBuilder content: () -> Content) {
+    init(hasHeader: Bool, hasFooter: Bool, headerDivider: Bool, footerDivider: Bool, padded: Bool, bottomPadding: Bool = true,
+         @ViewBuilder content: () -> Content) {
+        self.bottomPadding = bottomPadding
         self.hasHeader = hasHeader
         self.hasFooter = hasFooter
         self.headerDivider = headerDivider
@@ -325,7 +363,7 @@ struct ModalBody<Content: View>: View {
         // --padded: padding 16px (top 0 with a header)
         VStack(alignment: .leading, spacing: 0) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(EdgeInsets(top: padded && !hasHeader ? 16 : 0, leading: padded ? 16 : 0, bottom: padded ? 16 : 0, trailing: padded ? 16 : 0))
+            .padding(EdgeInsets(top: padded && !hasHeader ? 16 : 0, leading: padded ? 16 : 0, bottom: padded && bottomPadding ? 16 : 0, trailing: padded ? 16 : 0))
     }
 
     var body: some View {
@@ -426,7 +464,14 @@ struct ModalButtonFooterLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         if !wraps(bounds.width, subviews) {
-            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            var sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            // `flex: 1` children (layoutPriority > 0) share the free width.
+            let growing = subviews.indices.filter { subviews[$0].priority > 0 }
+            if !growing.isEmpty {
+                let used = sizes.map(\.width).reduce(0, +) + (Self.gap + Self.margin) * CGFloat(max(0, sizes.count - 1))
+                let free = max(0, bounds.width - used) / CGFloat(growing.count)
+                for i in growing { sizes[i].width += free }
+            }
             let lineHeight = sizes.map(\.height).max() ?? 0
             var x = bounds.maxX
             for (s, size) in zip(subviews, sizes).reversed() {

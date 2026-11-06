@@ -27,7 +27,7 @@ public struct LeftPaneFindByUsernameHelper: LeftPaneHelper {
 
     public func searchInput(_ ctx: LeftPaneContext) -> AnyView? {
         // __search-input: margin-top 8, padding-inline 12 (no search icon).
-        AnyView(SearchInput(value: .constant(searchTerm), placeholder: ctx.i18n("icu:LeftPaneFindByHelper__placeholder--findByUsername"),
+        AnyView(SearchInput(value: Binding(get: { searchTerm }, set: { ctx.updateSearchTerm($0) }), placeholder: ctx.i18n("icu:LeftPaneFindByHelper__placeholder--findByUsername"),
                             disabled: isFetching, hasSearchIcon: false,
                             description: ctx.i18n("icu:LeftPaneFindByHelper__description--findByUsername"), focusesOnAppear: true,
                             onEnter: doLookup)
@@ -75,7 +75,7 @@ public struct LeftPaneFindByPhoneNumberHelper: LeftPaneHelper {
         AnyView(VStack(spacing: 12) {
             CountryCodeSelect(countries: CountryDataSource.countries(locale: ctx.i18n.locale), defaultRegion: regionCode ?? "",
                               value: selectedRegion, onShowModal: onShowCountryModal)
-            SearchInput(value: .constant(searchTerm), placeholder: ctx.i18n("icu:LeftPaneFindByHelper__placeholder--findByPhoneNumber"),
+            SearchInput(value: Binding(get: { searchTerm }, set: { ctx.updateSearchTerm($0) }), placeholder: ctx.i18n("icu:LeftPaneFindByHelper__placeholder--findByPhoneNumber"),
                         disabled: isFetching, hasSearchIcon: false, focusesOnAppear: true, onEnter: doLookup)
                 .environment(\.searchInputInlinePadding, 12)
         }

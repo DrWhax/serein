@@ -42,6 +42,8 @@ let package = Package(
                 .product(name: "Blurhash", package: "SignalCodecs"),
                 // The media editor's export (pixels it drew itself; an encoder, not a parser).
                 .product(name: "EncodeJPEG", package: "SignalCodecs"),
+                // The username QR card's PNG (drawn here; an encoder, not a parser).
+                .product(name: "EncodePNG", package: "SignalCodecs"),
             ],
             resources: [.copy("Resources/Fonts"), .copy("Resources/Images"), .copy("Resources/country-display-names.json"), .copy("Resources/locale-display-names.json"), .copy("Resources/available-locales.json"), .copy("Resources/emoji-data.json")],
             swiftSettings: strict

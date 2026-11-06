@@ -239,3 +239,31 @@ struct StickerUnitTests {
         }
     }
 }
+
+/// The sticker creator's pack: decrypts back to the manifest and images; the multipart form.
+@Suite struct StickerPackUploadTests {
+    @Test func encryptsManifestAndImagesWithThePackKey() throws {
+        let a = Data("sticker-a".utf8), b = Data("sticker-b".utf8)
+        let draft = StickerPackDraft(title: "Cats", author: "Alice", stickers: [.init(data: a, emoji: "😺"), .init(data: b, emoji: nil), .init(data: a, emoji: "😸")],
+                                     cover: b)
+        let packKey = Data(repeating: 7, count: 32)
+        let pack = try StickerPackUpload.encrypt(draft, packKey: packKey)
+        #expect(pack.packKey == String(repeating: "07", count: 32))
+        #expect(pack.images.count == 2)                       // a, b (deduplicated; the cover is b)
+        #expect(try Stickers.decrypt(pack.images[0], packKey: packKey) == a)
+        let manifest = try Signalservice_StickerPack(serializedBytes: try Stickers.decrypt(pack.manifest, packKey: packKey))
+        #expect(manifest.title == "Cats" && manifest.author == "Alice" && manifest.stickers.count == 3 && manifest.cover.id == 1)
+        #expect(manifest.stickers.map(\.emoji) == ["😺", "", "😸"])
+    }
+
+    @Test func multipartForm() {
+        let form = StickerUploadForm(acl: "private", algorithm: "AWS4", credential: "cred", date: "20261106", id: 0, key: "stickers/x/manifest.proto",
+                                     policy: "pol", signature: "sig")
+        let (body, type) = StickerPackUpload.multipart(form, Data([1, 2, 3]), boundary: "BOUND")
+        let text = String(decoding: body, as: UTF8.self)
+        #expect(type == "multipart/form-data; boundary=BOUND")
+        #expect(text.hasPrefix("--BOUND\r\nContent-Disposition: form-data; name=\"key\"\r\n\r\nstickers/x/manifest.proto\r\n--BOUND"))
+        #expect(text.hasSuffix("\r\n--BOUND--\r\n"))
+        #expect(StickerPackUpload.shareURL(packId: "ab", packKey: "cd").absoluteString == "https://signal.art/addstickers/#pack_id=ab&pack_key=cd")
+    }
+}

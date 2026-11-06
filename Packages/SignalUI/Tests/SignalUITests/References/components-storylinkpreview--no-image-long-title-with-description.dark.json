@@ -1,0 +1,17 @@
+{
+ "id": "components-storylinkpreview--no-image-long-title-with-description",
+ "theme": "dark",
+ "width": 1168,
+ "height": 176,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  16,
+  16
+ ]
+}

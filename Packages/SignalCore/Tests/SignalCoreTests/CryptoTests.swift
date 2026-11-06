@@ -82,3 +82,13 @@ extension Data {
         #expect(throws: ReceiveError.invalidPadding) { try MessageReceiver.unpad(Data([0, 0])) }
     }
 }
+
+@Suite struct SignalEnvironmentTests {
+    @Test func configParses() throws {
+        for env in SignalEnvironment.allCases {
+            #expect(try env.serverTrustRoots().count == 2)
+            #expect(env.endpoints.cdnURLs.keys.sorted() == [0, 2, 3])
+        }
+        #expect(SecCertificateCreateWithData(nil, SignalEnvironment.signalRootCertificateDER as CFData) != nil)
+    }
+}

@@ -289,7 +289,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                                     ratchetKey: ratchetKey, wasSenderKey: ratchetKey == nil))
             }
             events.append(.decryptionErrorReported(sender: d.sender, senderDevice: d.senderDevice, timestamp: dem.timestamp, deviceId: dem.deviceId))
-        case .storyMessage: events.append(.other(kind: "story", sender: d.sender))
+        case .storyMessage(let story): events += try handleStoryMessage(story, d, e, db)
         case .callMessage(let call):
             // Signalling is handled by CallingService (handleCallingMessage); nothing is stored.
             let destination = Self.destination(e) ?? account.aci
@@ -342,6 +342,24 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             try ConversationState.applyIncomingTimer(db, conversationId: conversation, seconds: m.expireTimer, version: m.expireTimerVersion, from: d.sender,
                                                      sentAt: m.timestamp, isGroup: isGroupMessage, isUpdate: false)
         }
+        // A reply or reaction to a story (storyContext).
+        var storyId: String? = nil
+        switch try storyReplyTarget(m, isGroup: isGroupMessage, db) {
+        case .drop: return events
+        case .story(let id): storyId = id
+        case .none: break
+        }
+        if let storyId, m.hasReaction {
+            // A story reaction is a message of its own (`storyReaction`), not a reaction.
+            var extra = try Self.storyReplyExtra(db, storyId: storyId)
+            extra["storyReaction"] = ["emoji": m.reaction.emoji, "targetAuthorAci": m.storyContext.authorAci,
+                                      "targetTimestamp": m.storyContext.sentTimestamp]
+            let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "incoming", body: "", sentAt: m.timestamp, source: d.sender,
+                                                       sourceDevice: d.senderDevice, serverGuid: e.serverGuid, serverTimestamp: e.serverTimestamp,
+                                                       unidentified: d.sealed, extra: extra))
+            try db.execute(sql: "UPDATE messages SET storyId = ? WHERE id = ?", arguments: [storyId, id])
+            return events + [.storyReply(messageId: id, storyId: storyId, conversationId: conversation, sender: d.sender)]
+        }
         let ctx = ModifierContext(sender: d.sender, timestamp: m.timestamp, serverTimestamp: e.serverTimestamp, conversationId: conversation, source: .someoneElse)
         let mods = try MessageModifiers.modifiers(of: m, context: ctx)
         if !mods.isEmpty {
@@ -352,11 +370,26 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         var extra: [String: Any] = [:]
         if m.isViewOnce { extra["isViewOnce"] = true }
         if m.hasPollCreate, let poll = MessageModifiers.pollJSON(m.pollCreate) { extra["poll"] = poll }
+        if let storyId {
+            extra.merge(isGroupMessage ? try Self.storyReplyExtra(db, storyId: storyId) : ["storyId": storyId]) { _, new in new }
+        }
+        // Mentions and styles (`bodyRanges`), and the quote (`quote`).
+        let ranges = Self.bodyRangesJSON(m.bodyRanges)
+        if !ranges.isEmpty { extra["bodyRanges"] = ranges }
+        let mentionsMe = ranges.contains { $0["mentionAci"] as? String == account.aci }
+        if mentionsMe { extra["mentionsMe"] = true }
+        if m.hasQuote, let quote = Self.quoteJSON(m.quote) { extra["quote"] = quote }
         let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "incoming", body: m.body, sentAt: m.timestamp,
                                                    source: d.sender, sourceDevice: d.senderDevice, serverGuid: e.serverGuid,
                                                    serverTimestamp: e.serverTimestamp, unidentified: d.sealed, extra: extra))
+        if let storyId { try db.execute(sql: "UPDATE messages SET storyId = ? WHERE id = ?", arguments: [storyId, id]) }
+        if mentionsMe { try db.execute(sql: "UPDATE messages SET mentionsMe = 1 WHERE id = ?", arguments: [id]) }
         try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
                                                   attachments: m.attachments)
+        if m.hasQuote {
+            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
+                                                      attachments: Self.quoteThumbnails(m.quote), type: .quote)
+        }
         if m.hasSticker {
             try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp), messageType: "incoming", m.sticker)
         }
@@ -368,7 +401,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         // Delivery receipt (Desktop sends one for every delivered message), committed with the message.
         try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: ConversationJob.receipts(
             .delivery, [ReceiptTarget(messageId: id, conversationId: conversation, senderAci: d.sender, timestamp: m.timestamp)]))
-        return events + [.message(messageId: id, conversationId: conversation, sender: d.sender, senderDevice: d.senderDevice, timestamp: m.timestamp,
+        let replyEvent: [ReceiveEvent] = storyId.map { [.storyReply(messageId: id, storyId: $0, conversationId: conversation, sender: d.sender)] } ?? []
+        return events + replyEvent + [.message(messageId: id, conversationId: conversation, sender: d.sender, senderDevice: d.senderDevice, timestamp: m.timestamp,
                                   body: m.body, sealed: d.sealed, groupId: groupId ?? d.groupId)]
     }
 
@@ -477,6 +511,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                            ourAci: account.aci)
                 return [.sync(kind: "sentEdit", senderDevice: d.senderDevice)]
             }
+            if sent.hasStoryMessage || (!sent.hasMessage && !sent.storyMessageRecipients.isEmpty) { return try handleSentStory(sent, d, db) }
             guard sent.hasMessage else { return [.sync(kind: "sent", senderDevice: d.senderDevice)] }
             let m = sent.message
             let conversation: String
@@ -510,13 +545,18 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                        extra: ["sendStateByConversationId": sendState,
                                                                "expirationStartTimestamp": sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp]
                                                            .merging(m.isViewOnce ? ["isViewOnce": true] : [:]) { a, _ in a }
-                                                           .merging(m.hasPollCreate ? ["poll": MessageModifiers.pollJSON(m.pollCreate) as Any] : [:]) { a, _ in a }))
+                                                           .merging(m.hasPollCreate ? ["poll": MessageModifiers.pollJSON(m.pollCreate) as Any] : [:]) { a, _ in a }
+                                                           .merging(m.hasQuote ? Self.quoteJSON(m.quote).map { ["quote": $0] } ?? [:] : [:]) { a, _ in a }))
             if m.hasSticker {
                 try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing", m.sticker)
             }
             try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing",
                                            body: m.body, m.preview)
             try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), attachments: m.attachments)
+            if m.hasQuote {
+                try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
+                                                          attachments: Self.quoteThumbnails(m.quote), type: .quote)
+            }
             try ConversationState.setMessageTimer(db, messageId: id, seconds: m.expireTimer,
                                                   startedAt: Int64(sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp))
             try MessageModifiers.applyPending(db, author: account.aci, sentAt: sent.timestamp, ourAci: account.aci)
@@ -526,5 +566,43 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         case .none:
             return events.isEmpty ? [.sync(kind: "empty", senderDevice: d.senderDevice)] : events
         }
+    }
+}
+
+extension MessageReceiver {
+    /// `processBodyRange`: mentions (by ACI) and styles, as upstream keeps them.
+    static func bodyRangesJSON(_ ranges: [Signalservice_BodyRange]) -> [[String: Any]] {
+        ranges.compactMap { r in
+            var out: [String: Any] = ["start": r.start, "length": r.length]
+            switch r.associatedValue {
+            case .mentionAci?, .mentionAciBinary?:
+                guard let aci = serviceIdString(binary: r.mentionAciBinary.isEmpty ? nil : r.mentionAciBinary,
+                                                string: r.mentionAci.isEmpty ? nil : r.mentionAci) else { return nil }
+                out["mentionAci"] = aci
+            case .style(let style)?: out["style"] = style.rawValue
+            case nil: return nil
+            }
+            return out
+        }
+    }
+
+    /// A quote's thumbnails (the first quoted attachment's, upstream shows one), to download.
+    static func quoteThumbnails(_ q: Signalservice_DataMessage.Quote) -> [Signalservice_AttachmentPointer] {
+        q.attachments.prefix(1).compactMap { $0.hasThumbnail ? $0.thumbnail : nil }
+    }
+
+    /// The quote's reference (`quote`: id = the quoted message's timestamp, its author and text).
+    static func quoteJSON(_ q: Signalservice_DataMessage.Quote) -> [String: Any]? {
+        guard let author = serviceIdString(binary: q.hasAuthorAciBinary ? q.authorAciBinary : nil, string: q.hasAuthorAci ? q.authorAci : nil) else { return nil }
+        let attachments: [[String: Any]] = q.attachments.map { a in
+            var o: [String: Any] = ["contentType": a.contentType]
+            if a.hasFileName { o["fileName"] = a.fileName }
+            return o
+        }
+        var out: [String: Any] = ["id": q.id, "authorAci": author, "attachments": attachments, "isGiftBadge": q.type == .giftBadge]
+        if q.hasText { out["text"] = q.text }
+        let ranges = bodyRangesJSON(q.bodyRanges)
+        if !ranges.isEmpty { out["bodyRanges"] = ranges }
+        return out
     }
 }

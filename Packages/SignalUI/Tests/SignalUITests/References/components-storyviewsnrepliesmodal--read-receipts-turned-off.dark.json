@@ -1,0 +1,31 @@
+{
+ "id": "components-storyviewsnrepliesmodal--read-receipts-turned-off",
+ "theme": "dark",
+ "width": 1200,
+ "height": 900,
+ "scale": 2,
+ "background": [
+  18,
+  18,
+  18,
+  1
+ ],
+ "offset": [
+  0,
+  0
+ ],
+ "portals": [
+  [
+   820,
+   448,
+   360,
+   432
+  ],
+  [
+   820,
+   448,
+   360,
+   432
+  ]
+ ]
+}

@@ -20,6 +20,7 @@ let package = Package(
     products: [
         .library(name: "MediaXPCInterface", targets: ["MediaXPCInterface"]),
         .library(name: "SignalMediaDecoder", targets: ["SignalMediaDecoder"]),
+        .executable(name: "SignalMediaDecoderService", targets: ["SignalMediaDecoderService"]),
     ],
     dependencies: [.package(path: "../SignalCodecs")],
     targets: [
@@ -38,14 +39,17 @@ let package = Package(
                 .product(name: "Blurhash", package: "SignalCodecs"),
                 .product(name: "EncodePNG", package: "SignalCodecs"),
                 .product(name: "EncodeJPEG", package: "SignalCodecs"),
+                .product(name: "EncodeWebP", package: "SignalCodecs"),
                 .product(name: "ContainerMP4", package: "SignalCodecs"),
                 .product(name: "AudioAAC", package: "SignalCodecs"),
                 .product(name: "AudioMP3", package: "SignalCodecs"),
                 .product(name: "VideoH264", package: "SignalCodecs"),
+                .product(name: "VideoHEVC", package: "SignalCodecs"),
                 .product(name: "MetadataStrip", package: "SignalCodecs"),
             ],
             swiftSettings: strict
         ),
+        .executableTarget(name: "SignalMediaDecoderService", dependencies: ["SignalMediaDecoder"], swiftSettings: strict),
         .testTarget(name: "SignalMediaDecoderTests",
                     dependencies: ["SignalMediaDecoder", "MediaXPCInterface", .product(name: "EncodePNG", package: "SignalCodecs"),
                                    .product(name: "ImagePNG", package: "SignalCodecs"),

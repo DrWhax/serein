@@ -13,7 +13,7 @@ public enum LeftPaneWidth {
     public static let maxWidth: CGFloat = 380
 
     public static func fromPreferred(_ preferred: CGFloat, requiresFullWidth: Bool) -> CGFloat {
-        let clamped = min(max(preferred, minWidth), maxWidth)
+        let clamped = preferred.isNaN ? minFullWidth : min(max(preferred, minWidth), maxWidth)
         if requiresFullWidth || clamped >= snapWidth { return max(clamped, minFullWidth) }
         return minWidth
     }
@@ -85,7 +85,10 @@ public struct NavSidebar<Actions: View, Content: View, Toasts: View>: View {
         preferredWidth ?? LeftPaneWidth.fromPreferred(preferredLeftPaneWidth, requiresFullWidth: requiresFullWidth)
     }
     var width: CGFloat { LeftPaneWidth.fromPreferred(currentPreferred, requiresFullWidth: requiresFullWidth) }
-    var breakpoint: WidthBreakpoint { WidthBreakpoint.navSidebar(width) }
+    /// No preferred width (NaN: `width: NaNpx` is dropped): the sidebar fills its container
+    /// and lays out narrow, as in Storybook stories without a stored width.
+    var unsized: Bool { preferredWidth == nil && preferredLeftPaneWidth.isNaN }
+    var breakpoint: WidthBreakpoint { unsized ? .narrow : WidthBreakpoint.navSidebar(width) }
     var narrow: Bool { breakpoint == .narrow }
 
     public var body: some View {
@@ -97,8 +100,8 @@ public struct NavSidebar<Actions: View, Content: View, Toasts: View>: View {
         }
         .padding(.top, dragAreaHeight)
         .padding(.trailing, 1)
-        .frame(width: width)
-        .frame(maxHeight: .infinity)
+        .frame(width: unsized ? nil : width)
+        .frame(maxWidth: unsized ? .infinity : nil, maxHeight: .infinity)
         .background(AxoColor.surfaceSecondary)
         .overlay(alignment: .trailing) { Rectangle().fill(AxoColor.borderPrimary).frame(width: 1) }    // border-inline-end
         .overlay(alignment: .trailing) {

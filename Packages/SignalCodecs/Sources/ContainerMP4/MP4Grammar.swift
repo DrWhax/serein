@@ -12,6 +12,11 @@
 //   avc1/avc3  := reserved:6 dataRefIndex:u16 pre_defined/reserved:16 width:u16 height:u16 …:50 avcC other*
 //   mp4a       := reserved:6 dataRefIndex:u16 version:u16 …:6 channels:u16 sampleSize:u16 …:4 rate:u32(16.16) [v1: 16 | v2: 36] esds
 //   avcC       := 1 profile compat level 0b111111·lengthSizeMinusOne:2 0b111·numSPS:5 (len:u16 sps){numSPS} numPPS:u8 (len:u16 pps){numPPS} ext*
+//   hvc1/hev1  := (as avc1) hvcC other*
+//   hvcC       := 1 profile_space:2 tier:1 profile_idc:5 compat:u32 constraints:48 level:u8 0b1111·min_spatial_seg:12
+//                 0b111111·parallelismType:2 0b111111·chromaFormat:2 0b11111·bitDepthLumaMinus8:3 0b11111·bitDepthChromaMinus8:3
+//                 avgFrameRate:u16 constantFrameRate:2 numTemporalLayers:3 temporalIdNested:1 lengthSizeMinusOne:2
+//                 numOfArrays:u8 (completeness:1 0 nalType:6 numNalus:u16 (len:u16 nal){numNalus}){numOfArrays}   (14496-15 8.3.3.1)
 //   esds       := full descriptor(ES 0x03 → DecoderConfig 0x04 → DecoderSpecificInfo 0x05); length = 1–4 bytes of 7 bits
 //
 // Every length is checked against the enclosing range before it is used; counts are bounded
@@ -125,6 +130,23 @@ public struct AVCDecoderConfiguration: Sendable, Equatable {
     public var pictureParameterSets: [ByteSlice]
 }
 
+/// HEVCDecoderConfigurationRecord: the stream's profile and its VPS/SPS/PPS (and SEI) NAL units.
+public struct HEVCDecoderConfiguration: Sendable, Equatable {
+    public var profileSpace: Int
+    public var tier: Int
+    public var profileIdc: Int
+    public var levelIdc: Int
+    public var chromaFormat: Int
+    public var bitDepthLuma: Int
+    public var bitDepthChroma: Int
+    /// 1, 2 or 4 (the NAL unit length prefix in samples).
+    public var nalLengthSize: Int
+    /// Parameter-set NAL units (with their 2-byte headers), in record order.
+    public var videoParameterSets: [ByteSlice]
+    public var sequenceParameterSets: [ByteSlice]
+    public var pictureParameterSets: [ByteSlice]
+}
+
 public struct AACConfiguration: Sendable, Equatable {
     /// MPEG-4 objectTypeIndication (0x40 = MPEG-4 audio, 0x67 = MPEG-2 AAC LC, …).
     public var objectTypeIndication: UInt8
@@ -135,12 +157,14 @@ public struct AACConfiguration: Sendable, Equatable {
 
 public enum SampleEntry: Sendable, Equatable {
     case avc(fourCC: FourCC, width: Int, height: Int, config: AVCDecoderConfiguration)
+    case hevc(fourCC: FourCC, width: Int, height: Int, config: HEVCDecoderConfiguration)
     case aac(channels: Int, sampleRate: Int, config: AACConfiguration)
     case unsupported(FourCC)
 
     public var fourCC: FourCC {
         switch self {
         case .avc(let f, _, _, _): f
+        case .hevc(let f, _, _, _): f
         case .aac: FourCC("mp4a")
         case .unsupported(let f): f
         }

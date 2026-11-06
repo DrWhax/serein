@@ -49,6 +49,19 @@ const messages = {};
 for (const loc of locales) {
   messages[loc] = JSON.parse(readFileSync(join(upstream, '_locales', loc, 'messages.json'), 'utf8'));
 }
+// The sticker creator's own strings (sticker-creator/src/assets/locales), merged in: its
+// legacy `message` strings get their `$name$` placeholders as ICU arguments.
+const stickerLocale = { sr: 'sr-YR', 'zh-Hant': 'zh-TW', yue: 'zh-YU' };
+for (const loc of locales) {
+  const file = join(upstream, 'sticker-creator/src/assets/locales', stickerLocale[loc] ?? loc, 'messages.json');
+  if (!existsSync(file)) continue;
+  for (const [k, v] of Object.entries(JSON.parse(readFileSync(file, 'utf8')))) {
+    if (k === 'smartling' || typeof v !== 'object' || v == null) continue;
+    if (Object.hasOwn(messages[loc], k)) fail(`sticker creator key ${k} collides`);
+    if (typeof v.messageformat === 'string') messages[loc][k] = { messageformat: v.messageformat };
+    else if (typeof v.message === 'string') messages[loc][k] = { messageformat: v.message.replace(/\$([A-Za-z0-9_]+)\$/g, '{$1}') };
+  }
+}
 // Same key set and order as upstream's scripts/generate-compact-locales.mjs.
 const keys = Array.from(new Set(locales.flatMap((loc) => Object.entries(messages[loc]).filter(([, v]) => isMessage(v)).map(([k]) => k)))).sort();
 rmSync(resDir, { recursive: true, force: true });

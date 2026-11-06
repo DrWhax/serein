@@ -5,6 +5,7 @@ import Blurhash
 import CodecCore
 import EncodeJPEG
 import EncodePNG
+import EncodeWebP
 import Foundation
 import HTMLMeta
 import ImageBMP
@@ -54,6 +55,45 @@ public struct MediaDecoder: MediaProcessing {
         return (d.stillImage, false)
     }
 
+    /// `processImage`: an animated PNG passes as-is (square, 10…512px, looping forever, ≤ 300 KiB);
+    /// any other still image is drawn contained and centred on a transparent 512px square and
+    /// encoded as (lossless) WebP. Other animations are refused.
+    public func stickerImage(_ bytes: Data) async throws -> StickerImage {
+        let b = Array(bytes)
+        if Self.sniff(b) == .png, let decoded = try? PNGDecoder.decode(b), case .animated(let anim, _) = decoded {
+            guard anim.width == anim.height else { return StickerImage(data: Data(), contentType: "", refusal: .notSquare) }
+            guard bytes.count <= StickerImage.maxBytes else { return StickerImage(data: Data(), contentType: "", refusal: .tooLarge) }
+            guard anim.width >= StickerImage.minSize else { return StickerImage(data: Data(), contentType: "", refusal: .dimensionsTooSmall) }
+            guard anim.width <= StickerImage.size else { return StickerImage(data: Data(), contentType: "", refusal: .dimensionsTooLarge) }
+            guard anim.loopCount == 0 else { return StickerImage(data: Data(), contentType: "", refusal: .animated) }
+            let still = decoded.stillImage
+            return StickerImage(data: bytes, contentType: "image/png", previewWidth: still.width, previewHeight: still.height, previewRGBA: Data(still.rgba))
+        }
+        let image: PixelBuffer
+        do {
+            let (still, animated) = try Self.decode(bytes)
+            if animated { return StickerImage(data: Data(), contentType: "", refusal: .animated) }
+            image = still
+        } catch {
+            return StickerImage(data: Data(), contentType: "", refusal: .errorProcessing)
+        }
+        let size = StickerImage.size
+        let scale = Double(size) / Double(max(image.width, image.height))
+        let w = max(1, Int((Double(image.width) * scale).rounded())), h = max(1, Int((Double(image.height) * scale).rounded()))
+        let scaled = w == image.width && h == image.height ? image : Scaler.resample(image, width: w, height: h)
+        var canvas = [UInt8](repeating: 0, count: size * size * 4)
+        let dx = (size - w) / 2, dy = (size - h) / 2
+        for y in 0..<h {
+            for x in 0..<w {
+                let s = (y * w + x) * 4, d = ((y + dy) * size + x + dx) * 4
+                canvas[d] = scaled.rgba[s]; canvas[d + 1] = scaled.rgba[s + 1]; canvas[d + 2] = scaled.rgba[s + 2]; canvas[d + 3] = scaled.rgba[s + 3]
+            }
+        }
+        let webp = WebPEncoder.encodeLossless(PixelBuffer(width: size, height: size, rgba: canvas))
+        guard webp.count <= StickerImage.maxBytes else { return StickerImage(data: Data(), contentType: "", refusal: .tooLarge) }
+        return StickerImage(data: Data(webp), contentType: "image/webp", previewWidth: size, previewHeight: size, previewRGBA: Data(canvas))
+    }
+
     public func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML? {
         guard let m = HTMLPreview.parse(ByteSlice(Array(html.prefix(HTMLPreview.maxBytes))), httpCharset: httpCharset), let title = m.title else { return nil }
         return LinkPreviewHTML(title: title, description: m.description, imageHref: m.imageHref, rawDate: m.rawDate)
@@ -74,6 +114,16 @@ public struct MediaDecoder: MediaProcessing {
         guard image.width > 0, image.height > 0, size > 0 else { throw MediaProcessingError.undecodable("empty image") }
         let square = Scaler.cover(image, size: size)
         return Thumbnail(png: Data(PNGEncoder.encode(square)), width: size, height: size)
+    }
+
+    public func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage {
+        guard (1...4096).contains(maxDimension) else { throw MediaProcessingError.undecodable("bad maxDimension") }
+        let (image, _) = try Self.decode(bytes)
+        guard image.width > 0, image.height > 0 else { throw MediaProcessingError.undecodable("empty image") }
+        let fit = Self.fitSize(width: image.width, height: image.height, max: maxDimension)
+        let scaled = fit.width == image.width && fit.height == image.height ? image : Scaler.resample(image, width: fit.width, height: fit.height)
+        return DisplayImage(width: scaled.width, height: scaled.height, rgba: Data(scaled.rgba), originalWidth: image.width,
+                            originalHeight: image.height)
     }
 
     public func scaleForSending(_ bytes: Data, contentType: String, level: MediaQualityLevel) async throws -> ScaledImage {

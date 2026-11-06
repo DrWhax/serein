@@ -66,6 +66,8 @@ public struct ConversationDetailsCallbacks {
     public var showContactModal: (String) -> Void = { _ in }
     public var showConversation: (String) -> Void = { _ in }
     public var setDisappearingMessages: (Int) -> Void = { _ in }
+    /// "Custom time…" (DisappearingTimeDialog).
+    public var setupCustomDisappearingTimeout: () -> Void = {}
     public var setMuteExpiration: (MuteOption?) -> Void = { _ in }
     public var searchInConversation: () -> Void = {}
     public var onOutgoingVideoCall: () -> Void = {}
@@ -166,7 +168,7 @@ public struct ConversationDetails: View {
                                                  : "icu:ConversationDetails--disappearing-messages-info--direct"))
                         AxoItem.Accessory {
                             DisappearingTimerSelect(value: m.expireTimer ?? 0, disabled: m.isGroup && (!m.canEditGroupInfo || m.terminated),
-                                                    onChange: callbacks.setDisappearingMessages)
+                                                    onChange: callbacks.setDisappearingMessages, onCustom: callbacks.setupCustomDisappearingTimeout)
                         }
                     }
                 }

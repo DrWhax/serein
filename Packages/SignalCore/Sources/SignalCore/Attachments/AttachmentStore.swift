@@ -95,6 +95,12 @@ public struct AttachmentStore: Sendable {
         return (try write(e.blob), keys, e.plaintextHash)
     }
 
+    /// The plaintext of a locally stored file (avatars: {path, localKey, size}).
+    public func plaintext(of file: LocalFile) throws -> Data {
+        guard let k = Data(base64Encoded: file.localKey) else { throw AttachmentError.missingDigest }
+        return try AttachmentCipher.decryptLocal(read(file.path), localKey: k, size: file.size)
+    }
+
     /// The plaintext of a downloaded attachment.
     public func plaintext(of a: MessageAttachment) throws -> Data? {
         guard let path = a.path, let key = a.localKey, let k = Data(base64Encoded: key) else { return nil }
@@ -118,5 +124,24 @@ public struct AttachmentStore: Sendable {
         ]
         var u = url
         try u.setResourceValues(values)
+    }
+}
+
+/// A file in the local store (encrypted at rest): profile and group avatars.
+public struct LocalFile: Sendable, Hashable {
+    public var path: String
+    public var localKey: String
+    public var size: Int
+    public init(path: String, localKey: String, size: Int) {
+        self.path = path
+        self.localKey = localKey
+        self.size = size
+    }
+
+    /// `{path, localKey, size}` as upstream stores profileAvatar / avatar.
+    static func from(_ json: Any?) -> LocalFile? {
+        guard let j = json as? [String: Any], let path = j["path"] as? String, let key = j["localKey"] as? String,
+              let size = (j["size"] as? Int) ?? (j["size"] as? NSNumber)?.intValue else { return nil }
+        return LocalFile(path: path, localKey: key, size: size)
     }
 }

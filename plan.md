@@ -786,3 +786,104 @@ User request: "move parsing of incoming formats into an MacOS entitlement with n
 - **Reactions:** `CallReactionsModel` (one toast per reaction, newest at the bottom, 4th/5th faded; bursts when 3+ people send the same emoji within 4s, at most 3 per 4s) and a floating-emoji burst view; group-call-reactions-many-in-order matches (0.21%), the burst rule is unit-tested.
 - **Also ported:** CallingParticipantMenu (its story matches 0.00%; the participants-list "more" button opens it, with the remove/block confirm), DirectCallRemoteParticipant as its own view (a render test checks the remote frame is drawn), and the reaction picker over the controls (`min(44%, 32vw)` in, 70px up; picking sends `sendReaction`).
 - **Not compared:** the toast-a-palooza / remote-mute / hand-raising / both-speaking / many-* stories (animated, or 7000px-tall captures). The app shell now shows the real Calls tab over demo call history; the app now links SignalCore and SignalRingRTC (libsignal static, ringrtc as libsignal_ringrtc.dylib, so the two Rust runtimes never share a binary image: the Phase 0 duplicate-symbol risk does not arise), and `SIGNALSAFE_RINGRTC_SMOKE=1` starts the calling engine at launch (verified). Wiring CallingService, the capturers and MuteState into a session waits for the app session (no linked-account plumbing in the app yet, as for Phases 2–4).
+
+## Status (2026-11-06): Phase 7 — remaining parity (all items implemented; app wiring pending)
+- **Scope rulings:** donations stay out (as before); debug log upload and the auto-updater are omitted (user, 2026-11-06).
+- **Stories UI (SignalUI/Stories), matched to Storybook (≤1%, light and dark):** TextAttachment (15 of 17), StoryLinkPreview (10), StoryImage (11 of 12), StoryListItem (1), MyStoriesButton (5), MyStories (4), StoriesTab (4), StoryViewer (8 of 10). StoriesPane, StoriesAddStoryMenu, the hide/delete confirms and the viewer's menus are ported with them.
+  - Not compared: TextAttachment romeo-juliet / link-preview-wrj (Parisienne, a hinted TrueType script font: Chromium's advances are ~0.8% narrower than CoreText's and HarfBuzz's, and rounding them did not reproduce its lines); StoryImage video and StoryViewer multi-story (Storybook plays a JPEG as the video); StoryViewer long-caption (Chromium's 90px backdrop blur stays sharp near the right and bottom edges).
+- **Shared fixes:** AxoPopper keeps nested poppers (a tooltip on a menu's trigger); NavSidebar with no stored width fills its container, narrow; CSSText-independent `normalLineHeight`; `StaticAwareScrollView` for snapshot rendering; the viewer backdrop is the picture at its natural size, tiled (the inline `background:` resets `background-size`).
+
+- **More Stories UI:** StoryDetailsModal (4), StoryViewsNRepliesModal (18), StoriesSettingsModal (8, plus DistributionListSettings / EditMyStoryPrivacy / EditDistributionList / GroupStorySettings pages), SendStoryModal (12), TextStoryCreator (8; Tools/capture-storybook.mjs now finds `.StoryCreator` portals), all ≤1%. The views/replies tabs scroll with the list (upstream's are sticky).
+- **Stories data (SignalCore/Stories):** StoryStore (24h `story` rows, `storyReads`, distribution lists with storage write-back), receive (profile-sharing gate, group stories, sent-story syncs per list, recipient updates, replies and reactions by `storyContext`), send (`sendStory` to lists and groups, sealed with `story=true`; `sendStoryReply`; `markStoryViewed` with view receipts). Group stories go to each member, not by sender key. 7 mock-server tests.
+- **Received messages** now keep `bodyRanges` (mentions, styles), `mentionsMe` and `quote`.
+- **Notifications:** SignalCore/Notifications (notification profiles + schedule = `findNextProfileEvent`, should-notify rules: unread incoming, muted chats only for mentions/replies in groups, profiles, group story replies; Dock badge = `countAllConversationsUnreadStats`), SignalSafeSystem/SystemNotifications (UNUserNotificationCenter, name and message / name only / count, sound, draw attention, badge). Sounds: Tools/gen-sounds.sh (afconvert at build time into Contents/Library/Sounds).
+- **Chat folders data:** SignalCore/ChatFolders (`isConversationInChatFolder`, create / ensure All chats / toggle / reorder / delete tombstones / expiry, storage write-back). The pages were already ported (Phase 3).
+- **Platform:** spell-check (NSTextView continuous spell checking, no autocorrect), screen security (`NSWindow.sharingType`), display sleep during calls (ProcessInfo activity), start at login (SMAppService), crash reports (macOS's own `.ips` reports instead of Crashpad minidumps: libsignal's Minidump is Node-only and Crashpad is C++).
+- **Exports:** username QR card PNG (300 dpi, PNGEncoder gained pHYs); account keys PDF (Letter, rendered page; raster since a CoreGraphics PDF context needs pointer APIs); plaintext export (Backups.proto generated; account, recipients, chats, standard and sticker messages, folders, profiles → libsignal BackupJsonExporter → main.jsonl + media files) and its workflow dialogs (22 ≤1%). System notices, calls and stories are not in the plaintext export.
+- **Sticker creator:** EncodeWebP (VP8L lossless: subtract-green, LZ77, prefix codes; libwebp-valid), MediaProcessing.stickerImage (contain to 512, APNG checks) in the media service, SignalCore StickerPackUpload (V1 encryption, manifest, S3 multipart forms), SignalUI StickerCreator window (drop / emoji / details / upload / share) with the creator's 82 strings merged into SignalI18n. Upstream encodes lossy VP8 q0.8; no Storybook stories exist for the creator.
+- **App shell:** screen security, spell-check (read at launch), display sleep (`isCallActive`), start at login, notification permission and the crash-report count are wired into AppModel/AppDelegate. Everything that needs an account or the XPC media service (stories, folders and notifications from real data, exports, the sticker creator) waits for the link milestone; the app still shows demo data.
+
+## Status (2026-11-06): linking milestone — the app runs on SignalCore
+
+- **XPC media service:** `SignalMediaDecoder.xpc` (Packages/SignalMediaService: `MediaXPCHandler` + `SignalMediaDecoderService` executable) is bundled in `Contents/XPCServices`. Its only entitlement is App Sandbox, and it runs under the hardened runtime. The app talks to it through `MediaXPCClient`: a binary-plist `MediaRequest`, a watchdog timeout, relaunch on interruption, and every result re-validated. The new `displayImage` request returns RGBA (EXIF orientation applied, fitted to 1024), so the app never parses an image format. Tested in-process through an anonymous `NSXPCListener`, and in the real app bundle.
+- **App:** `SignalSession` opens `SignalClient` (production by default; data in `~/Library/Application Support/signal-safe`; `SIGNALSAFE_ENV=staging` uses `signal-safe-staging` and its own Keychain key). It resumes the stored account or shows the install screen with the QR code from `link(onURL:)`, mapping errors as upstream: 409 TooManyDevices, 499 TooOld, QR expiry → retry. After linking it requests contacts/blocked/configuration/keys syncs and a storage-service sync (no history import).
+  - Inbox and timeline are live from the database (GRDB ValueObservation: `inboxUpdates`, `timelineUpdates`, `contactUpdates`).
+  - The composer sends 1:1 and group text.
+  - Message-request actions are wired, and accepting downloads the held media.
+  - Image attachments render through the service.
+  - Grouping, metadata hiding and date headers follow upstream's `timelineUtil` (SignalUI `TimelineUtil`).
+  - Upstream's `SmartHeroRow` wrapper is ported as `HeroRow`.
+- **Bundle:** Tools/build-app.sh bundles SQLCipher.framework and libsignal_ringrtc.dylib in `Contents/Frameworks` and drops the build-tree rpath. It fails the build if decoder symbols other than ImagePNG (bundled images only) are in the app binary, or if the service is not sandboxed.
+  - Signing: `SIGNALSAFE_SIGN_IDENTITY=<Apple Development / Developer ID identity or SHA-1>`.
+  - Ad-hoc builds keep the hardened runtime and add `disable-library-validation`.
+- **Mock end-to-end:** `Tools/run-app-mock.py` runs the built app against @signalapp/mock-server. It links by QR, receives a text and a PNG, accepts the request, renders the photo via the XPC service, replies, and checks that Alice received the reply. It captures only the app's window.
+- **Not yet:** Real Signal servers are untested (user go-ahead needed). Also outstanding:
+  - Sending attachments from the composer, voice notes, stickers and reactions in the timeline UI, and quotes.
+  - Typing indicators in the UI, system notifications from receive events, the badge.
+  - Stories and calls on real data.
+  - QR rotation (upstream rotates the provisioning URL), and sticker creator wiring.
+
+## Status (2026-11-06, evening): linked to the user's real account (production)
+
+- Linked as device 4 after fixing production-only gaps the mock server does not check:
+  - `accountAttributes.capabilities` missing from the link request (422).
+  - App Transport Security rejecting Signal's private CA for storage/CDN/SFU hosts. Fixed with exact-host exceptions; pinned trust still required, and HTTPClient refuses http and redirects to it.
+  - Access-control `UNKNOWN` rejected in group state; upstream accepts it (DESKTOP-9868).
+  - Group sends before the group's state is fetched. Now fetched on demand.
+- Startup sync:
+  - Storage sync (1,231 contacts, 204 groups, account, 94 other records).
+  - Then `SignalClient.refreshIncomplete()`: groups without state and stale profiles, four at a time, each group capped at 90 s. Groups the server says we are not in are marked left.
+- Titles follow upstream `getTitle`: nickname, system name, profile name, number, username, shared name.
+- Profile avatars: downloaded from CDN0 for accepted chats and people in a group with us, AES-GCM decrypted with the profile key, stored encrypted at rest as `profileAvatar`, decoded for display by the XPC service.
+- App:
+  - The ✏️ compose list uses upstream's composable rules.
+  - Settings (General, Appearance, Chats, Privacy) via SignalCore `AccountSettings` with storage write-back.
+  - Attachments from the 📎 menu.
+  - `SIGNALSAFE_TRACE=1` logs event kinds, counts and error kinds only.
+- Data: `~/Library/Application Support/signal-safe`, separate from Signal Desktop's `Signal` folder.
+
+## Status (2026-11-06, night): Phase 7 wired into the app on real data
+
+- Notifications:
+  - Received messages and story replies go through `NotificationPolicy.pending`, which applies the mute, mention, profile and read rules, then to `SystemNotifications`.
+  - The Dock badge follows `badgeCount` live; clicking a notification opens the chat.
+  - Messages arriving in the open chat of the focused window are marked read.
+- Stories tab:
+  - `StoryFeed`: full text attachments with gradients, and media.
+  - Stories grouped by sender or group; My Stories grouped by distribution list.
+  - The viewer runs 5 s per story and marks stories viewed.
+  - The text creator and media stories go through SendStoryModal to `sendStory` for lists and groups.
+- Chat folders: the folder bar with unread and mute stats; inbox filtering by `ChatFolderStore.contains`; mark folder read; Settings → Chat folders list and edit (create, update, delete, reorder, with storage write-back).
+- Settings pages:
+  - Notifications and While muted (`NotificationSettings.save`).
+  - Blocked, with unblock.
+  - Profile: names, avatar and username; the username link copies, and the QR card saves as PNG.
+  - Account and account keys: OS auth via LAContext; the PDF is saved through NSSavePanel.
+  - Internal (local state).
+  - Calls is blank until calling is wired.
+- Plaintext export: confirm, OS auth, folder choice, `PlaintextExport.export` with progress, then the completed or error state.
+- Sticker creator (File menu): images through the XPC `stickerImage`; `StickerPackUpload` encrypt and upload; share link.
+- Crash reports: CrashReportDialog when `.ips` reports are pending. **Deviation:** "Send" saves the summaries to a user-chosen file, because there is no debug-log upload.
+- Fixes found on the real account:
+  - The live timeline content had an exact viewport height, so it never scrolled. It is now a minimum height.
+  - A failed SyncMessage.Sent transcript failed and resent delivered messages and marked them Failed. Transcript errors are now logged only, and `markFailed` leaves recipients already sent untouched.
+
+## Status (2026-11-06, late): HEVC (H.265) video decoder — VideoHEVC
+
+User decision: write a Swift HEVC decoder in the sandboxed service, triggered by a Pixel 8
+HDR clip (Main10, 1080p, BT.2020 HLG).
+- **H1 headers:** hvcC in ContainerMP4; NAL/RBSP, VPS/SPS/PPS (PTL, scaling lists, short-term RPS with inter prediction, long-term, VUI/HRD, range-extension flags), slice segment header (RPS, LT, list modification, pred weight table, entry points). Checked against ffmpeg trace_headers on 12 clips.
+- **H2 intra:** CABAC (H.264-shared engine and tables; HEVC context init values), coding quadtree / CU / PCM, MPM, transform tree and units, residual coding (sign hiding, transform skip), QP groups, dequantisation with scaling lists, DCT 4–32, DST, transquant bypass, intra prediction (filtering, strong smoothing, planar / DC / angular).
+- **H3 inter:** RPS marking, missing references, DPB bumping with latency, reference lists, merge (spatial / temporal / combined / zero), AMVP, TMVP, 8/4-tap interpolation, default and explicit weighted prediction.
+- **H4 loop filters:** deblocking (bS, luma strong/weak, chroma), SAO band/edge.
+- **Verification:** Tools/gen-hevc-fixtures.sh generates synthetic clips (x265, and VideoToolbox Main10). ffmpeg supplies goldens: trace_headers and per-frame framemd5. All 12 clips are bit-exact, and the user's 232-frame Pixel clip is bit-exact too (compared with -noautorotate).
+- **H5 wiring:** the media service has H.264/HEVC backends. 10/12-bit is rounded to 8-bit, and VideoFrame carries `transfer`. The renderer shader has BT.2020, HLG and PQ to SDR modes (OOTF, 203 cd/m² white, soft shoulder, 2020→709); HDRConvert does the same on the CPU for posters. HEVC is linked only into the XPC service (the build check covers it).
+- **H6 speed (done, 2026-11-06):** the user's 1080p10 clip runs at about 64 fps through the decoder alone (232 frames in 3.6 s, bit-exact) and 63 fps through the media service including XPC encoding.
+  - **Parser** (the caller's thread): branchless table-driven CABAC; nonzero coefficients go into a sparse per-slice pool. It records plain-data jobs and never reads a sample.
+  - **HEVCReconStage** (a serial queue, at most 2 pictures behind): motion compensation plus inter residuals run in parallel, one band per CTB row. Then come the ordered intra steps (their residuals precomputed in parallel), deblocking in CTB-row bands (vertical, then horizontal), SAO, and 8-bit cropped output.
+  - **XPC:** video frames use a flat bounds-checked format (`MediaXPCWire.encodeFrames`/`decodeFrames`), not a binary plist.
+  - **Player:** VideoPlaybackEngine refills in its own task (queue of 12), so presenting never waits for a fetch.
+  - **Parser as a struct:** HEVCSliceDecoder is now a struct, so its state needs no dynamic exclusivity checks. Decoder alone: 69 fps (3.34 s for 232 frames); through the service: 68 fps.
+  - **10-bit output:** HEVC playback sessions keep their bits. The decoder packs 16-bit little-endian planes (`packedOutput = .littleEndian16`), VideoFrame and VideoPlanes carry `bitDepth`, the XPC wire format is version 2, and the renderer uploads r16Unorm textures and scales them onto its 8-bit constants. Posters stay 8-bit.
+  - **Next, if needed:** the parser is CABAC-bound now, mostly in residualCoding. SAO is still serial.
+  - **Untested:** the PCM path has no fixture.

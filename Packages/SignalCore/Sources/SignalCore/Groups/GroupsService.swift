@@ -69,8 +69,16 @@ public actor GroupsService {
         do {
             return try await updateViaLogs(keys, stored: stored, timestamp: ts)
         } catch HTTPError.status(403, _) {
-            // Not (or no longer) a member: if we thought we were, record that we were removed.
-            guard let current = stored.state, current.isMember(ourAci) else { throw GroupsServiceError.notAMember }
+            // Not (or no longer) a member: if we thought we were, record that we were removed;
+            // a group we never had state for (storage service only) is marked left.
+            guard let current = stored.state, current.isMember(ourAci) else {
+                if stored.state == nil {
+                    try await database.pool.write { db in
+                        try MessageStore.updateConversationJSON(db, conversationId: stored.conversationId) { $0["left"] = true }
+                    }
+                }
+                throw GroupsServiceError.notAMember
+            }
             var removed = current
             removed.membersV2.removeAll { $0.aci == ourAci }
             let left = removed, ourAci = self.ourAci, ourPni = self.ourPni

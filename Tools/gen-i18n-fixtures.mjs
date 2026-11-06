@@ -17,7 +17,7 @@
 //   syntax.json             malformed messages with formatjs' error kind and offset, and
 //                           edge-case messages (quotes, offset:, selectordinal, …) with output
 //   js.json                 String(number) and Number(string) samples
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -42,6 +42,16 @@ const load = (loc) => {
   const json = JSON.parse(readFileSync(join(upstream, '_locales', loc, 'messages.json'), 'utf8'));
   const m = {};
   for (const [k, v] of Object.entries(json)) if (v && typeof v.messageformat === 'string') m[k] = v.messageformat;
+  // The sticker creator's strings, merged as gen-locales.mjs does.
+  const stickerLocale = { sr: 'sr-YR', 'zh-Hant': 'zh-TW', yue: 'zh-YU' };
+  const file = join(upstream, 'sticker-creator/src/assets/locales', stickerLocale[loc] ?? loc, 'messages.json');
+  if (existsSync(file)) {
+    for (const [k, v] of Object.entries(JSON.parse(readFileSync(file, 'utf8')))) {
+      if (k === 'smartling' || !v || typeof v !== 'object') continue;
+      if (typeof v.messageformat === 'string') m[k] = v.messageformat;
+      else if (typeof v.message === 'string') m[k] = v.message.replace(/\$([A-Za-z0-9_]+)\$/g, '{$1}');
+    }
+  }
   return m;
 };
 const en = load('en');

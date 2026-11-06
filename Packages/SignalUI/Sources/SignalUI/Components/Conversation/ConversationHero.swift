@@ -349,3 +349,13 @@ public struct GroupDescription: View {
         .cssTextColor(color)
     }
 }
+
+/// SmartHeroRow's wrapper (ts/state/smart/HeroRow.preload.tsx, `mt-10 flex justify-center`):
+/// the hero centred 40px below the top of the timeline. Storybook renders the bare hero.
+public struct HeroRow<Content: View>: View {
+    let content: Content
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+    public var body: some View {
+        content.frame(maxWidth: .infinity, alignment: .center).padding(.top, 40)
+    }
+}
