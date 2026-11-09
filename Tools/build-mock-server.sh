@@ -60,5 +60,17 @@ json.dump(pkg, open(pkg_path, "w"), indent=2)
 print("pinned", sum(1 for n in pins if not pins[n].startswith("link:")), "dependencies from pnpm-lock.yaml")
 PY
 (cd "$dst" && npm install --no-audit --no-fund --ignore-scripts --loglevel=error && npm run build --silent)
+# Once built, the copy needs only its runtime dependencies. Its devDependencies (mocha,
+# typescript, @types/*) would otherwise be resolved into Tests/MockServer's lockfile too,
+# along with mocha's transitive glob/minimatch/diff/serialize-javascript, which nothing
+# here runs. The build script goes too, so the install below does not rebuild without tsc.
+python3 -I - "$dst/package.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+pkg = json.load(open(p))
+pkg.pop("devDependencies", None)
+pkg.get("scripts", {}).pop("prepare", None)
+json.dump(pkg, open(p, "w"), indent=2)
+PY
 (cd Tests/MockServer && npm install --no-audit --no-fund --loglevel=error)
 node -e "const p=require('./Tests/MockServer/node_modules/@signalapp/mock-server/package.json'); console.log('mock-server', p.version, 'from', require('fs').realpathSync('./Tests/MockServer/node_modules/@signalapp/mock-server'))"

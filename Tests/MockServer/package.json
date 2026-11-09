@@ -6,5 +6,11 @@
   "type": "module",
   "dependencies": {
     "@signalapp/mock-server": "file:.mock-server"
+  },
+  "overrides": {
+    "@signalapp/types": {
+      "uuid": "13.0.1",
+      "zod": "4.6.6"
+    }
   }
 }
