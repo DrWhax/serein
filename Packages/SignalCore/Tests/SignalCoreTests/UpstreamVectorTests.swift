@@ -90,8 +90,33 @@ private struct Vectors: Decodable {
         var numberBlocks: [String]
     }
 
+    struct V2Decrypt: Decodable {
+        struct Base: Decodable {
+            var plaintextSize: Int
+            var padded: Bool
+            var blobSha256, digest: String
+            var incrementalMac: String?
+            var chunkSize: Int?
+        }
+        struct Case: Decodable {
+            var base: String
+            var flip, truncate: Int?
+            var append: String?
+            var size: Int
+            var digest, plaintextHash, incrementalMac: String?
+            var chunkSize: Int?
+            var ok: Bool
+            var plaintextSize: Int?
+            var plaintextSha256: String?
+        }
+        var keys, iv: String
+        var bases: [String: Base]
+        var cases: [Case]
+    }
+
     var desktopCommit: String
     var config: Config
+    var attachmentV2Decrypt: V2Decrypt
     var safetyNumber: [SafetyNumberCase]
     var hmacSha256: [MAC]
     var sha256: [Hash]
@@ -336,6 +361,128 @@ private func attempt<T>(_ body: () throws -> T) -> T? { try? body() }
             let back = try AttachmentCipher.decrypt(ours.blob, keys: bytes(c.keys), size: c.size, integrity: .encrypted(digest: bytes(c.digest)),
                                                     incrementalMac: c.incrementalMac.map(bytes), chunkSize: c.chunkSize)
             #expect(back.plaintext == plaintext)
+        }
+    }
+
+    /// Upstream's streaming decryptAttachmentV2 on damaged blobs and on pointers that lie
+    /// about an intact one: the same accept/reject, and the same bytes when accepted.
+    @Test func attachmentV2DecryptVerdicts() throws {
+        let d = v.attachmentV2Decrypt
+        let keys = bytes(d.keys), iv = bytes(d.iv)
+        var blobs: [String: Data] = [:]
+        for (name, base) in d.bases {
+            // "dirtyPadding": 100 bytes followed by 0xFF up to the padded size, encrypted as is.
+            let plaintext = base.padded ? pattern(base.plaintextSize) : pattern(100) + Data(repeating: 0xFF, count: base.plaintextSize - 100)
+            let encrypted = try AttachmentCipher.encrypt(plaintext, keys: keys, iv: iv, pad: base.padded, incrementalMac: base.padded)
+            #expect(SignalCrypto.sha256(encrypted.blob).hex == base.blobSha256, "base \(name)")   // the same blob upstream judged
+            blobs[name] = encrypted.blob
+        }
+        #expect(d.cases.contains { $0.ok } && d.cases.contains { !$0.ok })
+        for c in d.cases {
+            var blob = try #require(blobs[c.base])
+            if let i = c.flip { blob[i] ^= 0x01 }
+            if let n = c.truncate { blob = Data(blob.prefix(blob.count - n)) }
+            if let extra = c.append { blob += bytes(extra) }
+            let integrity: AttachmentIntegrity = c.plaintextHash.map { .plaintext(hash: bytes($0)) } ?? .encrypted(digest: bytes(c.digest ?? ""))
+            let ours = attempt {
+                try AttachmentCipher.decrypt(blob, keys: keys, size: c.size, integrity: integrity, incrementalMac: c.incrementalMac.map(bytes), chunkSize: c.chunkSize)
+            }
+            let what = "\(c.base) flip=\(c.flip.map(String.init) ?? "-") truncate=\(c.truncate.map(String.init) ?? "-") size=\(c.size) chunk=\(c.chunkSize.map(String.init) ?? "-")"
+            #expect((ours != nil) == c.ok, "\(what): upstream ok=\(c.ok)")
+            if let ours, c.ok {
+                #expect(ours.plaintext.count == c.plaintextSize, "\(what)")
+                #expect(SignalCrypto.sha256(ours.plaintext).hex == c.plaintextSha256, "\(what)")
+            }
+        }
+    }
+
+    // MARK: the other direction
+
+    /// What Swift encrypts with fresh randomness, for upstream's code to decrypt
+    /// (Tools/crypto-vectors/check.sh sets CRYPTO_VECTORS_EXPORT and runs verify.mjs on the
+    /// result). Without the variable this still checks that each output round-trips here.
+    @Test func exportsForUpstream() throws {
+        var export: [String: Any] = [:]
+
+        let identity = PrivateKey.generate()
+        let names = ["Serein", "", "MacBook Pro — 工作 💻", String(repeating: "n", count: 50)]
+        export["deviceName"] = [
+            "identityPrivateKey": identity.serialize().hex,
+            "cases": try names.map { name -> [String: Any] in
+                let proto = try DeviceNameCipher.encrypt(name, identityPublicKey: identity.publicKey)
+                #expect(try DeviceNameCipher.decrypt(proto, identityPrivateKey: identity) == name)
+                return ["name": name, "proto": proto.hex]
+            },
+        ]
+
+        let profileKey = SignalCrypto.randomBytes(32)
+        let people: [(String, String?)] = [("Alice", nil), ("Alice", "Smith"), ("Zoë", "Müller-Lüdenscheidt 🎉"), (String(repeating: "a", count: 53), nil),
+                                           (String(repeating: "a", count: 40), String(repeating: "b", count: 40))]
+        export["profile"] = [
+            "profileKey": profileKey.hex,
+            "names": try people.map { given, family -> [String: Any] in
+                let encrypted = try ProfileService.encryptName(given: given, family: family, profileKey: profileKey)
+                let back = try ProfileService.decryptName(encrypted, profileKey: profileKey)
+                #expect(back.0 == given && back.1 == family)
+                return ["given": given, "family": family as Any? ?? NSNull(), "encrypted": encrypted.hex]
+            },
+        ]
+
+        let packKey = SignalCrypto.randomBytes(32)
+        export["stickers"] = [
+            "packKey": packKey.hex,
+            "cases": try [0, 1, 16, 5000].map { size -> [String: Any] in
+                let plaintext = pattern(size)
+                let blob = try StickerPackUpload.encryptV1(plaintext, keys: try Stickers.derivePackKey(packKey))
+                #expect(try Stickers.decrypt(blob, packKey: packKey) == plaintext)
+                return ["plaintext": plaintext.hex, "blob": blob.hex]
+            },
+        ]
+
+        let storageKey = SignalCrypto.randomBytes(32), recordIkm = SignalCrypto.randomBytes(32)
+        let manifestPlaintext = SignalCrypto.randomBytes(120), manifestVersion: UInt64 = 4_294_967_301
+        export["storage"] = [
+            "storageKey": storageKey.hex,
+            "items": try [nil, recordIkm].map { ikm -> [String: Any] in
+                var record = Signalservice_StorageRecord()
+                record.contact.note = "written by Swift \(ikm == nil ? "with the legacy key" : "with a record ikm") ✅"
+                let raw = SignalCrypto.randomBytes(16)
+                let item = try StorageService.encryptItem(record, raw: raw, storageKey: storageKey, recordIkm: ikm)
+                #expect(try StorageService.decryptItem(item, storageKey: storageKey, recordIkm: ikm) == record)
+                return ["raw": raw.hex, "recordIkm": ikm?.hex as Any? ?? NSNull(), "note": record.contact.note, "value": item.value.hex]
+            },
+            "manifest": [
+                "version": "\(manifestVersion)", "plaintext": manifestPlaintext.hex,
+                "value": try SignalCrypto.aes256GCMEncrypt(key: StorageService.manifestKey(storageKey: storageKey, version: manifestVersion), manifestPlaintext).hex,
+            ],
+        ]
+
+        let recipient = PrivateKey.generate(), aci = PrivateKey.generate()
+        var message = Signalservice_ProvisionMessage()
+        message.aciIdentityKeyPrivate = aci.serialize()
+        message.aciIdentityKeyPublic = aci.publicKey.serialize()
+        message.aci = UUID().uuidString.lowercased()
+        message.number = "+15550002222"
+        message.provisioningCode = "654-321"
+        let envelope = try ProvisioningCipher.encrypt(message, to: recipient.publicKey)
+        #expect(try ProvisioningCipher(privateKey: recipient).decrypt(envelope: envelope) == message)
+        export["provisioning"] = ["recipientPrivateKey": recipient.serialize().hex, "envelope": envelope.hex, "aci": message.aci, "number": message.number,
+                                  "provisioningCode": message.provisioningCode, "aciPrivateKey": aci.serialize().hex]
+
+        export["padding"] = [0, 1, 78, 79, 80, 300].map { size -> [String: Any] in
+            let plaintext = SignalCrypto.randomBytes(size)
+            return ["plaintext": plaintext.hex, "padded": MessageSender.pad(plaintext).hex]
+        }
+
+        export["attachments"] = try [0, 1, 541, 542, 70_000, 200_000].map { size -> [String: Any] in
+            let plaintext = pattern(size), keys = AttachmentCipher.generateKeys()
+            let e = try AttachmentCipher.encrypt(plaintext, keys: keys, incrementalMac: true)
+            return ["size": size, "keys": keys.hex, "blob": e.blob.hex, "digest": e.digest.hex, "incrementalMac": e.incrementalMac?.hex as Any? ?? NSNull(),
+                    "chunkSize": e.chunkSize as Any? ?? NSNull(), "plaintextSha256": SignalCrypto.sha256(plaintext).hex]
+        }
+
+        if let path = ProcessInfo.processInfo.environment["CRYPTO_VECTORS_EXPORT"] {
+            try JSONSerialization.data(withJSONObject: export, options: [.sortedKeys]).write(to: URL(fileURLWithPath: path))
         }
     }
 

@@ -8936,163 +8936,163 @@
   "identityPrivateKey": "78bb5132b86239d42cfced67fd83918dcc1ad14b7d5dff27b1a33c99ddc01079",
   "cases": [
    {
-    "ephemeralPublic": "05f464df79ca5070fca55e09a59b8f15cdeb0bbf2c8bc4b74a372f5741b6034764",
-    "syntheticIv": "47d4ae265b711ff58c220e426abd1a4e",
-    "ciphertext": "f09c0f9ad9eb",
+    "ephemeralPublic": "05d66c0bb0e64538e0ddb1eed6071a4767beec79de8e2c34e5736c67fc3a4ac367",
+    "syntheticIv": "fba374e8a5da6e0565b0ab24b79f21d8",
+    "ciphertext": "7ec86a7eae30",
     "ok": true,
     "name": "Serein"
    },
    {
-    "ephemeralPublic": "05f464df79ca5070fca55e09a59b8f15cdeb0bbf2c8bc4b74a372f5741b6034764",
-    "syntheticIv": "47d4ae265b711ff58c220e426abd1a4e",
-    "ciphertext": "f19c0f9ad9eb",
+    "ephemeralPublic": "05d66c0bb0e64538e0ddb1eed6071a4767beec79de8e2c34e5736c67fc3a4ac367",
+    "syntheticIv": "fba374e8a5da6e0565b0ab24b79f21d8",
+    "ciphertext": "7fc86a7eae30",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05f464df79ca5070fca55e09a59b8f15cdeb0bbf2c8bc4b74a372f5741b6034764",
-    "syntheticIv": "47d4ae265b711ff58c220e426abd1a4e",
-    "ciphertext": "9c0f9ad9eb",
+    "ephemeralPublic": "05d66c0bb0e64538e0ddb1eed6071a4767beec79de8e2c34e5736c67fc3a4ac367",
+    "syntheticIv": "fba374e8a5da6e0565b0ab24b79f21d8",
+    "ciphertext": "c86a7eae30",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05f464df79ca5070fca55e09a59b8f15cdeb0bbf2c8bc4b74a372f5741b6034764",
-    "syntheticIv": "47d4ae275b711ff58c220e426abd1a4e",
-    "ciphertext": "f09c0f9ad9eb",
+    "ephemeralPublic": "05d66c0bb0e64538e0ddb1eed6071a4767beec79de8e2c34e5736c67fc3a4ac367",
+    "syntheticIv": "fba374e9a5da6e0565b0ab24b79f21d8",
+    "ciphertext": "7ec86a7eae30",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
     "ephemeralPublic": "05e91a1e9c6b5dde23ad1c211da16d1a317111dc06a1fb4ced0ed7a9784a1e4851",
-    "syntheticIv": "47d4ae265b711ff58c220e426abd1a4e",
-    "ciphertext": "f09c0f9ad9eb",
+    "syntheticIv": "fba374e8a5da6e0565b0ab24b79f21d8",
+    "ciphertext": "7ec86a7eae30",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "053e7e608b2d7dfade950b8f485443ae047420fb1dd9360e9c2a77113401cbcf63",
-    "syntheticIv": "6e125d4f02ced9dd6c6da3b4890ce125",
+    "ephemeralPublic": "05136992fc327dd8b8982c23398df0b92d278302a62abbdd08ee94553849f13d03",
+    "syntheticIv": "e5ac1e769c0d58b17f9fa2b764cb75d4",
     "ciphertext": "",
     "ok": true,
     "name": ""
    },
    {
-    "ephemeralPublic": "053e7e608b2d7dfade950b8f485443ae047420fb1dd9360e9c2a77113401cbcf63",
-    "syntheticIv": "6e125d4e02ced9dd6c6da3b4890ce125",
+    "ephemeralPublic": "05136992fc327dd8b8982c23398df0b92d278302a62abbdd08ee94553849f13d03",
+    "syntheticIv": "e5ac1e779c0d58b17f9fa2b764cb75d4",
     "ciphertext": "",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
     "ephemeralPublic": "054ccf90cb01021cb26163d5c0c05a80725fa70374b2f74cc581fff1a755aefb3a",
-    "syntheticIv": "6e125d4f02ced9dd6c6da3b4890ce125",
+    "syntheticIv": "e5ac1e769c0d58b17f9fa2b764cb75d4",
     "ciphertext": "",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05e0accb4006cc91bad41a95acfe88a37184d0e9b92353b83bc5c68914be7b3d58",
-    "syntheticIv": "0b15a575f864c82e3475bb3b3240a0a5",
-    "ciphertext": "61afe97735b06e75ab12f1656e64ebe5bb04a96f562a705ba226af",
+    "ephemeralPublic": "05d525044c6acd3c348bbcd79e335c815ecfeb8db664920602f3921de5836f995a",
+    "syntheticIv": "0f390615d4de58ee694a30a14be3dc35",
+    "ciphertext": "9498aeb8d9840320802a8cfd96a570eb5bd11d1015ebf0dfd4b89d",
     "ok": true,
     "name": "MacBook Pro — 工作 💻"
    },
    {
-    "ephemeralPublic": "05e0accb4006cc91bad41a95acfe88a37184d0e9b92353b83bc5c68914be7b3d58",
-    "syntheticIv": "0b15a575f864c82e3475bb3b3240a0a5",
-    "ciphertext": "60afe97735b06e75ab12f1656e64ebe5bb04a96f562a705ba226af",
+    "ephemeralPublic": "05d525044c6acd3c348bbcd79e335c815ecfeb8db664920602f3921de5836f995a",
+    "syntheticIv": "0f390615d4de58ee694a30a14be3dc35",
+    "ciphertext": "9598aeb8d9840320802a8cfd96a570eb5bd11d1015ebf0dfd4b89d",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05e0accb4006cc91bad41a95acfe88a37184d0e9b92353b83bc5c68914be7b3d58",
-    "syntheticIv": "0b15a575f864c82e3475bb3b3240a0a5",
-    "ciphertext": "afe97735b06e75ab12f1656e64ebe5bb04a96f562a705ba226af",
+    "ephemeralPublic": "05d525044c6acd3c348bbcd79e335c815ecfeb8db664920602f3921de5836f995a",
+    "syntheticIv": "0f390615d4de58ee694a30a14be3dc35",
+    "ciphertext": "98aeb8d9840320802a8cfd96a570eb5bd11d1015ebf0dfd4b89d",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05e0accb4006cc91bad41a95acfe88a37184d0e9b92353b83bc5c68914be7b3d58",
-    "syntheticIv": "0b15a574f864c82e3475bb3b3240a0a5",
-    "ciphertext": "61afe97735b06e75ab12f1656e64ebe5bb04a96f562a705ba226af",
+    "ephemeralPublic": "05d525044c6acd3c348bbcd79e335c815ecfeb8db664920602f3921de5836f995a",
+    "syntheticIv": "0f390614d4de58ee694a30a14be3dc35",
+    "ciphertext": "9498aeb8d9840320802a8cfd96a570eb5bd11d1015ebf0dfd4b89d",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
     "ephemeralPublic": "0560d90e8191ce034afe7e319a470bd3af54bacb810a1b750f7033d3b1b7f37148",
-    "syntheticIv": "0b15a575f864c82e3475bb3b3240a0a5",
-    "ciphertext": "61afe97735b06e75ab12f1656e64ebe5bb04a96f562a705ba226af",
+    "syntheticIv": "0f390615d4de58ee694a30a14be3dc35",
+    "ciphertext": "9498aeb8d9840320802a8cfd96a570eb5bd11d1015ebf0dfd4b89d",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05189e85b09645689c3d693724cea561e99c19d320ec0da66ffa8746594c5b4c1f",
-    "syntheticIv": "e94552a6616df3433b67deb786a3d969",
-    "ciphertext": "afbb4b0219139a1b285f6e7f3fd66cea2e171533fd8bc47fc3eff62eb8564bd58da44dfefec8764e864bf455f3fb212674e7",
+    "ephemeralPublic": "05d13c8ecf877c034fd315c399cdc2a3aa005d95674a4571c6362b61ce9a2afa06",
+    "syntheticIv": "38bae832ad4e926954efb59907420532",
+    "ciphertext": "4329df6d56c80fdcd6b64f9ac521ca4afe30dee2782fe1d9193fcbeb64ff357b7181dcdd255341d63592b80fb9ed82fae7b9",
     "ok": true,
     "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
    },
    {
-    "ephemeralPublic": "05189e85b09645689c3d693724cea561e99c19d320ec0da66ffa8746594c5b4c1f",
-    "syntheticIv": "e94552a6616df3433b67deb786a3d969",
-    "ciphertext": "aebb4b0219139a1b285f6e7f3fd66cea2e171533fd8bc47fc3eff62eb8564bd58da44dfefec8764e864bf455f3fb212674e7",
+    "ephemeralPublic": "05d13c8ecf877c034fd315c399cdc2a3aa005d95674a4571c6362b61ce9a2afa06",
+    "syntheticIv": "38bae832ad4e926954efb59907420532",
+    "ciphertext": "4229df6d56c80fdcd6b64f9ac521ca4afe30dee2782fe1d9193fcbeb64ff357b7181dcdd255341d63592b80fb9ed82fae7b9",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05189e85b09645689c3d693724cea561e99c19d320ec0da66ffa8746594c5b4c1f",
-    "syntheticIv": "e94552a6616df3433b67deb786a3d969",
-    "ciphertext": "bb4b0219139a1b285f6e7f3fd66cea2e171533fd8bc47fc3eff62eb8564bd58da44dfefec8764e864bf455f3fb212674e7",
+    "ephemeralPublic": "05d13c8ecf877c034fd315c399cdc2a3aa005d95674a4571c6362b61ce9a2afa06",
+    "syntheticIv": "38bae832ad4e926954efb59907420532",
+    "ciphertext": "29df6d56c80fdcd6b64f9ac521ca4afe30dee2782fe1d9193fcbeb64ff357b7181dcdd255341d63592b80fb9ed82fae7b9",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05189e85b09645689c3d693724cea561e99c19d320ec0da66ffa8746594c5b4c1f",
-    "syntheticIv": "e94552a7616df3433b67deb786a3d969",
-    "ciphertext": "afbb4b0219139a1b285f6e7f3fd66cea2e171533fd8bc47fc3eff62eb8564bd58da44dfefec8764e864bf455f3fb212674e7",
+    "ephemeralPublic": "05d13c8ecf877c034fd315c399cdc2a3aa005d95674a4571c6362b61ce9a2afa06",
+    "syntheticIv": "38bae833ad4e926954efb59907420532",
+    "ciphertext": "4329df6d56c80fdcd6b64f9ac521ca4afe30dee2782fe1d9193fcbeb64ff357b7181dcdd255341d63592b80fb9ed82fae7b9",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
     "ephemeralPublic": "05b0f0d85f6eb497fe19fe799669fa11b9618325153fed7a94dabb3bd268074b5d",
-    "syntheticIv": "e94552a6616df3433b67deb786a3d969",
-    "ciphertext": "afbb4b0219139a1b285f6e7f3fd66cea2e171533fd8bc47fc3eff62eb8564bd58da44dfefec8764e864bf455f3fb212674e7",
+    "syntheticIv": "38bae832ad4e926954efb59907420532",
+    "ciphertext": "4329df6d56c80fdcd6b64f9ac521ca4afe30dee2782fe1d9193fcbeb64ff357b7181dcdd255341d63592b80fb9ed82fae7b9",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05048832013c721b32923efce543c5af6d9eec85dd847c227dc5a8f9ff25a91e3b",
-    "syntheticIv": "18c2bfbef4892788c2a1767c8aeb47fa",
-    "ciphertext": "be",
+    "ephemeralPublic": "054c92ed0ff4b07eb01a845fefa9a2c1010e57bcb9d626fbe9e8efc0d1238e977a",
+    "syntheticIv": "aadadfacf06ac31801a675df073cb03a",
+    "ciphertext": "51",
     "ok": true,
     "name": "x"
    },
    {
-    "ephemeralPublic": "05048832013c721b32923efce543c5af6d9eec85dd847c227dc5a8f9ff25a91e3b",
-    "syntheticIv": "18c2bfbef4892788c2a1767c8aeb47fa",
-    "ciphertext": "bf",
+    "ephemeralPublic": "054c92ed0ff4b07eb01a845fefa9a2c1010e57bcb9d626fbe9e8efc0d1238e977a",
+    "syntheticIv": "aadadfacf06ac31801a675df073cb03a",
+    "ciphertext": "50",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05048832013c721b32923efce543c5af6d9eec85dd847c227dc5a8f9ff25a91e3b",
-    "syntheticIv": "18c2bfbef4892788c2a1767c8aeb47fa",
+    "ephemeralPublic": "054c92ed0ff4b07eb01a845fefa9a2c1010e57bcb9d626fbe9e8efc0d1238e977a",
+    "syntheticIv": "aadadfacf06ac31801a675df073cb03a",
     "ciphertext": "",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
-    "ephemeralPublic": "05048832013c721b32923efce543c5af6d9eec85dd847c227dc5a8f9ff25a91e3b",
-    "syntheticIv": "18c2bfbff4892788c2a1767c8aeb47fa",
-    "ciphertext": "be",
+    "ephemeralPublic": "054c92ed0ff4b07eb01a845fefa9a2c1010e57bcb9d626fbe9e8efc0d1238e977a",
+    "syntheticIv": "aadadfadf06ac31801a675df073cb03a",
+    "ciphertext": "51",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    },
    {
     "ephemeralPublic": "05b51bec7c1d02307d907394afb2723cfe11f20028a8df05306d2239a8c6ffe911",
-    "syntheticIv": "18c2bfbef4892788c2a1767c8aeb47fa",
-    "ciphertext": "be",
+    "syntheticIv": "aadadfacf06ac31801a675df073cb03a",
+    "ciphertext": "51",
     "ok": false,
     "error": "decryptDeviceName: synthetic IV did not match"
    }
@@ -9103,73 +9103,73 @@
   "names": [
    {
     "raw": "416c696365",
-    "encrypted": "50db284db916b760b92a485a1eee9ec0f6df6d7c816f53092621aaae6c1137c5f408df2f2259814c5b6ced2acf10a68fed2f64ef5b76c2af7e1f917f9a5f66f0608f5498018f010a0c2f5953c5103f9c82",
+    "encrypted": "94673e34dcb845d20b19158d43576c903597fd3554412ff225ecdd81fbe88d1ebc74f98894be6cfa9ab8a0f7f04dc257d73946528bbf67d28498ad5c3a5f37c5212b871827163cd393f5df38cd91cbbb8a",
     "given": "416c696365",
     "family": null
    },
    {
     "raw": "416c69636500536d697468",
-    "encrypted": "303d49eff3d7b541a641ce7eed0dac857a01d4625f7650e4405febe569592f20e32dba52e6b03ad2ea8a2bc564ca1748294d67e9ba4e06abfb3b0862d81f4d5380fdc75ffbd4bf98b614204e8a27724cb9",
+    "encrypted": "c50f919f8e075b12eb3845b9896c0bf033f5af374e64cf6d97a305db80019c225ba9e77532bfc5e07d7ad742bfc73489f9a318df22b5600bf59a67ca417083aa5f006d59c2ae896a8adcea9d1a6bf0479a",
     "given": "416c696365",
     "family": "536d697468"
    },
    {
     "raw": "00536d697468",
-    "encrypted": "9a254eeef6f1edee6fa4bb18a7a5a5b8cea6d24fc25c907cd495a621d130dcf2a3700f19c23308b89e331ab8162ee2f51e973847e9839b4a1f52a480e35361166fa135f519a3a6637e8a077be8fadc7950",
+    "encrypted": "321db6c71da5c17eb9db0efce58543da5210667942af203f8cb637358adcc84faba202dff21f765cc296234af91ae9e86e5b00f9f1d95c8f2830966032d5507ac1ff1f94404e9e4e935a5deb5ca1f83cfa",
     "given": "",
     "family": "536d697468"
    },
    {
     "raw": "416c69636500",
-    "encrypted": "c1a4ccb37a2e2fb1cb729b6ee9567d57ba19fb68604518fe7d7d00bc323706355011494d0c331c2e227850f17e1294791c4376c0fa1d54f8a13ea24292dea4f76d7a443303e8e1c96cd19dff6198829065",
+    "encrypted": "5df15cddefd29a5840c8baf288402d7ed3fed989e478c00950412ec4e5daa3cbd7c12518f7b2752e84146247c83b249b3f9767199539f11299d904d5ff76f079969dbd4b8e6eceb362aa669219a98a125b",
     "given": "416c696365",
     "family": null
    },
    {
     "raw": "4100420043",
-    "encrypted": "664639e289df205548369ce80396a6fbd4b6b3f55138c2f20bc9ba681f69425486287c777d9ce7b8f8ba009dcf46808dad10f697ed1e1f29dcbb48feddd7a534e73e7fb86089c4f91bcf52ff067361cfa8",
+    "encrypted": "f1e4c595fe158b88a7855d2fd9b540071954294360ad3bd0a83f60194ccca1c7a75ade826e556c3dac78654550d112e3aa10e6464900dc78d4434346a24e6ef57675361c5eef57895337055b3fc709498f",
     "given": "41",
     "family": "42"
    },
    {
     "raw": "41000043",
-    "encrypted": "eeb25c2f1ac203bbb1a4c2914fd68c2bf28109fd5d7ae5d981ec46cf2052191fc18ab7d84cef0e55c5cc84a9409bfd463fbb97a966bae43842af860c9a3a33a85d58d569faf163b22dd0dac2b0c77731b3",
+    "encrypted": "3f364609605d6891c624ca5a4e29bb220351b9f5a7fbaf9be187534f6cb43c344ce2d1dd18fa56d574117f87586e97ca6d36c0875ff14630b026f4f75879cb758066aec62be20458ba00abdf22fac54491",
     "given": "41",
     "family": null
    },
    {
     "raw": "",
-    "encrypted": "e02b636fbf90b8b62d97de266d8fff346ab4af8ecf016f88cc4912d56dcfaa9d871d660a37e9f23c349b1c8dbff80314561d2b9f1946583edc7f2a07aa8f076c777297b30128ece47c1a17e2cd58d4f46f",
+    "encrypted": "fa570db39cd5871b1f4e932e1133f7fd598ab46b78aac290467a005fb3c881bb110b5496b8f4c5f95de3f5c26a7507628c96c739556932756ee14f5588dd390026b0e39cadc186a9462b760c91a7971540",
     "given": "",
     "family": null
    },
    {
     "raw": "5a6fc3ab004dc3bc6c6c65722d4cc3bc64656e7363686569647420f09f8e89",
-    "encrypted": "d54540a865ddb49a3d3ff811df6ae3ed8f72261e52a37bdb3d7bb8ba1b53ed1d457307b439fe4ef7d2cfb49df38dbab110391c99b58768a0fa9637b17961b29aff40aebf09689fb2c5e525a97b90afec4f",
+    "encrypted": "02da18b04d543192080e32ecbe7d088967821f4e50f7be79bff3e854892ade84cf13850f8dcdd083e1b6136d77747f6c73f3c14422ff409f67bf6e245136c6e153ed5f022922804d0656a065321d2dc97c",
     "given": "5a6fc3ab",
     "family": "4dc3bc6c6c65722d4cc3bc64656e7363686569647420f09f8e89"
    },
    {
     "raw": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
-    "encrypted": "b3021e9c8b780c73e6772940353d896d9cd4ebe3867a2db3ad0913bc787bd7c973affd525ba60488553e7b4ac155ffde64eb37eb53468cddc7c53dd3cf62f8ae67514b05101f4db9c5a84d9591040d0bdc",
+    "encrypted": "8f0e4682f170a78411031e14ac1dc404a7b43cf839fb5b2418d78be31bd0e3a82b95cc175dc2b2afbd537367110b511a7efb95f494d56a0b2a68d4fbb6e8deaf9086983112b1c43a2bf6c51a00b48a344c",
     "given": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
     "family": null
    },
    {
     "raw": "6161616161616161616161616161616161616161616161616161006262626262626262626262626262626262626262626262626262",
-    "encrypted": "19697c61c10d979938b879042af1d080ab7f75b55eba96238b26231b5daccb9984defe63c00b64b2b192e98c43c00dd13ae7bc6e32f6c7c16a29e07e30e9cbaa38f40e24f41686ac0e84cf0f7335ea1061",
+    "encrypted": "660772c795139c8e88be3ec883dc5eb6465692c52b1f81176c868b6f39c0f6e0964ad7f42ebf04ba77d9f361f38032f43504fd2c74d562d3b11e0187d9687bd58138fd75f2271f59c4fde7173d34b1e66a",
     "given": "6161616161616161616161616161616161616161616161616161",
     "family": "6262626262626262626262626262626262626262626262626262"
    },
    {
     "raw": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
-    "encrypted": "ebca2130c2ba7fbe4e203bfc2164ee6b3db6728f4e23064475b8f8423ccb74768a7d2df2a0b3fc3b8e5caf667b41ee9a893490c91b7f634a99ead3dd624b33c7123540687f8c7bed5ca34da2c4f0321efcbc57d6deb909941931bf8543412a84c8da7a0f65cd9e1536284b572014732cd7bd1160f99f9a4f00aa69948cdd7792a33ca316aa53e0a425e45911e8499113cc8f5ad1d026ccc35f0c9545ccea25afd9a527eef434218bfc0e66edaa299b47b1cb424f884720b9e184de6af414d8025d42bf0d9f993853ee7361f3fe9647f34530d77315ac4ea1698a3336b5b5e89dd61dd0f1f2278db6aa049bf773f78432d60b97bd38a90252430bd0b1431e48b5026187d8fe89e0c7dc1164b9b125ff43dfe25a260376f58c3c7f4ba46d",
+    "encrypted": "cdef45daf668cb2cca729fb1ca62bc092616e0f1f23b8c91d2d74f94342687e5acdab59f8bad965d1e3c9e6b4eac45aa874a17a485dc685231e018b5da5fa51ec3c0702662f8eb9c1d745a3a4d4bfead80174b20af48cfca52f0f653ae35a8ab105bd851bf36f93e3cd2df4447a440241f3472290f6730667fff45035fcb4239d9a0d298ab0a41c9f2d89887a2c60683dedc022e8c46ac7ca2279e63c8978dd4bcad314edbc304caa77a132720f63fe62bd6dadbc1aa9ef4ea1170c1de3fc705df9e7e029c5decca44b9547d877cfc56b7f6883aac711442c6e49590ef13a4b4edf37a9ef3d79416f898b1a3ca498f2e5ac2d2e4f69f53812810bff5025ddb0587e3ea7b594c74d3248276b278d42ca892630fa0a4f6970dd6ac116225",
     "given": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
     "family": null
    },
    {
     "raw": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161006262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262",
-    "encrypted": "31cc8a8aa468fcab18338ea424f8beeaef861a8f4c0168658d43053db99b60069116cc4c8f26b6cce12b10834af558038e01a75ab4a310d162c261d4dd2e38217d7a089675a763bb89f801539deaece7400a0fa47b2db3e811653a28bf285088b0f3b258a5c845146983924209935e6084aaddda521982343df54c21022709e12a6eeceef6be6269bafed5384a96d332dd3e166a27ca25f3d859e6b7739aeb0c0595c966c19556798cfa66547a142c9bec61b15c9dd2f6c1bac194e0631ad5ec493ce856261351022d62340138ab5242455d6aa1db735f15449dcae888643eef065c17a2de1739f76599c330a94980feac4932772fe381e51a6b22ebefd8c0828be13d140ade2692481b51eb037a416a4025bf355e1f4e518ffe34b3c3",
+    "encrypted": "13a659605216d12d566a05c00fc3ab35bdaabd5b84aee23e918d033425cb5b767ec0e6371e88a027ad5276232dd90a45ad4402ab99de8f56e3c294e23e8a5c5c0494061f66fd790697cac763f9f7c6cdc7eff3cbd7f6abd7aaabde509e5ca5fe18722a63c05491241730c8a58ee4669aac3b87fb5725a40c44ef5890933a5d690bfa252c2ff760805f3493ba86b28507df468f5739cf719483f5712d348d36755161565bb89766289791e9a7d559702773a5ff18b7c3be2e9ebf321686450c716a7e7b7fee296b3691268ccb9b3f9897c14f6ae39d3256afebdc9b010fb94f4a4e22c06b6d266ad909a281b8cec9bf11aecff2708b0644d60311298752ad82a46a1e2a68eed25083ae8418022d2cb5675b5e63c51f5d898f563d49fdfd",
     "given": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
     "family": "6262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262"
    }
@@ -9177,63 +9177,63 @@
   "strings": [
    {
     "raw": "48656c6c6f207468657265",
-    "encrypted": "4edb38b21518ba5c49ad5fb410b155943ad1b78409685a460c0867aacf3949a8f7bcf51d99901c1a6e577b9dc4edf1d32afc2ceb5bc76b108223032647f1387afd002eaab2857d5a5bce7626a1914780feb3e8f8acbf26f5974d5aa0132d4b07f25c5fd2aa8976275704b759a831f568fee414aaded95645ae7d426f0499ec52f179f4d84255dbbcb744bfb175250213ece3eb1cbaee488c0a13db4e",
+    "encrypted": "e7b1f270ff57d5c84d7a0823b10024e38260f5969a3c5018bb0bd86d304472882febeb33fa5720e4e7c3d9a1aae85337eba02aaca983286201f4692221a1c25bcb8fa825bc475358ed8de80e01694d51f02d888f8e4ffe3266d263e31cc3254d7b9e5b2f37c95daf5630626ade5a19fbe590a981f9cfbe38612714a408d29f41ed1bfa573b31dac7f1feee47883c1dd4db5699f5fb180f103859ab70",
     "display": "48656c6c6f207468657265"
    },
    {
     "raw": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
-    "encrypted": "b7b73d8e7c41c7a1199217591aee3e74f095807cbd920e3ac2669879ee0f74cedf841b5222606405cd74cf0ba719ecd2086b9eadcc730f9ca1553ea23116bedee231b1ac16978b76c6a15e333fd8c036619f0405144f22504b08500a0659f6b96525082c7e8e2983d633d207cd993e2e8ce17c45e402694d45bc0efc57d0232fd8904aaf09b5fa0a579f96f7441fb6308490b068930d2c28ec067bf3",
+    "encrypted": "3122ce3615af0ccc3156a5969ab1658243430827c265b60bb06fe412ba381552f890c85814b55afabc616ebf6a7362222fb65ca6f58a8415067af2c084ceeba9063f01a02c4483635541f886346439e0f3ac8cb53f9dae81f594c5babf0603a694d082096ecaf2e83431d78ce98aff1489a27ac21e125c21007dcb1ad0d115823bd4a94ca06aad5397fbea11fe4761a4487d987bc2e2795c39d0b3ea",
     "display": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
    },
    {
     "raw": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
-    "encrypted": "5154fe1b77df5586e05e7feea37860dd91f7d84109dd4aa72c297bab58feb15c40f19cf8eee4539015c93d433c5192e2d40cf37d77ca164a11f08cfd0dd4f35d5e3b9dfce9897d9c0927dfbcb9a2270df76d77154d6c5dd6c89be89a5c338ac992e76f0bb816807c25101b45b9600c6ac635c3d651503ce44ffce4410489598eb378b606cdbcd7dad2903c790304ae006dedbb17a2a33b5f432923434e35b7c926b860bff1cd952866e2a0ade4b61f273a102efea06facd3c0babc016d993c2a2c79b444743db47ef35f584270d47b74788e450e8d92b4eefd488d6aad97551f9f9a1aaf066b3bc011c3119ba6010acdb33f35044c5c0fcce47f69c8cef31e9eeff4786af9cd5a78684ff3c41f1ec9e5fc0482e6718d93d6e76a",
+    "encrypted": "38e01941ccd6b5454bdabe542ff1cab4452b804eb5bdb4a87c0e85ecd74b00c507ab2dc17ed5c3eda05c067690d54803adfadcb98c963fe96bbcd445bb9aa1a7440a1fcc3fbe7e29c2ab8685e1c2a1758991b8e74c5214490bde651ef4ebc4016f11f287df8c81bee83788c6311a14a7f564d3262c82d8f0c4dcf1efc79f5c4853b0171fda665b7ce98e4a0c0fc24c7e4544aceba3a600dcf58abb4a3fbf37a61fd8abe68f2a29ceafdadc66e9188e71a2d8d256f12e21da4ebf5fa69a0aea7b5f1bdf01623e59727c755d1263a6ef73db9cc16b505bd7b47073a9904d94abaa49b9df73f6519b6a64f22fc67894242ea3cfc2e28cd3970f3c55df02ba27905a46b6b2180dc0f89cc25e38ec483d139876b6a76d211e6c7f808a",
     "display": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
    },
    {
     "raw": "77697468006e756c6c",
-    "encrypted": "c8821c89aca2ae1f6f96452a270129c0e51859ae6353a60d34f9684f06e1e3eedd5c4f14d3d8f06a8b16fd8ab73a269d3260ac4218505fef61e50f5fdf8c6fc0cc4484a85b7b7ed3973fc6c32eb2413ddf87873f2e6d9b71d6a05b122deba0eee9c8052f3d5b40db12a69c87585bbfcb3fe0104c299197f61923ad55a7d8f65e0194350d80a4a891d5f17a2e88746ecc5e5e3b1f474eb435651d16bf",
+    "encrypted": "d500f5aa359ace3467f590ff9c9a51c228955b6c963a7a0bc51301445f5d8baaa716e63cb04c52e24001d122933a35df4ffc0fcf33092b17eec1635c22f1f9f651f56e0902f1820fa2a79da02773cb3a976fd29724c43d907c248ce94c58459c2e531ce04702a0e269a511f390c5213b6b74de219b7bd444d32d830840cdaee12a28bc22cd184810eb3bcae9bd75eab951cd784397bba27213a18f84",
     "display": "77697468"
    },
    {
     "raw": "",
-    "encrypted": "440dd8fc5ebe52569121eb3417e9d559f430948123eddde47b06d80217cca8e7955e203911458cfa08886b67ed77350266b3a11c0b73a7fc4a704e59f3d1d14d988a0a0437bb6f0c8ba17bdc40758ce6dc83216fcba467890ee0b2ed845425b33c7baf418bb0aa86da6796c2fa301dd6a1837e477d9d0da1f9bc17e65805a838cd901d4f438b71fd129f24e7940639b9402c66cc598bf96893e62870",
+    "encrypted": "e8e303b124986d740d8da4049db9430885cfda18df40c36830fcab094310ded94a066d94bf1a70be03467a19d5b4c0ad1f2924b43a39a4dc8b4ca56a289894e3a595f0ca8bcaba6a99e9e3c99abc87a6e7036a59067e293fdba2b4eb205b3e1f4fa4e3367da2da496c756d5bc9b33b8a7c404eb13bd75dad77514b2a959bbe088ceffb1a5e19e84d3f53671d8f7f1d7072a912178d2c3fce9a86a203",
     "display": ""
    },
    {
     "raw": "f09f8e89",
-    "encrypted": "e9a77aa6d93f342111a65edae10775b0fa9cdd23dd6928110690884585999540e4c3589d597a17cd9e5c3f53836cc41549aa2b32e391ee419108d6de",
+    "encrypted": "050376eee8b9d97c5e9680d2c9de5d35e3a78f0621b185d583a12b9a6868728a7a81368a8fb929e3134804af240fa9e8c38564816a7d733bb7cda2a9",
     "display": "f09f8e89"
    }
   ],
   "decrypt": [
    {
-    "data": "b73ac7f6d1f1dfc5e31fc792384a93007d72761d00593b6df3aff96fdfd0c3ac419590d70a5b4bdde46301b63da2f877043051b4ac43b47ccc876091b689d8e7f542780dce4c58559a87cbc982ab15d4ae",
+    "data": "2c6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d878b6757fa5ccee3771d9304a23b2415cbbb4f724b86141712ecbbebeef0fe3e4119b49ada4d45c4f6b1c5619633861542b846e006fc477ea308243058c",
     "ok": true,
     "plaintext": "416c696365000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
    },
    {
-    "data": "b63ac7f6d1f1dfc5e31fc792384a93007d72761d00593b6df3aff96fdfd0c3ac419590d70a5b4bdde46301b63da2f877043051b4ac43b47ccc876091b689d8e7f542780dce4c58559a87cbc982ab15d4ae",
+    "data": "2d6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d878b6757fa5ccee3771d9304a23b2415cbbb4f724b86141712ecbbebeef0fe3e4119b49ada4d45c4f6b1c5619633861542b846e006fc477ea308243058c",
     "ok": false,
     "error": "Failed to decrypt profile data. Most likely the profile key has changed."
    },
    {
-    "data": "b73ac7f6d1f1dfc5e31fc792384a93007d72761d01593b6df3aff96fdfd0c3ac419590d70a5b4bdde46301b63da2f877043051b4ac43b47ccc876091b689d8e7f542780dce4c58559a87cbc982ab15d4ae",
+    "data": "2c6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d879b6757fa5ccee3771d9304a23b2415cbbb4f724b86141712ecbbebeef0fe3e4119b49ada4d45c4f6b1c5619633861542b846e006fc477ea308243058c",
     "ok": false,
     "error": "Failed to decrypt profile data. Most likely the profile key has changed."
    },
    {
-    "data": "b73ac7f6d1f1dfc5e31fc792384a93007d72761d00593b6df3aff96fdfd0c3ac419590d70a5b4bdde46301b63da2f877043051b4ac43b47ccc876091b689d8e7f542780dce4c58559a87cbc982ab15d4af",
+    "data": "2c6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d878b6757fa5ccee3771d9304a23b2415cbbb4f724b86141712ecbbebeef0fe3e4119b49ada4d45c4f6b1c5619633861542b846e006fc477ea308243058d",
     "ok": false,
     "error": "Failed to decrypt profile data. Most likely the profile key has changed."
    },
    {
-    "data": "b73ac7f6d1f1dfc5e31fc792384a93007d72761d00593b6df3aff96fdfd0c3ac419590d70a5b4bdde46301b63da2f877043051b4ac43b47ccc876091b689d8e7f542780dce4c58559a87cbc982ab15d4",
+    "data": "2c6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d878b6757fa5ccee3771d9304a23b2415cbbb4f724b86141712ecbbebeef0fe3e4119b49ada4d45c4f6b1c5619633861542b846e006fc477ea30824305",
     "ok": false,
     "error": "Failed to decrypt profile data. Most likely the profile key has changed."
    },
    {
-    "data": "b73ac7f6d1f1dfc5e31fc792384a93007d72761d00593b6df3aff9",
+    "data": "2c6c8b4d4ad61884c5bfdb73eb1a8f7d5a5d06d878b6757fa5ccee",
     "ok": false,
     "error": "Got too short input: 27"
    },
@@ -9503,6 +9503,667 @@
    "chunkSize": 65536
   }
  ],
+ "attachmentV2Decrypt": {
+  "keys": "dfa4a79e801535f3bb846e6bc8814ae51181394eedfe9c504b50e58d0d2bb378dfbc9604ad5a3915fb1081d7f303731e8f1f91d63fe799bcc341ab3f6f52ce9e",
+  "iv": "0ef726a10c9987a514079c019df94e8e",
+  "bases": {
+   "small": {
+    "plaintextSize": 100,
+    "padded": true,
+    "blobSha256": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536
+   },
+   "large": {
+    "plaintextSize": 200000,
+    "padded": true,
+    "blobSha256": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536
+   },
+   "dirtyPadding": {
+    "plaintextSize": 541,
+    "padded": false,
+    "blobSha256": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "incrementalMac": null,
+    "chunkSize": null
+   }
+  },
+  "cases": [
+   {
+    "base": "small",
+    "size": 100,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "small",
+    "flip": 3,
+    "size": 100,
+    "digest": "848c2d77a61407bebe3b1e6ffe03dee2fa7e03a81b0a8a7f7a8108a86fd6d36b",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "flip": 40,
+    "size": 100,
+    "digest": "dc78b36197ab18bab5845dd340124bd41666a3920f44ef8251e865e54a5744bb",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "flip": 552,
+    "size": 100,
+    "digest": "a1ee668ace52cd8ff18996c4a31430a7c50de40d39a4e155836ce8bdcc7b0c9e",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "flip": 591,
+    "size": 100,
+    "digest": "b6b3899fdd7988dbd2ce4940a0ef33784763bc677181896254c2052531c59c62",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "truncate": 1,
+    "size": 100,
+    "digest": "517411b607b1a4bba666db8ab66fc9e2a3cb07face0ba94a296f66be87e0d96c",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "truncate": 16,
+    "size": 100,
+    "digest": "b6840640461bbee4127851a07488bd917fc048e422af2faa9b61ec25c8781b8f",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "truncate": 572,
+    "size": 100,
+    "digest": "a8f1ca602d616a2c9e0ce7ddc1ff1fbdb74fe0ae4bd02637ccf729ce88473899",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "append": "aabb",
+    "size": 100,
+    "digest": "9b31a523791616c91cb3bbb11f1ea3ea15012bf74203cd14f97f9d35ef482929",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": "3cf799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad digest"
+   },
+   {
+    "base": "small",
+    "size": 101,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 101,
+    "plaintextSha256": "b280a96897d2371d9842c8974ec12f4f2bfab98cd725c7d9d29a054fe7762f99"
+   },
+   {
+    "base": "small",
+    "size": 99,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 99,
+    "plaintextSha256": "5f82467eaca5f013b232d5bb9f00ff6f236be257453d87ad87f720b824b828df"
+   },
+   {
+    "base": "small",
+    "size": 0,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 0,
+    "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "base": "small",
+    "size": 592,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 541,
+    "plaintextSha256": "b1fd61c7943910e59e5d161cce17a01bb390f3887981f0d43de8764f9785b08f"
+   },
+   {
+    "base": "small",
+    "size": 1073741824,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 541,
+    "plaintextSha256": "b1fd61c7943910e59e5d161cce17a01bb390f3887981f0d43de8764f9785b08f"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d17b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 4096,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": "3df799eb7e0fb6f9e5426135c582b105f85085912e031fda0e5f1af6daf56595",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": null,
+    "plaintextHash": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982",
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "small",
+    "size": 100,
+    "digest": null,
+    "plaintextHash": "c48e4ffad4998c8f2736ead8774b7ee13b73d7039a15ea54e7f6ea47beeba5e5",
+    "incrementalMac": "383073c50d16b4c6d8cc5fcf5605fa783c4e4db8fbaf38ab3487a995f2aa0788",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad plaintextHash"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 200000,
+    "plaintextSha256": "7b918918603a842ada5c26b4d5aa4e76f07300a004534060ac36750191b4af48"
+   },
+   {
+    "base": "large",
+    "flip": 3,
+    "size": 200000,
+    "digest": "a680529ef4f7cd94cbb9457d5e8e24f49ee3a5fd95f23ede44e0c4d9b670bf17",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data"
+   },
+   {
+    "base": "large",
+    "flip": 40,
+    "size": 200000,
+    "digest": "7dbb6a48d97e3562bb078f3cc6c8192955a048ac104477ba8ba5503c2e1591c3",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data"
+   },
+   {
+    "base": "large",
+    "flip": 208232,
+    "size": 200000,
+    "digest": "b7db80f9dd06471929cf887f3b1658355deaa90fe021cbef83cb550ac62ffb85",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "flip": 208271,
+    "size": 200000,
+    "digest": "db71eef4e6065f5d8f43c0e633b6dc9f535f11f4fc938547628c864ba39d2838",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "truncate": 1,
+    "size": 200000,
+    "digest": "9af7ecca4dd16876b465bedc1bd26b50312bdd67721675aca89298b97e74cf58",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "truncate": 16,
+    "size": 200000,
+    "digest": "ce4678a97752730db89db8706a08cc3345d6f9ff2c71ad165b01ca1a193a9759",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "truncate": 208252,
+    "size": 200000,
+    "digest": "a8f1ca602d616a2c9e0ce7ddc1ff1fbdb74fe0ae4bd02637ccf729ce88473899",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "append": "aabb",
+    "size": 200000,
+    "digest": "b8ffdbd7e7fa30ec8acef89ecb0a56648bcc04ad9314d92b92747060fcc925db",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data (finalize)"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": "2605ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad digest"
+   },
+   {
+    "base": "large",
+    "size": 200001,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 200001,
+    "plaintextSha256": "2408b1bd83e63baa92b1caa1b78ec5e446328bb7ecbc97d831780f1dff261436"
+   },
+   {
+    "base": "large",
+    "size": 199999,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 199999,
+    "plaintextSha256": "aaa190aff39b93bb8eba123e9b1083ab5ca769c78c40d47993f14a4d5484d357"
+   },
+   {
+    "base": "large",
+    "size": 0,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 0,
+    "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "base": "large",
+    "size": 208272,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 208215,
+    "plaintextSha256": "5934ff3f5af97618063703d81f85e95b9d9e6c5eb65488519cccff05f714bcfd"
+   },
+   {
+    "base": "large",
+    "size": 1073741824,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 208215,
+    "plaintextSha256": "5934ff3f5af97618063703d81f85e95b9d9e6c5eb65488519cccff05f714bcfd"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f20c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "Corrupted input data"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 4096,
+    "ok": false,
+    "error": "Corrupted input data"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": "2705ed0a8184dd540f971fd447914b0d49841daf6386fd9d014602d52ae42e8a",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 200000,
+    "plaintextSha256": "7b918918603a842ada5c26b4d5aa4e76f07300a004534060ac36750191b4af48"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": null,
+    "plaintextHash": "7b918918603a842ada5c26b4d5aa4e76f07300a004534060ac36750191b4af48",
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": true,
+    "plaintextSize": 200000,
+    "plaintextSha256": "7b918918603a842ada5c26b4d5aa4e76f07300a004534060ac36750191b4af48"
+   },
+   {
+    "base": "large",
+    "size": 200000,
+    "digest": null,
+    "plaintextHash": "c48e4ffad4998c8f2736ead8774b7ee13b73d7039a15ea54e7f6ea47beeba5e5",
+    "incrementalMac": "b0c2e58a3f21c51b0624d19c7f37b301ee837d43bd12fa7cb9ab31060604af1d44f6bbbce21a3bf62ba2446b279869654c0a67709b884ec2e7a4b9fc8b64fec44e52bd24c6eee2af6a0ef9a7e016aed54a3920badacc7acb0e0017dd4fb872189af8b1e495c15ff9406dd672bc82428c971b3925b6bd0e9d00fa2efb506905fb",
+    "chunkSize": 65536,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad plaintextHash"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 100,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "dirtyPadding",
+    "flip": 3,
+    "size": 100,
+    "digest": "6c4b2087049fc9518f9c0a9d2281eb7eaf18334bb1215e94c62f7fcc5c606f66",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad MAC"
+   },
+   {
+    "base": "dirtyPadding",
+    "flip": 40,
+    "size": 100,
+    "digest": "8ac478159f0632e8143ec92be88038fe19546086885d32f1064af95e85641e30",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad MAC"
+   },
+   {
+    "base": "dirtyPadding",
+    "flip": 552,
+    "size": 100,
+    "digest": "a3365200010fbc181d9fbb05c7bfacb48cd52067342c5f4305a3e78323700b44",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "error:1C800064:Provider routines::bad decrypt"
+   },
+   {
+    "base": "dirtyPadding",
+    "flip": 591,
+    "size": 100,
+    "digest": "eb695bdf3d8596cd11e3c78cf07abf6fbc03ac4c664c0477edff05c689c03f11",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad MAC"
+   },
+   {
+    "base": "dirtyPadding",
+    "truncate": 1,
+    "size": 100,
+    "digest": "5a8d5429a6489778d11f52be35cf82c4f1127f57979f2d2a3bcf069814b52e16",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "error:1C80006B:Provider routines::wrong final block length"
+   },
+   {
+    "base": "dirtyPadding",
+    "truncate": 16,
+    "size": 100,
+    "digest": "e115b5ae90015ef255b2786731f119e2e13d80d960c390b45d8cf1c89cc0f9c6",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "error:1C800064:Provider routines::bad decrypt"
+   },
+   {
+    "base": "dirtyPadding",
+    "truncate": 572,
+    "size": 100,
+    "digest": "a8f1ca602d616a2c9e0ce7ddc1ff1fbdb74fe0ae4bd02637ccf729ce88473899",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decipher must be set"
+   },
+   {
+    "base": "dirtyPadding",
+    "append": "aabb",
+    "size": 100,
+    "digest": "811b8fd6a6f43eeb806800884f50fab292d72688154da04328738ffcc0fbf23a",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "error:1C80006B:Provider routines::wrong final block length"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 100,
+    "digest": "87bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad digest"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 101,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 101,
+    "plaintextSha256": "c249b66dfd52d51a0c77783173ebedce8816c887f93173c3bdc124175c65e4dd"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 99,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 99,
+    "plaintextSha256": "5f82467eaca5f013b232d5bb9f00ff6f236be257453d87ad87f720b824b828df"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 0,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 0,
+    "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 592,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 541,
+    "plaintextSha256": "598763efb235cabcd78f6fa2f01902cb1df50218a2c181914c8cdb52cbe6299d"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 1073741824,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 541,
+    "plaintextSha256": "598763efb235cabcd78f6fa2f01902cb1df50218a2c181914c8cdb52cbe6299d"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 100,
+    "digest": "86bcb9ce5079cf23b8bf274acc4c3309e7d4f83d70a6b03e2d03d4b86c9d1057",
+    "plaintextHash": null,
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 100,
+    "digest": null,
+    "plaintextHash": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982",
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": true,
+    "plaintextSize": 100,
+    "plaintextSha256": "13ae87edebd058f02ddb3d2b636814304c65163eef027b8b146a88c9caae7982"
+   },
+   {
+    "base": "dirtyPadding",
+    "size": 100,
+    "digest": null,
+    "plaintextHash": "c48e4ffad4998c8f2736ead8774b7ee13b73d7039a15ea54e7f6ea47beeba5e5",
+    "incrementalMac": null,
+    "chunkSize": null,
+    "ok": false,
+    "error": "decryptAttachmentV2(vector): Bad plaintextHash"
+   }
+  ]
+ },
  "provisioning": {
   "ourPrivateKey": "c0ffce3976030cf6eabd7962d282858f360ccf9bb36f07900628d4cb1591c95d",
   "cases": [

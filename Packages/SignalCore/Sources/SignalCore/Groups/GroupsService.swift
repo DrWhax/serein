@@ -57,10 +57,12 @@ public actor GroupsService {
         let stored = try await database.pool.write { try GroupStore.conversation($0, keys: keys) }
         let ts = timestamp ?? UInt64(MessageStore.now())
         if let current = stored.state, let newRevision, newRevision <= current.revision { return [] }
-        // A signed change for exactly the next revision is enough (`updateGroupViaSingleChange`).
+        // A change for exactly the next revision is enough (`updateGroupViaSingleChange`), but
+        // it reached us inside a member's message: only the server's signature over its actions
+        // says the group service accepted it. Without that, any member could rewrite our view
+        // of the group. A change that does not verify is ignored and the logs are fetched.
         if let current = stored.state, current.isMember(ourAci), let newRevision, newRevision == current.revision + 1, let groupChange,
-           let change = try? Signalservice_GroupChange(serializedBytes: groupChange),
-           let actions = try? Signalservice_GroupChange.Actions(serializedBytes: change.actions) {
+           let actions = try Self.verifiedActions(groupChange, groupId: keys.groupId, serverParams: try api.credentials.serverParams()) {
             let decrypted = try GroupCipher(keys).decryptActions(actions)
             if decrypted.version == newRevision {
                 return try await integrate([(decrypted, nil)], stored: stored, timestamp: ts)
@@ -88,6 +90,19 @@ public actor GroupsService {
                 return try GroupStore.appendChangeMessages(db, conversationId: stored.conversationId, messages, timestamp: ts)
             }
         }
+    }
+
+    /// Upstream getGroupUpdates' checks on a group change that came from a peer: an epoch we
+    /// understand, the group server's notary signature over the actions (`verifyNotarySignature`),
+    /// and actions that name this group. nil when any of them fails.
+    static func verifiedActions(_ groupChange: Data, groupId: Data, serverParams: ServerPublicParams) throws -> Signalservice_GroupChange.Actions? {
+        guard let change = try? Signalservice_GroupChange(serializedBytes: groupChange), change.changeEpoch <= GroupsAPI.supportedChangeEpoch,
+              !change.serverSignature.isEmpty, !change.actions.isEmpty,
+              let signature = try? NotarySignature(contents: change.serverSignature),
+              (try? serverParams.verifySignature(message: change.actions, notarySignature: signature)) != nil,
+              let actions = try? Signalservice_GroupChange.Actions(serializedBytes: change.actions),
+              !actions.groupID.isEmpty, actions.groupID == groupId else { return nil }
+        return actions
     }
 
     /// `updateGroupViaLogs`: every page from our revision (or the version we joined at).

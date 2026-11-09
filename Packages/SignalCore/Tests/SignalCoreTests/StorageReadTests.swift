@@ -147,9 +147,8 @@ import Testing
         #expect(throws: AttachmentError.badMAC) { try AttachmentCipher.decrypt(bad, key: key, digest: digest, size: nil) }
         #expect(throws: AttachmentError.badDigest) { try AttachmentCipher.decrypt(blob, key: key, digest: SignalCrypto.sha256(bad), size: nil) }
         #expect(throws: AttachmentError.missingDigest) { try AttachmentCipher.decrypt(blob, key: key, digest: nil, size: nil) }
-        // Padded to 541 bytes: a size past the padded plaintext is an error.
-        #expect(throws: AttachmentError.sizeMismatch(expected: 10_000, actual: 541)) {
-            try AttachmentCipher.decrypt(blob, key: key, digest: digest, size: 10_000)
-        }
+        // Padded to 541 bytes: as upstream, a size past that yields all of it (see the
+        // attachment verdicts in UpstreamVectorTests).
+        #expect(try AttachmentCipher.decrypt(blob, key: key, digest: digest, size: 10_000).count == 541)
     }
 }

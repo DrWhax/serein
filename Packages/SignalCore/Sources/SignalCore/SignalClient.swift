@@ -104,12 +104,15 @@ public actor SignalClient {
     /// closes the connection. A client that is replaced by another one on the same folder
     /// must be shut down first: two of them would write to one database.
     public func shutdown() async {
-        preKeyTask?.cancel()
+        let preKeys = preKeyTask
         preKeyTask = nil
+        preKeys?.cancel()
         if let session {
-            await session.maintenance.stop()
+            await session.maintenance.stopAndWait()
             await session.jobs.stop()
         }
+        // A pre-key check that is mid-request finishes (and records its result) first.
+        await preKeys?.value
         await socket.disconnect()
     }
 

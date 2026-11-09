@@ -86,9 +86,16 @@ extension SignalCrypto {
         }
     }
 
-    public static func aes256GCMEncrypt(key: Data, nonce: Data? = nil, _ plaintext: Data) throws -> Data {
+    /// Always under a fresh random nonce: a caller cannot supply one (a repeated nonce under
+    /// one key breaks GCM completely).
+    public static func aes256GCMEncrypt(key: Data, _ plaintext: Data) throws -> Data {
+        try aes256GCMEncrypt(key: key, nonce: randomBytes(12), plaintext)
+    }
+
+    /// With a given nonce: for known-answer tests only, hence not public.
+    static func aes256GCMEncrypt(key: Data, nonce: Data, _ plaintext: Data) throws -> Data {
         guard key.count == 32 else { throw SignalCryptoError.badLength("AES key \(key.count)") }
-        let n = try AES.GCM.Nonce(data: nonce ?? randomBytes(12))
+        let n = try AES.GCM.Nonce(data: nonce)
         guard let combined = try AES.GCM.seal(plaintext, using: SymmetricKey(data: key), nonce: n).combined else {
             throw SignalCryptoError.badLength("GCM nonce")
         }

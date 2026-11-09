@@ -8,86 +8,30 @@
 //
 //   node --no-warnings --import ./register.mjs generate.mjs <out.json>
 //
-// Values that upstream randomises internally (device-name ephemeral keys, profile IVs)
-// differ between runs; everything else is deterministic.
+// The output is reproducible: where upstream draws randomness (device-name ephemeral keys,
+// profile IVs) the source is pinned at the Node and libsignal boundary, so the same Desktop
+// commit always gives the same file. check.sh relies on that.
 
-import { createHash } from 'node:crypto';
+import nodeCrypto, { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { transform } from 'esbuild';
 import { PrivateKey, PublicKey } from '@signalapp/libsignal-client';
 
-const desktop = new URL('../../Signal-Desktop/', import.meta.url);
-const up = path => import(new URL(path, desktop).href);
+import {
+  desktop, up, C, A, CipherType, logPadSize, getAesCbcCiphertextSize, getAttachmentCiphertextSize, MediaTier, Proto,
+  padMessage, unpad, hex, utf8, cat, det, pattern, verdict, scalar, flip, provisioningCipher,
+} from './upstream.mjs';
 
-const { Environment, setEnvironment } = await up('ts/environment.std.ts');
-setEnvironment(Environment.Test, false); // permits upstream's test-only fixed IVs
-
-const C = await up('ts/Crypto.node.ts');
-const A = await up('ts/AttachmentCrypto.node.ts');
-const { CipherType } = await up('ts/types/Crypto.std.ts');
-const { logPadSize } = await up('ts/util/logPadSize.std.ts');
-const { getAesCbcCiphertextSize, getAttachmentCiphertextSize } = await up('ts/util/AttachmentCrypto.std.ts');
-const { MediaTier } = await up('ts/types/AttachmentDownload.std.ts');
-const { default: ProvisioningCipher } = await up('ts/textsecure/ProvisioningCipher.node.ts');
-const { SignalService: Proto } = await up('ts/protobuf/index.std.ts');
-
-// Functions that live in modules too entangled to import (Electron, the whole message
-// pipeline): the upstream source text itself is cut out, transpiled and evaluated.
-async function extract(path, start, end, name, rewrite = text => text) {
-  const source = readFileSync(new URL(path, desktop), 'utf8');
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from);
-  if (from < 0 || to < 0) throw new Error(`extract: markers not found in ${path}`);
-  const { code } = await transform(rewrite(source.slice(from, to)), { loader: 'ts' });
-  return new Function(`${code}\nreturn ${name};`)();
-}
-const padMessage = await extract('ts/textsecure/OutgoingMessage.preload.ts', 'const PADDING_BLOCK', 'export default class', 'padMessage',
-  text => text.replace('export function', 'function'));
-// A private method: `#unpad(…) {…}` becomes `function unpad(…) {…}`.
-const unpad = await extract('ts/textsecure/MessageReceiver.preload.ts', '#unpad(paddedPlaintext', 'async #decryptSealedSender', 'unpad',
-  text => `function ${text.slice(1)}`);
-
-// MARK: helpers
-
-const hex = bytes => Buffer.from(bytes).toString('hex');
-const utf8 = s => new Uint8Array(Buffer.from(s, 'utf8'));
-const cat = (...parts) => new Uint8Array(Buffer.concat(parts.map(p => Buffer.from(p))));
-/** Deterministic test bytes: SHA-256(label ‖ counter) stream. */
-function det(label, length) {
-  const out = Buffer.alloc(length);
-  for (let i = 0, block = 0; i < length; block += 1) {
-    const h = createHash('sha256').update(`${label}:${block}`).digest();
-    i += h.copy(out, i, 0, Math.min(32, length - i));
-  }
-  return new Uint8Array(out);
-}
-/** The plaintext pattern UpstreamVectorTests regenerates for large attachments. */
-function pattern(size) {
-  const out = new Uint8Array(size);
-  for (let i = 0; i < size; i += 1) out[i] = (i * 131 + (i >>> 8) * 17 + 89) & 0xff;
-  return out;
-}
-/** Runs the oracle and records whether it accepted. */
-function verdict(fn) {
-  try {
-    return { ok: true, ...fn() };
-  } catch (error) {
-    return { ok: false, error: String(error.message).slice(0, 80) };
-  }
-}
-/** A clamped X25519 scalar (upstream warns about unclamped private keys). */
-function scalar(label) {
-  const k = det(label, 32);
-  k[0] &= 248; k[31] &= 127; k[31] |= 64;
-  return k;
-}
-function flip(bytes, index) {
-  const out = new Uint8Array(bytes);
-  out[(index + out.length) % out.length] ^= 0x01;
-  return out;
+// Pinned randomness (see the header): upstream's getRandomBytes goes through node:crypto's
+// default export, its key pairs through libsignal's PrivateKey.generate.
+{
+  let draws = 0;
+  nodeCrypto.randomBytes = size => Buffer.from(det(`random-${(draws += 1)}`, size));
+  let keys = 0;
+  PrivateKey.generate = () => PrivateKey.deserialize(Buffer.from(scalar(`generated-${(keys += 1)}`)));
 }
 
 const out = {
@@ -276,6 +220,91 @@ out.accessKeyVerifier = [det('access', 16), det('access2', 16)].map(k => ({ acce
   }
 }
 
+// MARK: attachment decryption verdicts
+
+{
+  // What upstream's streaming decryptAttachmentV2 makes of damaged or mislabelled blobs.
+  // The blobs themselves are not stored: each case names a base (which the Swift side
+  // encrypts identically, as the sections above establish) and how it was changed.
+  const keys = det('attachment-keys', 64);
+  const iv = det('attachment-iv', 16);
+  const sha = bytes => hex(createHash('sha256').update(bytes).digest());
+  async function encrypt(plaintext, { skipPadding = false, size = plaintext.byteLength } = {}) {
+    const chunks = [];
+    const sink = new Writable({ write(chunk, _enc, done) { chunks.push(Buffer.from(chunk)); done(); } });
+    const options = { _testOnlyDangerousIv: iv, keys, needIncrementalMac: !skipPadding, plaintext: { data: plaintext }, sink };
+    if (skipPadding) options._testOnlyDangerousSkipPadding = true;
+    const result = await A.encryptAttachmentV2(options);
+    return { blob: new Uint8Array(Buffer.concat(chunks)), digest: result.digest, incrementalMac: result.incrementalMac, chunkSize: result.chunkSize, size };
+  }
+  async function decrypt(blob, { size, digest, incrementalMac, chunkSize, plaintextHash }) {
+    const chunks = [];
+    const sink = new Writable({ write(chunk, _enc, done) { chunks.push(Buffer.from(chunk)); done(); } });
+    try {
+      await A.decryptAttachmentV2ToSink({
+        idForLogging: 'vector', size, ciphertextStream: Readable.from([Buffer.from(blob)]), type: 'standard',
+        theirIncrementalMac: incrementalMac, theirChunkSize: chunkSize,
+        integrityCheck: plaintextHash ? { type: 'plaintext', plaintextHash } : { type: 'encrypted', digest },
+        aesKey: keys.subarray(0, 32), macKey: keys.subarray(32, 64),
+      }, sink);
+      const plaintext = Buffer.concat(chunks);
+      return { ok: true, plaintextSize: plaintext.byteLength, plaintextSha256: sha(plaintext) };
+    } catch (error) {
+      return { ok: false, error: String(error.message).slice(0, 80) };
+    }
+  }
+  const dirty = cat(pattern(100), new Uint8Array(541 - 100).fill(0xff));   // "padding" that is not zeros
+  const bases = {
+    small: await encrypt(pattern(100)),
+    large: await encrypt(pattern(200000)),
+    dirtyPadding: await encrypt(dirty, { skipPadding: true, size: 100 }),
+  };
+  const cases = [];
+  for (const [name, base] of Object.entries(bases)) {
+    const n = base.blob.byteLength;
+    const blobs = [
+      [{}, base.blob],
+      [{ flip: 3 }, flip(base.blob, 3)], [{ flip: 40 }, flip(base.blob, 40)], [{ flip: n - 40 }, flip(base.blob, n - 40)], [{ flip: n - 1 }, flip(base.blob, n - 1)],
+      [{ truncate: 1 }, base.blob.subarray(0, n - 1)], [{ truncate: 16 }, base.blob.subarray(0, n - 16)], [{ truncate: n - 20 }, base.blob.subarray(0, 20)],
+      [{ append: 'aabb' }, cat(base.blob, [0xaa, 0xbb])],
+    ];
+    for (const [mutation, blob] of blobs) {
+      // The pointer's digest is that of the damaged blob, so the damage itself is what is judged.
+      const digest = createHash('sha256').update(blob).digest();
+      cases.push({ base: name, ...mutation, size: base.size, digest: hex(digest), plaintextHash: null,
+        incrementalMac: base.incrementalMac ? hex(base.incrementalMac) : null, chunkSize: base.chunkSize ?? null,
+        ...await decrypt(blob, { ...base, size: base.size, digest }) });
+    }
+    // The blob is intact; what the pointer says about it is not.
+    const intact = [
+      { digest: 'flipped' }, { size: base.size + 1 }, { size: base.size - 1 }, { size: 0 }, { size: n }, { size: 1 << 30 },
+      { incrementalMac: 'flipped' }, { chunkSize: 4096 }, { incrementalMac: 'none' }, { plaintextHash: 'right' }, { plaintextHash: 'wrong' },
+    ];
+    for (const change of intact) {
+      if (base.incrementalMac == null && (change.incrementalMac === 'flipped' || change.chunkSize)) continue;
+      const size = change.size ?? base.size;
+      const options = {
+        size, digest: change.digest === 'flipped' ? flip(base.digest, 0) : base.digest,
+        incrementalMac: change.incrementalMac === 'none' ? undefined : change.incrementalMac === 'flipped' ? flip(base.incrementalMac, 5) : base.incrementalMac,
+        chunkSize: change.incrementalMac === 'none' ? undefined : change.chunkSize ?? base.chunkSize,
+        plaintextHash: change.plaintextHash === 'right' ? createHash('sha256').update(name === 'dirtyPadding' ? dirty.subarray(0, 100) : pattern(base.size)).digest()
+          : change.plaintextHash === 'wrong' ? det('wrong-hash', 32) : undefined,
+      };
+      cases.push({ base: name, size, digest: options.plaintextHash ? null : hex(options.digest), plaintextHash: options.plaintextHash ? hex(options.plaintextHash) : null,
+        incrementalMac: options.incrementalMac ? hex(options.incrementalMac) : null, chunkSize: options.chunkSize ?? null,
+        ...await decrypt(base.blob, options) });
+    }
+  }
+  out.attachmentV2Decrypt = {
+    keys: hex(keys), iv: hex(iv),
+    bases: Object.fromEntries(Object.entries(bases).map(([name, b]) => [name, {
+      plaintextSize: name === 'dirtyPadding' ? 541 : b.size, padded: name !== 'dirtyPadding', blobSha256: sha(b.blob), digest: hex(b.digest),
+      incrementalMac: b.incrementalMac ? hex(b.incrementalMac) : null, chunkSize: b.chunkSize ?? null,
+    }])),
+    cases,
+  };
+}
+
 // MARK: provisioning
 
 {
@@ -283,11 +312,7 @@ out.accessKeyVerifier = [det('access', 16), det('access2', 16)].map(k => ({ acce
   // Swift side can hold the same private key.
   const ours = PrivateKey.deserialize(Buffer.from(det('provisioning-ours', 32)));
   const primary = PrivateKey.deserialize(Buffer.from(det('provisioning-primary', 32)));
-  const cipher = new ProvisioningCipher();
-  const generate = PrivateKey.generate;
-  PrivateKey.generate = () => ours;
-  try { cipher.getPublicKey(); } finally { PrivateKey.generate = generate; }
-  if (hex(cipher.getPublicKey().serialize()) !== hex(ours.getPublicKey().serialize())) throw new Error('could not pin the provisioning key pair');
+  const cipher = provisioningCipher(PrivateKey, ours);
   const describe = r => ({
     aci: r.aci, pni: r.pni ?? null, number: r.number ?? null, provisioningCode: r.provisioningCode ?? null, userAgent: r.userAgent ?? null,
     readReceipts: r.readReceipts, aciPrivateKey: hex(r.aciKeyPair.privateKey.serialize()), pniPrivateKey: r.pniKeyPair ? hex(r.pniKeyPair.privateKey.serialize()) : null,

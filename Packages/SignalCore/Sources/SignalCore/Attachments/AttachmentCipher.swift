@@ -66,8 +66,13 @@ public enum AttachmentCipher {
 
     public static func generateKeys() -> Data { SignalCrypto.randomBytes(keySetLength) }
 
-    public static func encrypt(_ plaintext: Data, keys: Data = generateKeys(), iv: Data = SignalCrypto.randomBytes(16),
-                               pad: Bool = true, incrementalMac: Bool = false) throws -> EncryptedAttachment {
+    /// Always under a fresh random IV.
+    public static func encrypt(_ plaintext: Data, keys: Data = generateKeys(), pad: Bool = true, incrementalMac: Bool = false) throws -> EncryptedAttachment {
+        try encrypt(plaintext, keys: keys, iv: SignalCrypto.randomBytes(ivLength), pad: pad, incrementalMac: incrementalMac)
+    }
+
+    /// With a given IV: for known-answer tests only (upstream's `dangerousTestOnlyIv`), hence not public.
+    static func encrypt(_ plaintext: Data, keys: Data, iv: Data, pad: Bool = true, incrementalMac: Bool = false) throws -> EncryptedAttachment {
         guard keys.count == keySetLength, iv.count == ivLength else { throw AttachmentError.badKey }
         let aesKey = Data(keys.prefix(32)), macKey = Data(keys.suffix(32))
         var padded = plaintext
@@ -112,8 +117,9 @@ public enum AttachmentCipher {
             } catch { throw AttachmentError.badIncrementalMAC }
         }
         let padded = try SignalCrypto.aes256CBCDecrypt(key: aesKey, iv: Data(body.prefix(ivLength)), Data(body.dropFirst(ivLength)))
-        if let size, size > padded.count { throw AttachmentError.sizeMismatch(expected: size, actual: padded.count) }
-        let plaintext = size.map { Data(padded.prefix($0)) } ?? padded
+        // Upstream trims to the pointer's size and does not object to one that is larger than
+        // what is there: it then yields everything, padding included.
+        let plaintext = size.map { Data(padded.prefix(max(0, $0))) } ?? padded
         let plaintextHash = SignalCrypto.sha256(plaintext)
         switch integrity {
         case .encrypted(let expected):

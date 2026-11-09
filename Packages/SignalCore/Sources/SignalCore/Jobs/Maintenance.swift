@@ -72,6 +72,14 @@ public actor Maintenance {
         loop = nil
     }
 
+    /// `stop`, and waits for a pass that is under way to finish (nothing of ours writes to the
+    /// database afterwards).
+    public func stopAndWait() async {
+        let running = loop
+        stop()
+        await running?.value
+    }
+
     /// Whether the periodic pass is scheduled.
     public var isRunning: Bool { loop != nil }
 }

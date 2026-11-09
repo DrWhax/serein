@@ -281,3 +281,66 @@ import Testing
         #expect(GroupAccess.isValidLink(GroupAccess.unknown) && GroupAccess.isValidLink(GroupAccess.unsatisfiable) && !GroupAccess.isValidLink(GroupAccess.member))
     }
 }
+
+/// A group change that arrives inside a member's message is only as good as the group
+/// server's signature on it (upstream getGroupUpdates / verifyNotarySignature).
+@Suite struct GroupChangeSignatureTests {
+    @Test func peerDeliveredChangeNeedsTheServersSignature() async throws {
+        try await LinkedClient.with { c in
+            let g = try await c.server.json("createGroup", ["title": "Mock club"])
+            let groupId = try #require(g["id"] as? String), masterKey = try #require(Data(base64Encoded: g["masterKey"] as! String))
+            let keys = try GroupKeys(masterKey: masterKey)
+            _ = try await c.server.json("sendGroupText", ["groupId": groupId, "text": "hi group", "timestamp": TestClock.next()])
+            _ = try await c.log.waitFor("group update") { if case .other("groupUpdated", _) = $0 { return true } else { return false } }
+            let before = try #require(try await GroupFlowTests.groupState(c, masterKey))
+            let serverParams = try c.groupCredentials.serverParams()
+
+            // A genuine change from the mock group server, as alice forwards it in her message.
+            _ = try await c.server.json("modifyGroupTimer", ["groupId": groupId, "seconds": 3600, "timestamp": TestClock.next()])
+            let event = try await c.log.waitFor("signed change") {
+                if case .groupContext(_, let revision, let change, _, _) = $0 { return revision == before.revision + 1 && change != nil } else { return false }
+            }
+            guard case .groupContext(_, _, let signed?, _, _) = event else { throw HarnessError(description: "no group change") }
+            #expect(try GroupsService.verifiedActions(signed, groupId: keys.groupId, serverParams: serverParams) != nil)
+
+            // The same change, altered or misattributed: none of these counts.
+            var change = try Signalservice_GroupChange(serializedBytes: signed)
+            func verified(_ c: Signalservice_GroupChange, group: Data = keys.groupId, params: ServerPublicParams = serverParams) throws -> Bool {
+                try GroupsService.verifiedActions(try c.serializedData(), groupId: group, serverParams: params) != nil
+            }
+            var tampered = change
+            tampered.actions[tampered.actions.count - 1] ^= 0x01
+            #expect(try !verified(tampered))
+            tampered = change
+            tampered.serverSignature[5] ^= 0x01
+            #expect(try !verified(tampered))
+            tampered = change
+            tampered.serverSignature = Data()
+            #expect(try !verified(tampered))
+            tampered = change
+            tampered.changeEpoch = UInt32(GroupsAPI.supportedChangeEpoch + 1)
+            #expect(try !verified(tampered))
+            #expect(try !verified(change, group: SignalCrypto.randomBytes(32)))                            // signed for another group
+            #expect(try !verified(change, params: try ServerPublicParams(contents: SignalEnvironment.production.serverPublicParams)))   // another server
+            #expect(try GroupsService.verifiedActions(Data([1, 2, 3]), groupId: keys.groupId, serverParams: serverParams) == nil)
+
+            // A member forges the next revision (they hold the group keys, so they can encrypt
+            // a new title) and sends it as if the server had accepted it.
+            try await c.eventually("timer applied") { db in try GroupStore.find(db, groupId: keys.groupId)?.state?.expireTimer == 3600 }
+            let current = try #require(try await GroupFlowTests.groupState(c, masterKey))
+            var actions = Signalservice_GroupChange.Actions()
+            actions.version = UInt32(current.revision + 1)
+            actions.groupID = keys.groupId
+            var title = Signalservice_GroupAttributeBlob()
+            title.title = "Renamed by a forger"
+            actions.modifyTitle.title = try GroupCipher(keys).encryptAttribute(title)
+            change = Signalservice_GroupChange()
+            change.actions = try actions.serializedData()
+            change.serverSignature = SignalCrypto.randomBytes(64)
+            let forged = try change.serializedData()
+            _ = try? await c.groups.update(keys, newRevision: current.revision + 1, groupChange: forged)
+            let after = try #require(try await GroupFlowTests.groupState(c, masterKey))
+            #expect(after.name == "Mock club" && after.revision == current.revision)
+        }
+    }
+}
