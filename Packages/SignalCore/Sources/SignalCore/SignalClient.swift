@@ -57,7 +57,13 @@ public actor SignalClient {
         /// Find by phone number (CDSI) and by username.
         public let discovery: ContactDiscovery
         public let usernames: UsernameService
+        /// Refill and rotation of the pre-keys the server hands out for us.
+        public let preKeys: PreKeyMaintenance
+        /// Expiring messages and pins, the weekly key-transparency self check.
+        public let maintenance: Maintenance
     }
+
+    private var preKeyTask: Task<Void, Never>?
 
     public init(config: Config, directory: URL, keyStore: any DatabaseKeyStore = KeychainDatabaseKeyStore(), media: any MediaProcessing) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -71,6 +77,18 @@ public actor SignalClient {
         trustRoots = config.trustRoots
     }
 
+    /// The calling service for the linked account (CallingClass): ringrtc with our signalling,
+    /// SFU requests, relays and group credentials. Created on the main actor (RingRTC's
+    /// callbacks and the call UI live there).
+    public func makeCallingService(sfuURL: URL, fieldTrials: [String: String] = [:]) async throws -> CallingService? {
+        guard let s = session else { return nil }
+        let database = database, socket = socket
+        return try await MainActor.run {
+            try CallingService(account: s.account, database: database, socket: socket, http: s.http, messenger: s.messenger, groups: s.groups.api,
+                               credentials: s.groups.api.credentials, config: CallingConfig(sfuURL: sfuURL), fieldTrials: fieldTrials)
+        }
+    }
+
     /// The stored account, if this device is linked.
     public func storedAccount() async throws -> Account? { try await database.pool.read { try Account.load($0) } }
 
@@ -80,6 +98,19 @@ public actor SignalClient {
         let account = try await linker.link(LinkOptions(deviceName: deviceName), onURL: onURL)
         try await start(account, uploadOneTimeKeys: linker)
         return account
+    }
+
+    /// Ends the session's background work (job queue, pre-key and maintenance timers) and
+    /// closes the connection. A client that is replaced by another one on the same folder
+    /// must be shut down first: two of them would write to one database.
+    public func shutdown() async {
+        preKeyTask?.cancel()
+        preKeyTask = nil
+        if let session {
+            await session.maintenance.stop()
+            await session.jobs.stop()
+        }
+        await socket.disconnect()
     }
 
     /// Starts the stored account's session.
@@ -135,12 +166,34 @@ public actor SignalClient {
                 Self.diagnose("groups fetched: \(keys.count), failed \(f.count)\(f.isEmpty ? "" : ", first: \(f[0])")")
             }
         })
+        let maintenance = Maintenance(database: database, store: store,
+                                      keyTransparency: KeyTransparencyService(account: account, database: database, socket: socket))
         session = Session(account: account, jobs: jobs, messenger: messenger, receiver: receiver, profiles: profiles, storage: storage,
                           groups: groups, stickers: stickers, downloads: downloads, attachmentStore: store, http: http,
                           discovery: ContactDiscovery(net: net, database: database, socket: socket),
-                          usernames: UsernameService(account: account, database: database, socket: socket))
+                          usernames: UsernameService(account: account, database: database, socket: socket),
+                          preKeys: PreKeyMaintenance(account: account, database: database, socket: socket), maintenance: maintenance)
+        // Files nothing refers to any more, while nothing is writing new ones yet.
+        if let removed = try? await maintenance.cleanOrphans(), removed > 0 { Self.diagnose("orphaned attachment files removed: \(removed)") }
         try await socket.connect(listener: receiver)
+        // Disappearing messages are deleted when their time is up (upstream
+        // expiringMessagesDeletionService), expired pins unpinned, and once a week the
+        // key-transparency self check runs.
+        await maintenance.start()
         if let linker { try await linker.uploadOneTimePreKeys(for: account) }
+        // UpdateKeysListener: now if a run is due, then checked hourly (a run is due every two days).
+        let preKeys = PreKeyMaintenance(account: account, database: database, socket: socket)
+        preKeyTask?.cancel()
+        preKeyTask = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                do {
+                    if try await preKeys.runIfDue() { Self.diagnose("pre-keys: checked") }
+                } catch {
+                    Self.diagnose("pre-key update failed: \(String(describing: error).prefix(120))")
+                }
+                try? await Task.sleep(for: .seconds(3600))
+            }
+        }
         try await downloads.start()
     }
 

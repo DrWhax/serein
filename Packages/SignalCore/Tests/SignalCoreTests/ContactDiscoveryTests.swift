@@ -116,8 +116,8 @@ import Testing
     }
 
     @Test func messagePadding() throws {
-        // Desktop padMessage: (n + 2) rounded up to a multiple of 160, minus 1.
-        for (n, expected) in [(0, 159), (157, 159), (158, 159), (159, 319), (318, 319), (319, 479)] {
+        // Desktop padMessage: (n + 2) rounded up to a multiple of 80, minus 1.
+        for (n, expected) in [(0, 79), (77, 79), (78, 79), (79, 159), (158, 159), (159, 239)] {
             let padded = MessageSender.pad(Data(repeating: 0x41, count: n))
             #expect(padded.count == expected)
             #expect(padded[n] == 0x80 && padded[(n + 1)...].allSatisfy { $0 == 0 })

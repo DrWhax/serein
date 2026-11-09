@@ -4,6 +4,7 @@
 // the messenger. Untrusted media goes to SignalMediaDecoder.xpc (MediaXPCClient).
 
 import AppKit
+import AVFAudio
 import Foundation
 import GRDB
 import LibSignalClient
@@ -11,6 +12,7 @@ import MediaXPCInterface
 import Observation
 import UniformTypeIdentifiers
 import SignalCore
+import SignalRingRTC
 import SignalUI
 
 @MainActor @Observable final class SignalSession {
@@ -67,9 +69,118 @@ import SignalUI
     private var settingsTask: Task<Void, Never>?
     private(set) var ourAci: String?
     var selectedConversationId: String? {
-        didSet { if selectedConversationId != oldValue { observeTimeline() } }
+        didSet { if selectedConversationId != oldValue { observeTimeline(leaving: oldValue) } }
     }
-    var draft = ""
+    var draft = "" {
+        didSet {
+            if draft != oldValue {
+                maybeGrabLinkPreview()
+                // A restored draft going in is not typing.
+                if draft == restoredDraftText { return }
+                restoredDraftText = nil
+                draftChangedForTyping()
+                scheduleDraftSave()
+            }
+        }
+    }
+    /// The open chat's saved draft as the composer shows it, while it is going in.
+    @ObservationIgnored var restoredDraftText: String?
+    @ObservationIgnored var draftSaveTask: Task<Void, Never>?
+    /// Paging: how many of the newest messages the timeline loads, whether that is all of them,
+    /// and whether a larger page is on its way.
+    @ObservationIgnored var timelineLimit = SignalSession.timelinePage
+    private(set) var haveOldest = true
+    private(set) var isLoadingOlder = false
+    static let timelinePage = 100
+    /// The "unread messages" divider: the oldest message unread when the chat opened, and how
+    /// many were unread (upstream's oldestUnseen / totalUnseen, fixed while the chat is open).
+    private(set) var unreadMarker: UnseenSummary?
+    /// Who is typing where (conversation → sender → since), and their expiry timers.
+    var typing: [String: [String: Date]] = [:]
+    @ObservationIgnored var typingExpiry: [String: Task<Void, Never>] = [:]
+    /// Our own indicator: where "started" was last sent, when, and the idle timer.
+    @ObservationIgnored var typingSentTo: String?
+    @ObservationIgnored var typingSentAt: Date?
+    @ObservationIgnored var typingIdleTask: Task<Void, Never>?
+    /// The composer's link preview (upstream's `linkPreviews` duck and LinkPreview service): the
+    /// link being previewed and, once fetched, the preview and its decoded image.
+    var linkPreview: ComposerLinkPreview?
+    /// Links whose preview was closed or failed (`excludedPreviewUrls`), until the next send.
+    var linkPreviewExcluded: Set<String> = []
+    var linkPreviewTask: Task<Void, Never>?
+    var linkPreviewDebounce: Task<Void, Never>?
+    /// Previews are fetched directly from the site, as upstream Desktop does: Signal's content
+    /// proxy only lets a few hosts through (Giphy and the like; others get 403). One session,
+    /// ephemeral, no cookies or cache; sites have public certificates (system trust).
+    let linkPreviewTransport = URLSessionLinkPreviewTransport(proxy: .direct)
+    /// The strings a preview carries (in our language), set by the conversation pane.
+    var linkPreviewStrings: LinkPreviewStrings?
+    /// Link-preview pages are parsed by SignalLinkPreviewParser.xpc (its own tight sandbox).
+    let linkPreviewParser = LinkPreviewParserClient()
+    /// Calls (Calls.swift): the service, the call on screen, an incoming ring, our audio/video,
+    /// picture-in-picture, the camera and its preview.
+    var calling: CallingService?
+    var activeCall: ActiveCallState?
+    var ringingCall: (conversationId: String, isVideo: Bool)?
+    var callLocalAudio = true
+    var callLocalVideo = false
+    var callPip = false
+    @ObservationIgnored var camera: CameraCapture?
+    @ObservationIgnored var cameraSends = false
+    @ObservationIgnored var cameraOp: Task<Void, Never>?
+    var preferredCameraId: String?
+    var preferredMicrophoneId: String?
+    var preferredSpeakerId: String?
+    var callDevices = CallDevices()
+    @ObservationIgnored let callLocalVideoModel = LocalVideoModel()
+    @ObservationIgnored var groupVideoSources: [String: GroupCallVideo] = [:]
+    @ObservationIgnored var directVideo: DirectCallVideo?
+    var callHistory: [CallHistoryStore.Group] = []
+    @ObservationIgnored var callHistoryTask: Task<Void, Never>?
+    /// Call links (ours and joined), live; the call link modal on screen.
+    var callLinks: [CallLinkRecord] = []
+    @ObservationIgnored var callLinksTask: Task<Void, Never>?
+    var callLinkModal: CallLinkModal?
+    /// Text to send to chats the user picks (the forward dialog), e.g. a shared call link.
+    var shareText: String?
+    /// Sharing presenting: the ScreenCaptureKit sources to pick from, and the capture running.
+    var presentingSources: [PresentableSource]?
+    @ObservationIgnored var screenCapture: ScreenShareCapture?
+    @ObservationIgnored var ringtone: NSSound?
+    /// The voice note being recorded (VoiceRecorder.swift), and its engine, samples and task.
+    var recording: VoiceRecording?
+    @ObservationIgnored var recorderEngine: AVAudioEngine?
+    @ObservationIgnored var recorderSamples: MicSamples?
+    @ObservationIgnored var recorderTask: Task<Void, Never>?
+    /// The live composer's rich text (mentions, styles) and its "@query" (MentionSuggestions).
+    @ObservationIgnored let composer = ComposerController()
+    var mentionQuery: String?
+    /// Which message text holds the mouse selection (one at a time).
+    @ObservationIgnored let textSelection = TextSelectionCenter()
+    /// The video playing in its bubble (one at a time), by message.
+    var inlineVideo: (messageId: String, player: VideoPlaybackEngine)?
+    /// A chat's avatar shown large (AvatarLightbox), by conversation.
+    var avatarLightboxFor: String?
+    /// The poll dialog (PollCreateModal) is open.
+    var isCreatingPoll = false
+    /// The message whose edit history is shown (EditHistoryMessagesModal).
+    var editHistoryMessageId: String?
+    /// ⌘⇧E: the message whose reaction picker to toggle, and a counter so each press counts.
+    var reactionPickerMessageId: String?
+    var reactionPickerCount = 0
+    /// The toast over the left pane (ToastManager), until it times out or is closed.
+    var toast: ToastType?
+    /// Audio playback (VoiceNotes.swift): the playing (or paused) message, its play head.
+    var activeAudioMessageId: String?
+    /// The playing message's sender (nil: ours), for the mini-player's title.
+    var activeAudioAuthor: String?
+    var audioPlaying = false
+    var audioTime: Double = 0
+    var audioRate: Double = 1
+    @ObservationIgnored var audioEngine: AudioPlaybackEngine?
+    @ObservationIgnored var audioClockTask: Task<Void, Never>?
+    @ObservationIgnored let audioWaveforms = ObservedCache<AudioWaveform>()
+    @ObservationIgnored var audioWaveformLoading: Set<String> = []
     /// The reply being composed: the message the composer quotes.
     var quotedMessageId: String?
     /// The sent message being edited (the composer holds its new text).
@@ -91,12 +202,12 @@ import SignalUI
     var scrollCounter = 0
     /// The Fun picker's installed sticker packs (live) and decoded sticker images.
     var stickerPacks: [StickerPackSummary] = []
-    var stickerImages: [String: RGBAImage] = [:]
-    var stickerLoading: Set<String> = []
+    @ObservationIgnored let stickerImages = ObservedCache<RGBAImage>()
+    @ObservationIgnored var stickerLoading: Set<String> = []
     /// Looping players of the timeline's GIFs, by attachment path (the newest few kept).
-    var gifPlayers: [String: VideoPlaybackEngine] = [:]
-    var gifOrder: [String] = []
-    var gifLoading: Set<String> = []
+    @ObservationIgnored let gifPlayers = ObservedCache<VideoPlaybackEngine>()
+    @ObservationIgnored var gifOrder: [String] = []
+    @ObservationIgnored var gifLoading: Set<String> = []
     /// The open chat's details (header, details panel), live.
     var details: ConversationDetailsInfo?
     var detailsTask: Task<Void, Never>?
@@ -118,6 +229,8 @@ import SignalUI
     var isAddingMembers = false
     var addMembersState = RequestState.inactive
     var isEditingGroup = false
+    /// The edit dialog opens on its avatar editor (the details' avatar was clicked).
+    var editGroupStartsWithAvatar = false
     var editGroupState = RequestState.inactive
     /// The photo picked for the group's avatar (its bytes, re-encoded by the media service on save).
     var pendingGroupPhoto: (data: Data, contentType: String)?
@@ -134,6 +247,15 @@ import SignalUI
     var groupSelection: [String] = []
     var newGroupName = ""
     var newGroupTimer = 0
+    /// The new group's avatar (AvatarEditor's result; a photo's bytes are in `newGroupPhoto`).
+    var newGroupAvatar: AvatarData?
+    /// Its preview pixels (a photo's, or the preset drawn once).
+    var newGroupAvatarPreview: RGBAImage?
+    var newGroupPhoto: (data: Data, contentType: String)?
+    var isEditingNewGroupAvatar = false
+    /// Find by phone number: the chosen country (`composeSelectedRegion`), and its chooser.
+    var composeSelectedRegion: String?
+    var isChoosingCountry = false
     var isCreatingGroup = false
     var isLookingUp = false
     /// A lookup's "not a Signal user" (or invalid) message.
@@ -153,6 +275,7 @@ import SignalUI
 
     private var client: SignalClient?
     var clientDatabase: SignalDatabase? { client?.database }
+    var signalClient: SignalClient? { client }
     /// The Fun picker's GIFs (Giphy through Signal's content proxy).
     var giphy: GiphyClient? {
         // Giphy's hosts have public certificates: system trust (Signal's roots are for Signal's servers).
@@ -161,8 +284,8 @@ import SignalUI
     /// The sandboxed decoder (SignalMediaDecoder.xpc); shared with SignalClient.
     let media = MediaXPCClient()
     /// Decoded attachment pixels for the timeline, by local attachment path.
-    private(set) var images: [String: RGBAImage] = [:]
-    private var loadingImages: Set<String> = []
+    @ObservationIgnored let images = ObservedCache<RGBAImage>()
+    @ObservationIgnored private var loadingImages: Set<String> = []
     /// The open Lightbox (MediaViewer).
     var lightbox: LightboxState?
     var signalSession: SignalClient.Session? { session }
@@ -173,6 +296,11 @@ import SignalUI
     private var contactsTask: Task<Void, Never>?
     private var timelineTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
+    private var identityStopsTask: Task<Void, Never>?
+    /// The open safety-number review (IdentityReview.swift).
+    var identityReview: IdentityReview?
+    /// The open safety-number viewer for one contact.
+    var safetyNumberSheet: SafetyNumberSheet?
     private var linkTask: Task<Void, Never>?
 
     var isStaging: Bool { environment == .staging }
@@ -214,6 +342,7 @@ import SignalUI
     }
 
     func start() {
+        connectComposer()
         guard client == nil else { return }
         if Self.tracing { SignalClient.diagnostics.withLock { $0 = { Self.trace($0) } } }
         if let path = Self.mockReadyPath {
@@ -321,6 +450,22 @@ import SignalUI
             try? await Task.sleep(for: .seconds(1))
             draft = text
             sendDraft()
+            // SIGNALSAFE_MOCK_KEYCHANGE_REPLY=<text>: once the chat shows a safety-number
+            // notice, send this through the composer (the review dialog comes up), and
+            // confirm the dialog a few seconds later.
+            if let second = ProcessInfo.processInfo.environment["SIGNALSAFE_MOCK_KEYCHANGE_REPLY"] {
+                for _ in 0..<240 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard messages.contains(where: { if case .keyChange = $0.notice { true } else { false } }) else { continue }
+                    draft = second
+                    sendDraft()
+                    try? await Task.sleep(for: .seconds(1))
+                    Self.trace("identity review \(identityReview == nil ? "not shown" : "shown for \(identityReview?.contacts.count ?? 0) contact(s)")")
+                    try? await Task.sleep(for: .seconds(6))
+                    confirmIdentityReview()
+                    break
+                }
+            }
             // SIGNALSAFE_MOCK_LIGHTBOX=1: open the newest downloaded video in the Lightbox.
             guard ProcessInfo.processInfo.environment["SIGNALSAFE_MOCK_LIGHTBOX"] == "1" else { return }
             for _ in 0..<40 {
@@ -383,10 +528,16 @@ import SignalUI
             }
             await client.refreshIncomplete()
         }
+        startCalling()
+        traceSendHealth(session)
+        identityStopsTask?.cancel()
+        identityStopsTask = observeIdentityStops(session)
         eventsTask?.cancel()
         eventsTask = Task { [weak self] in
             for await e in await client.events() {
+                if case .callMessage(let call) = e { self?.handleCallMessage(call) }
                 Self.trace(Self.mockReadyPath != nil ? "event \(e)".prefix(160) : "event \(Self.kind(e))")
+                if case .message(_, let conversationId, let sender, _, _, _, _, _) = e { self?.clearTyping(conversationId, sender) }
                 self.map { $0.onEvent?(e, $0) }
             }
         }
@@ -442,36 +593,139 @@ import SignalUI
         }
     }
 
-    private func observeTimeline() {
+    private func observeTimeline(leaving previous: String? = nil) {
+        if let previous { saveDraft(previous) }
+        composer.cancelPendingDraft()
+        restoredDraftText = nil
+        unreadMarker = nil
+        timelineLimit = Self.timelinePage
+        haveOldest = true
+        isLoadingOlder = false
         if let c = selectedConversationId.flatMap(conversation) {
             Self.trace("open chat: \(c.kind), accepted \(c.isAccepted), serviceId \(c.serviceId != nil), masterKey \(c.masterKey != nil)")
         }
         timelineTask?.cancel()
         messages = []
+        cancelRecording()
+        stopInlineVideo()
+        resetLinkPreview()
         draft = ""
         quotedMessageId = nil
         editingMessageId = nil
         selectedMessageIds = nil
         messageDetailId = nil
         closeGifPlayers()
+        draftSaveTask?.cancel()    // clearing the composer above is not an edit of the next chat's draft
         panels = []
         observePins()
         observeDetails()
         observeConversationColor()
         guard let id = selectedConversationId, let db = client?.database else { return }
+        restoreDraft(id)
+        observeTimelineRows(id)
+        // A message we are waiting to be resent keeps its later place once the chat has been read.
+        if let messenger = session?.messenger { Task { try? await messenger.conversationOpened(id) } }
+        // The divider is placed from what was unread before the chat is marked read; a page
+        // large enough to hold it is loaded.
+        Task { [weak self] in
+            let unseen = try? await db.unseen(conversationId: id)
+            guard let self, self.selectedConversationId == id else { return }
+            self.unreadMarker = unseen
+            if let unseen, unseen.count + 10 > self.timelineLimit {
+                self.timelineLimit = unseen.count + 10
+                self.observeTimelineRows(id)
+            }
+            self.markRead(id)
+        }
+    }
+
+    /// (Re)starts the open chat's timeline at the current page size.
+    private func observeTimelineRows(_ id: String) {
+        guard let db = client?.database else { return }
+        timelineTask?.cancel()
+        let limit = timelineLimit
         timelineTask = Task { [weak self] in
             do {
-                for try await rows in db.timelineUpdates(conversationId: id) {
+                for try await rows in db.timelineUpdates(conversationId: id, limit: limit) {
                     guard let self else { return }
                     self.messages = rows
-                    if let target = self.pendingScrollMessageId, rows.contains(where: { $0.id == target }) {
-                        self.pendingScrollMessageId = nil
-                        self.goToMessage(target)
+                    self.haveOldest = rows.count < limit
+                    self.isLoadingOlder = false
+                    if let target = self.pendingScrollMessageId {
+                        if rows.contains(where: { $0.id == target }) {
+                            self.pendingScrollMessageId = nil
+                            self.goToMessage(target)
+                        } else if !self.haveOldest {
+                            self.loadOlderMessages()    // the message to show is further back
+                        }
                     }
                 }
             } catch {}
         }
-        markRead(id)
+    }
+
+    /// The timeline scrolled near its top: load the next older page.
+    func loadOlderMessages() {
+        guard !haveOldest, !isLoadingOlder, let id = selectedConversationId else { return }
+        isLoadingOlder = true
+        timelineLimit += Self.timelinePage
+        observeTimelineRows(id)
+    }
+
+    // MARK: drafts
+
+    /// Puts the chat's saved draft into its composer (once its text view exists).
+    private func restoreDraft(_ id: String) {
+        guard let c = conversation(id), let body = c.draft else { return }
+        let ranges = draftRanges(c)
+        restoredDraftText = ComposerController.displayText(body: body, ranges: ranges)
+        composer.load(body: body, ranges: ranges, intoNewView: true)
+    }
+
+    /// A saved draft's ranges for the composer (mentions titled with the contact's name).
+    func draftRanges(_ c: ConversationSummary) -> [BodyRange] {
+        c.draftBodyRanges.map { r in
+            switch r.kind {
+            case .mention(let aci):
+                BodyRange(start: r.start, length: r.length, kind: .mention(aci: aci, conversationID: aci, replacementText: contactTitle(aci)))
+            case .style(let style):
+                BodyRange(start: r.start, length: r.length, kind: .formatting(BodyRange.Style(rawValue: style) ?? .none))
+            }
+        }
+    }
+
+    /// Saves the draft a second after typing stops (so it survives quitting).
+    func scheduleDraftSave() {
+        guard editingMessageId == nil, let id = selectedConversationId else { return }
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, self?.selectedConversationId == id else { return }
+            self?.saveDraft(id)
+        }
+    }
+
+    /// Stores the composer's text as `conversationId`'s draft (empty: clears it).
+    func saveDraft(_ conversationId: String) {
+        draftSaveTask?.cancel()
+        guard let session, editingMessageId == nil else { return }
+        let (body, ranges) = Self.trimmed(composer.outgoing(), fallback: draft)
+        let coreRanges = Self.coreRanges(ranges)
+        let saved = conversation(conversationId)
+        if body.isEmpty && saved?.draft == nil { return }
+        if body == saved?.draft && coreRanges == saved?.draftBodyRanges { return }
+        Task { try? await session.messenger.saveDraft(conversationId, body: body, bodyRanges: coreRanges) }
+    }
+
+    /// The composer's ranges as SignalCore stores and sends them.
+    static func coreRanges(_ ranges: [BodyRange]) -> [MessageBodyRange] {
+        ranges.compactMap { r in
+            switch r.kind {
+            case .mention(let aci, _, _): MessageBodyRange(start: r.start, length: r.length, kind: .mention(aci: aci))
+            case .formatting(let style, _) where style != .none: MessageBodyRange(start: r.start, length: r.length, kind: .style(style.rawValue))
+            default: nil
+            }
+        }
     }
 
     func markRead(_ conversationId: String, force: Bool = false) {
@@ -522,6 +776,12 @@ import SignalUI
         groupSelection = []
         newGroupName = ""
         newGroupTimer = 0
+        newGroupAvatar = nil
+        newGroupAvatarPreview = nil
+        newGroupPhoto = nil
+        isEditingNewGroupAvatar = false
+        composeSelectedRegion = nil
+        isChoosingCountry = false
         composeTask?.cancel()
     }
 
@@ -583,7 +843,10 @@ import SignalUI
         var width: Int?
         var height: Int?
     }
-    private(set) var staged: [StagedAttachment] = []
+    private(set) var staged: [StagedAttachment] = [] {
+        // "If we have attachments, don't add link preview".
+        didSet { if staged.isEmpty != oldValue.isEmpty { maybeGrabLinkPreview() } }
+    }
     /// Upstream's outgoing limit (getMaximumOutgoingAttachmentSize default, 100 MiB).
     static let maxAttachmentBytes = 100 * 1024 * 1024
 
@@ -602,7 +865,28 @@ import SignalUI
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= Self.maxAttachmentBytes,
               let data = try? Data(contentsOf: url) else { return Self.trace("attach: file unreadable or too large") }
         let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        let item = StagedAttachment(data: data, contentType: type, fileName: url.lastPathComponent)
+        stage(data, contentType: type, fileName: url.lastPathComponent)
+    }
+
+    /// ⌘V in the composer (`handlePaste`): files on the pasteboard, or an image (PNG or JPEG
+    /// bytes; other image types would need ImageIO, so they are left alone).
+    func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            for url in urls { stage(url) }
+            return true
+        }
+        for (type, mime, ext) in [(NSPasteboard.PasteboardType.png, "image/png", "png"), (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "jpg")] {
+            if let data = pasteboard.data(forType: type), data.count <= Self.maxAttachmentBytes {
+                stage(data, contentType: mime, fileName: "image.\(ext)")
+                return true
+            }
+        }
+        return false
+    }
+
+    func stage(_ data: Data, contentType type: String, fileName: String) {
+        guard selectedConversationId != nil, editingMessageId == nil else { return }
+        let item = StagedAttachment(data: data, contentType: type, fileName: fileName)
         staged.append(item)
         guard AttachmentPolicy.isImage(type) else { return }
         let media = media
@@ -645,10 +929,13 @@ import SignalUI
     func saveNotificationSettings(_ change: (inout SignalCore.NotificationSettings) -> Void) {
         var n = notificationSettings
         change(&n)
-        guard n != notificationSettings, let db = client?.database else { return }
+        guard n != notificationSettings, let session else { return }
         notificationSettings = n
         let saved = n
-        Task { try? await db.pool.write { try saved.save($0) } }
+        // Saved, and "notify … while muted" synced to our other devices (AccountRecord).
+        Task {
+            do { try await session.messenger.saveNotificationSettings(saved) } catch { Self.trace("notification settings failed: \(error)") }
+        }
     }
 
     /// Chat folder changes (stored, and written back to the storage service).
@@ -789,8 +1076,8 @@ import SignalUI
     }
 
     /// A contact's or group's avatar, decoded by the media service the first time it is shown.
-    private(set) var avatars: [String: RGBAImage] = [:]
-    private var loadingAvatars: Set<String> = []
+    @ObservationIgnored let avatars = ObservedCache<RGBAImage>()
+    @ObservationIgnored private var loadingAvatars: Set<String> = []
     func avatarImage(_ file: LocalFile?) -> RGBAImage? {
         guard let file else { return nil }
         if let hit = avatars[file.path] { return hit }
@@ -827,9 +1114,31 @@ import SignalUI
         Task { try? await db.saveAccountSettings(s) }
     }
 
+    /// The body without leading and trailing whitespace, its ranges moved (and clipped) to match.
+    /// Falls back to the plain draft when the composer has no text view (tests, previews).
+    static func trimmed(_ out: (body: String, ranges: [BodyRange]), fallback: String) -> (String, [BodyRange]) {
+        let raw = out.body.isEmpty && !fallback.isEmpty ? fallback : out.body
+        let units = Array(raw.utf16)
+        func isSpace(_ u: UInt16) -> Bool { Unicode.Scalar(u).map { CharacterSet.whitespacesAndNewlines.contains($0) } ?? false }
+        var lo = 0, hi = units.count
+        while lo < hi, isSpace(units[lo]) { lo += 1 }
+        while hi > lo, isSpace(units[hi - 1]) { hi -= 1 }
+        let body = String(decoding: units[lo..<hi], as: UTF16.self)
+        let ranges = (out.body.isEmpty ? [] : out.ranges).compactMap { r -> BodyRange? in
+            let s = max(r.start, lo), e = min(r.start + r.length, hi)
+            guard e > s else { return nil }
+            var moved = r
+            moved.start = s - lo
+            moved.length = e - s
+            return moved
+        }
+        return (body, ranges)
+    }
+
     /// Sends the composer's text to the open conversation.
     func sendDraft() {
-        let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The composer's body (mentions as U+FFFC) and its ranges, trimmed like the text.
+        let (body, bodyRanges) = Self.trimmed(composer.outgoing(), fallback: draft)
         Self.trace("send: draft \(body.count) chars, \(staged.count) attachments, session \(session != nil), conversation \(selectedConversation.map { "\($0.kind)" } ?? "none")")
         if let editing = editingMessageId {
             // An edit: the new text replaces the message's body (here and for everyone).
@@ -843,31 +1152,44 @@ import SignalUI
         }
         guard !body.isEmpty || !staged.isEmpty, let session, let c = selectedConversation else { return }
         let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName) }
+        let coreRanges = Self.coreRanges(bodyRanges)
+        let preview = attachments.isEmpty ? linkPreviewForSend(body) : nil
+        resetLinkPreview()
+        unreadMarker = nil    // upstream: sending clears the divider
         draft = ""
         staged = []
         let quoting = quotedMessageId
         quotedMessageId = nil
-        Task {
+        let stagedBefore = staged
+        // Upstream blockSendUntilConversationsAreVerified: a changed safety number is put to
+        // the user before anything is queued; cancelling leaves the draft as it was.
+        afterIdentityReview(conversationId: c.id, send: { Task {
             do {
                 if c.kind == .group {
                     guard let key = c.masterKey else { return Self.trace("send failed: group has no master key") }
                     do {
-                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, quoting: quoting, masterKey: key)
+                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key)
                     } catch GroupsServiceError.notAMember {
                         // No group state yet (the post-link group fetch is still running) or a stale
                         // one: bring the group up to date now, then send once more.
                         Self.trace("send: group state missing, fetching it")
                         _ = try await session.groups.update(try GroupKeys(masterKey: key))
-                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, quoting: quoting, masterKey: key)
+                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key)
                     }
                 } else {
                     guard let to = c.serviceId else { return Self.trace("send failed: contact has no service id") }
-                    _ = try await session.messenger.sendMessage(body, attachments: attachments, quoting: quoting, to: to)
+                    _ = try await session.messenger.sendMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, to: to)
                 }
                 Self.trace("send: queued")
             } catch {
                 Self.trace("send failed: \(error)")
             }
-        }
+        } }, cancelled: { [weak self] in
+            guard let self, self.selectedConversationId == c.id, self.draft.isEmpty, self.staged.isEmpty else { return }
+            self.draft = ComposerController.displayText(body: body, ranges: bodyRanges)
+            self.composer.load(body: body, ranges: bodyRanges)
+            self.staged = stagedBefore
+            self.quotedMessageId = quoting
+        })
     }
 }

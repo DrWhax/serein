@@ -3,6 +3,7 @@
 // CONNECT proxy (the harness's stand-in for contentproxy.signal.org) to an HTTPS site.
 
 import Foundation
+import LinkPreviewParser
 import GRDB
 import Synchronization
 import MediaXPCInterface
@@ -70,7 +71,7 @@ struct LinkPreviewFetchTests {
     let site = "https://site.signalsafe.app"
 
     func meta(_ t: FakeTransport, _ path: String = "/") async -> LinkPreviewMetadata? {
-        await LinkPreviewFetch.metadata(t, media: media, href: site + path)
+        await LinkPreviewFetch.metadata(t, parser: LinkPreviewParser(), media: media, href: site + path)
     }
 
     @Test func pagesAndHeaders() async {
@@ -149,7 +150,7 @@ struct LinkPreviewFetchTests {
         let r = try await c.server.json("setPreviewSite", ["routes": routes])
         let port = try #require(r["proxyPort"] as? Int)
         let transport = URLSessionLinkPreviewTransport(proxy: .custom(host: "127.0.0.1", port: port), rootCertificatesDER: c.endpoints.rootCertificatesDER)
-        return LinkPreviewService(transport: transport, media: MediaDecoder(), stickers: c.stickers, groups: c.groups, strings: Self.strings)
+        return LinkPreviewService(transport: transport, parser: LinkPreviewParser(), media: MediaDecoder(), stickers: c.stickers, groups: c.groups, strings: Self.strings)
     }
 
     @Test func pagePreviewThroughTheProxyAndSend() async throws {
@@ -177,6 +178,12 @@ struct LinkPreviewFetchTests {
             #expect(Data(base64Encoded: fetched["plaintext"] as! String) == image.data && i["width"] as? Int != nil)
             let stored = try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT json ->> '$.preview' FROM messages WHERE id = ?", arguments: [sent.messageId]) }
             #expect(stored?.contains("news.signalsafe.app") == true)
+            // The timeline carries it, with its stored image.
+            let conversation = try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [sent.messageId]) }
+            let timeline = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: conversation ?? "", limit: 10) }
+            let shown = try #require(timeline.first { $0.id == sent.messageId }?.previews.first)
+            #expect(shown.url == "https://news.signalsafe.app/old" && shown.title == "Tea & biscuits" && shown.domain == "news.signalsafe.app")
+            #expect(shown.image?.isDownloaded == true && shown.image?.contentType == image.contentType)
         }
     }
 
@@ -193,6 +200,10 @@ struct LinkPreviewFetchTests {
             let list = try #require(try JSONSerialization.jsonObject(with: Data((json ?? "[]").utf8)) as? [[String: Any]])
             #expect(list.count == 1 && list[0]["title"] as? String == "Signal blog" && list[0]["domain"] as? String == "signal.org"
                     && list[0]["date"] as? Int64 == 1_587_386_096_009)
+            let conversation = try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT conversationId FROM messages WHERE sent_at = ?", arguments: [Int64(t)]) }
+            let timeline = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: conversation ?? "", limit: 10) }
+            let shown = try #require(timeline.first { $0.sentAt == Int64(t) })
+            #expect(shown.previews.map(\.url) == ["https://signal.org/blog/"] && shown.previews[0].date == 1_587_386_096_009 && shown.previews[0].image == nil)
         }
     }
 

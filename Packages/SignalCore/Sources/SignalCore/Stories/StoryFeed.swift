@@ -43,15 +43,20 @@ public struct StoryFeedItem: Sendable, Equatable, Identifiable {
     /// Outgoing: Pending / Sent / Failed… per recipient; views = recipients that viewed it.
     public var sendStatuses: [String]
     public var views: Int
+    /// The sender's (or group's) stories are hidden (conversation hideStory).
+    public var isHidden = false
 }
 
 public enum StoryFeed {
     public static func items(_ db: Database, now: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) throws -> [StoryFeedItem] {
         let ourAci = ((try Items.get(db, "uuid_id") as String?) ?? "").split(separator: ".").first.map(String.init) ?? ""
         return try Row.fetchAll(db, sql: """
-            SELECT m.id, m.conversationId, m.sourceServiceId, m.sent_at, m.storyDistributionListId, m.readStatus, m.json, c.type AS ctype
+            SELECT m.id, m.conversationId, m.sourceServiceId, m.sent_at, m.storyDistributionListId, m.readStatus, m.json, c.type AS ctype,
+                   coalesce(c.json ->> '$.hideStory', 0) AS hidden
             FROM messages m LEFT JOIN conversations c ON c.id = m.conversationId
-            WHERE m.type = 'story' AND coalesce(m.expirationStartTimestamp, m.sent_at) + 86400000 > ? ORDER BY m.sent_at DESC
+            WHERE m.type = 'story' AND coalesce(m.expirationStartTimestamp, m.sent_at) + 86400000 > ?
+              AND coalesce(m.json ->> '$.deletedForEveryone', 0) = 0
+            ORDER BY m.sent_at DESC
             """, arguments: [now]).map { row in
             let id: String = row["id"]
             let json = (try? MessageStore.jsonObject(row["json"])) ?? [:]
@@ -62,7 +67,7 @@ public enum StoryFeed {
                 isUnread: (row["readStatus"] as Int?) == ReadStatus.unread.rawValue, distributionListId: row["storyDistributionListId"],
                 groupConversationId: (row["ctype"] as String?) == "group" ? row["conversationId"] : nil,
                 canReply: json["canReplyToStory"] as? Bool ?? false, text: nil, media: nil, mediaLocation: nil, sendStatuses: states,
-                views: states.filter { $0 == "Viewed" }.count)
+                views: states.filter { $0 == "Viewed" }.count, isHidden: (row["hidden"] as Int?) == 1)
             if let t = (json["attachments"] as? [[String: Any]])?.first?["textAttachment"] as? [String: Any] {
                 item.text = text(t)
             } else if let (loc, a) = try MessageAttachments.fetch(db, messageId: id).first(where: { $0.0.type == .attachment }) {

@@ -35,13 +35,14 @@ public struct EditConversationAttributesModal: View {
     @Environment(\.i18n) var i18n
 
     public init(avatarColor: String? = nil, avatarImage: RGBAImage? = nil, title: String, groupDescription: String = "",
-                initiallyFocusDescription: Bool = false, requestState: RequestState = .inactive, userAvatarData: [AvatarData] = [],
+                initiallyFocusDescription: Bool = false, initiallyEditingAvatar: Bool = false, requestState: RequestState = .inactive, userAvatarData: [AvatarData] = [],
                 makeRequest: @escaping (Request) -> Void = { _ in }, onClose: @escaping () -> Void = {}) {
         self.avatarColor = avatarColor
         self.avatarImage = avatarImage
         self.title = title
         self.groupDescription = groupDescription
         self.initiallyFocusDescription = initiallyFocusDescription
+        _editingAvatar = State(initialValue: initiallyEditingAvatar)
         self.requestState = requestState
         self.userAvatarData = userAvatarData
         self.makeRequest = makeRequest

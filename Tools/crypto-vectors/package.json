@@ -1,0 +1,15 @@
+{
+  "name": "crypto-vectors",
+  "private": true,
+  "type": "module",
+  "description": "Generates known-answer vectors from Signal-Desktop's own TypeScript crypto (the oracle for SignalCore's Swift port).",
+  "dependencies": {
+    "@indutny/protopiler": "^4.0.2",
+    "@signalapp/libsignal-client": "0.106.0",
+    "esbuild": "^0.25.0",
+    "fs-extra": "11.3.4",
+    "lodash": "4.18.1",
+    "lru-cache": "^11.2.7",
+    "pino": "^10.3.1"
+  }
+}

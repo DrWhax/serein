@@ -32,7 +32,8 @@ extension SignalSession {
         var messageId: String
         var attachments: [SignalCore.MessageAttachment]
         var index: Int
-        var authorTitle: String
+        /// The sender's name (nil: ours, shown as "You").
+        var authorTitle: String?
         var authorColor: String
         var timestamp: Date
         var players: [Int: VideoPlaybackEngine] = [:]
@@ -46,7 +47,7 @@ extension SignalSession {
     func openLightbox(_ m: TimelineMessage, index: Int) {
         let visual = m.attachments.map(\.attachment).filter { AttachmentPolicy.isImage($0.contentType) || AttachmentPolicy.isVideo($0.contentType) }
         guard visual.indices.contains(index) else { return }
-        let author = m.direction == .outgoing ? "You" : contactTitle(m.author)
+        let author = m.direction == .outgoing ? nil : contactTitle(m.author)
         lightbox = LightboxState(messageId: m.id, attachments: visual, index: index, authorTitle: author,
                                  authorColor: m.direction == .outgoing ? "A200" : contactColor(m.author), timestamp: Date(milliseconds: m.sentAt))
         prepareLightboxItem(index)
@@ -67,7 +68,7 @@ extension SignalSession {
 
     /// Images: a large decode. Videos: a decode session plus audio, then play.
     func prepareLightboxItem(_ index: Int) {
-        guard let l = lightbox, let session = signalSession else { return }
+        guard let l = lightbox, signalSession != nil else { return }
         let a = l.attachments[index]
         guard a.isDownloaded else { return }
         if AttachmentPolicy.isImage(a.contentType) {
@@ -75,24 +76,11 @@ extension SignalSession {
             return
         }
         guard l.players[index] == nil else { Task { await l.players[index]?.play() }; return }
-        let store = session.attachmentStore, media = media, messageId = l.messageId
+        let messageId = l.messageId
+        if inlineVideo?.messageId == messageId { inlineVideo?.player.pause() }
         Task {
-            guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil else { return }
             do {
-                let (videoSession, info) = try await media.openVideo(bytes)
-                var audio: AudioPlaybackEngine?
-                if info.hasAudio {
-                    let engine = AudioPlaybackEngine()
-                    try? await engine.load({ start, count in
-                        let chunk = try await media.decodeAudio(bytes, startFrame: start, maxFrames: count)
-                        return PCMChunk(sampleRate: chunk.sampleRate, channels: chunk.channels, totalFrames: chunk.totalFrames,
-                                        startFrame: chunk.startFrame, samples: chunk.floats)
-                    })
-                    audio = engine
-                }
-                let player = VideoPlaybackEngine(audio: audio)
-                player.isLooping = (a.flags ?? 0) & 8 != 0
-                await player.load(XPCVideoSource(media: media, session: videoSession), duration: info.duration, rotation: info.rotation)
+                guard let (player, info) = try await makeVideoPlayer(a) else { return }
                 guard lightbox?.messageId == messageId else { await player.unload(); return }
                 lightbox?.players[index] = player
                 lightbox?.durations[index] = info.duration
@@ -104,14 +92,76 @@ extension SignalSession {
         }
     }
 
+    /// A video's player: a decode session in the media service (our Swift H.264/HEVC decoders),
+    /// plus its audio (MP3/AAC decoded there too) when it has a track.
+    func makeVideoPlayer(_ a: SignalCore.MessageAttachment) async throws -> (VideoPlaybackEngine, VideoInfo)? {
+        guard let session = signalSession else { return nil }
+        let store = session.attachmentStore, media = media
+        guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil else { return nil }
+        let (videoSession, info) = try await media.openVideo(bytes)
+        var audio: AudioPlaybackEngine?
+        if info.hasAudio {
+            let engine = AudioPlaybackEngine()
+            try? await engine.load({ start, count in
+                let chunk = try await media.decodeAudio(bytes, startFrame: start, maxFrames: count)
+                return PCMChunk(sampleRate: chunk.sampleRate, channels: chunk.channels, totalFrames: chunk.totalFrames,
+                                startFrame: chunk.startFrame, samples: chunk.floats)
+            })
+            audio = engine
+        }
+        let player = VideoPlaybackEngine(audio: audio)
+        player.isLooping = (a.flags ?? 0) & 8 != 0
+        await player.load(XPCVideoSource(media: media, session: videoSession), duration: info.duration, rotation: info.rotation)
+        return (player, info)
+    }
+
+    /// A lone video played in its bubble (one at a time): started, or resumed if it is the one.
+    func playVideoInline(_ m: TimelineMessage) {
+        guard let a = m.attachments.first?.attachment, AttachmentPolicy.isVideo(a.contentType), a.isDownloaded else { return }
+        if let current = inlineVideo, current.messageId == m.id {
+            Task { await current.player.play() }
+            return
+        }
+        stopInlineVideo()
+        stopAudio()
+        let id = m.id
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let (player, _) = try await makeVideoPlayer(a) else { return }
+                stopInlineVideo()
+                inlineVideo = (id, player)
+                player.onEnded = { [weak self] in Task { @MainActor in self?.stopInlineVideo() } }
+                await player.play()
+            } catch {
+                Self.trace("inline video failed: \(error)")
+            }
+        }
+    }
+
+    func stopInlineVideo() {
+        guard let current = inlineVideo else { return }
+        inlineVideo = nil
+        Task { await current.player.unload() }
+    }
+
     /// "Save": the plaintext with the quarantine properties, where the user picks.
     func saveLightboxItem() {
         guard let l = lightbox, let session = signalSession else { return }
         let a = l.attachments[l.index]
+        let name = Self.suggestedFilename(a, sentAt: Int64(l.timestamp.timeIntervalSince1970 * 1000), index: l.index + 1)
+        if Self.isFileDangerous(name) { return toast = .dangerousFileType }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = a.fileName ?? "signal-\(Int(l.timestamp.timeIntervalSince1970))"
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.nameFieldStringValue = name
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? session.attachmentStore.export(a, to: url)
+        do {
+            try session.attachmentStore.export(a, to: url)
+            toast = .fileSaved(fullPath: url.path, countOfFiles: 1)
+        } catch {
+            Self.trace("save failed: \(error)")
+            toast = .error
+        }
     }
 
     /// The Lightbox's larger decode (cached apart from the timeline's).
@@ -148,9 +198,10 @@ struct MediaLightbox: View {
                 return LightboxMediaItem(kind: .image, image: session.largeImage(for: a) ?? session.image(for: a))
             }
             Lightbox(media: items, selectedIndex: l.index,
-                     header: LightboxHeaderInfo(title: l.authorTitle, color: l.authorColor,
+                     header: LightboxHeaderInfo(title: l.authorTitle ?? i18n("icu:you"), color: l.authorColor,
                                                 timestamp: l.timestamp.formatted(date: .abbreviated, time: .shortened)),
-                     closeLightbox: { session.closeLightbox() }, onSave: { session.saveLightboxItem() },
+                     closeLightbox: { session.closeLightbox() }, onForward: { session.closeLightbox(); session.forward([l.messageId]) },
+                     onSave: { session.saveLightboxItem() },
                      onPrevAttachment: { session.selectLightbox(l.index - 1) }, onNextAttachment: { session.selectLightbox(l.index + 1) },
                      onSelectAttachment: { session.selectLightbox($0) })
         }

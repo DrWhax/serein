@@ -1,0 +1,34 @@
+; Seatbelt rules for SignalLinkPreviewParser.xpc, on top of App Sandbox (the only other
+; entitlement). Tools/build-app.sh puts each rule (one per line; `;` lines are comments) in the
+; service's com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox
+; profile. App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every
+; deny here has a filter that matches everything. The service needs none of this: it is handed
+; bytes over its XPC connection (set up before these rules apply) and returns strings.
+; Tools/check-sandbox-profile.sh runs a probe service under these rules.
+;
+; Files: nothing read (not even system files), written, or ioctl'd.
+(deny file-read* (subpath "/"))
+(deny file-write* (subpath "/"))
+(deny file-ioctl (subpath "/"))
+; No other programs, no children.
+(deny process-exec* (subpath "/"))
+(deny process-fork)
+; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any.
+(deny mach-lookup (global-name-regex #".*"))
+(deny mach-lookup (local-name-regex #".*"))
+(deny mach-register (global-name-regex #".*"))
+(deny mach-register (local-name-regex #".*"))
+; No network of any kind (App Sandbox without network entitlements already denies IP sockets).
+(deny network* (remote ip))
+(deny network* (local ip))
+(deny network* (remote unix-socket))
+(deny network* (local unix-socket))
+; No preferences, devices, shared memory or semaphores.
+(deny user-preference-read (preference-domain-regex #".*"))
+(deny user-preference-write (preference-domain-regex #".*"))
+(deny iokit-open (iokit-user-client-class-regex #".*"))
+(deny ipc-posix-shm* (ipc-posix-name-regex #".*"))
+(deny ipc-posix-sem (ipc-posix-name-regex #".*"))
+; No changing kernel state, no signalling other processes.
+(deny sysctl-write)
+(deny signal (target others))

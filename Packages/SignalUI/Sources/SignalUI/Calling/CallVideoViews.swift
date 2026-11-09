@@ -131,18 +131,21 @@ public struct RemoteVideoView: NSViewRepresentable {
 @MainActor
 public final class LocalVideoModel {
     public private(set) var current: VideoPlanes?
-    var onFrame: ((VideoPlanes?) -> Void)?
+    /// Every preview on screen (the lobby, the call's self view, PiP), by view.
+    var sinks: [ObjectIdentifier: (VideoPlanes?) -> Void] = [:] {
+        didSet { if sinks.count > 8 { sinks = [:] } }    // views come and go; a stale handful is harmless (weak), more is a leak
+    }
     public init() {}
 
     public func present(_ frame: CapturedFrame) {
         let p = frame.planes
         current = p
-        onFrame?(p)
+        for sink in sinks.values { sink(p) }
     }
 
     public func clear() {
         current = nil
-        onFrame?(nil)
+        for sink in sinks.values { sink(nil) }
     }
 }
 
@@ -165,7 +168,7 @@ public struct LocalVideoView: NSViewRepresentable {
 
     public func updateNSView(_ v: VideoLayerView, context: Context) {
         v.fit = fit
-        model.onFrame = { [weak v] f in v?.show(f) }
+        model.sinks[ObjectIdentifier(v)] = { [weak v] f in v?.show(f) }
         v.show(model.current)
     }
 

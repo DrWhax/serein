@@ -309,6 +309,44 @@ public enum CallHistoryStore {
         try Row.fetchOne(db, sql: "SELECT * FROM callsHistory WHERE callId = ? AND peerId = ?", arguments: [callId, peerId]).map(decode)
     }
 
+    /// A row of the Calls tab (`CallHistoryGroup`): consecutive calls with the same peer, mode,
+    /// type, direction and status within four hours, newest first.
+    public struct Group: Sendable, Equatable {
+        public var peerId: String
+        public var mode: CallMode
+        public var type: CallType
+        public var direction: CallDirection
+        public var status: CallStatus
+        /// The newest call's time (ms).
+        public var timestamp: Int64
+        public var calls: [(callId: String, timestamp: Int64)]
+
+        public static func == (a: Group, b: Group) -> Bool {
+            a.peerId == b.peerId && a.mode == b.mode && a.type == b.type && a.direction == b.direction && a.status == b.status
+                && a.timestamp == b.timestamp && a.calls.map(\.callId) == b.calls.map(\.callId)
+        }
+    }
+
+    static let groupWindow: Int64 = 4 * 60 * 60 * 1000
+
+    /// `getCallHistoryGroups`: the recent calls (deleted ones left out), grouped.
+    public static func groups(_ db: Database, limit: Int = 1000) throws -> [Group] {
+        let rows = try Row.fetchAll(db, sql: "SELECT * FROM callsHistory WHERE status != 'Deleted' ORDER BY timestamp DESC LIMIT ?", arguments: [limit]).map(decode)
+        var out: [Group] = []
+        for h in rows {
+            let d = h.details
+            if var last = out.last, last.peerId == d.peerId, last.mode == d.mode, last.type == d.type, last.direction == d.direction, last.status == h.status,
+               (last.calls.first?.timestamp ?? last.timestamp) - d.timestamp <= groupWindow {
+                last.calls.append((d.callId, d.timestamp))
+                out[out.count - 1] = last
+            } else {
+                out.append(Group(peerId: d.peerId, mode: d.mode, type: d.type, direction: d.direction, status: h.status, timestamp: d.timestamp,
+                                 calls: [(d.callId, d.timestamp)]))
+            }
+        }
+        return out
+    }
+
     static func decode(_ r: Row) -> CallHistoryDetails {
         CallHistoryDetails(details: CallDetails(callId: r["callId"], peerId: r["peerId"], ringerId: r["ringerId"], startedById: r["startedById"],
                                                 mode: CallMode(rawValue: r["mode"]) ?? .direct, type: CallType(rawValue: r["type"]) ?? .unknown,
@@ -449,4 +487,9 @@ public enum CallHistoryStore {
     public static func all(_ db: Database, limit: Int = 500) throws -> [CallHistoryDetails] {
         try Row.fetchAll(db, sql: "SELECT * FROM callsHistory WHERE status != 'Deleted' ORDER BY timestamp DESC LIMIT ?", arguments: [limit]).map(decode)
     }
+}
+
+extension SignalDatabase {
+    /// The Calls tab's groups, live.
+    public func callHistoryUpdates() -> AsyncThrowingStream<[CallHistoryStore.Group], Error> { observe { try CallHistoryStore.groups($0) } }
 }

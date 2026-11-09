@@ -171,7 +171,11 @@ public struct CallingLobby: View {
         GeometryReader { g in
             ZStack(alignment: .top) {
                 Color(rgba: LegacyColor.gray90)
-                localPreview(g.size)
+                    // `position: absolute`: the preview is centred and may be wider than the
+                    // window (a wide camera at full height); it never widens the layout, so
+                    // the header (settings, ✕) and the controls stay in the window.
+                    .overlay(alignment: .top) { localPreview(g.size) }
+                    .clipped()
                 VStack(spacing: 0) {
                     Color.clear.frame(height: 64).padding(.top, 12)
                     CallingPreCallInfo(conversation: conversation, meId: me.id, meAci: me.aci, ringMode: ringMode, groupMembers: groupMembers,

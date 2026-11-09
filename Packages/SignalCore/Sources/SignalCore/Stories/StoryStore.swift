@@ -244,10 +244,22 @@ public enum StoryDistributionLists {
 
     /// `getSignalConnections`: contacts we share our profile with (profile sharing on, not
     /// blocked or hidden), with an ACI.
+    /// `getSignalConnections`: profile-sharing contacts, not blocked or removed, never
+    /// unregistered, and not the Signal release-notes account.
     public static func signalConnections(_ db: Database) throws -> [String] {
         try String.fetchAll(db, sql: """
             SELECT serviceId FROM conversations WHERE type = 'private' AND serviceId IS NOT NULL
               AND json ->> '$.profileSharing' = 1 AND IFNULL(json ->> '$.isBlocked', 0) = 0 AND json ->> '$.removalStage' IS NULL
-            """)
+              AND IFNULL(json ->> '$.firstUnregisteredAt', 0) = 0 AND serviceId != ?
+            """, arguments: [StoryDistributionLists.signalReleaseNotesAci])
+    }
+
+    /// `SIGNAL_ACI`: the official Signal account.
+    static let signalReleaseNotesAci = "11111111-1111-4111-8111-111111111111"
+
+    /// `isConversationEverUnregistered`.
+    static func everUnregistered(_ db: Database, serviceId: String) throws -> Bool {
+        (try Int64.fetchOne(db, sql: "SELECT IFNULL(json ->> '$.firstUnregisteredAt', 0) FROM conversations WHERE serviceId = ?",
+                            arguments: [serviceId]) ?? 0) != 0
     }
 }

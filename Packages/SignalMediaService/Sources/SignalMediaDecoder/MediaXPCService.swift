@@ -22,7 +22,6 @@ public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
         switch request {
         case .stickerImage(let b): return try MediaXPCWire.encode(try await d.stickerImage(b))
         case .displayImage(let b, let max): return try MediaXPCWire.encode(try await d.displayImage(b, maxDimension: max))
-        case .linkPreviewHTML(let b, let charset): return try MediaXPCWire.encode((try await d.linkPreviewHTML(b, httpCharset: charset)).map { [$0] } ?? [])
         case .imageInfo(let b): return try MediaXPCWire.encode(try await d.imageInfo(b))
         case .thumbnail(let b, let size): return try MediaXPCWire.encode(try await d.thumbnail(b, size: size))
         case .scaleForSending(let b, let type, let level): return try MediaXPCWire.encode(try await d.scaleForSending(b, contentType: type, level: level))

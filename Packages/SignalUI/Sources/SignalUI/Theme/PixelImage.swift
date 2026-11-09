@@ -111,3 +111,9 @@ public enum BundledImage {
         return image
     }
 }
+
+extension EnvironmentValues {
+    /// A rebranded build's app logo, shown where upstream draws signal-logo.svg (the About
+    /// window, the no-conversation splash). nil: upstream's Signal logo.
+    @Entry public var brandLogo: RGBAImage? = nil
+}

@@ -255,7 +255,7 @@ public struct TextStoryCreator: View {
             HueSlider(label: MediaEditorColor.cssRGBA(sliderValue), value: $sliderValue)
                 .padding(.trailing, 14)
             AxoDropdownMenu.Root(isOpen: $fontMenuOpen, side: .top) {
-                StoryCreatorToolButton(icon: fontIcon, label: fontLabel) { fontMenuOpen.toggle() }
+                StoryCreatorToolButton(icon: fontIcon, label: fontLabel) {}
             } items: {
                 AxoDropdownMenu.RadioGroup(value: Binding(get: { String(textStyle.rawValue) },
                                                           set: { textStyle = $0.flatMap(Int.init).flatMap(TextAttachmentStyle.init) ?? .regular })) {

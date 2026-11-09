@@ -14,6 +14,8 @@ let package = Package(
         .package(path: "../../Packages/SignalCore"),
         .package(path: "../../Packages/SignalRingRTC"),
         .package(path: "../../Packages/SignalMediaService"),
+        .package(path: "../../Packages/SignalText"),
+        .package(path: "../../Packages/SignalCodecs"),
     ],
     targets: [
         .executableTarget(
@@ -24,6 +26,10 @@ let package = Package(
                 .product(name: "SignalCore", package: "SignalCore"),
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
                 .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                .product(name: "SignalText", package: "SignalText"),
+                // Encoding our own drawings only (group avatars); decoders stay in the service.
+                .product(name: "EncodePNG", package: "SignalCodecs"),
+                .product(name: "CodecCore", package: "SignalCodecs"),
                 "SignalSafeSystem",
             ],
             swiftSettings: [
@@ -44,5 +50,11 @@ let package = Package(
             ]
         ),
         .testTarget(name: "SignalSafeSystemTests", dependencies: ["SignalSafeSystem"]),
+        .testTarget(
+            name: "SignalSafeTests",
+            dependencies: ["SignalSafe", .product(name: "ImagePNG", package: "SignalCodecs"), .product(name: "CodecCore", package: "SignalCodecs"),
+                           .product(name: "SignalUI", package: "SignalUI")],
+            swiftSettings: [.strictMemorySafety(), .treatWarning("StrictMemorySafety", as: .error)]
+        ),
     ]
 )

@@ -6,6 +6,7 @@
 import Foundation
 import CryptoKit
 import GRDB
+import SignalText
 import LibSignalClient
 
 public struct ConversationSummary: Sendable, Equatable, Identifiable {
@@ -32,6 +33,45 @@ public struct ConversationSummary: Sendable, Equatable, Identifiable {
     public var avatar: LocalFile?
     /// What chat folders test (mute, unread, mentions, marked unread).
     public var folderProps: ChatFolderConversation = ChatFolderConversation(id: "", isGroup: false)
+    /// The unsent composer text (`json.draft`, mentions as U+FFFC), its ranges and when it was saved.
+    public var draft: String?
+    public var draftBodyRanges: [MessageBodyRange] = []
+    public var draftTimestamp: Int64?
+    /// Groups: whether the group is in the story send list ("Always" / "Never" / nil: default).
+    public var storySendMode: String?
+}
+
+/// Where the "unread messages" divider goes when a chat opens (upstream getOldestUnseenMessage-
+/// ForConversation / getTotalUnseenForConversation).
+public struct UnseenSummary: Sendable, Equatable {
+    public var oldestId: String
+    public var count: Int
+}
+
+/// A timeline entry that is not a chat message but something the reader has to be told
+/// (upstream's notification message types).
+public enum TimelineNotice: Sendable, Equatable {
+    /// `keychange`: this contact's safety number changed.
+    case keyChange(serviceId: String?)
+    /// `verified-change`: marked verified or not, here (`local`) or on another device.
+    case verifiedChange(verified: Bool, local: Bool)
+    /// `delivery-issue`: a message from `sender` could not be decrypted.
+    case deliveryIssue(sender: String?)
+    /// `chat-session-refreshed`: the session was reset after a decryption error.
+    case chatSessionRefreshed
+
+    /// The message types the timeline shows as notices.
+    static let types = ["keychange", "verified-change", "delivery-issue", "chat-session-refreshed"]
+
+    init?(type: String?, json: [String: Any], source: String?) {
+        switch type {
+        case "keychange": self = .keyChange(serviceId: json["key_changed"] as? String)
+        case "verified-change": self = .verifiedChange(verified: json["verified"] as? Bool ?? false, local: json["local"] as? Bool ?? false)
+        case "delivery-issue": self = .deliveryIssue(sender: source)
+        case "chat-session-refreshed": self = .chatSessionRefreshed
+        default: return nil
+        }
+    }
 }
 
 public struct TimelineMessage: Sendable, Equatable, Identifiable {
@@ -64,6 +104,18 @@ public struct TimelineMessage: Sendable, Equatable, Identifiable {
     public var hasBodyRanges = false
     /// A sticker message's sticker.
     public var sticker: TimelineSticker?
+    /// The message's link previews (`preview`), their images the `preview` attachments.
+    public var previews: [TimelinePreview] = []
+    /// `readStatus` is Viewed (a played voice note, an opened view-once).
+    public var isViewed = false
+    /// A poll (`poll`): its question, options and votes.
+    public var poll: TimelinePoll?
+    /// `bodyRanges`: mentions and styles of the body.
+    public var bodyRanges: [MessageBodyRange] = []
+    /// `editHistory`: every version, newest first (the current one included); empty if never edited.
+    public var editHistory: [TimelineEdit] = []
+    /// Set for an entry that is a notice, not a message (its body is empty).
+    public var notice: TimelineNotice?
 }
 
 public struct TimelineSticker: Sendable, Equatable {
@@ -106,6 +158,38 @@ public struct TimelineQuote: Sendable, Equatable {
         self.isGiftBadge = isGiftBadge
         self.messageId = messageId
     }
+}
+
+/// A poll as stored on its message (votes by voter conversation; an empty vote is a retraction).
+public struct TimelinePoll: Sendable, Equatable {
+    public struct Vote: Sendable, Equatable {
+        public var fromConversationId: String
+        public var optionIndexes: [Int]
+    }
+    public var question: String
+    public var options: [String]
+    public var allowMultiple: Bool
+    public var terminated: Bool
+    public var votes: [Vote]
+}
+
+/// One version of an edited message.
+public struct TimelineEdit: Sendable, Equatable {
+    public var body: String
+    /// Its send time (ms).
+    public var timestamp: Int64
+}
+
+/// A link preview as stored on a message (`LinkPreviewType`).
+public struct TimelinePreview: Sendable, Equatable {
+    public var url: String
+    public var title: String?
+    public var description: String?
+    public var date: Int64?
+    public var domain: String?
+    public var isStickerPack: Bool
+    public var isCallLink: Bool
+    public var image: MessageAttachment?
 }
 
 public struct TimelineAttachment: Sendable, Equatable {
@@ -178,7 +262,22 @@ public enum ConversationQueries {
             folderProps: ChatFolderConversation(id: id, isGroup: kind == .group, muteExpiresAt: (json["muteExpiresAt"] as? NSNumber)?.int64Value ?? 0,
                                                 unreadCount: (json["unreadCount"] as? NSNumber)?.intValue ?? 0,
                                                 unreadMentionsCount: (json["unreadMentionsCount"] as? NSNumber)?.intValue ?? 0,
-                                                markedUnread: json["markedUnread"] as? Bool ?? false))
+                                                markedUnread: json["markedUnread"] as? Bool ?? false),
+            draft: (json["draft"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            draftBodyRanges: (json["draftBodyRanges"] as? [[String: Any]] ?? []).compactMap(MessageBodyRange.from),
+            draftTimestamp: (json["draftTimestamp"] as? NSNumber)?.int64Value, storySendMode: json["storySendMode"] as? String)
+    }
+
+    /// The oldest unread incoming message and how many there are (nil: none).
+    public static func unseen(_ db: Database, conversationId: String) throws -> UnseenSummary? {
+        guard let oldest = try String.fetchOne(db, sql: """
+            SELECT id FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?
+            ORDER BY received_at, sent_at LIMIT 1
+            """, arguments: [conversationId, ReadStatus.unread.rawValue]) else { return nil }
+        let count = try Int.fetchOne(db, sql: """
+            SELECT count(*) FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?
+            """, arguments: [conversationId, ReadStatus.unread.rawValue]) ?? 0
+        return UnseenSummary(oldestId: oldest, count: count)
     }
 
     public static func inbox(_ db: Database) throws -> [ConversationSummary] {
@@ -261,7 +360,8 @@ public enum ConversationQueries {
             return s
         }
         return try Row.fetchAll(db, sql: """
-            SELECT \(messageColumns) FROM messages WHERE conversationId = ? AND type IN ('incoming', 'outgoing') AND received_at < ?
+            SELECT \(messageColumns) FROM messages
+            WHERE conversationId = ? AND type IN ('incoming', 'outgoing', \(TimelineNotice.types.map { "'\($0)'" }.joined(separator: ", "))) AND received_at < ?
             ORDER BY received_at DESC, sent_at DESC LIMIT ?
             """, arguments: [conversationId, before, limit]).map(message).reversed().map { m in
                 var m = m
@@ -272,6 +372,7 @@ public enum ConversationQueries {
                 if pinned.contains(m.id) { m.isPinned = true }
                 for k in m.reactions.indices { m.reactions[k].fromId = try serviceId(m.reactions[k].fromId) }
                 if m.sticker != nil { m.sticker?.attachment = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .sticker, order: 0)) }
+                for k in m.previews.indices { m.previews[k].image = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .preview, order: k)) }
                 guard m.hasAttachments else { return m }
                 m.attachments = try MessageAttachments.fetch(db, messageId: m.id)
                     .filter { $0.0.type == .attachment && $0.0.editHistoryIndex == -1 }
@@ -334,12 +435,16 @@ public enum ConversationQueries {
             // Best state across recipients, failed only when every recipient failed (upstream getMessagePropStatus).
             let all = states.values.compactMap { ($0["status"] as? String).flatMap(SendStatus.init(rawValue:)) }
             if let best = all.max(by: { $0.rank < $1.rank }) { status = TimelineMessage.Status(rawValue: best.rawValue) }
+            // No one else to send to (a group with only us): upstream's `isMessageJustForMe`,
+            // sent — not "sending" forever.
+            else if states.isEmpty { status = .sent }
             else { status = .pending }
         }
         var m = TimelineMessage(id: row["id"], conversationId: conversationId, direction: outgoing ? .outgoing : .incoming,
                                 body: row["body"] ?? "", sentAt: row["sent_at"] ?? 0, receivedAt: row["received_at"] ?? 0,
                                 author: row["sourceServiceId"], status: status, hasAttachments: (row["hasAttachments"] as Int?) == 1,
                                 isDeleted: json["deletedForEveryone"] as? Bool ?? false, content: MessageContentKind.of(json))
+        m.notice = TimelineNotice(type: row["type"], json: json, source: row["sourceServiceId"])
         func int64(_ v: Any?) -> Int64? { (v as? NSNumber)?.int64Value }
         m.reactions = (json["reactions"] as? [[String: Any]] ?? []).compactMap { r in
             guard let emoji = r["emoji"] as? String, let from = r["fromId"] as? String else { return nil }
@@ -354,8 +459,27 @@ public enum ConversationQueries {
         m.expireTimer = (json["expireTimer"] as? NSNumber)?.intValue
         m.expirationStartTimestamp = int64(json["expirationStartTimestamp"])
         m.hasBodyRanges = !((json["bodyRanges"] as? [Any])?.isEmpty ?? true)
+        m.bodyRanges = (json["bodyRanges"] as? [[String: Any]] ?? []).compactMap(MessageBodyRange.from)
+        if let p = json["poll"] as? [String: Any], let question = p["question"] as? String, let options = p["options"] as? [String] {
+            let votes = (p["votes"] as? [[String: Any]] ?? []).compactMap { v -> TimelinePoll.Vote? in
+                guard let from = v["fromConversationId"] as? String else { return nil }
+                return TimelinePoll.Vote(fromConversationId: from, optionIndexes: (v["optionIndexes"] as? [NSNumber] ?? []).map(\.intValue))
+            }
+            m.poll = TimelinePoll(question: question, options: options, allowMultiple: p["allowMultiple"] as? Bool ?? false,
+                                  terminated: p["terminatedAt"] != nil, votes: votes)
+        }
         if let s = json["sticker"] as? [String: Any], let packId = s["packId"] as? String, let stickerId = (s["stickerId"] as? NSNumber)?.intValue {
             m.sticker = TimelineSticker(packId: packId, stickerId: stickerId, emoji: s["emoji"] as? String)
+        }
+        m.editHistory = (json["editHistory"] as? [[String: Any]] ?? []).map { e in
+            TimelineEdit(body: e["body"] as? String ?? "", timestamp: int64(e["timestamp"]) ?? 0)
+        }
+        m.isViewed = (json["readStatus"] as? NSNumber).flatMap { ReadStatus(rawValue: $0.intValue) } == .viewed
+        m.previews = (json["preview"] as? [[String: Any]] ?? []).compactMap { p in
+            guard let url = p["url"] as? String else { return nil }
+            return TimelinePreview(url: url, title: p["title"] as? String, description: p["description"] as? String, date: int64(p["date"]),
+                                   domain: p["domain"] as? String ?? LinkPreviewRules.domain(url), isStickerPack: p["isStickerPack"] as? Bool ?? false,
+                                   isCallLink: p["isCallLink"] as? Bool ?? false)
         }
         return m
     }
@@ -383,6 +507,10 @@ extension SignalDatabase {
     public func chatFolderUpdates() -> AsyncThrowingStream<[ChatFolder], Error> { observe { try ChatFolderStore.current($0) } }
 
     public func composableUpdates() -> AsyncThrowingStream<[ConversationSummary], Error> { observe(ConversationQueries.composable) }
+
+    public func unseen(conversationId: String) async throws -> UnseenSummary? {
+        try await pool.read { try ConversationQueries.unseen($0, conversationId: conversationId) }
+    }
 
     public func timelineUpdates(conversationId: String, limit: Int = 100) -> AsyncThrowingStream<[TimelineMessage], Error> {
         observe { try ConversationQueries.messages($0, conversationId: conversationId, limit: limit) }

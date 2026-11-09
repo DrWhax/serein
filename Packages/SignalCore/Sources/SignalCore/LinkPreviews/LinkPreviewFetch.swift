@@ -1,10 +1,12 @@
 // ts/linkPreviews/linkPreviewFetch.preload.ts: fetching a page (manual redirects, header
 // checks, at most 1000 KiB of HTML) and its preview image (at most 1 MiB). The HTML is parsed
-// and the image read only by the sandboxed media service (MediaProcessing).
+// only by SignalLinkPreviewParser.xpc (LinkPreviewParsing), the image read only by the sandboxed
+// media decoder (MediaProcessing, our Swift decoders).
 //
-// Requests go through Signal's content proxy (contentproxy.signal.org:443, an HTTP CONNECT
-// proxy, so the sites see the proxy's address, not ours; TLS is end to end), like the
-// mobile clients. Desktop upstream fetches directly; `ContentProxy.direct` does the same.
+// The app fetches directly (`ContentProxy.direct`), as Desktop upstream does: Signal's content
+// proxy (contentproxy.signal.org:443, an HTTP CONNECT proxy) only lets a fixed set of hosts
+// through (Giphy and the like) and answers 403 for other sites. `.signal` remains for those
+// hosts (the GIF picker); `.custom` is the test harness's stand-in proxy.
 
 import Foundation
 import MediaXPCInterface
@@ -199,19 +201,42 @@ public enum LinkPreviewFetch {
     }
 
     /// `fetchLinkPreviewMetadata`: nil for anything that is not a usable page (or image).
-    public static func metadata(_ transport: any LinkPreviewTransport, media: any MediaProcessing, href: String) async -> LinkPreviewMetadata? {
-        guard let response = try? await fetchWithRedirects(transport, href, headers: ["Accept": "text/html,application/xhtml+xml", "User-Agent": userAgent],
-                                                           limit: max(maxHTMLBytes, maxImageBytes)),
-              (200..<300).contains(response.status), !response.body.isEmpty,
+    public static func metadata(_ transport: any LinkPreviewTransport, parser: any LinkPreviewParsing, media: any MediaProcessing, href: String,
+                                log: @Sendable (String) -> Void = { _ in }) async -> LinkPreviewMetadata? {
+        let response: LinkPreviewHTTPResponse
+        do {
+            response = try await fetchWithRedirects(transport, href, headers: ["Accept": "text/html,application/xhtml+xml", "User-Agent": userAgent],
+                                                    limit: max(maxHTMLBytes, maxImageBytes))
+        } catch {
+            log("fetch failed: \(error)")
+            return nil
+        }
+        guard (200..<300).contains(response.status), !response.body.isEmpty,
               isInline(response.headers["content-disposition"]),
-              contentLength(response.headers["content-length"]) >= minHTMLLength else { return nil }
+              contentLength(response.headers["content-length"]) >= minHTMLLength else {
+            log("unusable response: status \(response.status), \(response.body.count) bytes")
+            return nil
+        }
         let (type, charset) = contentType(response.headers["content-type"])
         guard type == "text/html" else {
-            guard let type, validImageTypes.contains(type), let image = await processImage(response, media: media) else { return nil }
+            guard let type, validImageTypes.contains(type), let image = await processImage(response, media: media) else {
+                log("not a page or usable image: \(type ?? "no type")")
+                return nil
+            }
             return LinkPreviewMetadata(title: response.url.lastPathComponent == "/" ? "" : response.url.lastPathComponent, description: nil, date: nil,
                                        imageHref: nil, image: image)
         }
-        guard let html = try? await media.linkPreviewHTML(response.body.prefix(maxHTMLBytes), httpCharset: charset)?.validated() else { return nil }
+        let html: LinkPreviewHTML?
+        do {
+            html = try await parser.linkPreviewHTML(response.body.prefix(maxHTMLBytes), httpCharset: charset)?.validated()
+        } catch {
+            log("parser failed: \(error)")
+            return nil
+        }
+        guard let html else {
+            log("page has no title (\(response.body.count) bytes)")
+            return nil
+        }
         let imageHref = html.imageHref.flatMap { LinkPreviewRules.parse($0, relativeTo: response.url.absoluteString)?.absoluteString }
         return LinkPreviewMetadata(title: html.title, description: html.description, date: html.rawDate.flatMap(parseDate), imageHref: imageHref, image: nil)
     }

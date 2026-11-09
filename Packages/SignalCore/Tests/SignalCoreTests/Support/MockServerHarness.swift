@@ -2,6 +2,7 @@
 // and talks to it over JSON lines.
 
 import Foundation
+import Synchronization
 import LibSignalClient
 
 struct HarnessError: Error, CustomStringConvertible {
@@ -75,16 +76,38 @@ actor MockServerHarness {
         }
         try p.run()
 
-        var lines = output.fileHandleForReading.bytes.lines.makeAsyncIterator()
+        // Lines arrive through the handle's own readability callback. `FileHandle.bytes` must
+        // not be used here: Foundation reads every AsyncBytes sequence in the process on one
+        // shared actor with a blocking read(), so one idle mock server would hold up the
+        // output of all the others (tests run in parallel, each with its own server).
+        let (lineStream, lineSink) = AsyncStream<String>.makeStream(bufferingPolicy: .unbounded)
+        let partial = Mutex(Data())
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {   // end of file
+                handle.readabilityHandler = nil
+                lineSink.finish()
+                return
+            }
+            let lines = partial.withLock { buffer -> [String] in
+                buffer.append(data)
+                var out: [String] = []
+                while let newline = buffer.firstIndex(of: 0x0A) {
+                    out.append(String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self))
+                    buffer = Data(buffer[buffer.index(after: newline)...])
+                }
+                return out
+            }
+            for line in lines { lineSink.yield(line) }
+        }
         trace("harness: launched node pid \(p.processIdentifier)")
-        guard let first = try await lines.next() else { throw HarnessError(description: "harness exited before ready") }
+        var firstLine = lineStream.makeAsyncIterator()
+        guard let first = await firstLine.next() else { throw HarnessError(description: "harness exited before ready") }
         let ready = try JSONDecoder().decode(MockServerReady.self, from: Data(first.utf8))
         trace("harness: ready on port \(ready.port)")
         let harness = MockServerHarness(process: p, stdin: input.fileHandleForWriting, ready: ready, exited: exited)
-        // The same iterator keeps reading, so nothing buffered after the ready line is lost.
-        let reader = Task { [lines] in
-            var lines = lines
-            while let line = try? await lines.next() { await harness.deliver(line) }
+        let reader = Task {
+            for await line in lineStream { await harness.deliver(line) }
             await harness.failAll("harness stdout closed")
         }
         await harness.setReader(reader)

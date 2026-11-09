@@ -135,7 +135,7 @@ public struct StoryViewer: View {
         if data.isSent || !data.isSignalConversation {
             AxoThemeOverride(theme: .forceDark) {
                 AxoDropdownMenu.Root(isOpen: $moreOpen) {
-                    AxoIconButton.Root(label: i18n("icu:MyStories__more"), variant: .impliedSecondary, size: .sm, symbol: "more") { moreOpen.toggle() }
+                    AxoIconButton.Root(label: i18n("icu:MyStories__more"), variant: .impliedSecondary, size: .sm, symbol: "more")
                 } items: {
                     AxoDropdownMenu.Item(i18n("icu:StoryListItem__info"), symbol: "info", action: actions.showDetails)
                     if data.isSent {

@@ -179,6 +179,10 @@ const commands = {
   async provision({ url }) {
     const pending = await server.waitForProvision();
     desktop = await pending.complete({ provisionURL: url, primaryDevice: phone });
+    // mock-server keeps one of the two (ACI, PNI) entries of its link-time bookkeeping, and
+    // then refuses the device's next upload of one-time keys for that identity ("Duplicate
+    // service id kind") although it has stored them. Linking is over: drop what is left.
+    server.provisionResultQueueByKey.clear();
     // As Signal Desktop's test bootstrap does: the phone and each contact open a session
     // to the new device from one of its uploaded one-time keys.
     await phone.addSingleUseKey(desktop, await desktop.popSingleUseKey());
@@ -437,6 +441,17 @@ const commands = {
       devices: [a.device.deviceId, ...a.secondaryDevices.map((d) => d.deviceId)],
     };
   },
+  // A retry request (DecryptionErrorMessage) the linked device sent to a mock account.
+  async waitForDecryptionError({ account: name, timeout = 15000 }) {
+    const e = await withTimeout(account(name).waitForDecryptionError(), timeout, `decryption error to ${name}`);
+    return { timestamp: Number(e.timestamp), senderDevice: e.senderDevice, source: e.source?.aci ?? null, hasRatchetKey: e.ratchetKey != null };
+  },
+  // How many data messages the account has received that no waitForMessage has taken yet
+  // (after a short settle time): for asserting that nothing was sent.
+  async pendingMessages({ account: name, settle = 300 }) {
+    await new Promise(resolve => setTimeout(resolve, settle));
+    return { count: outerTypes.get(name).message.length };
+  },
   // Messages a mock account received from the linked device.
   async waitForMessage({ account: name, timeout = 15000 }) {
     const e = await withTimeout(account(name).waitForMessage(), timeout, `message to ${name}`);
@@ -450,6 +465,8 @@ const commands = {
       timestamp: Number(e.dataMessage.timestamp),
       profileKey: b64(e.dataMessage.profileKey),
       ...summarizeData(e.dataMessage),
+      bodyRanges: (e.dataMessage.bodyRanges ?? []).map((r) => ({ start: r.start ?? 0, length: r.length ?? 0, mentionAci: r.associatedValue?.mentionAci || r.mentionAci || null,
+        style: r.associatedValue?.style ?? r.style ?? null })),
       preview: (e.dataMessage.preview ?? []).map((p) => ({ url: p.url ?? null, title: p.title ?? null, description: p.description ?? null,
         date: p.date != null ? Number(p.date) : null,
         image: p.image ? { cdnKey: p.image.attachmentIdentifier?.cdnKey ?? null, key: b64(p.image.key), digest: b64(p.image.digest), size: p.image.size ?? null,
@@ -525,11 +542,13 @@ const commands = {
     return { deviceId: device.deviceId };
   },
   // The contact re-installs: new identity and registration ids, same ACI → 410 (stale devices).
-  async reregister({ account: name }) {
+  // `openSession`: the new installation fetches our pre-keys, so it can write to us first.
+  async reregister({ account: name, openSession = false }) {
     const old = account(name);
     const fresh = await server.reregisterPrimaryDevice({ aci: old.device.aci, profileName: old.profileName });
     accounts[name] = fresh;
     instrumentTyping(name, fresh);
+    if (openSession) await fresh.addSingleUseKey(needDesktop(), await needDesktop().popSingleUseKey(ServiceIdKind.ACI), ServiceIdKind.ACI);
     return { aci: fresh.device.aci, identityKey: b64(fresh.publicKey.serialize()) };
   },
   async setStorageState() {

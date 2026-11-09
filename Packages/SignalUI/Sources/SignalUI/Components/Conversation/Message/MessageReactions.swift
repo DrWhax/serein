@@ -11,11 +11,19 @@ public struct MessageReaction: Sendable, Hashable {
     public var fromTitle: String
     /// Milliseconds since 1970.
     public var timestamp: Double
-    public init(emoji: String, fromIsMe: Bool = false, fromTitle: String = "", timestamp: Double) {
+    /// Who reacted, for the reaction viewer (their id, avatar colour and picture).
+    public var fromId = ""
+    public var fromColor = "A200"
+    public var fromAvatar: RGBAImage?
+    public init(emoji: String, fromIsMe: Bool = false, fromTitle: String = "", timestamp: Double, fromId: String = "", fromColor: String = "A200",
+                fromAvatar: RGBAImage? = nil) {
         self.emoji = emoji
         self.fromIsMe = fromIsMe
         self.fromTitle = fromTitle
         self.timestamp = timestamp
+        self.fromId = fromId
+        self.fromColor = fromColor
+        self.fromAvatar = fromAvatar
     }
 
     /// `Emoji.getParent`: the emoji without skin-tone modifiers.
@@ -49,7 +57,14 @@ struct MessageReactions: View {
     let reactions: [MessageReaction]
     let outgoing: Bool
     let toggleReactionViewer: (() -> Void)?
+    /// `reactionViewerRoot`: the viewer is open (a popper below the reactions).
+    @State private var viewerOpen = false
+    @State private var viewerId = UUID().uuidString
     @Environment(\.i18n) var i18n
+
+    func toggle() {
+        if let toggleReactionViewer { toggleReactionViewer() } else { viewerOpen.toggle() }
+    }
 
     var body: some View {
         let ordered = groupedAndOrderedReactions(reactions)
@@ -70,6 +85,15 @@ struct MessageReactions: View {
         .frame(height: 22)
         // --incoming: padding-inline-end 8px, margin-inline-start 8px (mirrored for outgoing)
         .padding(.horizontal, 8)
+        // placement bottom-end (outgoing) / bottom-start (incoming)
+        .axoPopper(id: viewerId, isPresented: viewerOpen,
+                   placement: AxoPopper.Placement(side: .bottom, align: outgoing ? .end : .start, sideOffset: 4, collisionPadding: 8),
+                   dismiss: { viewerOpen = false }) {
+            ReactionViewer(reactions: reactions.map { r in
+                ReactionViewerReaction(emoji: r.emoji, timestamp: Date(timeIntervalSince1970: r.timestamp / 1000),
+                                       from: .init(id: r.fromId, title: r.fromTitle, isMe: r.fromIsMe, color: r.fromColor, avatar: r.fromAvatar))
+            }, onClose: { viewerOpen = false })
+        }
     }
 
     func label(_ group: [MessageReaction]) -> String {
@@ -85,7 +109,7 @@ struct MessageReactions: View {
         let count = group.count
         let countColor = countIsMe ? AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray15) : AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray25)
         let countStyle = LegacyType.caption(weight: 600)
-        return SwiftUI.Button { toggleReactionViewer?() } label: {
+        return SwiftUI.Button { toggle() } label: {
             HStack(spacing: 0) {
                 if isMore {
                     CSSText("+\(moreTotal)", style: countStyle, wrap: .nowrap, color: countColor)

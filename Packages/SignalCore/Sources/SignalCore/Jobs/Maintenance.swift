@@ -25,13 +25,24 @@ public actor Maintenance {
         public var ranKeyTransparency: Bool
     }
 
-    /// One pass; `now` for tests.
+    /// `cleanupOrphanedAttachments`. Like upstream, only at startup, before anything downloads
+    /// or sends: a file is written a moment before the row that refers to it, and must not be
+    /// taken for an orphan in between.
     @discardableResult
-    public func runOnce(now: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) async throws -> Report {
-        let store = self.store
+    public func cleanOrphans() async throws -> Int {
+        guard let store else { return 0 }
+        return try await database.pool.write { db in try store.deleteOrphans(db) }
+    }
+
+    /// One pass; `now` for tests. `cleanOrphans` only where nothing else is writing files.
+    @discardableResult
+    public func runOnce(now: Int64 = Int64(Date().timeIntervalSince1970 * 1000), cleanOrphans: Bool = true) async throws -> Report {
+        let store = cleanOrphans ? self.store : nil
         let (expired, orphans) = try await database.pool.write { db -> (Int, Int) in
             let e = try ConversationState.deleteExpired(db, now: now).count
             try MessageModifiers.expirePins(db, now: now)
+            // Messages we asked to be resent and that did not come within the hour.
+            try RetryPlaceholders.expire(db, now: now)
             return (e, try store?.deleteOrphans(db) ?? 0)
         }
         var ranKT = false
@@ -45,12 +56,12 @@ public actor Maintenance {
         return Report(expiredMessages: expired, orphanedFiles: orphans, ranKeyTransparency: ranKT)
     }
 
-    /// Runs `runOnce` every `interval` until `stop`.
+    /// Runs `runOnce` (without the orphan pass) every `interval` until `stop`.
     public func start(interval: Duration = .seconds(60)) {
         guard loop == nil else { return }
         loop = Task {
             while !Task.isCancelled {
-                _ = try? await self.runOnce()
+                _ = try? await self.runOnce(cleanOrphans: false)
                 try? await Task.sleep(for: interval)
             }
         }
@@ -60,4 +71,7 @@ public actor Maintenance {
         loop?.cancel()
         loop = nil
     }
+
+    /// Whether the periodic pass is scheduled.
+    public var isRunning: Bool { loop != nil }
 }

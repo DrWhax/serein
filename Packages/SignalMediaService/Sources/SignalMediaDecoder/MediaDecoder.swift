@@ -7,7 +7,6 @@ import EncodeJPEG
 import EncodePNG
 import EncodeWebP
 import Foundation
-import HTMLMeta
 import ImageBMP
 import ImageGIF
 import ImageJPEG
@@ -92,11 +91,6 @@ public struct MediaDecoder: MediaProcessing {
         let webp = WebPEncoder.encodeLossless(PixelBuffer(width: size, height: size, rgba: canvas))
         guard webp.count <= StickerImage.maxBytes else { return StickerImage(data: Data(), contentType: "", refusal: .tooLarge) }
         return StickerImage(data: Data(webp), contentType: "image/webp", previewWidth: size, previewHeight: size, previewRGBA: Data(canvas))
-    }
-
-    public func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML? {
-        guard let m = HTMLPreview.parse(ByteSlice(Array(html.prefix(HTMLPreview.maxBytes))), httpCharset: httpCharset), let title = m.title else { return nil }
-        return LinkPreviewHTML(title: title, description: m.description, imageHref: m.imageHref, rawDate: m.rawDate)
     }
 
     public func imageInfo(_ bytes: Data) async throws -> ImageInfo {

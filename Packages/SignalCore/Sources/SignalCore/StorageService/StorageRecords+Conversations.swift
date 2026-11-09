@@ -168,7 +168,12 @@ enum StorageRecords {
             if !keysMatch || oldVerified != newVerified {
                 try ProtocolStore.setIdentity(db, serviceId: serviceId, key: identity.serialize(), verified: newVerified)
             }
-            if localIdentity != nil, (oldVerified == .verified) != (newVerified == .verified) {
+            // `updateIdentityAfterSync`'s shouldAddVerifiedChangedMessage: never together with a
+            // key change; when the contact becomes verified (known before or not), or stops being so.
+            let hadEntry = localIdentity != nil
+            let becameVerified = newVerified == .verified && (!hadEntry || oldVerified != .verified)
+            let noLongerVerified = newVerified != .verified && hadEntry && oldVerified == .verified
+            if !(hadEntry && !keysMatch), becameVerified || noLongerVerified {
                 try MessageStore.insert(db, .init(conversationId: id, type: "verified-change", body: "", sentAt: UInt64(ctx.now), source: nil,
                                                   sourceDevice: nil, serverGuid: nil, serverTimestamp: nil, unidentified: false,
                                                   extra: ["verified": newVerified == .verified, "verifiedChanged": id, "local": false,

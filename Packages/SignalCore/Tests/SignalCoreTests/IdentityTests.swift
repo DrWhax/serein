@@ -30,10 +30,17 @@ import Testing
             #expect(sync["kind"] as? String == "verified")
             #expect(try await c.database.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM messages WHERE type = 'verified-change'") } == 1)
 
-            // The phone unverifies her.
+            // A Verified sync message is dropped, as upstream does: verification comes from the
+            // storage service. Neither its state nor a key in it is taken.
             let alice = try await c.accountInfo("alice")
-            try await c.server.callJSON("phoneSync", ["timestamp": TestClock.next(), "verified": ["destination": "alice", "identityKey": alice.identityKey, "state": "DEFAULT"]])
-            try await c.eventually("unverified by the phone") { db in try ProtocolStore.verifiedStatus(db, serviceId: c.aliceAci) == .default }
+            let other = IdentityKeyPair.generate().identityKey.serialize().base64EncodedString()
+            for (key, state) in [(alice.identityKey, "DEFAULT"), (other, "VERIFIED")] {
+                try await c.server.callJSON("phoneSync", ["timestamp": TestClock.next(), "verified": ["destination": "alice", "identityKey": key, "state": state]])
+                _ = try await c.log.waitFor("verified sync") { if case .sync("verified", _) = $0 { true } else { false } }
+            }
+            let row = try #require(try await c.database.pool.read { db in try ProtocolStore.identityRow(db, serviceId: c.aliceAci) })
+            #expect(row.verifiedStatus == .verified && row.publicKey == alice.identityKey)
+            #expect(try await c.database.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM messages WHERE type = 'keychange'") } == 0)
         }
     }
 

@@ -77,7 +77,11 @@ public enum MainMenu {
         public var isProduction: Bool
         /// Not linked yet: File starts with "Set Up as New Device".
         public var includeSetup: Bool
-        public init(platform: String = "darwin", isProduction: Bool = true, includeSetup: Bool = false) {
+        /// Help's links to Signal's support site, release notes, forums and beta (off in a
+        /// rebranded build: they are Signal's).
+        public var includeSignalLinks: Bool
+        public init(platform: String = "darwin", isProduction: Bool = true, includeSetup: Bool = false, includeSignalLinks: Bool = true) {
+            self.includeSignalLinks = includeSignalLinks
             self.platform = platform
             self.isProduction = isProduction
             self.includeSetup = includeSetup
@@ -117,13 +121,17 @@ public enum MainMenu {
         var window: [Item] = [.item(label: t("windowMenuMinimize"), role: .minimize)]
         var help: [Item] = [
             .item(label: t("helpMenuShowKeyboardShortcuts"), accelerator: "CmdOrCtrl+/", action: .showKeyboardShortcuts),
-            .separator,
-            .item(label: t("contactUs"), action: .openContactUs),
-            .item(label: t("goToReleaseNotes"), action: .openReleaseNotes),
-            .item(label: t("goToForums"), action: .openForums),
-            .item(label: t("goToSupportPage"), action: .openSupportPage),
         ]
-        if options.isProduction { help.append(.item(label: t("joinTheBeta"), action: .openJoinTheBeta)) }
+        if options.includeSignalLinks {
+            help += [
+                .separator,
+                .item(label: t("contactUs"), action: .openContactUs),
+                .item(label: t("goToReleaseNotes"), action: .openReleaseNotes),
+                .item(label: t("goToForums"), action: .openForums),
+                .item(label: t("goToSupportPage"), action: .openSupportPage),
+            ]
+            if options.isProduction { help.append(.item(label: t("joinTheBeta"), action: .openJoinTheBeta)) }
+        }
         help += [.separator, .item(label: t("aboutSignalDesktop"), action: .showAbout)]
 
         if options.includeSetup {

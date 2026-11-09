@@ -275,6 +275,26 @@ extension Messenger {
         try await changeConversation(conversationId) { $0["muteExpiresAt"] = until.map { min($0, StorageLocal.muteAlways) } }
     }
 
+    /// Saves (or, for an empty body, clears) the composer's unsent text: `json.draft`,
+    /// `draftBodyRanges` and `draftTimestamp`, as upstream. Local only (not a storage record).
+    public func saveDraft(_ conversationId: String, body: String, bodyRanges: [MessageBodyRange]) async throws {
+        let ranges = MessageBodyRange.valid(bodyRanges, bodyLength: body.utf16.count)
+        let now = MessageStore.now()
+        try await database.pool.write { db in
+            try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
+                if body.isEmpty {
+                    json["draft"] = nil
+                    json["draftBodyRanges"] = nil
+                    json["draftTimestamp"] = nil
+                } else {
+                    json["draft"] = body
+                    json["draftBodyRanges"] = ranges.map(\.json)
+                    json["draftTimestamp"] = now
+                }
+            }
+        }
+    }
+
     public func setMarkedUnread(_ conversationId: String, _ unread: Bool) async throws {
         try await changeConversation(conversationId) { $0["markedUnread"] = unread }
     }

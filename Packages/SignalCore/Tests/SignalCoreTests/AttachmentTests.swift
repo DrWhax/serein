@@ -183,4 +183,38 @@ import Testing
             #expect(!onDisk.isEmpty && onDisk.range(of: image.prefix(64)) == nil)
         }
     }
+
+    /// An attachment from a chat we have not accepted is not fetched by itself; "Download"
+    /// queues it (`requestDownload`), cancelling leaves it unpending with nothing queued, and a
+    /// second request downloads it.
+    @Test func manualDownloadAndCancel() async throws {
+        try await LinkedClient.with { c in
+            let image = Self.png()
+            let ts = TestClock.next()
+            _ = try await c.server.json("sendAttachment", ["from": "alice", "data": image.base64EncodedString(), "contentType": "image/png", "timestamp": ts])
+            _ = try await c.log.waitFor { if case .message(_, _, _, _, let t, _, _, _) = $0 { return t == ts } else { return false } }
+            func state() async throws -> (MessageAttachments.Location, MessageAttachment, Int) {
+                try await c.database.pool.read { db in
+                    let id = try String.fetchOne(db, sql: "SELECT id FROM messages WHERE sent_at = ?", arguments: [Int64(ts)])!
+                    let (loc, a) = try MessageAttachments.fetch(db, messageId: id).first!
+                    return (loc, a, try AttachmentDownloads.count(db))
+                }
+            }
+            var (loc, a, queued) = try await state()
+            #expect(!a.isDownloaded && a.pending != true && queued == 0)
+            await c.downloads.stop()
+            try await c.downloads.requestDownload([loc])
+            (loc, a, queued) = try await state()
+            #expect(a.pending == true && queued == 1)
+            try await c.downloads.cancelDownloads(messageId: loc.messageId)
+            (loc, a, queued) = try await state()
+            #expect(a.pending == false && queued == 0 && !a.isDownloaded)
+            try await c.downloads.start()
+            try await c.downloads.requestDownload([loc])
+            let messageId = loc.messageId
+            try await c.eventually("attachment downloaded") { db in
+                try MessageAttachments.fetch(db, messageId: messageId).first?.1.isDownloaded == true
+            }
+        }
+    }
 }

@@ -48,7 +48,7 @@ import SignalUI
 
     // MARK: the chat's state
 
-    private func run(_ what: String, _ body: @escaping @Sendable (SignalClient.Session) async throws -> Void) {
+    func run(_ what: String, _ body: @escaping @Sendable (SignalClient.Session) async throws -> Void) {
         guard let session = signalSession else { return }
         Task {
             do { try await body(session) } catch { Self.trace("\(what) failed: \(error)") }
@@ -119,6 +119,19 @@ import SignalUI
         }
         let (c, m, r) = (calls, mentions, replies)
         run("notify while muted") { try await $0.messenger.setNotifyWhileMuted(id, calls: c, mentions: m, replies: r) }
+    }
+
+    /// `canPinMessages`: direct chats; groups when we may edit the group's info (an admin, or
+    /// attributes open to members) and are still in it.
+    var canPinMessages: Bool {
+        guard let c = selectedConversation else { return false }
+        return Self.canPinMessages(isGroup: c.kind == .group, group: details?.group, me: ourAci)
+    }
+
+    nonisolated static func canPinMessages(isGroup: Bool, group: GroupV2State?, me: String?) -> Bool {
+        if !isGroup { return true }
+        guard let g = group, let me, g.member(me) != nil else { return false }
+        return g.isAdmin(me) || g.accessControl.attributes == GroupAccess.member
     }
 
     // MARK: groups

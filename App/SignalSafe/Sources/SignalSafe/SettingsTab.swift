@@ -26,6 +26,10 @@ struct SettingsTab: View {
     @State private var accountKey: String?
     @State private var internalSettings = InternalSettings()
     @State private var profilePage: ProfileEditorPage = .none
+    /// Notification profiles: sync with our other devices, and whether the onboarding was seen
+    /// (nil until read).
+    @State private var profileSyncEnabled = true
+    @State private var profileOnboardingSeen: Bool?
     @State private var usernameEdit: UsernameEditState = .editing
 
     var body: some View {
@@ -37,7 +41,10 @@ struct SettingsTab: View {
             case .chats: PreferencesChatsPage(settings: chats, onOpenChatFolders: { self.page = .chatFolders },
                                               startPlaintextExport: { session.startPlaintextExport() })
             case .privacy: PreferencesPrivacyPage(settings: privacy, onOpenBlocked: { self.page = .blocked })
-            case .notifications: PreferencesNotificationsPage(settings: notifications, onOpenWhileMuted: { self.page = .whileMuted })
+            case .notifications: PreferencesNotificationsPage(settings: notifications, onOpenWhileMuted: { self.page = .whileMuted },
+                                                              onOpenNotificationProfiles: { self.page = .notificationProfilesHome })
+            case .notificationProfilesHome: notificationProfilesHome
+            case .notificationProfilesCreateFlow: notificationProfilesCreateFlow
             case .whileMuted: PreferencesWhileMutedPage(notifyWhileMuted: whileMuted, onBack: { self.page = .notifications })
             case .blocked: PreferencesBlocked(blockedContacts: blocked(groups: false), blockedGroups: blocked(groups: true),
                                               goBack: { self.page = .privacy }, onUnblock: { session.unblock($0) })
@@ -50,10 +57,101 @@ struct SettingsTab: View {
                     .task { accountKey = await session.accountEntropyPool() }
             case .profile: profilePageView
             case .internal: PreferencesInternal(settings: $internalSettings)
+            case .calls: callsPage
             default: Rectangle().fill(AxoColor.surfacePrimary)
             }
         }
         .background(AxoColor.surfacePrimary)
+    }
+
+    // MARK: notification profiles
+
+    /// The chats a profile can let through (conversation ids), for the chooser.
+    var profileChats: [SearchableConversation] {
+        session.conversations.map { c in
+            SearchableConversation(listItem: ContactListItemData(id: c.id, title: c.title, type: c.kind == .group ? .group : .direct,
+                                                                 avatar: ConversationAvatarData(title: c.title, conversationType: c.kind == .group ? .group : .direct,
+                                                                                                color: c.color, image: session.avatarImage(c.avatar))))
+        }
+    }
+
+    func profileChatPill(_ chats: [SearchableConversation]) -> (String) -> SelectedChatPill {
+        { id in SelectedChatPill(data: chats.first { $0.id == id }?.listItem ?? ContactListItemData(id: id, title: i18n("icu:unknownContact"))) }
+    }
+
+    var profileActions: NotificationProfilesActions {
+        var a = NotificationProfilesActions()
+        a.onBackToNotifications = { page = .notifications }
+        a.onOpenCreateFlow = { page = .notificationProfilesCreateFlow }
+        a.onOpenHome = { page = .notificationProfilesHome }
+        a.createProfile = { session.createNotificationProfile(Self.coreProfile($0)) }
+        a.updateProfile = { session.updateNotificationProfile(Self.coreProfile($0)) }
+        a.markProfileDeleted = { session.deleteNotificationProfile($0) }
+        a.setProfileOverride = { id, on in session.setNotificationProfileOverride(id, enabled: on, endsAt: nil) }
+        a.setIsSyncEnabled = { on in
+            profileSyncEnabled = on
+            let label = i18n
+            session.setNotificationProfileSyncEnabled(on) { label("icu:NotificationProfile--copy-label", ["profileName": .string($0)]) }
+        }
+        a.setHasOnboardingBeenSeen = { _ in
+            profileOnboardingSeen = true
+            session.setNotificationProfileOnboardingSeen()
+        }
+        return a
+    }
+
+    var notificationProfilesHome: some View {
+        let chats = profileChats
+        return NotificationProfilesHome(activeProfileId: session.notificationProfiles.activeProfileId,
+                                        allProfiles: session.notificationProfiles.profiles.map(Self.uiProfile), conversations: chats,
+                                        conversationSelector: profileChatPill(chats), doWeHaveOtherDevices: true,
+                                        hasOnboardingBeenSeen: profileOnboardingSeen ?? true, isSyncEnabled: profileSyncEnabled,
+                                        actions: profileActions)
+            .id(profileOnboardingSeen == nil)     // the onboarding check runs once the flag is known
+            .task {
+                profileSyncEnabled = await session.notificationProfileSyncEnabled()
+                profileOnboardingSeen = await session.notificationProfileOnboardingSeen()
+            }
+    }
+
+    var notificationProfilesCreateFlow: some View {
+        let chats = profileChats
+        return NotificationProfilesCreateFlow(conversations: chats, conversationSelector: profileChatPill(chats), actions: profileActions)
+    }
+
+    static func uiProfile(_ p: NotificationProfile) -> NotificationProfileData {
+        NotificationProfileData(id: p.id, name: p.name, emoji: p.emoji, color: p.color, allowAllCalls: p.allowAllCalls, allowAllMentions: p.allowAllMentions,
+                                allowedMembers: p.allowedMembers.sorted(), scheduleEnabled: p.scheduleEnabled, scheduleStartTime: p.scheduleStartTime,
+                                scheduleEndTime: p.scheduleEndTime, scheduleDaysEnabled: p.scheduleDaysEnabled)
+    }
+
+    static func coreProfile(_ p: NotificationProfileData) -> NotificationProfile {
+        NotificationProfile(id: p.id, name: p.name, emoji: p.emoji, color: p.color, createdAtMs: 0, allowAllCalls: p.allowAllCalls,
+                            allowAllMentions: p.allowAllMentions, allowedMembers: Set(p.allowedMembers), scheduleEnabled: p.scheduleEnabled,
+                            scheduleStartTime: p.scheduleStartTime, scheduleEndTime: p.scheduleEndTime, scheduleDaysEnabled: p.scheduleDaysEnabled)
+    }
+
+    /// Settings → Calls: notifications, the ringtone, devices (ringrtc's microphones and
+    /// speakers, the cameras), and always relaying calls.
+    var callsPage: some View {
+        let devices = session.callDevices
+        func pref(_ id: String?, _ list: AudioDeviceList) -> AudioDevicePref {
+            id.flatMap { id in list.devices.first { $0.uniqueId == id } }.map { .specificDevice($0) } ?? .nonWindowsDefault
+        }
+        return PreferencesCallsPage(
+            hasIncomingCallNotifications: Binding(get: { session.accountSettings.incomingCallNotification },
+                                                  set: { v in session.updateAccountSettings { $0.incomingCallNotification = v } }),
+            hasCallRingtoneNotification: Binding(get: { session.accountSettings.callRingtoneNotification },
+                                                 set: { v in session.updateAccountSettings { $0.callRingtoneNotification = v } }),
+            hasRelayCalls: Binding(get: { session.accountSettings.alwaysRelayCalls }, set: { v in session.updateAccountSettings { $0.alwaysRelayCalls = v } }),
+            devices: CallingDeviceSelectionItems(availableCameras: devices.cameras, availableMicrophones: devices.microphones,
+                                                 availableSpeakers: devices.speakers, selectedCamera: session.preferredCameraId,
+                                                 selectedMicrophone: pref(session.preferredMicrophoneId, devices.microphones),
+                                                 selectedSpeaker: pref(session.preferredSpeakerId, devices.speakers),
+                                                 onSelectedCameraChange: { session.selectCamera($0) },
+                                                 onSelectedMicrophoneChange: { session.selectMicrophone($0) },
+                                                 onSelectedSpeakerChange: { session.selectSpeaker($0) }))
+            .task { session.refreshCallDevices() }
     }
 
     var me: PreferencesMe {
@@ -122,10 +220,12 @@ struct SettingsTab: View {
             s.universalExpireTimer = a.universalExpireTimer
             s.hasContentProtection = model.hasContentProtection
             s.hasSealedSenderIndicators = a.sealedSenderIndicators
+            s.hasStoriesDisabled = a.storiesDisabled
             s.isKeyTransparencyAvailable = false
             return s
         } set: { s in
             if let on = s.hasContentProtection { model.hasContentProtection = on }
+            if s.hasStoriesDisabled != session.accountSettings.storiesDisabled { session.setStoriesDisabled(s.hasStoriesDisabled) }
             session.updateAccountSettings {
                 $0.readReceipts = s.hasReadReceipts
                 $0.typingIndicators = s.hasTypingIndicators

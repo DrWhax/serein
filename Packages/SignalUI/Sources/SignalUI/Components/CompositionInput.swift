@@ -47,6 +47,8 @@ public struct CompositionInput: View {
     let onSubmit: () -> Void
     /// `children`: drawn before the scroller (FunEmojiPickerButton).
     var leading: AnyView?
+    /// `CompositionInput__link-preview`: the staged link preview, above the text.
+    var linkPreview: AnyView?
     @State private var focused = false
     @Environment(\.i18n) var i18n
     @Environment(\.axoStaticRendering) var staticRendering
@@ -72,6 +74,8 @@ public struct CompositionInput: View {
     static var minHeight: CGFloat { 32 - 2 * border }
     static var maxHeight: CGFloat { 72 - 2 * border }
     static var largeHeight: CGFloat { 212 - 2 * border }
+    /// The live composer's height limit in lines (requested; upstream's box fits about three).
+    static let liveMaxLines = 4
 
     /// Focused on open while active (Quill focuses itself), shown as keyboard focus.
     var showsFocus: Bool { !disabled && !isViewOnceActive && (focused || (staticRendering && isActive)) }
@@ -80,6 +84,13 @@ public struct CompositionInput: View {
     public func leading(_ view: some View) -> CompositionInput {
         var copy = self
         copy.leading = AnyView(view)
+        return copy
+    }
+
+    /// The staged link preview (StagedLinkPreview, `.compositionInput`), or nil.
+    public func linkPreview(_ view: AnyView?) -> CompositionInput {
+        var copy = self
+        copy.linkPreview = view
         return copy
     }
 
@@ -98,6 +109,26 @@ public struct CompositionInput: View {
 
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: variant == .textArea ? 0 : 18)
+        VStack(alignment: .leading, spacing: 0) {
+            if let linkPreview { linkPreview }
+            row
+        }
+        .overlay {
+            if isViewOnceActive {
+                CSSText(i18n("icu:CompositionArea--viewOnceMediaPlaceholder"), style: LegacyType.body1(), wrap: .nowrap,
+                        color: AxoColor(light: LegacyColor.gray45, dark: LegacyColor.gray25))
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(minHeight: variant == .storyReply ? 36 - 2 * Self.border : nil)
+        .padding(Self.border)        // the 1px border (transparent unless focused)
+        .background(shape.fill(background))
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(borderColor, lineWidth: Self.border))
+        .cssTextColor(.labelPrimary)
+    }
+
+    var row: some View {
         HStack(alignment: .center, spacing: 0) {
             if let leading { leading }
             scroller
@@ -113,19 +144,6 @@ public struct CompositionInput: View {
                 .padding(.trailing, 8)
             }
         }
-        .overlay {
-            if isViewOnceActive {
-                CSSText(i18n("icu:CompositionArea--viewOnceMediaPlaceholder"), style: LegacyType.body1(), wrap: .nowrap,
-                        color: AxoColor(light: LegacyColor.gray45, dark: LegacyColor.gray25))
-                    .allowsHitTesting(false)
-            }
-        }
-        .frame(minHeight: variant == .storyReply ? 36 - 2 * Self.border : nil)
-        .padding(Self.border)        // the 1px border (transparent unless focused)
-        .background(shape.fill(background))
-        .clipShape(shape)
-        .overlay(shape.strokeBorder(borderColor, lineWidth: Self.border))
-        .cssTextColor(.labelPrimary)
     }
 
     /// The draft as runs: text with mentions as "@name" pills and emoji boxes.
@@ -152,7 +170,9 @@ public struct CompositionInput: View {
         let minH = textArea ? 100 : Self.minHeight, maxH = textArea ? 300 : large ? Self.largeHeight : Self.maxHeight
         // The scroller's padding (6px block; 16px, 36px at the end, in a text area) plus
         // Quill's 12px inline padding.
-        let pad = textArea ? EdgeInsets(top: 16, leading: 28, bottom: 16, trailing: 48) : EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
+        // `scroller--link-preview`: no top padding under a link preview (not when large).
+        let pad = textArea ? EdgeInsets(top: 16, leading: 28, bottom: 16, trailing: 48)
+            : EdgeInsets(top: linkPreview != nil && !large ? 0 : 6, leading: 12, bottom: 6, trailing: 12)
         Group {
             if isViewOnceActive {
                 Color.clear.frame(height: 32)
@@ -175,10 +195,13 @@ public struct CompositionInput: View {
                 let caretInset: CGFloat = text.last.map { CSSTextLayout.isEmoji($0) } == true ? 0 : 2
                 ScrollEndClip(minHeight: minH, maxHeight: maxH, fixedHeight: large ? maxH : nil, overflowBottomInset: pad.bottom + caretInset) { content }
             } else {
+                // The live composer grows with its text to `liveMaxLines` lines, then scrolls (upstream's
+                // 72px cap, about three lines, stays for the static Storybook renders).
+                let liveMax = variant == .composer && !large ? CGFloat(Self.liveMaxLines) * style.lineHeight + pad.top + pad.bottom : maxH
                 ComposerTextView(text: $text, placeholder: placeholder ?? i18n("icu:sendMessage"), disabled: disabled, autoFocus: isActive,
                                  focused: $focused, onSubmit: onSubmit, keys: keys)
                     .padding(.leading, pad.leading).padding(.trailing, pad.trailing)
-                    .frame(minHeight: minH - pad.top - pad.bottom, maxHeight: maxH - pad.top - pad.bottom)
+                    .frame(minHeight: minH - pad.top - pad.bottom, maxHeight: liveMax - pad.top - pad.bottom)
                     .frame(height: large && !textArea ? maxH - pad.top - pad.bottom : nil)
                     .padding(.top, pad.top).padding(.bottom, pad.bottom)
             }
@@ -255,12 +278,18 @@ struct ComposerTextView: NSViewRepresentable {
         let tv = PlaceholderTextView(frame: .zero, textContainer: container)
         tv.placeholder = placeholder
         tv.delegate = context.coordinator
-        tv.isRichText = false
+        // Rich text for mention pills and styles; pastes stay plain (PlaceholderTextView.paste).
+        tv.isRichText = true
+        tv.importsGraphics = false
         tv.drawsBackground = false
         tv.textContainerInset = .zero
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
         tv.autoresizingMask = [.width]
+        // The text view grows past the visible box (to any height) so the scroll view can
+        // scroll; without a maximum size it stays the box's height and later lines are hidden.
+        tv.minSize = .zero
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         tv.allowsUndo = true
         // Spell-check (NSSpellChecker underlines, suggestions in the context menu) as Chromium's
         // spellchecker: no autocorrection, no grammar or text replacement.
@@ -276,12 +305,38 @@ struct ComposerTextView: NSViewRepresentable {
                                .foregroundColor: NSColor.labelColor]
         tv.string = text
         scroll.documentView = tv
+        context.environment.composerController?.textView = tv
         if autoFocus { DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(tv) } }
         return scroll
     }
 
+    /// The text's height at the proposed width (the frame around clamps it and the scroll view
+    /// scrolls past that): what lets the composer grow line by line.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: NSScrollView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0, width.isFinite, let tv = scroll.documentView as? NSTextView else { return nil }
+        // A trailing newline starts a line of its own.
+        let measured = tv.string.isEmpty || tv.string.hasSuffix("\n") ? tv.string + "x" : tv.string
+        let rect = NSAttributedString(string: measured, attributes: tv.typingAttributes)
+            .boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
+        // At most the proposed height (the box's limit): the rest scrolls.
+        var height = ceil(rect.height)
+        if let limit = proposal.height, limit.isFinite { height = min(height, limit) }
+        return CGSize(width: width, height: height)
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? NSTextView else { return }
+        (tv as? PlaceholderTextView)?.pasteAttachments = keys.paste
+        let controller = context.environment.composerController
+        controller?.textView = tv
+        context.coordinator.controller = controller
+        if let p = tv as? PlaceholderTextView {
+            p.controller = controller
+            let i18n = context.environment.i18n
+            p.formatItems = [(i18n("icu:Keyboard--composer--bold"), .bold), (i18n("icu:Keyboard--composer--italic"), .italic),
+                             (i18n("icu:Keyboard--composer--strikethrough"), .strikethrough), (i18n("icu:Keyboard--composer--monospace"), .monospace),
+                             (i18n("icu:Keyboard--composer--spoiler"), .spoiler)]
+        }
         if tv.string != text { tv.string = text }
         tv.isEditable = !disabled
         if tv.isContinuousSpellCheckingEnabled != context.environment.spellCheckEnabled {
@@ -294,14 +349,38 @@ struct ComposerTextView: NSViewRepresentable {
         var parent: ComposerTextView
         /// Keeps the TextKit 2 content storage alive with the view.
         var content: NSTextContentStorage?
+        weak var controller: ComposerController?
         init(_ parent: ComposerTextView) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
+            controller?.reportMentionQuery()
+            // Keep the caret in view once the text is taller than the box.
+            tv.scrollRangeToVisible(tv.selectedRange())
+        }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            // Text typed after a pill is plain.
+            if tv.typingAttributes[ComposerController.mentionKey] != nil { tv.typingAttributes = ComposerController.plainAttributes(tv) }
+            controller?.reportMentionQuery()
+        }
+        /// A deletion touching a mention pill removes the whole pill.
+        func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            guard let controller, replacementString?.isEmpty == true else { return true }
+            let expanded = controller.expandDeletion(range)
+            guard expanded != range else { return true }
+            textView.insertText("", replacementRange: expanded)
+            return false
         }
         func textDidBeginEditing(_ notification: Notification) { parent.focused = true }
         func textDidEndEditing(_ notification: Notification) { parent.focused = false }
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            // While mention suggestions show: Enter / Tab pick the first, Escape hides them.
+            if selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertTab(_:)),
+               let pick = controller?.pickFirstMention, pick() {
+                return true
+            }
+            if selector == #selector(NSResponder.cancelOperation(_:)), controller?.dismissMentions() == true { return true }
             if selector == #selector(NSResponder.insertNewline(_:)) {
                 let mods = NSApp.currentEvent?.modifierFlags ?? []
                 if mods.contains(.shift) || mods.contains(.option) { return false }
@@ -322,6 +401,66 @@ struct ComposerTextView: NSViewRepresentable {
 /// NSTextView drawing its placeholder while empty.
 final class PlaceholderTextView: NSTextView {
     var placeholder = ""
+    weak var controller: ComposerController?
+    /// The context menu's Format items (localised labels).
+    var formatItems: [(String, BodyRange.Style)] = []
+
+    /// Focused (the shortcuts apply only then).
+    private var isFocused = false
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { isFocused = true }
+        return ok
+    }
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { isFocused = false }
+        return ok
+    }
+
+    /// ⌘B bold, ⌘I italic, ⌘⇧X strikethrough, ⌘E monospace, ⌘⇧B spoiler.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard let controller, isFocused else { return super.performKeyEquivalent(with: event) }
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let style: BodyRange.Style? = switch (mods, key) {
+        case ([.command], "b"): .bold
+        case ([.command], "i"): .italic
+        case ([.command, .shift], "x"): .strikethrough
+        case ([.command], "e"): .monospace
+        case ([.command, .shift], "b"): .spoiler
+        default: nil
+        }
+        guard let style else { return super.performKeyEquivalent(with: event) }
+        controller.toggle(style)
+        return true
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard controller != nil, !formatItems.isEmpty else { return menu }
+        // The formatting items (localised: Bold, Italic, …) first.
+        menu.insertItem(.separator(), at: 0)
+        for (title, style) in formatItems.reversed() {
+            let item = NSMenuItem(title: title, action: #selector(formatFromMenu(_:)), keyEquivalent: "")
+            item.tag = style.rawValue
+            item.target = self
+            menu.insertItem(item, at: 0)
+        }
+        return menu
+    }
+
+    @objc func formatFromMenu(_ item: NSMenuItem) {
+        if let style = BodyRange.Style(rawValue: item.tag) { controller?.toggle(style) }
+    }
+    /// Attachments pasted (files, images) go to the composer instead of the text.
+    var pasteAttachments: ((NSPasteboard) -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        if let pasteAttachments, pasteAttachments(NSPasteboard.general) { return }
+        pasteAsPlainText(sender)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard string.isEmpty else { return }
@@ -343,9 +482,12 @@ extension EnvironmentValues {
 public struct ComposerKeys {
     public var arrowUp: (() -> Bool)?
     public var escape: (() -> Bool)?
-    public init(arrowUp: (() -> Bool)? = nil, escape: (() -> Bool)? = nil) {
+    /// ⌘V with files or an image on the pasteboard (true: handled, nothing pasted as text).
+    public var paste: ((NSPasteboard) -> Bool)?
+    public init(arrowUp: (() -> Bool)? = nil, escape: (() -> Bool)? = nil, paste: ((NSPasteboard) -> Bool)? = nil) {
         self.arrowUp = arrowUp
         self.escape = escape
+        self.paste = paste
     }
 }
 

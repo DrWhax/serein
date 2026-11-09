@@ -15,6 +15,8 @@ struct SenderKeyInfo: Codable, Equatable {
     var createdAtDate: Int64
     var distributionId: String
     var memberDevices: [Device]
+    /// Set when a member's identity key changed: the key is replaced before the next send.
+    var needsReset: Bool?
 }
 
 public struct GroupSendResult: Sendable, Equatable {
@@ -41,14 +43,21 @@ public struct GroupSender: Sendable {
     public func send(_ payload: OutgoingPayload, keys: GroupKeys, recipients: [String], messageIds: [String] = [], attempt: Int = 0)
         async throws -> GroupSendResult
     {
+        try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let ourAci = account.aci
         let targets = Array(Set(recipients.filter { $0 != ourAci })).sorted()
         guard !targets.isEmpty else { return GroupSendResult(senderKeyRecipients: [], normalRecipients: [], unregistered: []) }
         let conversationId = try await database.pool.write { db in try GroupStore.conversation(db, keys: keys).conversationId }
         // Sessions for every recipient (fetchKeysForServiceIds).
+        var untrusted: [String] = []
         for t in targets where try await database.pool.read({ db in try sender.activeDevices(db, serviceId: t) }).isEmpty {
-            try? await sender.fetchKeys(t, deviceId: nil)
+            do { try await sender.fetchKeys(t, deviceId: nil) } catch SendError.untrustedIdentities(let ids) { untrusted += ids } catch {}
         }
+        // Nothing goes to the group while a member's identity key awaits approval or is marked
+        // unverified: the sender-key encryption would refuse them, and upstream fails the send
+        // for everyone so the user decides first.
+        untrusted += try await database.pool.read { db in try targets.filter { try ProtocolStore.needsApproval(db, serviceId: $0) } }
+        if !untrusted.isEmpty { throw SendError.untrustedIdentities(Array(Set(untrusted)).sorted()) }
         let endorsements = try await database.pool.read { db in try GroupSendEndorsements.State.load(db, groupId: keys.groupIdBase64) }
         let now = Int64(Date().timeIntervalSince1970)
         let endorsed = endorsements.map { e in GroupSendEndorsements.isValidExpiration(e.expiration, now: now) ? Set(e.members.keys) : [] } ?? []
@@ -81,18 +90,31 @@ public struct GroupSender: Sendable {
         return GroupSendResult(senderKeyRecipients: viaSenderKey, normalRecipients: normal, unregistered: unregistered)
     }
 
+    /// The conversation's sender-key state. A key that has expired, or that was marked for
+    /// reset (a member's identity key changed), is replaced first.
     func loadInfo(_ conversationId: String) async throws -> SenderKeyInfo {
         let now = MessageStore.now()
         return try await database.pool.write { db in
             let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE id = ?", arguments: [conversationId]).map(MessageStore.jsonObject) ?? [:]
-            if let raw = json["senderKeyInfo"], let data = try? JSONSerialization.data(withJSONObject: raw),
-               let info = try? JSONDecoder().decode(SenderKeyInfo.self, from: data), now - info.createdAtDate < Self.senderKeyExpiry {
-                return info
-            }
-            let info = SenderKeyInfo(createdAtDate: now, distributionId: UUID().uuidString.lowercased(), memberDevices: [])
-            try Self.saveInfo(db, conversationId, info)
-            return info
+            let stored = json["senderKeyInfo"].flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                .flatMap { try? JSONDecoder().decode(SenderKeyInfo.self, from: $0) }
+            if let stored, stored.needsReset != true, now - stored.createdAtDate < Self.senderKeyExpiry { return stored }
+            return try self.resetSenderKey(db, conversationId: conversationId, previous: stored)
         }
+    }
+
+    /// Upstream `resetSenderKey`: our key for this distribution is deleted, so the next
+    /// distribution message carries a new one that only the current members receive. The
+    /// distribution id is kept (as upstream does), which lets receivers replace our old key.
+    @discardableResult
+    func resetSenderKey(_ db: Database, conversationId: String, previous: SenderKeyInfo?) throws -> SenderKeyInfo {
+        let fresh = SenderKeyInfo(createdAtDate: MessageStore.now(), distributionId: previous?.distributionId ?? UUID().uuidString.lowercased(),
+                                  memberDevices: [])
+        if let previous, let id = UUID(uuidString: previous.distributionId) {
+            try sender.store.removeSenderKey(db, from: try ProtocolAddress(name: account.aci, deviceId: account.deviceId), distributionId: id)
+        }
+        try Self.saveInfo(db, conversationId, fresh)
+        return fresh
     }
 
     static func saveInfo(_ db: Database, _ conversationId: String, _ info: SenderKeyInfo) throws {
@@ -119,9 +141,8 @@ public struct GroupSender: Sendable {
         let memberSet = Set(devices.map(\.0))
         // A device of someone no longer in the send target saw our key: start a new one.
         if removed.contains(where: { !memberSet.contains($0.serviceId) }) {
-            info = SenderKeyInfo(createdAtDate: MessageStore.now(), distributionId: UUID().uuidString.lowercased(), memberDevices: [])
-            let fresh = info
-            try await database.pool.write { db in try Self.saveInfo(db, conversationId, fresh) }
+            let previous = info
+            info = try await database.pool.write { db in try self.resetSenderKey(db, conversationId: conversationId, previous: previous) }
         }
         guard let distributionId = UUID(uuidString: info.distributionId) else { throw SendError.invalidKeysResponse("distribution id") }
         let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)

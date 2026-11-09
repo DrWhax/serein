@@ -19,6 +19,10 @@ public final class Messenger: Sendable {
     public let groupSender: GroupSender
     /// Attachment storage, upload and the media service (nil: text only).
     public let attachments: AttachmentServices?
+    /// Sends that stopped because a recipient's identity key needs the user's approval
+    /// (upstream `conversationStoppedByMissingVerification`).
+    public let identityStops: AsyncStream<IdentityStop>
+    let identityStopSink: AsyncStream<IdentityStop>.Continuation
 
     public init(account: Account, database: SignalDatabase, socket: SocketManager, trustRoots: [PublicKey], jobs: JobQueue,
                 attachments: AttachmentServices? = nil) {
@@ -27,6 +31,7 @@ public final class Messenger: Sendable {
         self.socket = socket
         self.jobs = jobs
         self.attachments = attachments
+        (identityStops, identityStopSink) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         sender = MessageSender(account: account, database: database, socket: socket, trustRoots: trustRoots)
         groupSender = GroupSender(account: account, database: database, socket: socket, sender: sender)
     }
@@ -36,7 +41,12 @@ public final class Messenger: Sendable {
         await jobs.register(ConversationJob.queueType, handler: { [self] job in
             try await self.run(try job.decode(ConversationJob.self))
         }, onFailure: { [self] job, error in
-            guard let j = try? job.decode(ConversationJob.self), j.type == .normalMessage, let id = j.messageId else { return }
+            guard let j = try? job.decode(ConversationJob.self) else { return }
+            if j.type == .resendRequest, let from = j.requester, let device = j.requesterDevice {
+                // `failoverToLocalReset`: the request never went out.
+                try? await self.automaticSessionReset(sender: from, device: device)
+            }
+            guard j.type == .normalMessage, let id = j.messageId else { return }
             try? await self.database.pool.write { db in try MessageStore.markFailed(db, messageId: id, error: "\(error)") }
         })
     }
@@ -53,7 +63,7 @@ public final class Messenger: Sendable {
     /// and blurhash from the media service for images) and uploaded by the send job.
     @discardableResult
     public func sendMessage(_ body: String, attachments outgoing: [OutgoingAttachment], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                            to serviceId: String, timestamp: UInt64? = nil) async throws
+                            bodyRanges: [MessageBodyRange] = [], to serviceId: String, timestamp: UInt64? = nil) async throws
         -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -79,7 +89,8 @@ public final class Messenger: Sendable {
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: conversationId, type: "outgoing", body: body, sentAt: sentAt, source: self.account.aci,
                 sourceDevice: self.account.deviceId, serverGuid: nil, serverTimestamp: nil, unidentified: false,
-                extra: try Self.outgoingExtra(db, ["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]],
+                extra: try Self.outgoingExtra(db, Self.withBodyRanges(["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]],
+                                                                      bodyRanges, body: body),
                                               quoting: quoting, ourAci: self.account.aci)))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
@@ -97,6 +108,15 @@ public final class Messenger: Sendable {
         }
         jobs.poke()
         return (id, sentAt)
+    }
+
+    /// The new message's stored fields plus its body ranges (only those inside the body).
+    static func withBodyRanges(_ extra: [String: Any], _ ranges: [MessageBodyRange], body: String) -> [String: Any] {
+        let valid = MessageBodyRange.valid(ranges, bodyLength: body.utf16.count)
+        guard !valid.isEmpty else { return extra }
+        var out = extra
+        out["bodyRanges"] = valid.map(\.json)
+        return out
     }
 
     /// Marks every unread incoming message of a conversation read (Desktop markConversationRead):
@@ -131,6 +151,29 @@ public final class Messenger: Sendable {
         return target
     }
 
+    /// `retryMessageSend`: a failed outgoing message is sent again (its failed recipients back
+    /// to pending, the error cleared). Group members that already have it drop the duplicate
+    /// (same sender and timestamp).
+    public func retrySend(messageId: String) async throws {
+        try await database.pool.write { db in
+            guard let conversationId = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ? AND type = 'outgoing'",
+                                                           arguments: [messageId]) else { return }
+            try MessageStore.updateJSON(db, messageId: messageId) { json in
+                var states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+                for (k, v) in states where (v["status"] as? String) == SendStatus.failed.rawValue {
+                    var v = v
+                    v["status"] = SendStatus.pending.rawValue
+                    v["updatedAt"] = MessageStore.now()
+                    states[k] = v
+                }
+                json["sendStateByConversationId"] = states
+                json["errors"] = nil
+            }
+            try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: ConversationJob.normalMessage(conversationId: conversationId, messageId: messageId))
+        }
+        jobs.poke()
+    }
+
     /// Typing indicators are ephemeral: sent directly (online-only, never queued or logged).
     public func sendTyping(to serviceId: String, started: Bool, timestamp: UInt64? = nil) async throws {
         var typing = Signalservice_TypingMessage()
@@ -140,6 +183,20 @@ public final class Messenger: Sendable {
         content.typingMessage = typing
         try await sender.send(OutgoingPayload(content: content, timestamp: typing.timestamp, contentHint: .implicit, urgent: false, online: true),
                               to: serviceId, logged: false)
+    }
+
+    /// A typing indicator to a group's members (with the group id), online-only like 1:1 ones.
+    public func sendGroupTyping(masterKey: Data, started: Bool, timestamp: UInt64? = nil) async throws {
+        let keys = try GroupKeys(masterKey: masterKey)
+        guard let state = try await database.pool.read({ try GroupStore.find($0, groupId: keys.groupId)?.state }) else { return }
+        var typing = Signalservice_TypingMessage()
+        typing.timestamp = timestamp ?? UInt64(MessageStore.now())
+        typing.action = started ? .started : .stopped
+        typing.groupID = keys.groupId
+        var content = Signalservice_Content()
+        content.typingMessage = typing
+        _ = try await groupSender.send(OutgoingPayload(content: content, timestamp: typing.timestamp, contentHint: .implicit, urgent: false, online: true),
+                                       keys: keys, recipients: state.membersV2.map(\.aci))
     }
 
     /// Asks the primary device for contacts, blocked list, configuration and keys
@@ -156,17 +213,21 @@ public final class Messenger: Sendable {
         case .receipts: try await sendReceipts(job)
         case .readSync, .viewedSync: try await sendReadOrViewedSync(job)
         case .resend: try await resend(job)
+        case .resendRequest: try await sendResendRequest(job)
         case .syncRequest: try await sendSyncRequests(job)
         case .fetchLatest: try await sendFetchLatest(job)
         case .stickerPackSync: try await sendStickerPackSync(job)
-        case .modifierSend: try await sendModifier(job)
+        case .modifierSend:
+            do { try await sendModifier(job) } catch SendError.untrustedIdentities(let ids) {
+                throw try await stoppedByIdentity(ids, conversationId: job.conversationId, messageId: nil)
+            }
         }
     }
 
     /// Queues a message to a Groups v2 conversation (members from the stored group state).
     @discardableResult
     public func sendGroupMessage(_ body: String, attachments outgoing: [OutgoingAttachment] = [], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                                 masterKey: Data, timestamp: UInt64? = nil)
+                                 bodyRanges: [MessageBodyRange] = [], masterKey: Data, timestamp: UInt64? = nil)
         async throws -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -192,7 +253,7 @@ public final class Messenger: Sendable {
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: group.conversationId, type: "outgoing", body: body, sentAt: sentAt, source: ourAci, sourceDevice: self.account.deviceId,
                 serverGuid: nil, serverTimestamp: nil, unidentified: false,
-                extra: try Self.outgoingExtra(db, ["sendStateByConversationId": states], quoting: quoting, ourAci: ourAci)))
+                extra: try Self.outgoingExtra(db, Self.withBodyRanges(["sendStateByConversationId": states], bodyRanges, body: body), quoting: quoting, ourAci: ourAci)))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
                 for (i, a) in prepared.enumerated() {
@@ -222,6 +283,7 @@ public final class Messenger: Sendable {
         let sentAt = UInt64(sentAtMs)
         var data = Signalservice_DataMessage()
         data.body = body
+        data.bodyRanges = try await storedBodyRanges(messageId: messageId)
         data.timestamp = sentAt
         if let pk = account.profileKey { data.profileKey = pk }
         var context = Signalservice_GroupContextV2()
@@ -238,8 +300,13 @@ public final class Messenger: Sendable {
         content.dataMessage = data
         let ourAci = account.aci
         let recipients = state.membersV2.map(\.aci).filter { $0 != ourAci }
-        let result = try await groupSender.send(OutgoingPayload(content: content, timestamp: sentAt), keys: group.keys, recipients: recipients,
+        let result: GroupSendResult
+        do {
+            result = try await groupSender.send(OutgoingPayload(content: content, timestamp: sentAt), keys: group.keys, recipients: recipients,
                                                 messageIds: [messageId])
+        } catch SendError.untrustedIdentities(let ids) {
+            throw try await stoppedByIdentity(ids, conversationId: group.conversationId, messageId: messageId)
+        }
         let delivered = Set(result.senderKeyRecipients + result.normalRecipients).subtracting(result.unregistered)
         try await database.pool.write { db in
             try MessageStore.updateJSON(db, messageId: messageId) { json in
@@ -279,6 +346,7 @@ public final class Messenger: Sendable {
         }
         var data = Signalservice_DataMessage()
         data.body = body
+        data.bodyRanges = try await storedBodyRanges(messageId: messageId)
         data.timestamp = sentAt
         if let pk = account.profileKey { data.profileKey = pk }
         data.attachments = try await uploadAttachments(messageId: messageId)
@@ -292,6 +360,8 @@ public final class Messenger: Sendable {
         let result: SendResult
         do {
             result = try await sender.send(OutgoingPayload(content: content, timestamp: sentAt), to: serviceId, messageIds: [messageId])
+        } catch SendError.untrustedIdentities(let ids) {
+            throw try await stoppedByIdentity(ids, conversationId: conversationId, messageId: messageId)
         } catch let e as SendError {
             throw JobError.permanent("\(e)")
         }
@@ -498,6 +568,8 @@ public final class Messenger: Sendable {
                                       to: senderAci, messageIds: targets.map(\.messageId))
             } catch SendError.unregistered {
                 continue   // nobody left to tell
+            } catch SendError.untrustedIdentities {
+                continue   // upstream cancels receipts to an untrusted identity
             }
         }
     }

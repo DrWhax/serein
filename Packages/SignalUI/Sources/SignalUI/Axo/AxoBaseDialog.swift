@@ -2,6 +2,7 @@
 // centres the dialog, with the dimming overlay) and the shared dialog panel styling
 // (curved-30, material-dialog, shadow-elevation-3, type-body-medium text-secondary).
 
+import AppKit
 import SwiftUI
 
 public enum AxoBaseDialog {
@@ -44,6 +45,7 @@ public enum AxoBaseDialog {
         /// `focus-visible:axo-focus-ring`: Radix focuses the panel itself when nothing in it can
         /// take the initial focus.
         var focused = false
+        @Environment(\.axoDialogBackdropBlur) private var backdropBlur
         var body: some View {
             let shape = SuperellipseRect.curved(30)
             content
@@ -51,9 +53,30 @@ public enum AxoBaseDialog {
                 .environment(\.axoInheritedTextSize, (13, 18))    // type-body-medium
                 .frame(width: width)
                 .background(shape.fill(AxoColor.materialDialog))
+                .background { if backdropBlur { WithinWindowBlur() } }
                 .clipShape(shape)
                 .axoShadow(.shadowElevation3, in: shape)
                 .axoFocusRing(focused, in: shape)
         }
     }
+}
+
+extension EnvironmentValues {
+    /// `backdrop-blur-thick` under dialog panels. Off by default: the window's live content is
+    /// only blurred in the app (screenshot tests render the panel over a uniform backdrop,
+    /// where the blur is invisible, and offscreen renders cannot draw AppKit views).
+    @Entry public var axoDialogBackdropBlur: Bool = false
+}
+
+/// A within-window NSVisualEffectView: blurs whatever the window draws behind the panel. The
+/// 90% material-dialog fill on top supplies the colour.
+struct WithinWindowBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.blendingMode = .withinWindow
+        v.material = .hudWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

@@ -14,12 +14,15 @@ public struct About: View {
     let platform: String
     let version: String
     let closeAbout: () -> Void
+    /// A rebranded build's logo in place of signal-logo.svg; Signal's links are dropped too.
+    @Environment(\.brandLogo) var productLogo
     /// The conversation About: a contact's about text.
     let contactAbout: String?
     @Environment(\.i18n) var i18n
 
     /// The About window.
-    public init(appEnv: String, arch: String = "arm64", platform: String = "darwin", version: String, closeAbout: @escaping () -> Void = {}) {
+    public init(appEnv: String, arch: String = "arm64", platform: String = "darwin", version: String,
+                closeAbout: @escaping () -> Void = {}) {
         self.appEnv = appEnv
         self.arch = arch
         self.platform = platform
@@ -74,17 +77,25 @@ public struct About: View {
     var window: some View {
         VStack(spacing: 0) {
             // module-splash-screen__logo--128: signal-logo.svg in the logo colour, 24px above and below.
-            SignalIcon("signal-logo", size: 128, color: AxoColor(light: LegacyColor.ultramarineLogo, dark: LegacyColor.white), mask: true)
-                .padding(.vertical, 24)
+            Group {
+                if let productLogo {
+                    PixelImage(productLogo, fit: .contain).frame(width: 128, height: 128)
+                } else {
+                    SignalIcon("signal-logo", size: 128, color: AxoColor(light: LegacyColor.ultramarineLogo, dark: LegacyColor.white), mask: true)
+                }
+            }
+            .padding(.vertical, 24)
             CSSText(i18n("icu:signalDesktop"), style: LegacyType.body1(weight: 600), alignment: .center, color: Self.text)
                 .accessibilityAddTraits(.isHeader)
             line(version).textSelection(.enabled)
             line(env).textSelection(.enabled)
             Color.clear.frame(height: 20)    // <br />
-            link("signal.org", "https://signal.org")
-            Color.clear.frame(height: 20)
-            link(i18n("icu:softwareAcknowledgments"), "https://github.com/signalapp/Signal-Desktop/blob/main/ACKNOWLEDGMENTS.md")
-            link(i18n("icu:privacyPolicy"), "https://signal.org/legal")
+            if productLogo == nil {
+                link("signal.org", "https://signal.org")
+                Color.clear.frame(height: 20)
+                link(i18n("icu:softwareAcknowledgments"), "https://github.com/signalapp/Signal-Desktop/blob/main/ACKNOWLEDGMENTS.md")
+                link(i18n("icu:privacyPolicy"), "https://signal.org/legal")
+            }
             line(i18n("icu:signalNonProfit"), color: .labelSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

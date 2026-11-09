@@ -51,10 +51,7 @@ public enum AxoOutgoingStatus {
             let resolvedLabel: String? = label ?? status.defaultLabel
             Group {
                 if status == .sending && !animationsDisabled {
-                    TimelineView(.animation) { timeline in
-                        let t = timeline.date.timeIntervalSinceReferenceDate
-                        glyph.rotationEffect(.degrees(360 * t.truncatingRemainder(dividingBy: 1)))   // animate-spin: 1s linear
-                    }
+                    glyph.caSpin(period: 1)   // animate-spin: 1s linear
                 } else {
                     glyph
                 }

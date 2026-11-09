@@ -33,11 +33,14 @@ struct ComposeError {
         guard !name.isEmpty else { return }
         let members = groupSelection.compactMap { id in composable.first { $0.id == id }?.serviceId }
         let timer = newGroupTimer
+        let avatar = newGroupAvatar, photo = newGroupPhoto
         isCreatingGroup = true
         Task {
             defer { isCreatingGroup = false }
             do {
-                let keys = try await session.groups.create(title: name, expireTimer: timer > 0 ? timer : nil, members: members)
+                var bytes: Data?
+                if let avatar { bytes = try await avatarBytes(avatar, photo: photo) }
+                let keys = try await session.groups.create(title: name, avatar: bytes, expireTimer: timer > 0 ? timer : nil, members: members)
                 let id = try await db.pool.write { try GroupStore.conversation($0, keys: keys).conversationId }
                 await openNew(id)
             } catch {
@@ -107,3 +110,4 @@ struct ComposeError {
     /// The region for parsing numbers typed without a country code: ours, else the Mac's.
     var phoneRegion: String { Locale.current.region?.identifier ?? "US" }
 }
+

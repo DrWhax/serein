@@ -59,10 +59,7 @@ public struct Spinner: View {
             if animationsDisabled {
                 LegacyIcon.Mask(svgSize == .small ? .spinner24 : .spinner56, color: arc)
             } else {
-                TimelineView(.animation) { timeline in
-                    LegacyIcon.Mask(svgSize == .small ? .spinner24 : .spinner56, color: arc)
-                        .rotationEffect(.degrees(360 * timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)))
-                }
+                LegacyIcon.Mask(svgSize == .small ? .spinner24 : .spinner56, color: arc).caSpin(period: 1)
             }
         }
         .frame(width: side, height: side)

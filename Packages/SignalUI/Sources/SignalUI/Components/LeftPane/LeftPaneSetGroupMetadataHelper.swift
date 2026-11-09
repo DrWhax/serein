@@ -12,10 +12,13 @@ public struct LeftPaneSetGroupMetadataHelper: LeftPaneHelper {
     public var onChangeGroupName: @MainActor @Sendable (String) -> Void
     public var onChangeExpireTimer: (Int) -> Void
     public var onEditAvatar: () -> Void
+    /// `groupAvatar`: the chosen avatar, shown in the preview.
+    public var groupAvatar: RGBAImage?
 
     public init(groupName: String, groupExpireTimer: Int = 0, isCreating: Bool = false, selectedContacts: [ContactListItemData],
                 onChangeGroupName: @escaping @MainActor @Sendable (String) -> Void = { _ in }, onChangeExpireTimer: @escaping (Int) -> Void = { _ in },
-                onEditAvatar: @escaping () -> Void = {}) {
+                onEditAvatar: @escaping () -> Void = {}, groupAvatar: RGBAImage? = nil) {
+        self.groupAvatar = groupAvatar
         self.groupName = groupName
         self.groupExpireTimer = groupExpireTimer
         self.isCreating = isCreating
@@ -39,7 +42,8 @@ public struct LeftPaneSetGroupMetadataHelper: LeftPaneHelper {
         let name = Binding(get: { groupName }, set: onChangeGroupName)
         return AnyView(VStack(spacing: 0) {
             // AvatarPreview with style { height: 96, width: 96, margin: 0 }: the avatar colour is AvatarColors[0].
-            AvatarPreview(avatarColor: AxoTokens.Avatar.allColorNames[0], isGroup: true, showUploadButton: true, size: 96, margins: false, onClick: onEditAvatar)
+            AvatarPreview(avatarColor: AxoTokens.Avatar.allColorNames[0], avatarValue: groupAvatar, isGroup: true, showUploadButton: true, size: 96, margins: false,
+                          onClick: onEditAvatar)
             // .module-GroupInput--container: margin 16
             Input(value: name, placeholder: i18n("icu:setGroupMetadata__group-name-placeholder"), clearLabel: i18n("icu:cancel"),
                   disabled: isCreating, maxLengthCount: 32, autoFocus: true)

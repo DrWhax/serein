@@ -18,6 +18,14 @@ public struct AccountSettings: Sendable, Equatable {
     public var username: String?
     /// https://signal.me/#eu/… (the username link QR card).
     public var usernameLink: String?
+    /// Settings → Calls (local to this device, as upstream): incoming call notifications, the
+    /// ringtone, and always relaying calls (hides the IP address from the other side).
+    public var incomingCallNotification = true
+    public var callRingtoneNotification = true
+    public var alwaysRelayCalls = false
+    /// Stories (AccountRecord): view receipts (unset follows read receipts) and stories off.
+    public var storyViewReceipts = false
+    public var storiesDisabled = false
 
     public init() {}
 
@@ -32,6 +40,11 @@ public struct AccountSettings: Sendable, Equatable {
         s.linkPreviews = try Items.get(db, "linkPreviews", as: Bool.self) ?? false
         s.sealedSenderIndicators = try Items.get(db, "sealedSenderIndicators", as: Bool.self) ?? false
         s.universalExpireTimer = try Items.get(db, "universalExpireTimer", as: Int.self) ?? 0
+        s.incomingCallNotification = try Items.get(db, "incoming-call-notification", as: Bool.self) ?? true
+        s.callRingtoneNotification = try Items.get(db, "call-ringtone-notification", as: Bool.self) ?? true
+        s.alwaysRelayCalls = try Items.get(db, "always-relay-calls", as: Bool.self) ?? false
+        s.storyViewReceipts = try Items.get(db, "storyViewReceiptsEnabled", as: Bool.self) ?? s.readReceipts
+        s.storiesDisabled = try Items.get(db, "hasStoriesDisabled", as: Bool.self) ?? false
         s.blockedContacts = Set(try BlockedList.serviceIds.entries(db).map(\.id)).union(try BlockedList.numbers.entries(db).map(\.id)).count
         s.blockedGroups = try BlockedList.groups.entries(db).count
         s.username = try Items.get(db, "username", as: String.self)
@@ -51,6 +64,9 @@ public struct AccountSettings: Sendable, Equatable {
         try Items.set(db, "linkPreviews", linkPreviews)
         try Items.set(db, "sealedSenderIndicators", sealedSenderIndicators)
         try Items.set(db, "universalExpireTimer", universalExpireTimer)
+        try Items.set(db, "incoming-call-notification", incomingCallNotification)
+        try Items.set(db, "call-ringtone-notification", callRingtoneNotification)
+        try Items.set(db, "always-relay-calls", alwaysRelayCalls)
         if let account = try Account.load(db) { try StorageWriteBack.accountChanged(db, account: account) }
     }
 }

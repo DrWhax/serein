@@ -157,7 +157,21 @@ struct ConversationPanelView: View {
             session.addMembersState = .inactive
             session.isAddingMembers = true
         }
+        // The avatar: straight to the avatar editor when we may edit the group (a photo or a
+        // preset), else shown large as upstream does.
+        let canEdit = conversation.kind == .group && detailsModel.canEditGroupInfo
+        c.showAvatar = { [id = conversation.id] in
+            if canEdit {
+                session.editGroupState = .inactive
+                session.pendingGroupPhoto = nil
+                session.editGroupStartsWithAvatar = true
+                session.isEditingGroup = true
+            } else {
+                session.avatarLightboxFor = id
+            }
+        }
         c.editGroup = {
+            session.editGroupStartsWithAvatar = false
             session.editGroupState = .inactive
             session.pendingGroupPhoto = nil
             session.isEditingGroup = true

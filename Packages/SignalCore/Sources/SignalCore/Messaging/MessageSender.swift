@@ -6,6 +6,8 @@
 //   410 stale devices:      archive their sessions, fetch fresh bundles, retry
 //   401 on a sealed send:   retry unsealed (authenticated)
 //   no sessions at all:     fetch v2/keys/<serviceId>/* and process every bundle
+//   untrusted identity:     (key changed and not approved, or marked unverified) nothing is sent;
+//                           the key goes on record with its notice, SendError.untrustedIdentities
 //
 // Encryption of all devices runs in one write transaction (session state advances
 // atomically). Successful sends are recorded in the send log.
@@ -18,7 +20,13 @@ import SwiftProtobuf
 
 public enum SendError: Error, Equatable {
     case unregistered(String)
-    case untrustedIdentity(String)
+    /// The identity keys of these recipients are not trusted for sending: changed and not yet
+    /// approved, or marked unverified (upstream OutgoingIdentityKeyError). Nothing was sent to
+    /// them; `Messenger.approveIdentities` followed by a retry sends it.
+    case untrustedIdentities([String])
+    /// Our own signed pre-key or last-resort key is more than two weeks old and could not be
+    /// replaced (upstream "Keys still out of date after update").
+    case keysOutOfDate
     case deviceMismatchUnresolved(String)
     case invalidKeysResponse(String)
 }
@@ -33,6 +41,11 @@ public struct OutgoingPayload: Sendable {
     public var online: Bool
     /// A story or story reply: sent sealed with `story=true`, which needs no access key.
     public var story: Bool
+    /// A serialized PlaintextContent to send *instead of* encrypting `content`: only a retry
+    /// request (DecryptionErrorMessage) goes out this way, when the session may be the problem.
+    public var plaintextContent: Data?
+    /// The group the message belongs to (sealed sender's group id), if any.
+    public var groupId = Data()
 
     public init(content: Signalservice_Content, timestamp: UInt64, contentHint: ContentHint = .resendable, urgent: Bool = true, online: Bool = false,
                 story: Bool = false) {
@@ -74,6 +87,7 @@ public final class MessageSender: Sendable {
     @discardableResult
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
                      logged: Bool = true) async throws -> SendResult {
+        try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let isSelf = serviceId == account.aci
         var accessKey: Data? = nil
         let storySend = payload.story && !isSelf
@@ -94,9 +108,17 @@ public final class MessageSender: Sendable {
 
             let cert = certificate
             let targets = devices
-            let messages = try await database.pool.write { db in
-                try self.encrypt(db, padded, for: serviceId, devices: targets, certificate: cert, contentHint: payload.contentHint)
+            let encrypted: [DeviceMessage]? = try await database.pool.write { db in
+                do {
+                    return try self.encrypt(db, padded, for: serviceId, devices: targets, certificate: cert, contentHint: payload.contentHint,
+                                            plaintextContent: payload.plaintextContent, groupId: payload.groupId)
+                } catch SignalError.untrustedIdentity {
+                    // Upstream OutgoingMessage: close every session with them, fail the send.
+                    try ProtocolStore.archiveSessions(db, serviceId: serviceId)
+                    return nil
+                }
             }
+            guard let messages = encrypted else { throw SendError.untrustedIdentities([serviceId]) }
             let json = try JSONEncoder().encode(MessageList(messages: messages, timestamp: payload.timestamp,
                                                             online: payload.online && !isSelf, urgent: payload.urgent))
             let path = "/v1/messages/\(serviceId)" + (storySend ? "?story=true" : "")
@@ -167,7 +189,7 @@ public final class MessageSender: Sendable {
     }
 
     func encrypt(_ db: Database, _ padded: Data, for serviceId: String, devices: [UInt32], certificate: SenderCertificate?,
-                 contentHint: ContentHint) throws -> [DeviceMessage] {
+                 contentHint: ContentHint, plaintextContent: Data? = nil, groupId: Data = Data()) throws -> [DeviceMessage] {
         let ctx = DatabaseStoreContext(db)
         let store = self.store
         let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)
@@ -175,16 +197,18 @@ public final class MessageSender: Sendable {
             let address = try ProtocolAddress(name: serviceId, deviceId: device)
             guard let session = try store.loadSession(for: address, context: ctx) else { throw ProtocolStoreError.missing("session \(address)") }
             let registrationId = try session.remoteRegistrationId()
-            let message = try signalEncrypt(message: padded, for: address, localAddress: local, sessionStore: store, identityStore: store, context: ctx)
+            let message = try plaintextContent.map { try CiphertextMessage(PlaintextContent(bytes: $0)) }
+                ?? signalEncrypt(message: padded, for: address, localAddress: local, sessionStore: store, identityStore: store, context: ctx)
             let type: Int
             let content: Data
             if let certificate {
-                let usmc = try UnidentifiedSenderMessageContent(message, from: certificate, contentHint: contentHint, groupId: Data())
+                let usmc = try UnidentifiedSenderMessageContent(message, from: certificate, contentHint: contentHint, groupId: groupId)
                 content = try sealedSenderEncrypt(usmc, for: address, identityStore: store, context: ctx)
                 type = Signalservice_Envelope.TypeEnum.unidentifiedSender.rawValue
             } else {
                 content = message.serialize()
                 type = message.messageType == .preKey ? Signalservice_Envelope.TypeEnum.prekeyMessage.rawValue
+                    : message.messageType == .plaintext ? Signalservice_Envelope.TypeEnum.plaintextContent.rawValue
                     : Signalservice_Envelope.TypeEnum.doubleRatchet.rawValue
             }
             return DeviceMessage(type: type, destinationDeviceId: device, destinationRegistrationId: registrationId, content: content.base64EncodedString())
@@ -231,10 +255,15 @@ public final class MessageSender: Sendable {
             throw SendError.unregistered(serviceId)
         }
         let keys = try JSONDecoder().decode(KeysResponse.self, from: body)
-        try await database.pool.write { db in try self.process(db, keys, serviceId: serviceId) }
+        let trusted = try await database.pool.write { db in try self.process(db, keys, serviceId: serviceId) }
+        if !trusted { throw SendError.untrustedIdentities([serviceId]) }
     }
 
-    func process(_ db: Database, _ keys: KeysResponse, serviceId: String) throws {
+    /// Starts a session per device from the pre-key bundles. Returns false, with no session
+    /// started, when the identity key they come with is not trusted for sending. In that
+    /// case the key is put on record the way upstream's follow-up profile fetch does
+    /// (`updateIdentityKey`): a changed key raises the notice and waits for approval.
+    func process(_ db: Database, _ keys: KeysResponse, serviceId: String) throws -> Bool {
         func bytes(_ s: String) throws -> Data {
             guard let d = Data(lenientBase64: s) else { throw SendError.invalidKeysResponse("base64") }
             return d
@@ -242,7 +271,6 @@ public final class MessageSender: Sendable {
         let ctx = DatabaseStoreContext(db)
         let store = self.store
         let identity = try IdentityKey(bytes: try bytes(keys.identityKey))
-        try acceptIdentity(db, identity, serviceId: serviceId)
         let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)
         for d in keys.devices {
             if serviceId == account.aci && d.deviceId == account.deviceId { continue }
@@ -260,31 +288,24 @@ public final class MessageSender: Sendable {
                                           kyberPrekeyId: d.pqPreKey.keyId, kyberPrekey: try KEMPublicKey(try bytes(d.pqPreKey.publicKey)),
                                           kyberPrekeySignature: try bytes(d.pqPreKey.signature))
             }
-            try processPreKeyBundle(bundle, for: try ProtocolAddress(name: serviceId, deviceId: d.deviceId), ourAddress: local,
-                                    sessionStore: store, identityStore: store, context: ctx)
+            do {
+                try processPreKeyBundle(bundle, for: try ProtocolAddress(name: serviceId, deviceId: d.deviceId), ourAddress: local,
+                                        sessionStore: store, identityStore: store, context: ctx)
+            } catch SignalError.untrustedIdentity {
+                try store.updateIdentityKey(db, identity, serviceId: serviceId)
+                return false
+            }
         }
-    }
-
-    /// Desktop behaviour for a changed identity key: a contact whose safety number was
-    /// marked verified blocks sending (the user must re-verify); otherwise the new key is
-    /// accepted, sessions with the old identity are archived and a "keychange"
-    /// notification is added to the conversation.
-    func acceptIdentity(_ db: Database, _ identity: IdentityKey, serviceId: String) throws {
-        let ctx = DatabaseStoreContext(db)
-        let address = try ProtocolAddress(name: serviceId, deviceId: 1)
-        guard let existing = try store.identity(for: address, context: ctx), existing != identity else { return }
-        if try ProtocolStore.verifiedStatus(db, serviceId: serviceId) == .verified { throw SendError.untrustedIdentity(serviceId) }
-        _ = try store.saveIdentity(identity, for: address, context: ctx)
-        let devices = try Int.fetchAll(db, sql: "SELECT deviceId FROM sessions WHERE ourServiceId = ? AND serviceId = ?", arguments: [account.aci, serviceId])
-        try archive(db, serviceId: serviceId, devices: devices.map { UInt32($0) })
-        if serviceId != account.aci { try MessageStore.insertKeyChange(db, serviceId: serviceId) }
+        return true
     }
 
     // MARK: helpers
 
-    /// Unidentified-delivery access key for a recipient (Desktop getAccessKey): derived
-    /// from their profile key; random when they allow unrestricted access; none when
-    /// sealed sender is disabled for them or their profile key is unknown.
+    /// The unidentified-delivery access key to try for a recipient (upstream getSendOptions):
+    /// none when they have sealed sender disabled; the all-zero key when they accept it from
+    /// anyone; otherwise the key derived from their profile key, or, while we know neither
+    /// their mode nor their profile key, the all-zero key, which the server accepts only for
+    /// an unrestricted recipient (a 401 falls back to an authenticated send).
     static func accessKey(_ db: Database, serviceId: String) throws -> Data? {
         guard let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ? AND type = 'private'", arguments: [serviceId]) else {
             return nil
@@ -292,15 +313,28 @@ public final class MessageSender: Sendable {
         let c = try MessageStore.jsonObject(json)
         let mode = c["sealedSender"] as? Int ?? SealedSenderMode.unknown.rawValue
         if mode == SealedSenderMode.disabled.rawValue { return nil }
-        if mode == SealedSenderMode.unrestricted.rawValue { return SignalCrypto.randomBytes(16) }
-        guard let b64 = c["profileKey"] as? String, let key = Data(base64Encoded: b64), key.count == 32 else { return nil }
+        if mode == SealedSenderMode.unrestricted.rawValue { return zeroAccessKey }
+        guard let b64 = c["profileKey"] as? String, let key = Data(base64Encoded: b64), key.count == 32 else { return zeroAccessKey }
         return try ProfileKey(contents: key).deriveAccessKey()
     }
 
-    /// Desktop padMessage: plaintext ‖ 0x80 ‖ 0x00…, total length (n + 2) rounded up to 160 minus 1.
+    /// The access key derived from the contact's profile key, when we have it (the only key
+    /// that says anything about the contact; used for key-transparency lookups).
+    static func derivedAccessKey(_ db: Database, serviceId: String) throws -> Data? {
+        guard let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ? AND type = 'private'", arguments: [serviceId]),
+              let b64 = try MessageStore.jsonObject(json)["profileKey"] as? String, let key = Data(base64Encoded: b64), key.count == 32 else { return nil }
+        return try ProfileKey(contents: key).deriveAccessKey()
+    }
+
+    /// Upstream ZERO_ACCESS_KEY.
+    static let zeroAccessKey = Data(count: 16)
+
+    /// Desktop padMessage: plaintext ‖ 0x80 ‖ 0x00…, total length (n + 2) rounded up to a
+    /// multiple of 80 (upstream PADDING_BLOCK), minus 1.
+    static let paddingBlock = 80
     static func pad(_ plaintext: Data) -> Data {
         let withTerminator = plaintext.count + 2
-        let paddedLength = ((withTerminator + 159) / 160) * 160 - 1
+        let paddedLength = ((withTerminator + paddingBlock - 1) / paddingBlock) * paddingBlock - 1
         var out = plaintext
         out.append(0x80)
         out.append(contentsOf: repeatElement(0, count: paddedLength - out.count))

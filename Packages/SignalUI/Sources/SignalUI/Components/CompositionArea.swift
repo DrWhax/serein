@@ -53,6 +53,11 @@ public struct CompositionAreaModel {
     public var isEditingMessage = false
     public var canSend = true
     public var hasLinkPreview = false
+    /// `linkPreviewLoading` / `linkPreviewResult`: the staged preview (no domain while loading).
+    public var linkPreviewLoading = false
+    public var linkPreviewResult: LinkPreview?
+    /// The group members matching the "@query" being typed (MentionSuggestions).
+    public var mentionSuggestions: [ComposerController.Mention] = []
     public var isDisabled = false
     public var isActive = true
     public var isPollSend1to1Enabled = true
@@ -78,6 +83,10 @@ public struct CompositionAreaActions {
     public var onToggleViewOnce: () -> Void = {}
     public var setMediaQualitySetting: (Bool) -> Void = { _ in }
     public var onCloseQuote: () -> Void = {}
+    public var onCloseLinkPreview: () -> Void = {}
+    public var onPickMention: (ComposerController.Mention) -> Void = { _ in }
+    /// ⌘V in the input: files or an image on the pasteboard become attachments (true: taken).
+    public var onPaste: ((NSPasteboard) -> Bool)?
     public var onClickQuote: (() -> Void)?
     public var onAddAttachment: () -> Void = {}
     public var onClickAttachment: (Int) -> Void = { _ in }
@@ -244,6 +253,21 @@ public struct CompositionArea: View {
         }
     }
 
+    /// The input's link preview (none while view-once is on).
+    var stagedLinkPreview: AnyView? {
+        guard !model.isViewOnceActive, model.linkPreviewLoading, let p = model.linkPreviewResult else { return nil }
+        return AnyView(StagedLinkPreview(preview: p, image: p.image, isStickerPack: p.isStickerPack, placement: .compositionInput,
+                                         onClose: actions.onCloseLinkPreview))
+    }
+
+    /// `handleEscape`: the link preview, else the quote, else the edit.
+    var escapeAction: (() -> Bool)? {
+        if model.linkPreviewResult != nil { return { actions.onCloseLinkPreview(); return true } }
+        if model.quote != nil || model.quotedMessageId != nil { return { actions.onCloseQuote(); return true } }
+        if model.isEditingMessage { return { actions.discardEditMessage(); return true } }
+        return nil
+    }
+
     var composer: some View {
         let m = model
         let viewOnce = m.isViewOnceActive
@@ -261,15 +285,20 @@ public struct CompositionArea: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            if !m.mentionSuggestions.isEmpty {
+                MentionSuggestions(members: m.mentionSuggestions, onPick: actions.onPickMention)
+                    .padding(.horizontal, 12)
+            }
             HStack(alignment: .bottom, spacing: 0) {
                 if !large { leftHandSideButtons(first: true) }
                 CompositionInput(text: $text, large: large && !viewOnce, disabled: m.isDisabled, isActive: m.isActive,
                                  showViewOnceButton: m.showViewOnceToggle, isViewOnceActive: viewOnce,
                                  onToggleViewOnce: actions.onToggleViewOnce, onSubmit: actions.onSubmit)
+                    .linkPreview(stagedLinkPreview)
                     .environment(\.composerKeys, ComposerKeys(
                         // `hasDraft` (text, attachments, a quote) keeps ↑ for the caret.
                         arrowUp: m.draftAttachments.isEmpty && m.quote == nil && !m.isEditingMessage ? actions.onEditLastMessage : nil,
-                        escape: m.isEditingMessage ? { actions.discardEditMessage(); return true } : nil))
+                        escape: escapeAction, paste: actions.onPaste))
                     .padding(.horizontal, 6)
                     .frame(maxWidth: .infinity)
                     .layoutPriority(1)

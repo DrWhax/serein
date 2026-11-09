@@ -3,7 +3,10 @@
 // (presets and custom colours), forwarding messages, and the banned members.
 
 import AppKit
+import CodecCore
+import EncodePNG
 import Foundation
+import MediaXPCInterface
 import SignalCore
 import SignalUI
 import SwiftUI
@@ -62,11 +65,34 @@ struct CustomColorEditing {
 
     /// The edit dialog's photo: its bytes kept for upload, its pixels from the media service.
     func loadGroupPhoto(_ url: URL) async -> RGBAImage? {
+        guard let (photo, image) = await Self.loadPhoto(url, media: media) else { return nil }
+        pendingGroupPhoto = photo
+        return image
+    }
+
+    /// A picked photo file: its bytes and type, and its pixels decoded by the media service.
+    static func loadPhoto(_ url: URL, media: MediaXPCClient) async -> ((data: Data, contentType: String), RGBAImage)? {
         guard let data = try? Data(contentsOf: url), data.count <= 20 << 20,
               let shown = try? await media.displayImage(data, maxDimension: 512) else { return nil }
         let type = url.pathExtension.lowercased()
-        pendingGroupPhoto = (data, ["png": "image/png", "gif": "image/gif", "webp": "image/webp", "heic": "image/heic"][type] ?? "image/jpeg")
-        return RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
+        let contentType = ["png": "image/png", "gif": "image/gif", "webp": "image/webp", "heic": "image/heic"][type] ?? "image/jpeg"
+        return ((data, contentType), RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2))
+    }
+
+    /// The new group's photo (AvatarEditor in the compose flow).
+    func loadNewGroupPhoto(_ url: URL) async -> RGBAImage? {
+        guard let (photo, image) = await Self.loadPhoto(url, media: media) else { return nil }
+        newGroupPhoto = photo
+        return image
+    }
+
+    /// An avatar's bytes for upload: a photo re-encoded (metadata dropped) by the media service,
+    /// a preset drawn here and encoded by our PNG encoder.
+    func avatarBytes(_ a: AvatarData, photo: (data: Data, contentType: String)?) async throws -> Data? {
+        if a.image != nil, let photo {
+            return try await media.scaleForSending(photo.data, contentType: photo.contentType, level: .one).data
+        }
+        return Self.renderAvatar(a)
     }
 
     /// `updateGroupAttributes`: title, description and avatar (each only if changed).
@@ -104,12 +130,60 @@ struct CustomColorEditing {
         }
     }
 
-    /// A preset avatar as a 512px PNG (our own drawing: no untrusted decoding involved).
+    /// A preset avatar as a 512px PNG (our own drawing, encoded by our PNG encoder).
     static func renderAvatar(_ a: AvatarData) -> Data? {
         let renderer = ImageRenderer(content: AvatarDataImage(data: a, size: 512))
         renderer.scale = 1
-        guard let cg = renderer.cgImage else { return nil }
-        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+        guard let cg = renderer.cgImage, let pixels = rgba(cg) else { return nil }
+        return Data(PNGEncoder.encode(pixels))
+    }
+
+    /// A preset avatar's preview pixels (the compose flow's AvatarPreview).
+    static func renderAvatarImage(_ a: AvatarData) -> RGBAImage? {
+        let renderer = ImageRenderer(content: AvatarDataImage(data: a, size: 96))
+        renderer.scale = 2
+        guard let cg = renderer.cgImage, let pixels = rgba(cg) else { return nil }
+        return RGBAImage(width: pixels.width, height: pixels.height, pixels: Data(pixels.rgba), scale: 2)
+    }
+
+    /// The image's pixels as straight-alpha RGBA8, read from its data provider: 8-bit, 4-byte
+    /// pixels in any channel order (RGBA, ARGB, either byte order), premultiplied or not, or nil.
+    static func rgba(_ image: CGImage) -> PixelBuffer? {
+        let (w, h) = (image.width, image.height)
+        guard w > 0, h > 0, image.bitsPerComponent == 8, image.bitsPerPixel == 32,
+              let data = image.dataProvider?.data as Data? else { return nil }
+        let bytes = [UInt8](data), stride = image.bytesPerRow
+        guard stride >= w * 4, bytes.count >= stride * (h - 1) + w * 4 else { return nil }
+        let info = image.bitmapInfo
+        guard let alpha = CGImageAlphaInfo(rawValue: info.rawValue & CGBitmapInfo.alphaInfoMask.rawValue) else { return nil }
+        let little = info.rawValue & CGBitmapInfo.byteOrderMask.rawValue == CGBitmapInfo.byteOrder32Little.rawValue
+        let alphaFirst: Bool
+        let hasAlpha: Bool
+        switch alpha {
+        case .premultipliedLast, .last: (alphaFirst, hasAlpha) = (false, true)
+        case .noneSkipLast: (alphaFirst, hasAlpha) = (false, false)
+        case .premultipliedFirst, .first: (alphaFirst, hasAlpha) = (true, true)
+        case .noneSkipFirst: (alphaFirst, hasAlpha) = (true, false)
+        default: return nil
+        }
+        let premultiplied = alpha == .premultipliedLast || alpha == .premultipliedFirst
+        // Byte offsets of R, G, B, A within a pixel.
+        var order = alphaFirst ? [1, 2, 3, 0] : [0, 1, 2, 3]
+        if little { order = order.map { 3 - $0 } }
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * stride + x * 4, o = (y * w + x) * 4
+                let a = hasAlpha ? Int(bytes[i + order[3]]) : 255
+                for c in 0..<3 {
+                    let v = Int(bytes[i + order[c]])
+                    // Un-premultiply (rounded).
+                    out[o + c] = !premultiplied || a == 255 ? UInt8(v) : a == 0 ? 0 : UInt8(min(255, (v * 255 + a / 2) / a))
+                }
+                out[o + 3] = UInt8(a)
+            }
+        }
+        return PixelBuffer(width: w, height: h, rgba: out)
     }
 
     // MARK: chat colours
@@ -212,6 +286,25 @@ struct CustomColorEditing {
 
     /// `doForwardMessages`: each message (its text, as edited, and its attachments, or its
     /// sticker) to each chosen chat.
+    /// Sends `text` to each chat (the share dialog).
+    func sendText(_ text: String, to conversationIds: [String]) {
+        guard let session = signalSession, !text.isEmpty else { return }
+        let targets = conversationIds.compactMap { id in conversation(id) ?? composable.first { $0.id == id } }
+        Task {
+            for t in targets {
+                do {
+                    if t.kind == .group, let key = t.masterKey {
+                        _ = try await session.messenger.sendGroupMessage(text, masterKey: key)
+                    } else if let to = t.serviceId {
+                        _ = try await session.messenger.sendMessage(text, attachments: [], to: to)
+                    }
+                } catch {
+                    Self.trace("share failed: \(error)")
+                }
+            }
+        }
+    }
+
     func doForward(to conversationIds: [String], drafts: [MessageForwardDraft]) {
         guard let session = signalSession, let ids = forwardMessageIds else { return }
         forwardMessageIds = nil
@@ -248,6 +341,34 @@ struct CustomColorEditing {
     }
 
     // MARK: notification profiles
+
+    func createNotificationProfile(_ p: NotificationProfile) {
+        run("create notification profile") { _ = try await $0.messenger.createNotificationProfile(p) }
+    }
+
+    func updateNotificationProfile(_ p: NotificationProfile) {
+        run("update notification profile") { try await $0.messenger.updateNotificationProfile(p) }
+    }
+
+    func deleteNotificationProfile(_ id: String) {
+        run("delete notification profile") { try await $0.messenger.deleteNotificationProfile(id) }
+    }
+
+    func setNotificationProfileSyncEnabled(_ on: Bool, copyLabel: @escaping @Sendable (String) -> String) {
+        run("notification profile sync") { try await $0.messenger.setNotificationProfileSyncEnabled(on, copyLabel: copyLabel) }
+    }
+
+    func notificationProfileSyncEnabled() async -> Bool {
+        (try? await signalSession?.messenger.notificationProfileSyncEnabled()) ?? true
+    }
+
+    func notificationProfileOnboardingSeen() async -> Bool {
+        (try? await clientDatabase?.notificationProfileOnboardingSeen()) ?? true
+    }
+
+    func setNotificationProfileOnboardingSeen() {
+        run("profile onboarding seen") { try await $0.messenger.setNotificationProfileOnboardingSeen() }
+    }
 
     func setNotificationProfileOverride(_ id: String, enabled: Bool, endsAt: Date?) {
         guard let session = signalSession else { return }

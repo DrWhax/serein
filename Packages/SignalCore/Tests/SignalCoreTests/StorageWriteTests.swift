@@ -4,6 +4,7 @@
 
 import CryptoKit
 import Foundation
+import Synchronization
 import GRDB
 import SignalProtos
 import Testing
@@ -146,6 +147,36 @@ import Testing
             }
             // Uploading again with nothing changed writes nothing.
             #expect(try await c.storage.upload() == nil)
+        }
+    }
+
+    /// An upload takes a round trip. A setting changed while it is on its way was not part of
+    /// it, and must still go up afterwards instead of being marked as synced.
+    @Test func changeMadeWhileAnUploadIsOnItsWayIsNotLost() async throws {
+        try await LinkedClient.with { c in
+            try await c.server.call("setStorageState")
+            try await c.storage.sync()
+            try await c.jobs.waitUntilIdle()
+            let conversation = try await c.database.pool.write { db in try MessageStore.privateConversation(db, serviceId: c.aliceAci) }
+
+            // The next write is interrupted, once, between building the manifest and recording it.
+            let fired = Mutex(false)
+            c.storage.duringWrite.withLock { hook in
+                hook = {
+                    guard fired.withLock({ was in defer { was = true }; return !was }) else { return }
+                    try await c.messenger.setNote(conversation, "written during the upload")
+                }
+            }
+            try await c.messenger.setArchived(conversation, true)
+
+            let phone = try await phoneStorage(c) { $0.contact(aci: c.aliceAci)?["note"] as? String == "written during the upload" }
+            #expect(fired.withLock { $0 })
+            #expect(phone.contact(aci: c.aliceAci)?["archived"] as? Bool == true)
+            try await c.jobs.waitUntilIdle()
+            let dirty = try await c.database.pool.read { db in
+                try Bool.fetchOne(db, sql: "SELECT coalesce(json_extract(json, '$.needsStorageServiceSync'), 0) FROM conversations WHERE id = ?", arguments: [conversation])
+            }
+            #expect(dirty == false)   // and once it is up, nothing is left pending
         }
     }
 

@@ -72,3 +72,71 @@ public struct CountryCodeSelect: View {
         .buttonStyle(.plain)
     }
 }
+
+/// `ChooseCountryCodeModal`: the countries (name and calling code), filtered by a search, in a
+/// dialog; a click picks one and closes it. Upstream ranks with Fuse (threshold 0.1 over the
+/// name, and the code at half weight); here a match is a case- and diacritic-insensitive
+/// substring of either, prefix matches of the name first.
+public struct ChooseCountryCodeModal: View {
+    let countries: [CountryData]
+    let onChange: (String) -> Void
+    let onClose: () -> Void
+    @State private var searchTerm = ""
+    @Environment(\.i18n) var i18n
+
+    public init(countries: [CountryData], onChange: @escaping (String) -> Void, onClose: @escaping () -> Void) {
+        self.countries = countries
+        self.onChange = onChange
+        self.onClose = onClose
+    }
+
+    var filtered: [CountryData] {
+        let q = searchTerm.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return countries }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let digits = q.filter(\.isNumber)
+        let matches = countries.filter { c in
+            c.displayName.range(of: q, options: options) != nil || (!digits.isEmpty && c.code.filter(\.isNumber).hasPrefix(digits))
+        }
+        return matches.sorted { a, b in
+            let pa = a.displayName.range(of: q, options: options.union(.anchored)) != nil
+            let pb = b.displayName.range(of: q, options: options.union(.anchored)) != nil
+            return pa && !pb
+        }
+    }
+
+    public var body: some View {
+        AxoDialog.Content(size: .md) {
+            AxoDialog.Header {
+                AxoDialog.Title(i18n("icu:CountryCodeSelect__Modal__title"))
+                AxoDialog.Close(action: onClose)
+            }
+            AxoDialog.Search {
+                AxoSearchField.Root(value: $searchTerm) {
+                    AxoSearchField.Icon()
+                    AxoSearchField.Input(placeholder: i18n("icu:search"), autoFocus: true)
+                    AxoSearchField.Clear()
+                }
+            }
+            AxoDialog.Body(padding: .md, forceMaxHeight: true) {
+                let rows = filtered
+                if !rows.isEmpty {
+                    AxoList.Group {
+                        AxoList.Root {
+                            AxoList.Body {
+                                AxoItem.Group {
+                                    ForEach(rows) { c in
+                                        AxoClickableItem.Root(label: c.displayName, value: c.code, onClick: {
+                                            onClose()
+                                            onChange(c.region)
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

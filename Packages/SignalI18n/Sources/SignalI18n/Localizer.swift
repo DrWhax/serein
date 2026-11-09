@@ -19,6 +19,8 @@ public final class Localizer: Sendable {
     private let data: LocaleData
     private let catalog: MessageCatalog
     private let onError: (@Sendable (_ key: String, _ error: I18nError) -> Void)?
+    /// A rebranded build's app-name strings (nil: upstream's text).
+    public let rebrand: Rebrand?
     private let cache = Mutex<[CacheKey: Result<[MessageElement], MessageSyntaxError>]>([:])
 
     private struct CacheKey: Hashable {
@@ -34,8 +36,10 @@ public final class Localizer: Sendable {
     public init(
         locale: String,
         catalog: MessageCatalog = .bundled,
+        rebrand: Rebrand? = nil,
         onError: (@Sendable (_ key: String, _ error: I18nError) -> Void)? = nil
     ) {
+        self.rebrand = rebrand
         let data = LocaleData.named(locale) ?? LocaleData.named(Self.match([locale])) ?? LocaleData.english
         self.data = data
         self.locale = data.identifier
@@ -134,7 +138,8 @@ public final class Localizer: Sendable {
             useEnglish = true
             source = try catalog.message(key, locale: "en")
         }
-        guard let source else { throw .missingKey(key) }
+        guard var source else { throw .missingKey(key) }
+        if let rebrand { source = rebrand.apply(key, to: source) }
         let cacheKey = CacheKey(key: key, english: useEnglish)
         if let hit = cache.withLock({ $0[cacheKey] }) {
             return try hit.mapError { I18nError.syntax($0) }.get()

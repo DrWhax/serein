@@ -138,4 +138,19 @@ extension LinkedClient {
             _ = try await c.log.waitFor("typing from alice") { if case .typing(_, true, t2, _) = $0 { true } else { false } }
         }
     }
+
+    /// A group typing indicator reaches the members, online-only.
+    @Test func groupTypingIndicator() async throws {
+        try await LinkedClient.with { c in
+            try await c.receiveFromAlice("session first", withProfileKey: true)
+            let g = try await c.server.json("createGroup", ["title": "Typists"])
+            let groupId = try #require(g["id"] as? String), masterKey = try #require(Data(base64Encoded: g["masterKey"] as! String))
+            _ = try await c.server.json("sendGroupText", ["groupId": groupId, "text": "hello", "timestamp": TestClock.next()])
+            _ = try await c.log.waitFor("group update") { if case .other("groupUpdated", _) = $0 { return true } else { return false } }
+            let t = TestClock.next()
+            try await c.messenger.sendGroupTyping(masterKey: masterKey, started: true, timestamp: t)
+            let typing = try await c.server.decode(ReceivedTyping.self, "waitForTyping", ["account": "alice"])
+            #expect(typing.action == "started" && typing.timestamp == t)
+        }
+    }
 }

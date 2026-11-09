@@ -96,6 +96,9 @@ public final class StorageService: Sendable {
         var uploadBucket: [Int64] = []
     }
     let hooks = Mutex(Hooks())
+    /// Tests only: runs between generating a manifest and recording its upload (where a real
+    /// write is on the network).
+    let duringWrite = Mutex<(@Sendable () async throws -> Void)?>(nil)
     /// `storageJobQueue`: syncs and uploads run one at a time.
     let queue = StorageQueue()
 
@@ -644,10 +647,26 @@ public final class StorageService: Sendable {
         let (status, _) = try await http.send("PUT", modify, body: try write.serializedBytes() as Data, headers: try await headers(), accept: [409])
         if status == 409 { throw StorageServiceError.conflict }
 
+        if let hook = duringWrite.withLock({ $0 }) { try await hook() }
+
         let uploaded = generated.uploaded
         let ikm = generated.recordIkm
+        // What went up, per storage id: a record that has changed since is not done.
+        let sent = Dictionary(try generated.inserts.map { ($0.raw.base64EncodedString(), try $0.record.serializedData()) }, uniquingKeysWith: { a, _ in a })
         try await database.pool.write { db in
             for (owner, id) in uploaded { try owner.setUploaded(db, storageID: id, version: version) }
+            // The write took a round trip. A record changed in the meantime was marked as
+            // needing sync, and `setUploaded` has just cleared that mark: the server has the
+            // older state. Put the mark back and queue the next upload, or the change would
+            // stay on this device until something else touched the record.
+            let current = try Self.localEntries(db, ctx: try self.context(db, version: version))
+            var changedDuringWrite = false
+            for entry in current {
+                guard let id = entry.storageID, let bytes = sent[id], try entry.record.serializedData() != bytes else { continue }
+                try entry.owner.markNeedsSync(db)
+                changedDuringWrite = true
+            }
+            if changedDuringWrite { try Self.scheduleUpload(db) }
             try Items.set(db, "manifestVersion", version)
             if let ikm { try Items.set(db, "manifestRecordIkm", ikm.base64EncodedString()) }
             try Items.set(db, "storage-service-pending-deletes", [StorageIDRecord]())

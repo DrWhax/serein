@@ -536,7 +536,7 @@ struct NewStoryMenu: View {
 
     var body: some View {
         AxoDropdownMenu.Root(isOpen: $open) {
-            AxoButton.Root(i18n("icu:SendStoryModal__new"), variant: .strongSecondary, size: .sm, symbol: "plus") { open.toggle() }
+            AxoButton.Root(i18n("icu:SendStoryModal__new"), variant: .strongSecondary, size: .sm, symbol: "plus")
         } items: {
             AxoDropdownMenu.Item(i18n("icu:SendStoryModal__new-custom--title"), symbol: "stories",
                                  description: i18n("icu:SendStoryModal__new-custom--description"), action: onNewCustom)

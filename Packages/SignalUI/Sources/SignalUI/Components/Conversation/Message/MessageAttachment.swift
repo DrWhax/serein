@@ -177,9 +177,21 @@ struct MessageGenericAttachment: View {
     let withContentAbove: Bool
     let withContentBelow: Bool
     let metadata: MessageMetadata?
+    /// `#openGenericAttachment` (the whole row is the button).
+    var onClick: (() -> Void)? = nil
     @Environment(\.i18n) var i18n
 
     var body: some View {
+        if let onClick {
+            SwiftUI.Button(action: onClick) { content.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+                .accessibilityLabel(i18n(attachment.pending ? "icu:cancelDownload" : "icu:startDownload"))
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder var content: some View {
         let incoming = direction == .incoming
         let unavailable = attachment.isPermanentlyUndownloadable && !attachment.wasTooBig
         HStack(alignment: .center, spacing: 0) {

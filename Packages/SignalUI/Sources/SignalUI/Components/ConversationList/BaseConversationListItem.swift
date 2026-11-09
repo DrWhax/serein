@@ -267,10 +267,7 @@ struct MessageStatusIcon: View {
         }
         Group {
             if status == .sending && !animationsDisabled {
-                TimelineView(.animation) { t in
-                    SignalIcon(icon, color: color)
-                        .rotationEffect(.degrees(360 * (t.date.timeIntervalSinceReferenceDate / 4).truncatingRemainder(dividingBy: 1)))
-                }
+                SignalIcon(icon, color: color).caSpin(period: 4)
             } else {
                 // mask-size 100%: the SVG scaled to the box width, height by aspect ratio.
                 SignalIcon(icon, color: color)

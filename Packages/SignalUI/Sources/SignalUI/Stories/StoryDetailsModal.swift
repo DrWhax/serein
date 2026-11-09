@@ -145,7 +145,7 @@ public struct StoryDetailsModal: View {
         }
         let remaining = expirationTimestamp.map { Int($0.timeIntervalSince(now)) }
         return AxoDropdownMenu.Root(isOpen: $menuOpen) {
-            Button { menuOpen.toggle() } label: {
+            Button {} label: {
                 VStack(alignment: .leading, spacing: 0) {
                     line("icu:StoryDetailsModal__sent-time", "time", long(timestamp))
                     if let attachmentSize { line("icu:StoryDetailsModal__file-size", "size", formatFileSize(attachmentSize)) }

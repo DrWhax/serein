@@ -159,6 +159,31 @@ public actor AttachmentDownloadManager {
         await tick()
     }
 
+    /// A manual download ("Download" in the timeline): queues these attachments whatever the
+    /// auto-download settings, and starts them if there is room.
+    public func requestDownload(_ locations: [MessageAttachments.Location]) async throws {
+        try await db.write { db in for loc in locations { try MessageStore.queueDownload(db, loc) } }
+        await tick()
+    }
+
+    /// `cancelAttachmentDownload`: the message's downloads stop (running ones are cancelled),
+    /// leave the queue, and its attachments are no longer pending (they can be started again).
+    public func cancelDownloads(messageId: String) async throws {
+        for (id, task) in active where id.hasPrefix(messageId + "|") { task.cancel() }
+        try await db.write { db in
+            try db.execute(sql: "DELETE FROM attachment_downloads WHERE messageId = ?", arguments: [messageId])
+            guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, sent_at, received_at, type FROM messages WHERE id = ?", arguments: [messageId])
+            else { return }
+            for (loc, a) in try MessageAttachments.fetch(db, messageId: messageId) where a.pending == true && !a.isDownloaded {
+                var a = a
+                a.pending = false
+                try MessageAttachments.upsert(db, loc, conversationId: row["conversationId"], sentAt: row["sent_at"], receivedAt: row["received_at"],
+                                              messageType: row["type"] ?? "incoming", a)
+            }
+        }
+        onUpdate?(messageId)
+    }
+
     /// Queues a job (and runs it if there is room).
     public func add(_ job: AttachmentDownloadJob) async throws {
         try await db.write { try AttachmentDownloads.add($0, job) }
@@ -206,12 +231,15 @@ public actor AttachmentDownloadManager {
         let now = clock()
         do {
             let updated = try await download(job)
+            // Cancelled (`cancelDownloads`) while finishing: the user stopped it; keep nothing.
+            if Task.isCancelled { return }
             try await db.write { db in
                 try Self.replace(db, job: job) { _ in updated }
                 try AttachmentDownloads.remove(db, job)
             }
             onUpdate?(job.messageId)
         } catch {
+            if Task.isCancelled || error is CancellationError { return }
             let permanent: Bool
             switch error {
             case AttachmentDownloadError.tooBig, AttachmentDownloadError.missingPointer, AttachmentDownloadError.permanent: permanent = true

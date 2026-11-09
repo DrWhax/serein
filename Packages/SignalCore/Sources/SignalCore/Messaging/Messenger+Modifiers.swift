@@ -377,6 +377,7 @@ extension Messenger {
                 do {
                     result = try await sender.send(OutgoingPayload(content: content, timestamp: timestamp), to: serviceId, messageIds: [])
                 } catch let e as SendError {
+                    if case .untrustedIdentities = e { throw e }   // handled by `run`
                     throw JobError.permanent("\(e)")
                 }
                 var st = Signalservice_SyncMessage.Sent.UnidentifiedDeliveryStatus()

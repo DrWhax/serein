@@ -81,7 +81,8 @@ extension Messenger {
             }
             for listId in listIds {
                 guard let list = try StoryDistributionLists.list(db, id: listId), list.deletedAt == nil else { continue }
-                let recipients = StoryDistributionLists.recipients(db, list: list, signalConnections: connections).filter { $0 != ourAci }
+                let recipients = try StoryDistributionLists.recipients(db, list: list, signalConnections: connections)
+                    .filter { r in try r != ourAci && !StoryDistributionLists.everUnregistered(db, serviceId: r) }
                 var s = draft
                 s.allowsReplies = list.allowsReplies
                 var states: [String: Any] = [:]
@@ -130,6 +131,7 @@ extension Messenger {
                 }
             }
             var delivered: Set<String> = []
+            var unregistered: Set<String> = []
             for r in lists.keys.sorted() {
                 var s = story
                 s.allowsReplies = canReply[r] ?? false
@@ -139,11 +141,13 @@ extension Messenger {
                     _ = try await sender.send(OutgoingPayload(content: c, timestamp: sentAt, contentHint: .implicit, urgent: false, story: true), to: r,
                                               messageIds: plan.listStories.map(\.id))
                     delivered.insert(r)
+                } catch SendError.unregistered {
+                    unregistered.insert(r)
                 } catch {
                     continue
                 }
             }
-            try await markStorySent(plan.listStories.map { ($0.id, $0.recipients) }, delivered: delivered)
+            try await markStorySent(plan.listStories.map { ($0.id, $0.recipients) }, delivered: delivered, unregistered: unregistered)
             var sent = Signalservice_SyncMessage.Sent()
             sent.timestamp = sentAt
             story.allowsReplies = plan.listStories.contains { $0.list.allowsReplies }
@@ -174,7 +178,7 @@ extension Messenger {
             let result = try await groupSender.send(OutgoingPayload(content: c, timestamp: sentAt, contentHint: .implicit, urgent: false, story: true),
                                                     keys: entry.group.keys, recipients: entry.members, messageIds: [entry.id])
             let delivered = Set(result.senderKeyRecipients + result.normalRecipients).subtracting(result.unregistered)
-            try await markStorySent([(entry.id, entry.members)], delivered: delivered)
+            try await markStorySent([(entry.id, entry.members)], delivered: delivered, unregistered: Set(result.unregistered))
             var sent = Signalservice_SyncMessage.Sent()
             sent.timestamp = sentAt
             sent.storyMessage = s
@@ -191,13 +195,26 @@ extension Messenger {
         return plan.listStories.map(\.id) + plan.groupStories.map(\.id)
     }
 
-    func markStorySent(_ stories: [(id: String, recipients: [String])], delivered: Set<String>) async throws {
+    /// Each recipient's send state: sent, or failed. Recipients that turned out to be
+    /// unregistered are marked so and dropped from the story (upstream sendStory: they are not
+    /// failures, and later sends skip them).
+    func markStorySent(_ stories: [(id: String, recipients: [String])], delivered: Set<String>, unregistered: Set<String> = []) async throws {
         try await database.pool.write { db in
+            for r in unregistered { try MessageStore.markUnregistered(db, serviceId: r) }
             for (id, recipients) in stories {
                 try MessageStore.updateJSON(db, messageId: id) { json in
+                    var gone: [String] = []
                     for r in recipients {
                         guard let cid = try? MessageStore.privateConversation(db, serviceId: r) else { continue }
-                        MessageStore.setSendStatus(&json, conversationId: cid, delivered.contains(r) ? .sent : .failed, force: !delivered.contains(r))
+                        if unregistered.contains(r) {
+                            gone.append(cid)
+                        } else {
+                            MessageStore.setSendStatus(&json, conversationId: cid, delivered.contains(r) ? .sent : .failed, force: !delivered.contains(r))
+                        }
+                    }
+                    if !gone.isEmpty, var states = json["sendStateByConversationId"] as? [String: Any] {
+                        for cid in gone { states[cid] = nil }
+                        json["sendStateByConversationId"] = states
                     }
                 }
             }

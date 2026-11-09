@@ -97,7 +97,7 @@ extension Messenger {
                   let key = (try MessageStore.jsonObject(s)["publicKey"] as? String).flatMap({ Data(base64Encoded: $0) }) else { return (nil, false) }
             let old = try ProtocolStore.verifiedStatus(db, serviceId: aci)
             guard old != state else { return (key, false) }
-            try ProtocolStore.setIdentity(db, serviceId: aci, key: key, verified: state)
+            try ProtocolStore.setVerified(db, serviceId: aci, state)
             let conversationId = try MessageStore.privateConversation(db, serviceId: aci)
             try Identity.insertVerifiedChange(db, conversationId: conversationId, verified: verified, local: true)
             try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
@@ -122,32 +122,6 @@ enum Identity {
                                           sourceDevice: nil, serverGuid: nil, serverTimestamp: nil, unidentified: false,
                                           extra: ["verified": verified, "verifiedChanged": conversationId, "local": local,
                                                   "readStatus": ReadStatus.read.rawValue, "seenStatus": local ? SeenStatus.seen.rawValue : SeenStatus.unseen.rawValue]))
-    }
-
-    /// SyncMessage.Verified from the phone (`processVerifiedMessage`): a different key is taken
-    /// with its state (and is a key change); the same key just changes state.
-    static func applyVerifiedSync(_ db: Database, _ v: Signalservice_Verified, account: Account) throws {
-        guard let aci = StorageLocal.aci(binary: v.destinationAciBinary, string: v.destinationAci), (try? IdentityKey(bytes: v.identityKey)) != nil else { return }
-        let state: VerifiedStatus = v.state == .verified ? .verified : v.state == .unverified ? .unverified : .default
-        let stored = try String.fetchOne(db, sql: "SELECT json FROM identityKeys WHERE id = ?", arguments: [aci]).map(MessageStore.jsonObject)
-        let oldKey = (stored?["publicKey"] as? String).flatMap { Data(base64Encoded: $0) }
-        let oldState = try ProtocolStore.verifiedStatus(db, serviceId: aci)
-        if let oldKey, oldKey != v.identityKey {
-            let store = account.aciStore(), ctx = DatabaseStoreContext(db)
-            for d in try Int.fetchAll(db, sql: "SELECT deviceId FROM sessions WHERE ourServiceId = ? AND serviceId = ?", arguments: [account.aci, aci]) {
-                let address = try ProtocolAddress(name: aci, deviceId: UInt32(d))
-                guard let session = try store.loadSession(for: address, context: ctx) else { continue }
-                session.archiveCurrentState()
-                try store.storeSession(session, for: address, context: ctx)
-            }
-            try MessageStore.insertKeyChange(db, serviceId: aci)
-        } else if oldKey != nil, oldState == state {
-            return
-        }
-        try ProtocolStore.setIdentity(db, serviceId: aci, key: v.identityKey, verified: state)
-        if (oldState == .verified) != (state == .verified) {
-            try insertVerifiedChange(db, conversationId: try MessageStore.privateConversation(db, serviceId: aci), verified: state == .verified, local: false)
-        }
     }
 }
 
@@ -342,7 +316,7 @@ public struct KeyTransparencyService: Sendable {
             guard let s = try String.fetchOne(db, sql: "SELECT json FROM identityKeys WHERE id = ?", arguments: [aci]),
                   let key = (try MessageStore.jsonObject(s)["publicKey"] as? String).flatMap({ Data(base64Encoded: $0) }) else { return nil }
             let e164 = try String.fetchOne(db, sql: "SELECT e164 FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [aci])
-            return (key, e164, try MessageSender.accessKey(db, serviceId: aci))
+            return (key, e164, try MessageSender.derivedAccessKey(db, serviceId: aci))
         }
         guard let (key, e164, accessKey) = info else { throw ModifierError.notFound }
         try await socket.keyTransparencyCheck(isSelf: nil, aci: aci, identityKey: key, e164: e164, accessKey: accessKey, usernameHash: nil, store: store)

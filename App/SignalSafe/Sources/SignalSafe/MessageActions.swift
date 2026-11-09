@@ -51,7 +51,7 @@ struct PinMessageRequest {
     func toggleSelect(_ messageId: String, shift: Bool = false, selected: Bool) {
         var ids = selectedMessageIds ?? []
         if shift, let anchor = ids.last, let a = messages.firstIndex(where: { $0.id == anchor }), let b = messages.firstIndex(where: { $0.id == messageId }) {
-            for m in messages[min(a, b)...max(a, b)] where !ids.contains(m.id) { ids.append(m.id) }
+            for m in messages[min(a, b)...max(a, b)] where m.notice == nil && !ids.contains(m.id) { ids.append(m.id) }
         } else if selected {
             if !ids.contains(messageId) { ids.append(messageId) }
         } else {
@@ -314,8 +314,8 @@ struct PinMessageRequest {
     }
 
     func closeGifPlayers() {
-        let players = Array(gifPlayers.values)
-        gifPlayers = [:]
+        let players = gifPlayers.values
+        gifPlayers.removeAll()
         gifOrder = []
         Task { for p in players { await p.unload() } }
     }
@@ -349,5 +349,61 @@ struct PinMessageRequest {
     func discardEdit() {
         editingMessageId = nil
         draft = ""
+    }
+
+    /// ⌘⇧E (`Keyboard--toggle-reaction-picker`): the reaction picker of the newest message in
+    /// the open chat that can be reacted to (not deleted; ours once sent).
+    func toggleReactionPickerShortcut() {
+        guard let target = messages.last(where: { m in
+            m.notice == nil && !m.isDeleted && (m.direction == .incoming || m.status.map { $0 != .pending && $0 != .failed } ?? true)
+        }) else { return }
+        reactionPickerMessageId = target.id
+        reactionPickerCount += 1
+    }
+
+    /// `retryMessageSend`
+    func retrySend(_ messageId: String) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.messenger.retrySend(messageId: messageId) } catch { Self.trace("retry failed: \(error)") }
+        }
+    }
+
+    // MARK: polls
+
+    /// A stored poll as the bubble's: each option's voters (whether each is us), totals.
+    func messagePoll(_ p: TimelinePoll) -> MessagePoll {
+        let me = conversations.first { $0.kind == .private && $0.serviceId != nil && $0.serviceId == ourAci }?.id
+        var out = MessagePoll(question: p.question, options: p.options)
+        out.allowMultiple = p.allowMultiple
+        out.terminated = p.terminated
+        let voters = p.votes.filter { !$0.optionIndexes.isEmpty }
+        for v in voters {
+            for i in v.optionIndexes where p.options.indices.contains(i) { out.votesByOption[i, default: []].append(v.fromConversationId == me) }
+        }
+        out.totalNumVotes = out.votesByOption.values.reduce(0) { $0 + $1.count }
+        out.uniqueVoters = voters.count
+        return out
+    }
+
+    /// `sendPollVote`: our choice (an empty list retracts).
+    func vote(_ messageId: String, _ optionIndexes: [Int]) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.messenger.vote(on: messageId, optionIndexes: optionIndexes) } catch { Self.trace("vote failed: \(error)") }
+        }
+    }
+
+    /// PollCreateModal's poll, to the open chat.
+    func createPoll(_ p: PollCreateType) {
+        isCreatingPoll = false
+        guard let session = signalSession, let id = selectedConversationId else { return }
+        Task {
+            do {
+                _ = try await session.messenger.createPoll(question: p.question, options: p.options, allowMultiple: p.allowMultiple, conversationId: id)
+            } catch {
+                Self.trace("poll failed: \(error)")
+            }
+        }
     }
 }

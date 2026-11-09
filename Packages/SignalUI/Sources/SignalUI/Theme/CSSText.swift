@@ -977,15 +977,40 @@ struct CSSTextFrame: Layout {
     /// `\.cssTextWrapWidth`: wrap at exactly this width (Blink's 1/64px comparison).
     var exactWrapWidth: CGFloat? = nil
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    /// Sizes already worked out (by proposed width) and the unwrapped layout, until the text
+    /// changes: SwiftUI proposes the same widths many times per pass.
+    struct Cache {
+        var natural: CSSTextLayout?
+        var sizes: [CGFloat: CGSize] = [:]
+        var unspecified: CGSize?
+    }
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        if let w = proposal.width, let size = cache.sizes[w] { return size }
+        if proposal.width == nil, let size = cache.unspecified { return size }
+        let size = measure(proposal, &cache)
+        if let w = proposal.width { cache.sizes[w] = size } else { cache.unspecified = size }
+        return size
+    }
+
+    func naturalLayout(_ cache: inout Cache) -> CSSTextLayout {
+        if let n = cache.natural { return n }
+        let n = CSSTextLayout.make(runs: runs, style, wrap: .nowrap, maxWidth: nil, colors: nil)
+        cache.natural = n
+        return n
+    }
+
+    func measure(_ proposal: ProposedViewSize, _ cache: inout Cache) -> CGSize {
         if let exact = exactWrapWidth, wrap == .wrap {
             let layout = CSSTextLayout.make(runs: runs, style, wrap: .wrap, maxWidth: exact, colors: nil, tolerance: CSSTextLayout.exactWidthTolerance)
             // Wrapped (soft breaks): the shrink-to-fit box is the whole width.
-            let natural = CSSTextLayout.make(runs: runs, style, wrap: .nowrap, maxWidth: nil, colors: nil)
+            let natural = naturalLayout(&cache)
             let wrapped = natural.width > exact + CSSTextLayout.exactWidthTolerance
             return CGSize(width: wrapped ? exact : layout.width, height: layout.height)
         }
-        let natural = CSSTextLayout.make(runs: runs, style, wrap: .nowrap, maxWidth: nil, colors: nil)
+        let natural = naturalLayout(&cache)
         // Text that fits at its natural width needs no limit (only forced breaks); SwiftUI may
         // propose a fraction under that width (pixel rounding), which is no reason to wrap.
         let maxWidth = proposal.width.flatMap { $0 >= natural.width - 0.6 ? nil : $0 }
@@ -999,7 +1024,7 @@ struct CSSTextFrame: Layout {
         return CGSize(width: max(0, width), height: layout.height)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         for s in subviews { s.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size)) }
     }
 }
@@ -1127,6 +1152,14 @@ public struct CSSText: View {
     @Environment(\.colorScheme) var scheme
     @Environment(\.cssTextColor) var inherited
     @Environment(\.cssTextWrapWidth) var envWrapWidth
+    /// Mouse selection and ⌘C (message bodies in the live timeline).
+    @Environment(\.cssTextSelectable) var selectable
+    @Environment(\.textSelectionCenter) var selectionCenter
+    /// The selected UTF-16 range, and where the drag started.
+    @State private var selection: Range<Int>?
+    @State private var anchor: Int?
+    @State private var selectionId = UUID()
+    @FocusState private var focused: Bool
 
     public init(_ string: String, style: CSSTextStyle, wrap: CSSTextWrap = .wrap, alignment: CSSTextAlign = .start, color: AxoColor? = nil) {
         self.init(runs: [CSSTextRun(string)], style: style, wrap: wrap, alignment: alignment, color: color)
@@ -1181,12 +1214,43 @@ public struct CSSText: View {
                 Canvas(opaque: false, rendersAsynchronously: false) { context, size in
                     let layout = layout(width: size.width, colors: resolve, base: color ?? inherited)
                     context.withCGContext { cg in
+                        if let selection, !selection.isEmpty {
+                            cg.setFillColor(NSColor.selectedTextBackgroundColor.cgColor)
+                            for r in selectionRects(layout, selection, width: size.width) { cg.fill(r) }
+                        }
                         layout.draw(in: cg, width: size.width, alignment: alignment,
                                     color: CGColor(srgbRed: rgba.r, green: rgba.g, blue: rgba.b, alpha: rgba.a), canvasOrigin: origin)
                     }
                 }
             }
-            if tappable, let onTap {
+            if selectable {
+                GeometryReader { geo in
+                    canvas.contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .local).onChanged { drag in
+                            let width = geo.size.width
+                            if anchor == nil {
+                                anchor = index(at: drag.startLocation, width: width)
+                                selectionCenter?.owner = selectionId
+                                focused = true
+                            }
+                            if let anchor {
+                                let here = index(at: drag.location, width: width)
+                                selection = min(anchor, here) ..< max(anchor, here)
+                            }
+                        }.onEnded { _ in anchor = nil })
+                        .onTapGesture(coordinateSpace: .local) { point in
+                            selection = nil
+                            if tappable, let onTap, let action = action(at: point, width: geo.size.width) { onTap(action) }
+                        }
+                        .pointerStyle(.horizontalText)
+                }
+                .focusable()
+                .focusEffectDisabled()
+                .focused($focused)
+                .onCopyCommand { selectedText.map { [NSItemProvider(object: $0 as NSString)] } ?? [] }
+                .onChange(of: selectionCenter?.owner) { _, owner in if owner != selectionId { selection = nil } }
+                .onChange(of: focused) { _, f in if !f { selection = nil } }
+            } else if tappable, let onTap {
                 GeometryReader { geo in
                     canvas.contentShape(Rectangle()).onTapGesture(coordinateSpace: .local) { point in
                         if let action = action(at: point, width: geo.size.width) { onTap(action) }
@@ -1199,6 +1263,48 @@ public struct CSSText: View {
         .accessibilityElement()
         .accessibilityLabel(string)
         .accessibilityAddTraits(tappable ? .isLink : [])
+    }
+
+    /// The selected text (nil without a selection).
+    var selectedText: String? {
+        guard let selection, !selection.isEmpty else { return nil }
+        let units = Array(string.utf16)
+        let lo = min(selection.lowerBound, units.count), hi = min(selection.upperBound, units.count)
+        return String(decoding: units[lo..<hi], as: UTF16.self)
+    }
+
+    /// The caret index nearest `point` (above the text: 0; below: the end).
+    func index(at point: CGPoint, width: CGFloat) -> Int {
+        let layout = layout(width: width, colors: nil)
+        guard !layout.lines.isEmpty else { return 0 }
+        if point.y < 0 { return 0 }
+        guard let i = layout.lineIndex(at: point.y) else { return string.utf16.count }
+        let x = lineX(layout, i, width: width)
+        let line = layout.lines[i]
+        let range = CTLineGetStringRange(line)
+        if point.x <= x { return range.location }
+        if point.x >= x + layout.widths[i] { return range.location + range.length }
+        return CTLineGetStringIndexForPosition(line, CGPoint(x: point.x - x, y: 0))
+    }
+
+    func lineX(_ layout: CSSTextLayout, _ i: Int, width: CGFloat) -> CGFloat {
+        switch alignment {
+        case .start: 0
+        case .center: (width - layout.widths[i]) / 2
+        case .end: width - layout.widths[i]
+        }
+    }
+
+    /// The selection's highlight, a rectangle per line it covers (y down).
+    func selectionRects(_ layout: CSSTextLayout, _ selection: Range<Int>, width: CGFloat) -> [CGRect] {
+        layout.lines.indices.compactMap { i in
+            let line = layout.lines[i], r = CTLineGetStringRange(line)
+            let lo = max(selection.lowerBound, r.location), hi = min(selection.upperBound, r.location + r.length)
+            guard hi > lo else { return nil }
+            let a = CTLineGetOffsetForStringIndex(line, lo, nil), b = CTLineGetOffsetForStringIndex(line, hi, nil)
+            let x = lineX(layout, i, width: width)
+            return CGRect(x: x + min(a, b), y: layout.lineTop(i), width: abs(b - a), height: layout.lineHeight(i))
+        }
     }
 
     /// The action of the run under `point` (text coordinates, y down).
@@ -1223,4 +1329,16 @@ public struct CSSText: View {
         }
         return nil
     }
+}
+
+/// Which selectable text holds the selection: starting one clears the others.
+@MainActor @Observable public final class TextSelectionCenter {
+    public var owner: UUID?
+    public init() {}
+}
+
+extension EnvironmentValues {
+    /// Text can be selected with the mouse and copied (⌘C): message bodies in the live timeline.
+    @Entry public var cssTextSelectable = false
+    @Entry public var textSelectionCenter: TextSelectionCenter? = nil
 }

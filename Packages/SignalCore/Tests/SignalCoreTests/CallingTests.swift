@@ -158,4 +158,29 @@ import CryptoKit
     }
 }
 
-private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d)) }
+private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d))
+}
+
+/// The Calls tab groups consecutive calls with the same peer, type, direction and status within
+/// four hours; deleted calls are left out.
+@Suite struct CallHistoryGroupTests {
+    @Sendable static func call(_ id: String, _ peer: String, _ t: Int64, _ status: CallStatus, _ dir: CallDirection = .incoming) -> CallHistoryDetails {
+        CallHistoryDetails(details: CallDetails(callId: id, peerId: peer, ringerId: nil, startedById: nil, mode: .direct, type: .audio,
+                                                direction: dir, timestamp: t), status: status)
+    }
+
+    @Test func callHistoryGroups() async throws {
+        try await LinkedClient.with { c in
+            let h: Int64 = 3_600_000
+            try await c.database.pool.write { db in
+                for x in [Self.call("1", "a", 10 * h, .missed), Self.call("2", "a", 9 * h, .missed), Self.call("3", "a", 3 * h, .missed),
+                          Self.call("4", "b", 2 * h, .accepted, .outgoing), Self.call("5", "a", 1 * h, .deleted)] {
+                    try CallHistoryStore.save(db, x)
+                }
+            }
+            let groups = try await c.database.pool.read { try CallHistoryStore.groups($0) }
+            #expect(groups.map { $0.calls.map(\.callId) } == [["1", "2"], ["3"], ["4"]])
+            #expect(groups[0].status == .missed && groups[0].timestamp == 10 * h && groups[2].direction == .outgoing)
+        }
+    }
+}

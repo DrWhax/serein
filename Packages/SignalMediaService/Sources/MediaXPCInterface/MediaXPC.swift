@@ -14,7 +14,6 @@ import Synchronization
 public enum MediaRequest: Codable, Sendable {
     case stickerImage(Data)
     case displayImage(Data, maxDimension: Int)
-    case linkPreviewHTML(Data, httpCharset: String?)
     case imageInfo(Data)
     case thumbnail(Data, size: Int)
     case scaleForSending(Data, contentType: String, level: MediaQualityLevel)
@@ -117,14 +116,14 @@ public enum MediaXPCWire {
     }
 }
 
-public final class MediaXPCClient: MediaProcessing {
-    public static let serviceName = "org.signalsafe.SignalMediaDecoder"
+/// One XPC service's connection: rebuilt after an invalidation or interruption (a crash), each
+/// request bounded by a watchdog. Shared by the media decoder and the link-preview parser.
+public final class XPCChannel: Sendable {
     let makeConnection: @Sendable () -> NSXPCConnection
     let connection = Mutex<NSXPCConnection?>(nil)
     let timeout: Duration
 
-    /// The bundled service, or (tests) any connection to a listener.
-    public init(timeout: Duration = .seconds(30), makeConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: MediaXPCClient.serviceName) }) {
+    public init(timeout: Duration, makeConnection: @escaping @Sendable () -> NSXPCConnection) {
         self.timeout = timeout
         self.makeConnection = makeConnection
     }
@@ -143,13 +142,8 @@ public final class MediaXPCClient: MediaProcessing {
         }
     }
 
-    func call<T: Decodable & Sendable>(_ request: MediaRequest, _ type: T.Type) async throws -> T {
-        try MediaXPCWire.decode(T.self, try await callData(request))
-    }
-
     /// The reply's bytes, undecoded.
-    func callData(_ request: MediaRequest) async throws -> Data {
-        let payload = try MediaXPCWire.encode(request)
+    func send(_ payload: Data) async throws -> Data {
         let conn = current()
         let timeout = self.timeout
         let reply: Data = try await withCheckedThrowingContinuation { (k: CheckedContinuation<Data, Error>) in
@@ -174,13 +168,29 @@ public final class MediaXPCClient: MediaProcessing {
         }
         return reply
     }
+}
+
+public final class MediaXPCClient: MediaProcessing {
+    public static let serviceName = "org.signalsafe.SignalMediaDecoder"
+    let channel: XPCChannel
+
+    /// The bundled service, or (tests) any connection to a listener.
+    public init(timeout: Duration = .seconds(30), makeConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: MediaXPCClient.serviceName) }) {
+        channel = XPCChannel(timeout: timeout, makeConnection: makeConnection)
+    }
+
+    func call<T: Decodable & Sendable>(_ request: MediaRequest, _ type: T.Type) async throws -> T {
+        try MediaXPCWire.decode(T.self, try await callData(request))
+    }
+
+    /// The reply's bytes, undecoded.
+    func callData(_ request: MediaRequest) async throws -> Data {
+        try await channel.send(try MediaXPCWire.encode(request))
+    }
 
     public func stickerImage(_ bytes: Data) async throws -> StickerImage { try await call(.stickerImage(bytes), StickerImage.self).validated() }
     public func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage {
         try await call(.displayImage(bytes, maxDimension: maxDimension), DisplayImage.self).validated(maxDimension: maxDimension)
-    }
-    public func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML? {
-        try await call(.linkPreviewHTML(html, httpCharset: httpCharset), [LinkPreviewHTML].self).first?.validated()
     }
     public func imageInfo(_ bytes: Data) async throws -> ImageInfo { try await call(.imageInfo(bytes), ImageInfo.self).validated() }
     public func thumbnail(_ bytes: Data, size: Int) async throws -> Thumbnail { try await call(.thumbnail(bytes, size: size), Thumbnail.self).validated(size: size) }

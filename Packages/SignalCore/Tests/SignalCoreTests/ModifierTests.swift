@@ -123,6 +123,12 @@ extension LinkedClient {
             try await c.server.callJSON("sendEditMessage", ["timestamp": e1, "targetSentTimestamp": t, "message": ["body": "hello"]])
             try await c.eventually("edit applied") { db in try String.fetchOne(db, sql: "SELECT body FROM messages WHERE sent_at = ?", arguments: [Int64(t)]) == "hello" }
             #expect((try await c.messageJSON(sentAt: t)["editHistory"] as? [Any])?.count == 2)
+            // The timeline carries the versions, newest first.
+            let versions = try await c.database.pool.read { db -> [TimelineEdit] in
+                let conv = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE sent_at = ?", arguments: [Int64(t)]) ?? ""
+                return try ConversationQueries.messages(db, conversationId: conv, limit: 10).first { $0.sentAt == Int64(t) }?.editHistory ?? []
+            }
+            #expect(versions.map(\.body) == ["hello", "helo"] && versions[0].timestamp == Int64(e1) && versions[1].timestamp == Int64(t))
             // A reaction to the edited version reaches the same message.
             _ = try await c.send(["reaction": ["emoji": "👍", "targetAuthor": "alice", "targetSentTimestamp": e1]], storesMessage: false)
             #expect((try await c.messageJSON(sentAt: t)["reactions"] as? [Any])?.count == 1)

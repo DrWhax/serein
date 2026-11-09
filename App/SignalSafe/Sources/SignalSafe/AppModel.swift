@@ -72,7 +72,7 @@ import SignalUI
     func saveCrashReports() {
         let text = crashReports.writeToLog().map(\.logText).joined(separator: "\n\n")
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "SignalSafe crash reports.txt"
+        panel.nameFieldStringValue = "Serein crash reports.txt"
         if panel.runModal() == .OK, let url = panel.url { try? Data(text.utf8).write(to: url) }
         eraseCrashReports()
     }

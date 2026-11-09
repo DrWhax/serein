@@ -636,6 +636,24 @@ extension StorageOwner {
         }
     }
 
+    /// The record changed again and still has to go up (the flag `setUploaded` clears).
+    func markNeedsSync(_ db: Database) throws {
+        switch self {
+        case .conversation(let id), .account(let id):
+            try MessageStore.updateConversationJSON(db, conversationId: id) { $0["needsStorageServiceSync"] = true }
+        case .storyList(let id): try db.execute(sql: "UPDATE storyDistributions SET storageNeedsSync = 1 WHERE id = ?", arguments: [id])
+        case .installedPack(let id): try db.execute(sql: "UPDATE sticker_packs SET storageNeedsSync = 1 WHERE id = ?", arguments: [id])
+        case .uninstalledPack(let id): try db.execute(sql: "UPDATE uninstalled_sticker_packs SET storageNeedsSync = 1 WHERE id = ?", arguments: [id])
+        case .favoriteSticker(let packId, let stickerId):
+            try db.execute(sql: "UPDATE favorite_stickers SET storageNeedsSync = 1 WHERE packId = ? AND stickerId = ?", arguments: [packId, stickerId])
+        case .callLink(let roomId): try db.execute(sql: "UPDATE callLinks SET storageNeedsSync = 1 WHERE roomId = ?", arguments: [roomId])
+        case .defunctCallLink(let roomId): try db.execute(sql: "UPDATE defunctCallLinks SET storageNeedsSync = 1 WHERE roomId = ?", arguments: [roomId])
+        case .pendingCallLink(let jobId): try StorageRecords.updatePendingCallLink(db, jobId: jobId) { $0.storageNeedsSync = true }
+        case .chatFolder(let id): try db.execute(sql: "UPDATE chatFolders SET storageNeedsSync = 1 WHERE id = ?", arguments: [id])
+        case .notificationProfile(let id): try db.execute(sql: "UPDATE notificationProfiles SET storageNeedsSync = 1 WHERE id = ?", arguments: [id])
+        }
+    }
+
     /// generateManifest: an expired tombstone (or a dropped contact) leaves the local state.
     func dropLocal(_ db: Database) throws {
         switch self {

@@ -1,9 +1,11 @@
 // The open conversation (upstream ConversationView: ConversationHeader, Timeline, CompositionArea)
 // over SignalSession's live timeline, and the mappings from SignalCore rows to SignalUI props.
 
+import AppKit
 import Foundation
 import SignalCore
 import SignalI18n
+import SignalText
 import SignalUI
 import SwiftUI
 
@@ -23,27 +25,38 @@ struct ConversationPane: View {
     }
 
     var conversationView: some View {
+        conversationContent
+            // Files dropped on the chat are staged as attachments (upstream's drop zone).
+            .dropDestination(for: URL.self) { urls, _ in
+                let files = urls.filter(\.isFileURL)
+                for url in files { session.stage(url) }
+                return !files.isEmpty
+            }
+    }
+
+    var conversationContent: some View {
         let messages = session.messages
         let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let index = Dictionary(messages.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
         return VStack(spacing: 0) {
-            ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, outgoingCallButtonStyle: .none,
+            ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, outgoingCallButtonStyle: callButtonStyle,
                                actions: headerActions) { EmptyView() }
-            if !session.pins.isEmpty {
-                PinnedMessagesBar(pins: session.pinItems(you: i18n("icu:you")), current: $session.currentPinIndex, canPinMessages: true,
+            if session.activeAudioMessageId != nil {
+                // While audio plays (in this chat or another) the mini-player takes the pinned bar's place.
+                AudioMiniPlayer(session: session, i18n: i18n)
+            } else if !session.pins.isEmpty {
+                PinnedMessagesBar(pins: session.pinItems(you: i18n("icu:you")), current: $session.currentPinIndex, canPinMessages: session.canPinMessages,
                                   onPinGoTo: { session.goToMessage($0) }, onPinRemove: { session.unpin($0) },
                                   onPinsShowAll: { if let first = session.pins.first { session.goToMessage(first.messageId) } })
             }
-            Timeline(id: conversation.id, items: messages.map(\.id), haveNewest: true, haveOldest: messages.count < 100,
+            Timeline(id: conversation.id, items: messages.map(\.id), haveNewest: true, haveOldest: session.haveOldest,
+                     isLoadingMessages: session.isLoadingOlder,
+                     oldestUnseenIndex: session.unreadMarker.flatMap { index[$0.oldestId] }, totalUnseen: session.unreadMarker?.count ?? 0,
                      scrollToIndex: session.scrollToMessageId.flatMap { index[$0] }, scrollToIndexCounter: session.scrollCounter,
                      getTimestampForMessage: { byId[$0].map { Date(milliseconds: $0.sentAt) } }) { props in
                 if let m = byId[props.id], let i = index[props.id] {
-                    VStack(spacing: 0) {
-                        if TimelineUtil.shouldRenderDateHeader(isOldest: i == 0, grouping(m), previous: i > 0 ? grouping(messages[i - 1]) : nil) {
-                            TimelineDateHeader(timestamp: Date(milliseconds: m.sentAt))
-                        }
-                        TimelineItem(item: .message(self.props(m, at: i, in: messages)))
-                    }
+                    TimelineRow(pane: self, message: m, previous: i > 0 ? messages[i - 1] : nil, next: i + 1 < messages.count ? messages[i + 1] : nil)
+                        .equatable()
                 }
             } renderHeroRow: {
                 HeroRow {
@@ -51,8 +64,18 @@ struct ConversationPane: View {
                                      avatar: avatar(conversation), isMe: isNoteToSelf, acceptedMessageRequest: conversation.isAccepted)
                 }
             } renderTypingBubble: {
-                EmptyView()
+                let typists = session.typingContacts(conversation.id)
+                if !typists.isEmpty {
+                    TypingBubble(conversationType: conversation.kind == .group ? .group : .direct, typingContacts: typists,
+                                 showContactModal: { session.contactModalId = $0 })
+                }
+            } loadOlderMessages: { _ in
+                session.loadOlderMessages()
             }
+            .environment(\.messageTextSelectable, true)
+            // A signal.link/call URL opens the call link's lobby instead of the browser.
+            .environment(\.openURL, OpenURLAction { url in session.openCallLinkURL(url) ? .handled : .systemAction })
+            .environment(\.textSelectionCenter, session.textSelection)
             if let selected = session.selectedMessageIds {
                 SelectModeActions(selectedCount: selected.count,
                                   areSelectedMessagesForwardable: selected.allSatisfy { id in session.messages.first { $0.id == id }.map { !$0.isDeleted } ?? false },
@@ -70,6 +93,7 @@ struct ConversationPane: View {
             CompositionArea(text: $session.draft, model: composerModel, actions: {
                 var a = CompositionAreaActions()
                 a.onCloseQuote = { session.quotedMessageId = nil }
+                a.onCloseLinkPreview = { session.closeLinkPreview() }
                 a.onEditLastMessage = { [isNoteToSelf] in session.editLastMessage(noteToSelf: isNoteToSelf) }
                 a.discardEditMessage = { session.discardEdit() }
                 a.onSubmit = { session.sendDraft() }
@@ -78,15 +102,38 @@ struct ConversationPane: View {
                 a.onAddAttachment = { session.pickAttachments(mediaOnly: false) }
                 a.onCloseAttachment = { session.removeStaged(at: $0) }
                 a.onClearAttachments = { session.clearStaged() }
+                a.onPaste = { session.pasteAttachments($0) }
+                a.onPickMention = { session.composer.insertMention($0) }
+                a.startRecording = { session.startRecording() }
+                a.openPollModal = { session.isCreatingPoll = true }
                 return a
-            }(), funPicker: AnyView(ComposerFunPicker(session: session)))
+            }(), funPicker: AnyView(ComposerFunPicker(session: session)), renderSmartCompositionRecording: {
+                let r = session.recording
+                return AnyView(CompositionRecording(peaks: r?.peaks ?? [], errorDialog: r?.error, startedAt: r?.startedAt ?? .now,
+                                                    onCancel: { session.cancelRecording() }, onSend: { session.sendRecording() },
+                                                    errorRecording: { _ in session.cancelRecording() }))
+            })
+            .environment(\.composerController, session.composer)
             .fixedSize(horizontal: false, vertical: true)    // its own height; the timeline takes the rest
-            .onAppear { session.observeStickers() }
+            .onAppear {
+                session.observeStickers()
+                session.linkPreviewStrings = linkPreviewStrings
+            }
+    }
+
+    /// The strings a preview we send carries (upstream fills them in the sender's language).
+    var linkPreviewStrings: LinkPreviewStrings {
+        let i18n = i18n
+        return LinkPreviewStrings(stickerPackDescription: { i18n("icu:stickers--StickerPackLinkPreviewDescription", ["author": .string($0)]) },
+                                  groupDescription: { i18n("icu:GroupV2--join--group-metadata--full", ["memberCount": .number(Double($0))]) },
+                                  unknownGroup: i18n("icu:unknownGroup"), callLinkTitle: i18n("icu:calling__call-link-default-title"),
+                                  callLinkDescription: i18n("icu:message--call-link-description"))
     }
 
     /// The MessageDetails panel (pushed over the conversation; back returns to it).
     func detailPanel(_ m: TimelineMessage, at i: Int) -> some View {
-        var message = props(m, at: i, in: session.messages)
+        let all = session.messages
+        var message = props(m, previous: i > 0 ? all[i - 1] : nil, next: i + 1 < all.count ? all[i + 1] : nil)
         message.actions = nil
         message.shouldCollapseAbove = false
         message.shouldCollapseBelow = false
@@ -128,9 +175,12 @@ struct ConversationPane: View {
         if !m.isDeleted && !m.body.isEmpty { a.copy = { session.copyText(id) } }
         a.select = { session.toggleSelect(id, selected: true) }
         if session.canEdit(m, noteToSelf: isNoteToSelf) { a.edit = { session.startEdit(id) } }
-        if !m.isDeleted {
+        if !m.isDeleted && session.canPinMessages {
             if m.isPinned { a.unpin = { session.unpin(id) } } else { a.pin = { session.requestPin(id) } }
         }
+        // Download: a message's attachments (not a sticker), saved where the user chooses.
+        if !m.isDeleted && m.sticker == nil && !m.attachments.isEmpty { a.download = { session.saveAttachments(m) } }
+        if m.direction == .outgoing, m.status == .failed { a.retrySend = { session.retrySend(id) } }
         a.moreInfo = { session.messageDetailId = id }
         if !m.isDeleted && (m.sticker != nil || !m.body.isEmpty || !m.attachments.isEmpty) { a.forward = { session.forward([id]) } }
         a.delete = { session.requestDelete([id]) }
@@ -213,6 +263,17 @@ struct ConversationPane: View {
     }
 
     /// The header's menu and buttons.
+    /// `getOutgoingCallButtonStyle`: none for Note to Self, unaccepted or left chats; both for
+    /// direct chats; video (or Join while a call is up) for groups.
+    var callButtonStyle: OutgoingCallButtonStyle {
+        guard session.calling != nil, conversation.isAccepted, !isNoteToSelf else { return .none }
+        if conversation.kind == .group {
+            guard let g = session.details?.group, let me = session.ourAci, g.member(me) != nil else { return .none }
+            return session.activeCall?.conversationId == conversation.id ? .join : .justVideo
+        }
+        return .both
+    }
+
     var headerActions: ConversationHeaderActions {
         var a = ConversationHeaderActions()
         a.onViewConversationDetails = { session.pushPanel("ConversationDetails") }
@@ -235,6 +296,9 @@ struct ConversationPane: View {
         a.onMarkUnread = { session.setMarkedUnread(true) }
         a.onSelectModeEnter = { session.selectedMessageIds = [] }
         a.onSearchInConversation = { session.startConversationSearch() }
+        let callId = conversation.id
+        a.onOutgoingAudioCall = { session.openCallLobby(callId, video: false) }
+        a.onOutgoingVideoCall = { session.openCallLobby(callId, video: true) }
         return a
     }
 
@@ -252,6 +316,11 @@ struct ConversationPane: View {
         m.quote = composerQuote
         m.quotedMessageId = session.quotedMessageId
         m.isEditingMessage = session.editingMessageId != nil
+        m.mentionSuggestions = session.mentionSuggestions
+        m.isRecording = session.recording != nil
+        m.linkPreviewResult = session.composerLinkPreview
+        m.linkPreviewLoading = m.linkPreviewResult != nil
+        m.hasLinkPreview = m.linkPreviewResult != nil
         m.draftAttachments = session.staged.map { s in
             var a = SignalUI.MessageAttachment(contentType: s.contentType, fileName: s.fileName, size: s.data.count, width: s.width, height: s.height)
             a.image = s.preview
@@ -262,7 +331,28 @@ struct ConversationPane: View {
         return m
     }
 
-    func authorId(_ m: TimelineMessage) -> String { m.direction == .outgoing ? (session.ourAci ?? "me") : (m.author ?? "unknown") }
+    /// A notice belongs to no author: it never collapses with the bubbles around it.
+    func authorId(_ m: TimelineMessage) -> String {
+        if m.notice != nil { return "notice:\(m.id)" }
+        return m.direction == .outgoing ? (session.ourAci ?? "me") : (m.author ?? "unknown")
+    }
+
+    /// The timeline's notices (upstream TimelineItem's notification types).
+    func noticeItem(_ notice: TimelineNotice) -> TimelineItemType {
+        switch notice {
+        case .keyChange(let serviceId):
+            let who = serviceId ?? conversation.serviceId
+            return .safetyNumberNotification(SafetyNumberNotification(contactTitle: session.contactTitle(who),
+                                                                      toggleSafetyNumberModal: { session.showSafetyNumber(who) }))
+        case .verifiedChange(let verified, let local):
+            return .verificationNotification(VerificationNotification(type: verified ? .markVerified : .markNotVerified, isLocal: local,
+                                                                      contactTitle: conversation.title))
+        case .deliveryIssue(let sender):
+            return .deliveryIssue(DeliveryIssueNotification(senderName: sender.map { session.contactTitle($0) }, inGroup: conversation.kind == .group))
+        case .chatSessionRefreshed:
+            return .chatSessionRefreshed(ChatSessionRefreshedNotification())
+        }
+    }
 
     func grouping(_ m: TimelineMessage) -> TimelineGroupingInfo {
         var g = TimelineGroupingInfo(authorId: authorId(m), timestamp: Date(milliseconds: m.sentAt), status: m.status.map(Self.messageStatus))
@@ -270,7 +360,7 @@ struct ConversationPane: View {
         return g
     }
 
-    func props(_ m: TimelineMessage, at i: Int, in all: [TimelineMessage]) -> MessageProps {
+    func props(_ m: TimelineMessage, previous previousMessage: TimelineMessage?, next nextMessage: TimelineMessage?) -> MessageProps {
         var author = MessageProps.Author(id: authorId(m), title: m.direction == .outgoing ? i18n("icu:you") : session.contactTitle(m.author))
         author.isMe = m.direction == .outgoing
         author.color = m.direction == .outgoing ? nil : session.contactColor(m.author)
@@ -289,6 +379,11 @@ struct ConversationPane: View {
         if let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 != 0, AttachmentPolicy.isVideo(first.contentType) {
             p.gifPlayer = session.gifPlayer(for: first)
         }
+        if m.attachments.count == 1, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 == 0, AttachmentPolicy.isVideo(first.contentType),
+           first.isDownloaded {
+            if let v = session.inlineVideo, v.messageId == m.id { p.inlineVideoPlayer = v.player }
+            p.playVideoInline = { [session] in session.playVideoInline(m) }
+        }
         if let st = m.sticker {
             // The sticker's own file (ours, or downloaded), else the installed pack's copy.
             p.isSticker = true
@@ -302,10 +397,37 @@ struct ConversationPane: View {
             a.pending = file?.pending ?? false
             p.attachments = [a]
         }
+        p.previews = m.previews.map(linkPreview)
+        // A preview opens its (https) link in the browser.
+        p.openLink = { [session] href in
+            guard LinkPreviewRules.shouldPreviewHref(href), let url = URL(string: href) else { return }
+            if !session.openCallLinkURL(url) { NSWorkspace.shared.open(url) }
+        }
         p.showLightbox = { [session] i in session.openLightbox(m, index: i) }
+        if m.attachments.contains(where: { !$0.attachment.isDownloaded }) { p.kickOffAttachmentDownload = { [session] in session.downloadAttachments(m) } }
+        if m.attachments.contains(where: { $0.attachment.pending == true }) { p.cancelAttachmentDownload = { [session] in session.cancelDownloads(m) } }
+        p.saveAttachment = { [session] i in session.saveAttachments(m, only: i) }
+        if let first = m.attachments.first?.attachment, AttachmentPolicy.isAudio(first.contentType) {
+            p.isVoiceMessagePlayed = m.direction == .outgoing || m.isViewed
+            p.audioControls = session.audioControls(m)
+            p.activeAudio = session.activeAudio(m)
+        }
         p.deletedForEveryone = m.isDeleted
         p.isPinned = m.isPinned
+        // Mentions ("@name", the member's current name) and styles.
+        p.bodyRanges = m.bodyRanges.map { r in
+            switch r.kind {
+            case .mention(let aci):
+                let name = session.contactTitle(aci)
+                return BodyRange(start: r.start, length: r.length, kind: .mention(aci: aci, conversationID: aci, replacementText: name))
+            case .style(let style):
+                return BodyRange(start: r.start, length: r.length, kind: .formatting(BodyRange.Style(rawValue: style) ?? .none))
+            }
+        }
+        if let poll = m.poll { p.poll = session.messagePoll(poll); p.canSendPollVote = !poll.terminated && conversation.isAccepted
+            p.sendPollVote = { [session] indexes in session.vote(m.id, indexes) } }
         p.isEdited = m.isEdited
+        if m.editHistory.count > 1 { p.showEditHistory = { [session] in session.editHistoryMessageId = m.id } }
         if let t = m.expireTimer, t > 0 {
             p.expirationLength = TimeInterval(t)
             p.expirationTimestamp = m.expirationStartTimestamp.map { Date(milliseconds: $0 + Int64(t) * 1000) }
@@ -313,7 +435,8 @@ struct ConversationPane: View {
         let me = session.ourAci
         p.reactions = m.reactions.map {
             MessageReaction(emoji: $0.emoji, fromIsMe: $0.fromId == me, fromTitle: $0.fromId == me ? i18n("icu:you") : session.contactTitle($0.fromId),
-                            timestamp: Double($0.timestamp))
+                            timestamp: Double($0.timestamp), fromId: $0.fromId, fromColor: session.contactColor($0.fromId),
+                            fromAvatar: session.avatarImage(session.contacts[$0.fromId]?.avatar))
         }
         if let q = m.quote {
             p.quote = quoteModel(q, in: m)
@@ -325,11 +448,21 @@ struct ConversationPane: View {
             p.toggleSelectMessage = { [session] shift, on in session.toggleSelect(m.id, shift: shift, selected: on) }
         }
         p.actions = actions(m)
-        let previous = i > 0 ? grouping(all[i - 1]) : nil, next = i + 1 < all.count ? grouping(all[i + 1]) : nil
+        if session.reactionPickerMessageId == m.id { p.reactionPickerRequest = session.reactionPickerCount }
+        let previous = previousMessage.map(grouping), next = nextMessage.map(grouping)
         p.shouldCollapseAbove = TimelineUtil.areMessagesInSameGroup(previous, unreadIndicator: false, grouping(m))
         p.shouldCollapseBelow = TimelineUtil.areMessagesInSameGroup(grouping(m), unreadIndicator: false, next)
         p.shouldHideMetadata = TimelineUtil.shouldHideMetadata(grouped: p.shouldCollapseBelow, grouping(m), next)
         return p
+    }
+
+    /// A stored link preview → the bubble's (its image decoded by the media service).
+    func linkPreview(_ p: TimelinePreview) -> LinkPreview {
+        var out = LinkPreview(url: p.url, domain: p.domain, title: p.title, description: p.description, date: p.date.map(Double.init),
+                              image: p.image.map(attachment))
+        out.isStickerPack = p.isStickerPack
+        out.isCallLink = p.isCallLink
+        return out
     }
 
     /// SignalCore's attachment row → the bubble's attachment (pixels via the media service).
@@ -343,6 +476,7 @@ struct ConversationPane: View {
         out.isGifFlag = (a.flags ?? 0) & 8 != 0
         out.hasUrl = a.isDownloaded
         out.image = session.image(for: a)
+        if AttachmentPolicy.isAudio(a.contentType) { out.audioWaveform = session.audioWaveform(for: a) }
         if AttachmentPolicy.isVideo(a.contentType) {
             out.screenshot = session.posterImage(for: a)
             out.videoFrame = out.screenshot
@@ -387,5 +521,49 @@ struct ComposerFunPicker: View {
             FunPanelGifs(recentGifs: [], source: session.gifSource, storedSearchInput: $gifSearch,
                          onSelectGif: { g in session.sendGif(g.gif.attachmentMedia.url); close() }, onClose: { close() })
         }
+    }
+}
+
+/// One timeline row (its date header and message). Equatable on what it is drawn from, so a
+/// re-render of the timeline (scrolling, another row's change) skips it; what it reads from the
+/// session while drawing (images, contacts, selection, pins…) still updates it through
+/// observation.
+struct TimelineRow: View, Equatable {
+    let pane: ConversationPane
+    let message: TimelineMessage
+    let previous: TimelineMessage?
+    let next: TimelineMessage?
+
+    nonisolated static func == (a: TimelineRow, b: TimelineRow) -> Bool {
+        a.message == b.message && a.previous == b.previous && a.next == b.next && a.pane.conversation == b.pane.conversation
+            && a.pane.session === b.pane.session
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if TimelineUtil.shouldRenderDateHeader(isOldest: previous == nil, pane.grouping(message), previous: previous.map(pane.grouping)) {
+                TimelineDateHeader(timestamp: Date(milliseconds: message.sentAt))
+            }
+            if let notice = message.notice {
+                TimelineItem(item: pane.noticeItem(notice))
+            } else {
+                TimelineItem(item: .message(pane.props(message, previous: previous, next: next)))
+            }
+        }
+    }
+}
+
+/// `SmartMiniPlayer`: the playing voice note's sender ("You" for ours), play / pause, speed and
+/// close (`unloadMessageAudio`).
+struct AudioMiniPlayer: View {
+    @Bindable var session: SignalSession
+    let i18n: Localizer
+
+    var body: some View {
+        let title = session.activeAudioAuthor.map { session.contactTitle($0) } ?? i18n("icu:you")
+        MiniPlayer(title: title, state: session.audioEngine?.isLoaded == true ? (session.audioPlaying ? .playing : .paused) : .loading,
+                   currentTime: session.audioTime, duration: session.audioEngine?.duration, playbackRate: session.audioRate,
+                   onPlay: { session.setAudioPlaying(true) }, onPause: { session.setAudioPlaying(false) },
+                   onPlaybackRate: { session.setAudioRate($0) }, onClose: { session.stopAudio() })
     }
 }

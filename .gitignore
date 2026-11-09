@@ -13,3 +13,5 @@ DerivedData/
 .cache/
 Packages/SignalRingRTC/rust/target/
 App/SignalSafe/Resources/Sounds/
+# installer output (Tools/make-installer.sh)
+/dist/

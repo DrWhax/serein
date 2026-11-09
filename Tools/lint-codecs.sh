@@ -68,13 +68,23 @@ done
 
 # SignalCore never links a decoder: media goes to the sandboxed service through MediaXPCInterface.
 core=$(find Packages/SignalCore/Sources -name '*.swift' 2>/dev/null || true)
-if [ -n "$core" ] && grep -nE '^\s*(@preconcurrency\s+)?(public\s+|internal\s+)?import\s+(Image[A-Za-z]+|Blurhash|Encode[A-Za-z]+|CodecCore|HTMLMeta|MetadataStrip|Container[A-Za-z0-9]+|Audio[A-Z][A-Za-z0-9]*|Video[A-Z][A-Za-z0-9]*|SignalMediaDecoder)\b' $core; then
+if [ -n "$core" ] && grep -nE '^\s*(@preconcurrency\s+)?(public\s+|internal\s+)?import\s+(Image[A-Za-z]+|Blurhash|Encode[A-Za-z]+|CodecCore|HTMLMeta|MetadataStrip|Container[A-Za-z0-9]+|Audio[A-Z][A-Za-z0-9]*|Video[A-Z][A-Za-z0-9]*|SignalMediaDecoder|LinkPreviewParser)\b' $core; then
   echo "lint: SignalCore imports a decoder module (only MediaXPCInterface is allowed)" >&2; fail=1
 fi
 # …and its library target's dependency list (up to the test target) names no decoder product.
 if sed -n '/name: "SignalCore",/,/testTarget/p' Packages/SignalCore/Package.swift | grep -v testTarget \
-   | grep -nE '"(SignalMediaDecoder|EncodePNG|EncodeJPEG|CodecCore|HTMLMeta|Blurhash|Image[A-Za-z]+|Container[A-Za-z0-9]+|AudioAAC|AudioMP3|VideoH264|MetadataStrip)"'; then
+   | grep -nE '"(SignalMediaDecoder|LinkPreviewParser|EncodePNG|EncodeJPEG|CodecCore|HTMLMeta|Blurhash|Image[A-Za-z]+|Container[A-Za-z0-9]+|AudioAAC|AudioMP3|VideoH264|MetadataStrip)"'; then
   echo "lint: SignalCore's library target depends on a decoder product" >&2; fail=1
+fi
+
+# The two services stay apart: the media decoder has no HTML parser, and the link-preview
+# parser (under its tighter Seatbelt profile) has nothing but HTMLMeta.
+svc=Packages/SignalMediaService/Sources
+if grep -nE '^\s*import\s+(HTMLMeta|LinkPreviewParser)\b' $svc/SignalMediaDecoder/*.swift $svc/SignalMediaDecoderService/*.swift; then
+  echo "lint: the media decoder service imports the HTML parser" >&2; fail=1
+fi
+if grep -nE '^\s*import\s+' $svc/LinkPreviewParser/*.swift $svc/SignalLinkPreviewParserService/*.swift | grep -vE 'import\s+(Foundation|CodecCore|HTMLMeta|MediaXPCInterface|LinkPreviewParser)\s*$'; then
+  echo "lint: the link-preview parser imports more than HTMLMeta" >&2; fail=1
 fi
 
 # Shipping code anywhere in the repo (tests and the differential oracle excluded).

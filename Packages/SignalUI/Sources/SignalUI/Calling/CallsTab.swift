@@ -524,9 +524,7 @@ public struct CallsTab<CallLinkDetailsView: View, ConversationDetailsView: View>
                         show(.newCall)
                     }
                     AxoDropdownMenu.Root(isOpen: $moreMenuOpen) {
-                        AxoIconButton.Root(label: i18n("icu:CallsTab__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more") {
-                            moreMenuOpen.toggle()
-                        }
+                        AxoIconButton.Root(label: i18n("icu:CallsTab__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more")
                     } items: {
                         AxoDropdownMenu.Item(i18n("icu:CallsTab__ClearCallHistoryLabel"), symbol: "trash") { confirmClearOpen = true }
                     }

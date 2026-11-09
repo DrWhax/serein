@@ -153,8 +153,12 @@ public struct MessageBody: View {
         return out
     }
 
+    /// The live timeline makes message text selectable (`\.messageTextSelectable`).
+    @Environment(\.messageTextSelectable) var textSelectable
+
     public var body: some View {
         CSSText(runs: runs, style: style, wrap: wrap, alignment: alignment, onTap: { handle(MessageTextAction(encoded: $0)) })
+            .environment(\.cssTextSelectable, textSelectable)
     }
 
     func handle(_ action: MessageTextAction) {
@@ -169,4 +173,10 @@ public struct MessageBody: View {
         case .downloadBody: kickOffBodyDownload?()
         }
     }
+}
+
+extension EnvironmentValues {
+    /// Message bodies can be selected with the mouse and copied (the app's live timeline;
+    /// off in static renders).
+    @Entry public var messageTextSelectable = false
 }

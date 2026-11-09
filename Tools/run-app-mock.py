@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--seconds", type=float, default=20)
 parser.add_argument("--screenshot")
 parser.add_argument("--video", help="an MP4 Alice also sends; the app opens it in the Lightbox")
+parser.add_argument("--key-change", action="store_true", help="Alice then re-installs and writes again: the chat shows the safety number notice")
 args = parser.parse_args()
 
 def png(w, h):
@@ -41,10 +42,24 @@ def call(cmd, **kw):
             if not r["ok"]: raise RuntimeError(f"{cmd}: {r['error']}")
             return r["result"]
 
-app_bin = os.path.join(root, "App/SignalSafe/.build/SignalSafe.app/Contents/MacOS/SignalSafe")
+def capture(path):
+    # Only the app's window (never the whole screen): its id from CGWindowList.
+    finder = 'import CoreGraphics\nlet l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []\n' \
+             'for w in l where (w["kCGWindowOwnerPID"] as? Int) == Int(CommandLine.arguments[1])! && (w["kCGWindowLayer"] as? Int) == 0 ' \
+             '{ print(w["kCGWindowNumber"] as! Int); break }\n'
+    wid = subprocess.run(["swift", "-e", finder, str(app.pid)], capture_output=True, text=True).stdout.strip()
+    if wid:
+        subprocess.run(["screencapture", "-x", "-o", "-l" + wid, path])
+        print("screenshot:", path)
+    else:
+        print("no app window found for a screenshot")
+
+app_bin = os.path.join(root, "App/SignalSafe/.build/Serein.app/Contents/MacOS/Serein")
 log = open(os.path.join(work, "app.log"), "w")
 reply = "Reply from SignalSafe ✅"
 extra = {"SIGNALSAFE_MOCK_LIGHTBOX": "1"} if args.video else {}
+second = "Is this really you?"
+if args.key_change: extra["SIGNALSAFE_MOCK_KEYCHANGE_REPLY"] = second
 app = subprocess.Popen([app_bin], env={**os.environ, "SIGNALSAFE_MOCK_READY": ready_path, "SIGNALSAFE_MOCK_REPLY": reply, **extra},
                        stdout=log, stderr=log)
 try:
@@ -72,20 +87,19 @@ try:
         got = call("waitForMessage", account="alice", timeout=20000)
         if got["body"]: break
     print("alice received:", repr(got["body"]), "ok" if got["body"] == reply else "MISMATCH")
+    if args.key_change:
+        call("reregister", account="alice", openSession=True)
+        call("sendText", **{"from": "alice", "text": "New phone, same Alice", "timestamp": int(time.time() * 1000)})
+        print("alice re-installed and wrote again")
+        # The app answers through its composer: the safety number review must come first.
+        time.sleep(4)
+        if args.screenshot: capture(args.screenshot.replace(".png", "-review.png"))
+        got = call("waitForMessage", account="alice", timeout=30000)
+        print("after confirming the review alice received:", repr(got["body"]), "ok" if got["body"] == second else "MISMATCH")
     time.sleep(args.seconds)
     services = subprocess.run(["pgrep", "-fl", "SignalMediaDecoder"], capture_output=True, text=True).stdout.strip()
     print("media service:", services or "not running")
-    if args.screenshot:
-        # Only the app's window (never the whole screen): its id from CGWindowList.
-        finder = 'import CoreGraphics\nlet l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []\n' \
-                 'for w in l where (w["kCGWindowOwnerPID"] as? Int) == Int(CommandLine.arguments[1])! && (w["kCGWindowLayer"] as? Int) == 0 ' \
-                 '{ print(w["kCGWindowNumber"] as! Int); break }\n'
-        wid = subprocess.run(["swift", "-e", finder, str(app.pid)], capture_output=True, text=True).stdout.strip()
-        if wid:
-            subprocess.run(["screencapture", "-x", "-o", "-l" + wid, args.screenshot])
-            print("screenshot:", args.screenshot)
-        else:
-            print("no app window found for a screenshot")
+    if args.screenshot: capture(args.screenshot)
 finally:
     app.terminate()
     try: app.wait(5)

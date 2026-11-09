@@ -73,7 +73,10 @@ extension LinkedClient {
             let got = try await c.waitForMessage(to: "alice")
             #expect(got.body == "hello alice" && got.timestamp == t)
             #expect(got.source == c.account.aci && got.sourceDevice == Int(c.account.deviceId))
-            // No profile key for alice yet → no access key → unsealed; the first message to a new session is a PreKey message.
+            // No profile key for alice and her sealed-sender mode unknown: upstream tries the
+            // all-zero access key, which only someone accepting sealed sender from anyone takes.
+            // Alice does not, the server answers 401, and the message goes out authenticated.
+            // The first message to a new session is a PreKey message.
             #expect(got.envelopeType == "PreKey")
             #expect(got.profileKey == c.account.profileKey?.base64EncodedString())
 
@@ -95,8 +98,8 @@ extension LinkedClient {
                 #expect(try Int.fetchOne(db, sql: "SELECT count(*) FROM sendLogMessageIds WHERE messageId = ?", arguments: [messageId]) == 2)
                 #expect(try Int.fetchOne(db, sql: "SELECT count(*) FROM sessions WHERE serviceId = ?", arguments: [c.aliceAci]) == 1)
             }
-            // The certificate was not needed for an unsealed send.
-            #expect(try await c.database.pool.read { try Items.get($0, "senderCertificateNoE164", as: String.self) } == nil)
+            // The sealed attempt needed our sender certificate.
+            #expect(try await c.database.pool.read { try Items.get($0, "senderCertificateNoE164", as: SenderCertificates.Cached.self) } != nil)
         }
     }
 
@@ -140,48 +143,7 @@ extension LinkedClient {
         }
     }
 
-    @Test func staleDevicesAreRefreshedAfter410() async throws {
-        try await LinkedClient.with { c in
-            try await c.messenger.sendText("before reinstall", to: c.aliceAci)
-            _ = try await c.waitForMessage(to: "alice")
-            try await c.jobs.waitUntilIdle()
-
-            // alice reinstalls: same ACI, new identity key and registration id.
-            let fresh = try await c.server.json("reregister", ["account": "alice"])
-            let (_, t) = try await c.messenger.sendText("after reinstall", to: c.aliceAci)
-            let got = try await c.waitForMessage(to: "alice")
-            #expect(got.body == "after reinstall" && got.timestamp == t && got.envelopeType == "PreKey")
-            try await c.jobs.waitUntilIdle()
-
-            let freshKey = fresh["identityKey"] as? String
-            try await c.database.pool.read { db throws in
-                let identity = try #require(try String.fetchOne(db, sql: "SELECT json ->> '$.publicKey' FROM identityKeys WHERE id = ?", arguments: [c.aliceAci]))
-                #expect(identity == freshKey)
-                // Safety-number change notification in the conversation.
-                #expect(try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE type = 'keychange' AND json ->> '$.key_changed' = ?",
-                                         arguments: [c.aliceAci]) == 1)
-            }
-            #expect(try await c.sendStatus(t, conversationWith: c.aliceAci) == "Sent")
-        }
-    }
-
-    @Test func verifiedContactWithNewIdentityBlocksSending() async throws {
-        try await LinkedClient.with { c in
-            try await c.messenger.sendText("before", to: c.aliceAci)
-            _ = try await c.waitForMessage(to: "alice")
-            try await c.jobs.waitUntilIdle()
-            try await c.database.pool.write { db in
-                try db.execute(sql: "UPDATE identityKeys SET json = json_set(json, '$.verified', 1) WHERE id = ?", arguments: [c.aliceAci])
-            }
-            try await c.server.call("reregister", ["account": "alice"])
-            let (_, t) = try await c.messenger.sendText("must not be sent", to: c.aliceAci)
-            try await c.eventually("send failure") { db in
-                try String.fetchOne(db, sql: "SELECT json ->> '$.errors[0].message' FROM messages WHERE sent_at = ?", arguments: [Int64(t)])?
-                    .contains("untrustedIdentity") == true
-            }
-            #expect(try await c.sendStatus(t, conversationWith: c.aliceAci) == "Failed")
-        }
-    }
+    // A re-installed contact (410, new identity key): IdentityTrustFlowTests.
 
     @Test func retryRequestResendsLoggedPayload() async throws {
         try await LinkedClient.with { c in

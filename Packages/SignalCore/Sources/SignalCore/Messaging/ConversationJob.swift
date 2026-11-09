@@ -26,6 +26,7 @@ public struct ConversationJob: Codable, Sendable {
         case fetchLatest = "FetchLatest"
         case stickerPackSync = "StickerPackSync"
         case modifierSend = "ModifierSend"
+        case resendRequest = "ResendRequest"
     }
 
     /// SyncMessage.StickerPackOperation
@@ -52,6 +53,14 @@ public struct ConversationJob: Codable, Sendable {
     public var stickerPack: StickerPackOperation?
     // ModifierSend: a serialized Content
     public var content: String?
+    // ResendRequest (we could not decrypt `requester`'s message at `timestamp`): the serialized
+    // PlaintextContent carrying our DecryptionErrorMessage, the failed message's content hint
+    // and group, and when it arrived.
+    public var plaintext: String?
+    public var contentHint: UInt32?
+    public var groupId: String?
+    public var receivedAt: Int64?
+    public var receivedAtCounter: Int64?
 
     public static let queueType = "conversation"
 
@@ -66,6 +75,11 @@ public struct ConversationJob: Codable, Sendable {
     public static func resend(requester: String, device: UInt32, timestamp: UInt64, ratchetKey: Data?, wasSenderKey: Bool) -> Self {
         Self(type: .resend, requester: requester, requesterDevice: device, timestamp: timestamp,
              ratchetKey: ratchetKey?.base64EncodedString(), wasSenderKey: wasSenderKey)
+    }
+    public static func resendRequest(sender: String, device: UInt32, timestamp: UInt64, plaintext: Data, contentHint: UInt32, groupId: Data?,
+                                     receivedAt: Int64, receivedAtCounter: Int64? = nil) -> Self {
+        Self(type: .resendRequest, requester: sender, requesterDevice: device, timestamp: timestamp, plaintext: plaintext.base64EncodedString(),
+             contentHint: contentHint, groupId: groupId?.base64EncodedString(), receivedAt: receivedAt, receivedAtCounter: receivedAtCounter)
     }
     public static func syncRequest(_ types: [Int]) -> Self { Self(type: .syncRequest, requestTypes: types) }
     /// `getFetchManifestSyncMessage` and friends: tells our other devices to refetch.

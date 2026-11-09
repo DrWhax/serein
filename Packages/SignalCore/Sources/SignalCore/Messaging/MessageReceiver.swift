@@ -12,6 +12,7 @@
 // without the decrypted result being stored (Desktop's withZone semantics).
 
 import Foundation
+import Synchronization
 import GRDB
 import LibSignalClient
 import SignalProtos
@@ -40,6 +41,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
 
     public let events: AsyncStream<ReceiveEvent>
     let continuation: AsyncStream<ReceiveEvent>.Continuation
+    /// How often a resend was requested per sender.device:timestamp (upstream retryRecord).
+    let retryRequests = Mutex<[String: Int]>([:])
 
     public init(account: Account, database: SignalDatabase, trustRoots: [PublicKey], jobs: JobQueue? = nil) {
         self.account = account
@@ -110,10 +113,43 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             jobs?.poke()
             events.forEach(emit)
         } catch {
-            try? database.pool.write { db in try db.execute(sql: "DELETE FROM unprocessed WHERE id = ?", arguments: [id]) }
-            emit(.failed(serverGuid: envelope.serverGuid, reason: "\(error)"))
+            // The transaction rolled back: no session, pre-key or identity change of a failed
+            // decryption is kept. What follows is upstream's DecryptionErrorEvent handling.
+            try? database.pool.write { db in
+                try db.execute(sql: "DELETE FROM unprocessed WHERE id = ?", arguments: [id])
+                if let failure = error as? DecryptionFailure { try self.requestResend(db, failure, envelope: envelope) }
+            }
+            jobs?.poke()
+            emit(.failed(serverGuid: envelope.serverGuid, reason: "\((error as? DecryptionFailure)?.underlying ?? error)"))
         }
     }
+
+    /// `MessageReceiver.#decrypt`'s catch and `handleRetry.onDecryptionError`: ask the sender
+    /// to send it again, unless the message was a duplicate, the sender is blocked or not an
+    /// ACI, it came to our PNI, or we have already asked `retryLimit` times for this message.
+    func requestResend(_ db: Database, _ f: DecryptionFailure, envelope e: Signalservice_Envelope) throws {
+        if case SignalError.duplicatedMessage = f.underlying { return }
+        guard !f.toPni, !f.sender.hasPrefix("PNI:"), f.sender != account.aci || f.senderDevice != account.deviceId else { return }
+        if try BlockedList.serviceIds.blockedAt(db, f.sender).blocked { return }
+        let key = "\(f.sender).\(f.senderDevice):\(e.clientTimestamp)"
+        let attempts = retryRequests.withLock { counts -> Int in
+            counts[key, default: 0] += 1
+            return counts[key] ?? 1
+        }
+        guard attempts <= Self.retryLimit else { return }
+        let message = try DecryptionErrorMessage(originalMessageBytes: f.ciphertext, type: f.type, timestamp: e.clientTimestamp,
+                                                 originalSenderDeviceId: f.senderDevice)
+        // Our own other devices are asked without a notice (upstream: Resendable when from us).
+        let hint = f.contentHint ?? (f.sender == account.aci ? .resendable : .default)
+        try JobQueue.insert(db, queueType: ConversationJob.queueType,
+                            payload: ConversationJob.resendRequest(sender: f.sender, device: f.senderDevice, timestamp: e.clientTimestamp,
+                                                                   plaintext: PlaintextContent(message).serialize(), contentHint: hint.rawValue,
+                                                                   groupId: f.groupId, receivedAt: MessageStore.now(),
+                                                                   receivedAtCounter: try MessageStore.nextReceivedAt(db)))
+    }
+
+    /// Upstream RETRY_LIMIT.
+    static let retryLimit = 5
 
     // MARK: unprocessed cache
 
@@ -168,6 +204,21 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         var content: Signalservice_Content
         var sealed: Bool
         var groupId: Data?
+        /// False for PlaintextContent: nothing vouches for it but the envelope, so only a
+        /// DecryptionErrorMessage is accepted from it.
+        var wasEncrypted = true
+    }
+
+    /// A message from a known sender that could not be decrypted (upstream DecryptionErrorEvent).
+    struct DecryptionFailure: Error {
+        var sender: String
+        var senderDevice: UInt32
+        var ciphertext: Data
+        var type: CiphertextMessage.MessageType
+        var contentHint: ContentHint?
+        var groupId: Data?
+        var toPni: Bool
+        var underlying: Error
     }
 
     func decryptAndDispatch(_ e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
@@ -183,26 +234,49 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         if let pniStore, destination == pniStore.ourServiceId { store = pniStore } else if destination == account.aci { store = aciStore } else {
             throw ReceiveError.invalidEnvelope("destination \(destination)")
         }
+        let toPni = store.ourServiceId != account.aci
         let local = try ProtocolAddress(name: store.ourServiceId, deviceId: account.deviceId)
         guard e.hasContent else { throw ReceiveError.invalidEnvelope("no content") }
+        // Our PNI only ever receives the pre-key message that starts a session (upstream
+        // unsealEnvelope / innerDecrypt): no sealed sender, no established-session traffic.
+        if toPni && e.type != .prekeyMessage { throw ReceiveError.invalidEnvelope("type \(e.type.rawValue) on PNI") }
 
         switch e.type {
         case .unidentifiedSender:
+            // `validateUnsealedEnvelope`: without a server timestamp the certificate's expiry
+            // cannot be checked.
+            guard e.serverTimestamp > 0 else { throw ReceiveError.invalidEnvelope("sealed sender without serverTimestamp") }
             let usmc = try UnidentifiedSenderMessageContent(message: e.content, identityStore: store, context: ctx)
             let certificate = usmc.senderCertificate
-            guard certificate.validate(trustRoots: trustRoots, time: e.serverTimestamp) else { throw ReceiveError.invalidSenderCertificate }
             let sender = certificate.senderUuid.lowercased()
             let device = certificate.deviceId
             if sender == account.aci, device == account.deviceId { throw ReceiveError.fromSelf }
+            guard certificate.validate(trustRoots: trustRoots, time: e.serverTimestamp) else { throw ReceiveError.invalidSenderCertificate }
             let from = try ProtocolAddress(name: sender, deviceId: device)
-            let plaintext = try decryptInner(type: usmc.messageType, usmc.contents, from: from, local: local, store: store, ctx)
-            return Decrypted(sender: sender, senderDevice: device, content: try parseContent(plaintext), sealed: true, groupId: usmc.groupId)
+            let plaintext: Data
+            do {
+                plaintext = try decryptInner(type: usmc.messageType, usmc.contents, from: from, local: local, store: store, ctx)
+            } catch {
+                throw DecryptionFailure(sender: sender, senderDevice: device, ciphertext: usmc.contents, type: usmc.messageType,
+                                        contentHint: usmc.contentHint, groupId: usmc.groupId, toPni: toPni, underlying: error)
+            }
+            return Decrypted(sender: sender, senderDevice: device, content: try parseContent(plaintext), sealed: true, groupId: usmc.groupId,
+                             wasEncrypted: usmc.messageType != .plaintext)
         case .doubleRatchet, .prekeyMessage, .plaintextContent:
             guard let sender = Self.source(e), e.hasSourceDeviceID else { throw ReceiveError.invalidEnvelope("missing source") }
+            // Upstream drops unsealed envelopes whose source is a PNI.
+            guard !sender.hasPrefix("PNI:") else { throw ReceiveError.invalidEnvelope("source is a PNI") }
             let from = try ProtocolAddress(name: sender, deviceId: e.sourceDeviceID)
             let type: CiphertextMessage.MessageType = e.type == .doubleRatchet ? .whisper : e.type == .prekeyMessage ? .preKey : .plaintext
-            let plaintext = try decryptInner(type: type, e.content, from: from, local: local, store: store, ctx)
-            return Decrypted(sender: sender, senderDevice: e.sourceDeviceID, content: try parseContent(plaintext), sealed: false, groupId: nil)
+            let plaintext: Data
+            do {
+                plaintext = try decryptInner(type: type, e.content, from: from, local: local, store: store, ctx)
+            } catch {
+                throw DecryptionFailure(sender: sender, senderDevice: e.sourceDeviceID, ciphertext: e.content, type: type, contentHint: nil,
+                                        groupId: nil, toPni: toPni, underlying: error)
+            }
+            return Decrypted(sender: sender, senderDevice: e.sourceDeviceID, content: try parseContent(plaintext), sealed: false, groupId: nil,
+                             wasEncrypted: type != .plaintext)
         default:
             throw ReceiveError.unsupported("envelope type \(e.type.rawValue)")
         }
@@ -247,17 +321,48 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         var events: [ReceiveEvent] = []
         let ctx = DatabaseStoreContext(db)
         let c = d.content
-        if c.hasSenderKeyDistributionMessage {
+        // Unencrypted content is only ever a retry request (upstream: "dropping plaintext
+        // envelope without decryption error message"). Anything else would let whoever
+        // delivers envelopes write messages in a contact's name.
+        if !d.wasEncrypted {
+            guard case .decryptionErrorMessage(let bytes) = c.content, !bytes.isEmpty else {
+                throw ReceiveError.invalidEnvelope("unencrypted content that is not a decryption error message")
+            }
+        }
+        if c.hasSenderKeyDistributionMessage && d.wasEncrypted {
             let skdm = try SenderKeyDistributionMessage(bytes: c.senderKeyDistributionMessage)
             try processSenderKeyDistributionMessage(skdm, from: try ProtocolAddress(name: d.sender, deviceId: d.senderDevice), store: aciStore, context: ctx)
             events.append(.senderKeyDistribution(sender: d.sender, senderDevice: d.senderDevice, distributionId: skdm.distributionId))
         }
         let fromOurDevice = d.sender == account.aci
 
+        // `story=true` lets an envelope in without our access key, so it may only carry a
+        // story, a group story reply or a delete (upstream decryptEnvelope).
+        if e.story {
+            let data: Signalservice_DataMessage? = if case .dataMessage(let m) = c.content { m } else { nil }
+            let isStory = if case .storyMessage = c.content { true } else { false }
+            let isGroupStoryReply = data.map { $0.hasStoryContext && $0.hasGroupV2 } ?? false
+            guard isStory || isGroupStoryReply || data?.hasDelete == true else {
+                throw ReceiveError.invalidEnvelope("story=true on a message that is not a story send, group story reply or delete")
+            }
+        }
+        // Nothing from a blocked sender is processed (the sender key above is, as upstream).
+        if !fromOurDevice, try BlockedList.serviceIds.blockedAt(db, d.sender).blocked { return events }
+
         switch c.content {
         case .dataMessage(let m):
             if fromOurDevice { throw ReceiveError.invalidEnvelope("DataMessage from our own account") }
+            // `maybeUpdateTimestamp`: a message we asked to be resent takes the place in the
+            // timeline where it first failed, unless the chat has been opened since.
+            let placeholder = try RetryPlaceholders.take(db, conversationId: RetryPlaceholders.conversation(db, sender: d.sender, groupId: d.groupId),
+                                                         sentAt: e.clientTimestamp)
             events += try handleDataMessage(m, d, e, db)
+            if let placeholder, placeholder.wasOpened != true {
+                try db.execute(sql: """
+                    UPDATE messages SET received_at = ?, json = json_set(json, '$.received_at', ?, '$.received_at_ms', ?)
+                    WHERE sourceServiceId = ? AND sent_at = ? AND type = 'incoming'
+                    """, arguments: [placeholder.receivedAtCounter, placeholder.receivedAtCounter, placeholder.receivedAt, d.sender, Int64(e.clientTimestamp)])
+            }
         case .syncMessage(let s):
             guard fromOurDevice else { throw ReceiveError.invalidEnvelope("SyncMessage from \(d.sender)") }
             events += try handleSyncMessage(s, d, db)
@@ -424,8 +529,11 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             if let conversation { try ConversationState.applyResponse(db, conversationId: conversation, type, ourAci: account.aci) }
             events.append(.sync(kind: "messageRequestResponse", senderDevice: d.senderDevice))
         }
-        if case .verified(let v)? = s.content {
-            try Identity.applyVerifiedSync(db, v, account: account)
+        if case .verified? = s.content {
+            // Upstream: "Got verified sync message, dropping". Verification travels between our
+            // devices in the storage service (ContactRecord.identityState), which is merged
+            // with the key-match rules of `updateIdentityAfterSync`; a sync message could
+            // otherwise replace a contact's identity key outright.
             events.append(.sync(kind: "verified", senderDevice: d.senderDevice))
         }
         if case .deleteForMe(let dfm)? = s.content {

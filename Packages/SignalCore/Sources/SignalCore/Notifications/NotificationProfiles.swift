@@ -198,8 +198,18 @@ public enum NotificationProfiles {
     // MARK: database
 
     /// Live (not deleted) profiles, newest first (`sortProfiles`).
+    /// With profile sync off, only this device's own profiles (no storage record) count
+    /// (upstream getProfiles on a linked device).
     public static func all(_ db: Database) throws -> [NotificationProfile] {
-        try Row.fetchAll(db, sql: "SELECT * FROM notificationProfiles WHERE deletedAtTimestampMs IS NULL ORDER BY createdAtMs DESC").map { row in
+        let syncDisabled = try Items.get(db, "notificationProfileSyncDisabled", as: Bool.self) ?? false
+        return try rows(db, sql: """
+            SELECT * FROM notificationProfiles WHERE coalesce(deletedAtTimestampMs, 0) = 0 \(syncDisabled ? "AND storageID IS NULL" : "")
+            ORDER BY createdAtMs DESC
+            """)
+    }
+
+    static func rows(_ db: Database, sql: String, arguments: StatementArguments = []) throws -> [NotificationProfile] {
+        try Row.fetchAll(db, sql: sql, arguments: arguments).map { row in
             let members = (try? JSONSerialization.jsonObject(with: Data((row["allowedMembersJson"] as String? ?? "[]").utf8))) as? [String] ?? []
             var days: [Int: Bool]?
             if let json: String = row["scheduleDaysEnabledJson"],
@@ -214,11 +224,10 @@ public enum NotificationProfiles {
         }
     }
 
-    /// The manual override (from the primary when profile sync is off).
+    /// This device's manual override. (With profile sync off, the primary's is kept apart in
+    /// `notificationProfileOverrideFromPrimary`, only for the AccountRecord, as upstream.)
     public static func override(_ db: Database) throws -> NotificationProfileOverrideState? {
-        let syncDisabled = try Items.get(db, "notificationProfileSyncDisabled", as: Bool.self) ?? false
-        guard let o = try Items.get(db, syncDisabled ? "notificationProfileOverrideFromPrimary" : "notificationProfileOverride",
-                                    as: StorageRecords.NotificationProfileOverride.self) else { return nil }
+        guard let o = try Items.get(db, "notificationProfileOverride", as: StorageRecords.NotificationProfileOverride.self) else { return nil }
         if let at = o.disabledAtMs, at > 0 { return .disabled(atMs: at) }
         if let e = o.enabled { return .enabled(profileId: e.profileId, endsAtMs: e.endsAtMs) }
         return nil
@@ -262,6 +271,21 @@ extension SignalDatabase {
 }
 
 extension Messenger {
+    /// Settings → Notifications (and While muted): saved, and the account-wide parts
+    /// (notify for calls / mentions / replies while muted) synced to our other devices.
+    public func saveNotificationSettings(_ settings: NotificationSettings) async throws {
+        let account = self.account
+        let before = try await database.pool.read { try NotificationSettings.load($0) }
+        try await database.pool.write { db in
+            try settings.save(db)
+            if before.notifyForCallsIfMuted != settings.notifyForCallsIfMuted || before.notifyForMentionsIfMuted != settings.notifyForMentionsIfMuted
+                || before.notifyForRepliesIfMuted != settings.notifyForRepliesIfMuted {
+                try StorageWriteBack.accountChanged(db, account: account)
+            }
+        }
+        jobs.poke()
+    }
+
     /// `setProfileOverride`: a profile on (until `endsAt`, or until turned off), or off now;
     /// synced to our other devices (AccountRecord).
     public func setNotificationProfileOverride(profileId: String, enabled: Bool, endsAt: Int64?) async throws {

@@ -172,4 +172,118 @@ import Testing
             #expect(state.activeProfileId == nil)
         }
     }
+
+    /// Settings → Notifications → While muted: the account defaults are saved and marked for
+    /// the storage service (AccountRecord), other settings only saved.
+    @Test func notifyWhileMutedDefaultsSync() async throws {
+        try await LinkedClient.with { c in
+            func pending() async throws -> Bool {
+                try await c.database.pool.read { db in
+                    let me = try StorageLocal.ourConversation(db, account: c.account)
+                    let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE id = ?", arguments: [me]) ?? "{}"
+                    return json.contains("\"needsStorageServiceSync\":true")
+                }
+            }
+            try await c.database.pool.write { db in
+                let me = try StorageLocal.ourConversation(db, account: c.account)
+                try MessageStore.updateConversationJSON(db, conversationId: me) { $0["needsStorageServiceSync"] = false }
+            }
+            var s = try await c.database.pool.read { try NotificationSettings.load($0) }
+            s.playSound.toggle()
+            try await c.messenger.saveNotificationSettings(s)
+            #expect(try await pending() == false)
+            s.notifyForCallsIfMuted.toggle()
+            try await c.messenger.saveNotificationSettings(s)
+            #expect(try await pending())
+            let saved = try await c.database.pool.read { try NotificationSettings.load($0) }
+            #expect(saved == s)
+        }
+    }
+
+    /// A failed message is sent again by `retrySend`: alice gets it, and it is no longer Failed.
+    @Test func retryFailedSend() async throws {
+        try await LinkedClient.with { c in
+            let sent = try await c.messenger.sendMessage("first try", attachments: [], to: c.aliceAci)
+            _ = try await c.server.json("waitForMessage", ["account": "alice"])
+            let id = sent.messageId
+            func status() async throws -> String? {
+                try await c.database.pool.read { db in
+                    let conv = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) ?? ""
+                    return try String.fetchOne(db, sql: "SELECT json ->> ('$.sendStateByConversationId.\"' || ? || '\".status') FROM messages WHERE id = ?",
+                                               arguments: [conv, id])
+                }
+            }
+            try await c.eventually("sent") { db in
+                let conv = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) ?? ""
+                return try String.fetchOne(db, sql: "SELECT json ->> ('$.sendStateByConversationId.\"' || ? || '\".status') FROM messages WHERE id = ?",
+                                           arguments: [conv, id]) != "Pending"
+            }
+            // As a failed send leaves it.
+            try await c.database.pool.write { db in
+                try MessageStore.updateJSON(db, messageId: id) { json in
+                    var states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+                    for k in states.keys { states[k]?["status"] = "Failed" }
+                    json["sendStateByConversationId"] = states
+                    json["errors"] = [["name": "SendError", "message": "test"]]
+                }
+            }
+            #expect(try await status() == "Failed")
+            try await c.messenger.retrySend(messageId: id)
+            let m = try await c.server.json("waitForMessage", ["account": "alice"])
+            #expect(m["body"] as? String == "first try")
+            try await c.eventually("no longer failed") { db in
+                let conv = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) ?? ""
+                let s = try String.fetchOne(db, sql: "SELECT json ->> ('$.sendStateByConversationId.\"' || ? || '\".status') FROM messages WHERE id = ?",
+                                            arguments: [conv, id])
+                return s != nil && s != "Failed" && s != "Pending"
+            }
+            #expect(try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT json ->> '$.errors' FROM messages WHERE id = ?", arguments: [id]) } == nil)
+        }
+    }
+
+    /// Mentions and styles go out in DataMessage.bodyRanges, are stored, and come back in the
+    /// timeline; ranges outside the body are dropped.
+    @Test func sendsBodyRanges() async throws {
+        try await LinkedClient.with { c in
+            let body = "hi \u{FFFC} bold"
+            let ranges = [MessageBodyRange(start: 3, length: 1, kind: .mention(aci: c.aliceAci)),
+                          MessageBodyRange(start: 5, length: 4, kind: .style(1)),
+                          MessageBodyRange(start: 50, length: 2, kind: .style(2))]
+            let sent = try await c.messenger.sendMessage(body, attachments: [], bodyRanges: ranges, to: c.aliceAci)
+            let m = try await c.server.json("waitForMessage", ["account": "alice"])
+            let wire = try #require(m["bodyRanges"] as? [[String: Any]])
+            #expect(wire.count == 2)
+            #expect(wire[0]["start"] as? Int == 3 && wire[0]["length"] as? Int == 1 && wire[0]["mentionAci"] as? String == c.aliceAci)
+            #expect(wire[1]["start"] as? Int == 5 && wire[1]["length"] as? Int == 4 && wire[1]["style"] as? Int == 1)
+            let conversation = try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [sent.messageId]) }
+            let timeline = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: conversation ?? "", limit: 10) }
+            #expect(timeline.first { $0.id == sent.messageId }?.bodyRanges == Array(ranges.prefix(2)))
+        }
+    }
+
+    /// A message to a group with only us has no one to wait for: it shows as sent, not
+    /// "sending" forever (upstream `isMessageJustForMe`).
+    @Test func messageToAGroupOfOneIsSent() async throws {
+        try await LinkedClient.with { c in
+            let keys = try await c.groups.create(title: "Just me", members: [])
+            let sent = try await c.messenger.sendGroupMessage("note", masterKey: keys.masterKey)
+            let conversation = try await c.database.pool.read { try String.fetchOne($0, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [sent.messageId]) }
+            let m = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: conversation ?? "", limit: 10).first { $0.id == sent.messageId } }
+            #expect(m?.status == .sent)
+        }
+    }
+
+    /// A poll we create shows in the timeline with its options; our vote is counted on it.
+    @Test func pollInTheTimeline() async throws {
+        try await LinkedClient.with { c in
+            let conversation = try await c.database.pool.write { try MessageStore.privateConversation($0, serviceId: c.aliceAci) }
+            let id = try await c.messenger.createPoll(question: "Tea or coffee?", options: ["Tea", "Coffee"], allowMultiple: false, conversationId: conversation)
+            _ = try await c.server.json("waitForMessage", ["account": "alice"])
+            try await c.messenger.vote(on: id, optionIndexes: [1])
+            let me = try await c.database.pool.write { try MessageStore.privateConversation($0, serviceId: c.account.aci) }
+            let poll = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: conversation, limit: 10).first { $0.id == id }?.poll }
+            #expect(poll?.question == "Tea or coffee?" && poll?.options == ["Tea", "Coffee"] && poll?.terminated == false)
+            #expect(poll?.votes == [TimelinePoll.Vote(fromConversationId: me, optionIndexes: [1])])
+        }
+    }
 }

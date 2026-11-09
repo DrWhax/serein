@@ -26,12 +26,20 @@ public struct Account: Sendable {
     public var pniServiceId: String? { pni.map { "PNI:\($0)" } }
     public var credentials: ChatCredentials { ChatCredentials(username: "\(aci).\(deviceId)", password: password) }
 
+    /// Our identity key per service id of ours (ACI, PNI): a protocol store never accepts
+    /// another key for these.
+    var ownIdentities: [String: IdentityKey] {
+        var out = [aci: aciIdentity.identityKey]
+        if let p = pniServiceId, let id = pniIdentity { out[p] = id.identityKey }
+        return out
+    }
+
     public func aciStore() -> ProtocolStore {
-        ProtocolStore(ourServiceId: aci, identity: aciIdentity, registrationId: aciRegistrationId)
+        ProtocolStore(ourServiceId: aci, identity: aciIdentity, registrationId: aciRegistrationId, ownIdentities: ownIdentities)
     }
     public func pniStore() -> ProtocolStore? {
         guard let p = pniServiceId, let id = pniIdentity, let reg = pniRegistrationId else { return nil }
-        return ProtocolStore(ourServiceId: p, identity: id, registrationId: reg)
+        return ProtocolStore(ourServiceId: p, identity: id, registrationId: reg, ownIdentities: ownIdentities)
     }
 
     struct KeyPairJSON: Codable { var pubKey: String; var privKey: String }

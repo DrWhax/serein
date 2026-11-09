@@ -210,19 +210,9 @@ public final class ProfileService: Sendable {
     }
 
     func store(_ db: Database, _ p: Profile) throws {
-        if p.serviceId != account.aci {
-            // A changed identity key is accepted like on send (keychange notification, sessions archived).
-            let sender = MessageSender(account: account, database: database, socket: socket, trustRoots: [])
-            do {
-                try sender.acceptIdentity(db, p.identityKey, serviceId: p.serviceId)
-            } catch SendError.untrustedIdentity {
-                // Verified contact changed keys: keep the old key, mark unverified (upstream behaviour).
-                try ProtocolStore.setIdentity(db, serviceId: p.serviceId, key: p.identityKey.serialize(), verified: .unverified)
-            }
-            if try sender.store.identity(for: try ProtocolAddress(name: p.serviceId, deviceId: 1), context: DatabaseStoreContext(db)) == nil {
-                _ = try sender.store.saveIdentity(p.identityKey, for: try ProtocolAddress(name: p.serviceId, deviceId: 1), context: DatabaseStoreContext(db))
-            }
-        }
+        // `updateIdentityKey`: a changed key is recorded with its notice; whether we may send
+        // to it is the identity store's decision (approval, or unverified for a verified contact).
+        try account.aciStore().updateIdentityKey(db, p.identityKey, serviceId: p.serviceId)
         let conversationId = try MessageStore.privateConversation(db, serviceId: p.serviceId)
         let now = MessageStore.now()
         try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
@@ -253,26 +243,30 @@ public final class ProfileService: Sendable {
         SignalCrypto.hmacSHA256(key: accessKey, Data(count: 32))
     }
 
-    /// Decrypts a profile field and strips the zero padding.
+    /// `decryptProfile`: the padded plaintext of a profile field. Upstream refuses anything
+    /// shorter than nonce ‖ one byte ‖ tag.
     static func decryptPadded(_ data: Data, profileKey: Data) throws -> Data {
-        let plain = try SignalCrypto.aes256GCMDecrypt(key: profileKey, data)
-        var end = plain.endIndex
-        while end > plain.startIndex, plain[end - 1] == 0 { end -= 1 }
-        return plain[plain.startIndex..<end]
+        guard data.count >= 12 + 16 + 1 else { throw SignalCryptoError.badLength("profile field \(data.count)") }
+        return try SignalCrypto.aes256GCMDecrypt(key: profileKey, data)
+    }
+
+    /// The bytes up to the first NUL (upstream `trimForDisplay`).
+    static func untilNUL(_ data: Data) -> Data {
+        data.prefix { $0 != 0 }
     }
 
     static func decryptString(_ data: Data, profileKey: Data) throws -> String? {
-        let s = String(decoding: try decryptPadded(data, profileKey: profileKey), as: UTF8.self)
+        let s = String(decoding: untilNUL(try decryptPadded(data, profileKey: profileKey)), as: UTF8.self)
         return s.isEmpty ? nil : s
     }
 
-    /// `given ‖ 0x00 ‖ family` (family optional), zero padded.
+    /// `decryptProfileName`: the given name runs to the first NUL, the family name is the
+    /// next run of non-NUL bytes after it (anything past a second NUL is padding).
     public static func decryptName(_ data: Data, profileKey: Data) throws -> (String?, String?) {
-        let plain = try decryptPadded(data, profileKey: profileKey)
-        let parts = plain.split(separator: 0, maxSplits: 1, omittingEmptySubsequences: false)
-        let given = parts.first.map { String(decoding: $0, as: UTF8.self) }
-        let family = parts.count > 1 ? String(decoding: parts[1], as: UTF8.self) : nil
-        return (given?.isEmpty == true ? nil : given, family?.isEmpty == true ? nil : family)
+        let padded = try decryptPadded(data, profileKey: profileKey)
+        let given = untilNUL(padded)
+        let family = untilNUL(padded.dropFirst(given.count + 1))
+        return (given.isEmpty ? nil : String(decoding: given, as: UTF8.self), family.isEmpty ? nil : String(decoding: family, as: UTF8.self))
     }
 
     /// Encrypts a name the way clients upload it (padded to 53 or 257 bytes).

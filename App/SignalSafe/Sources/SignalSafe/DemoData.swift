@@ -22,7 +22,7 @@ enum DemoData {
         ]
         let chats = [
             c("bob", "Bob Marley", color: "A180", nil, minutesAgo: 1) { $0.isSomeoneTyping = true },
-            c("team", "Signal Safe Team", color: "A110", "We should ship the left pane today. Snapshot tests are all green, emoji too 🔥",
+            c("team", "Serein Team", color: "A110", "We should ship the left pane today. Snapshot tests are all green, emoji too 🔥",
               minutesAgo: 45) { $0.type = .group; $0.avatar.conversationType = .group; $0.unreadMentionsCount = 1; $0.unreadCount = 12 },
             c("carol", "Carol Danvers", color: "A170", "Sent you the photos", status: .delivered, minutesAgo: 60 * 5) { $0.isSelected = true },
             c("dave", "Dave Grohl", color: "A130", nil, minutesAgo: 60 * 26) {

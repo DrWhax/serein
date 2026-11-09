@@ -61,11 +61,14 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
     let scrollToOldestUnreadMention: (String) -> Void
     let markMessageRead: (String) -> Void
 
-    @State private var hasRecentlyScrolled = true
-    @State private var visibleIds: [String] = []
+    /// What scrolling changes (visible rows, "recently scrolled"): read only by the overlays,
+    /// so scrolling re-renders them, not the rows.
+    @State private var tracker = TimelineScrollTracker()
     @State private var width: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    /// The first item when older messages were asked for (kept in place when they arrive).
+    @State private var loadAnchor: String?
     @Environment(\.i18n) var i18n
     @Environment(\.viewportWidth) var viewportWidth
     @Environment(\.axoStaticRendering) var staticRendering
@@ -119,8 +122,8 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
     }
 
     /// The oldest item at least partly on screen (the first item before anything is known).
-    var oldestVisibleId: String? { items.first { visibleIds.contains($0) } ?? items.first }
-    var newestVisibleId: String? { items.last { visibleIds.contains($0) } ?? items.last }
+    var oldestVisibleId: String? { tracker.oldestVisible(items) }
+    var newestVisibleId: String? { tracker.newestVisible(items) }
 
     public var body: some View {
         // Only the open conversation's timeline renders anything.
@@ -160,14 +163,23 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom)
-        .onScrollTargetVisibilityChange(idType: String.self) { visibleIds = $0 }
+        .onScrollTargetVisibilityChange(idType: String.self) { tracker.visibleIds = $0 }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentSize.height - geo.visibleRect.maxY
         } action: { _, bottom in
             onScroll(distanceFromBottom: bottom)
         }
         .onScrollGeometryChange(for: Bool.self) { geo in geo.contentOffset.y < 100 } action: { _, nearTop in
-            if nearTop && !haveOldest, let first = items.first { loadOlderMessages(first) }
+            if nearTop && !haveOldest, let first = items.first {
+                loadAnchor = first
+                loadOlderMessages(first)
+            }
+        }
+        // An older page went in above: keep the message that was at the top where it was.
+        .onChange(of: items.first) {
+            guard let anchor = loadAnchor, items.first != anchor else { return }
+            loadAnchor = nil
+            if items.contains(anchor) { scrollPosition.scrollTo(id: anchor, anchor: .top) }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .environment(\.messageContainerMaxWidth, messageMaxWidth)
@@ -176,11 +188,6 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
         .overlay(alignment: .bottom) { signalChip }
         .onChange(of: scrollToIndexCounter) { if let scrollToIndex { scrollTo(index: scrollToIndex) } }
         .onAppear { if let scrollToIndex { scrollTo(index: scrollToIndex) } }
-        .task(id: hasRecentlyScrolled) {
-            guard hasRecentlyScrolled else { return }
-            try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled { hasRecentlyScrolled = false }
-        }
         .accessibilityElement(children: .contain)
     }
 
@@ -214,15 +221,16 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
         // (rows: padding-bottom 6px + the 1px ::after)
     }
 
-    @ViewBuilder var floatingHeader: some View {
-        if let oldest = oldestVisibleId, let timestamp = getTimestampForMessage(oldest) {
-            TimelineFloatingHeader(timestamp: timestamp,
-                                   visible: (hasRecentlyScrolled || isLoadingMessages) && (!haveOldest || oldest != items.first),
-                                   isLoading: isLoadingMessages)
-        }
+    var floatingHeader: some View {
+        TimelineFloatingHeaderSlot(tracker: tracker, items: items, haveOldest: haveOldest, isLoadingMessages: isLoadingMessages,
+                                   getTimestampForMessage: getTimestampForMessage)
     }
 
-    @ViewBuilder var scrollDownButtons: some View {
+    var scrollDownButtons: some View {
+        TimelineOverlay(tracker: tracker) { scrollDownButtonsContent }
+    }
+
+    @ViewBuilder var scrollDownButtonsContent: some View {
         if !items.isEmpty && isNearBottom == false {
             let below = !haveNewest || (newestVisibleId != nil && newestVisibleId != items.last)
             VStack(spacing: 14) {
@@ -254,7 +262,7 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
         if isNearBottom != atBottom { setIsNearBottom(id, atBottom) }
         // The floating header shows while scrolling through history (not for new messages
         // or the typing bubble arriving at the bottom).
-        if hasRecentlyScrolled || !atBottom { hasRecentlyScrolled = true }
+        if !atBottom && !tracker.hasRecentlyScrolled { tracker.hasRecentlyScrolled = true }
         if atBottom, !haveNewest, let last = items.last { loadNewerMessages(last) }
         if let newest = newestVisibleId { markMessageRead(newest) }
     }
@@ -276,6 +284,58 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
             scrollPosition.scrollTo(id: items[oldestUnseenIndex], anchor: .top)
         } else {
             withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+        }
+    }
+}
+
+/// The timeline's scroll-driven state, kept out of `Timeline`'s body so a scroll frame does not
+/// re-render the rows: only the overlays read it.
+@MainActor @Observable final class TimelineScrollTracker {
+    var visibleIds: [String] = []
+    var hasRecentlyScrolled = true
+
+    func oldestVisible(_ items: [String]) -> String? {
+        let visible = Set(visibleIds)
+        return items.first { visible.contains($0) } ?? items.first
+    }
+
+    func newestVisible(_ items: [String]) -> String? {
+        let visible = Set(visibleIds)
+        return items.last { visible.contains($0) } ?? items.last
+    }
+}
+
+/// An overlay that re-renders with the tracker (its content reads it).
+struct TimelineOverlay<Content: View>: View {
+    let tracker: TimelineScrollTracker
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        let _ = tracker.visibleIds
+        content()
+    }
+}
+
+/// The floating date header: the oldest visible row's date, shown while scrolling (hidden 3 s
+/// after the last scroll).
+struct TimelineFloatingHeaderSlot: View {
+    let tracker: TimelineScrollTracker
+    let items: [String]
+    let haveOldest: Bool
+    let isLoadingMessages: Bool
+    let getTimestampForMessage: (String) -> Date?
+
+    var body: some View {
+        Group {
+            if let oldest = tracker.oldestVisible(items), let timestamp = getTimestampForMessage(oldest) {
+                TimelineFloatingHeader(timestamp: timestamp,
+                                       visible: (tracker.hasRecentlyScrolled || isLoadingMessages) && (!haveOldest || oldest != items.first),
+                                       isLoading: isLoadingMessages)
+            }
+        }
+        .task(id: tracker.hasRecentlyScrolled) {
+            guard tracker.hasRecentlyScrolled else { return }
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { tracker.hasRecentlyScrolled = false }
         }
     }
 }

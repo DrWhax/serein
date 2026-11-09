@@ -5,6 +5,8 @@
 //     module of this package the app, SignalCore and SignalUI may import (no decoders).
 //   * SignalMediaDecoder: the implementation over SignalCodecs, run inside the XPC service
 //     (SignalMediaDecoder.xpc, no network or file entitlements) and in-process by tests only.
+//   * LinkPreviewParser: link-preview HTML, run inside SignalLinkPreviewParser.xpc (App Sandbox
+//     plus the Seatbelt rules in Sandbox/SignalLinkPreviewParser.sb) and in-process by tests.
 
 import PackageDescription
 
@@ -21,6 +23,8 @@ let package = Package(
         .library(name: "MediaXPCInterface", targets: ["MediaXPCInterface"]),
         .library(name: "SignalMediaDecoder", targets: ["SignalMediaDecoder"]),
         .executable(name: "SignalMediaDecoderService", targets: ["SignalMediaDecoderService"]),
+        .library(name: "LinkPreviewParser", targets: ["LinkPreviewParser"]),
+        .executable(name: "SignalLinkPreviewParserService", targets: ["SignalLinkPreviewParserService"]),
     ],
     dependencies: [.package(path: "../SignalCodecs")],
     targets: [
@@ -30,7 +34,6 @@ let package = Package(
             dependencies: [
                 "MediaXPCInterface",
                 .product(name: "CodecCore", package: "SignalCodecs"),
-                .product(name: "HTMLMeta", package: "SignalCodecs"),
                 .product(name: "ImagePNG", package: "SignalCodecs"),
                 .product(name: "ImageJPEG", package: "SignalCodecs"),
                 .product(name: "ImageGIF", package: "SignalCodecs"),
@@ -50,8 +53,20 @@ let package = Package(
             swiftSettings: strict
         ),
         .executableTarget(name: "SignalMediaDecoderService", dependencies: ["SignalMediaDecoder"], swiftSettings: strict),
+        // SignalLinkPreviewParser.xpc: link-preview HTML only (HTMLMeta), under its own tighter
+        // Seatbelt profile (Sandbox/SignalLinkPreviewParser.sb). No image decoders.
+        .target(
+            name: "LinkPreviewParser",
+            dependencies: [
+                "MediaXPCInterface",
+                .product(name: "CodecCore", package: "SignalCodecs"),
+                .product(name: "HTMLMeta", package: "SignalCodecs"),
+            ],
+            swiftSettings: strict
+        ),
+        .executableTarget(name: "SignalLinkPreviewParserService", dependencies: ["LinkPreviewParser"], swiftSettings: strict),
         .testTarget(name: "SignalMediaDecoderTests",
-                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", .product(name: "EncodePNG", package: "SignalCodecs"),
+                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", "LinkPreviewParser", .product(name: "EncodePNG", package: "SignalCodecs"),
                                    .product(name: "ImagePNG", package: "SignalCodecs"),
                                    .product(name: "CodecCore", package: "SignalCodecs")],
                     resources: [.copy("Resources")],

@@ -120,6 +120,10 @@ public struct MessageProps {
     public var forceTapToPlay = false
     public var showMediaNoLongerAvailableToast: (() -> Void)?
     public var kickOffAttachmentDownload: (() -> Void)?
+    /// `toggleReactionPicker` from the keyboard (⌘⇧E): each new value opens the picker.
+    public var reactionPickerRequest = 0
+    /// `saveAttachment`: save a downloaded attachment (by index) where the user chooses.
+    public var saveAttachment: ((Int) -> Void)?
     public var cancelAttachmentDownload: (() -> Void)?
     public var showTapToViewNotAvailableModal: (() -> Void)?
     public var textCanDownload = false
@@ -131,6 +135,9 @@ public struct MessageProps {
     public var actions: TimelineMessageActions?
     /// The looping player of a GIF (an MP4 with the GIF flag), once its file is here.
     public var gifPlayer: VideoPlaybackEngine?
+    /// A lone video played in the bubble: its player once started, and the start action.
+    public var inlineVideoPlayer: VideoPlaybackEngine?
+    public var playVideoInline: (() -> Void)?
 
     public init(id: String, direction: MessageDirection, author: Author, text: String?, timestamp: Date) {
         self.id = id
@@ -222,6 +229,18 @@ public struct Message: View {
     static var textStyle: CSSTextStyle { LegacyType.body1().breakingWords() }   // overflow-wrap: break-word
 
     enum MetadataPlacement { case notRendered, inlineWithText, bottom, renderedElsewhere }
+
+    /// `#openGenericAttachment`: cancel a running download, start one, or save the file.
+    func openGenericAttachment() {
+        guard let first = props.attachments.first, !(first.isPermanentlyUndownloadable && !props.attachmentDroppedDueToSize) else { return }
+        if first.pending {
+            props.cancelAttachmentDownload?()
+        } else if !first.isDownloaded {
+            props.kickOffAttachmentDownload?()
+        } else {
+            props.saveAttachment?(0)
+        }
+    }
 
     /// `#isGenericAttachment`
     var isGenericAttachment: Bool {
@@ -368,6 +387,9 @@ public struct Message: View {
         }
         .padding(.horizontal, paddingInline)
         .modifier(MessageRowActions(actions: props.isSelectMode ? nil : props.actions, hovering: $hovering))
+        .onChange(of: props.reactionPickerRequest) { _, n in
+            if n > 0, props.actions?.react != nil { menu.reactionPicker.toggle() }
+        }
         // --select-mode: incoming messages move aside (translate 16 + 22px) for the checkbox.
         .offset(x: props.isSelectMode && props.direction == .incoming ? 38 : 0)
         .modifier(SelectModeWrapper(isSelectMode: props.isSelectMode, isSelected: props.isSelected,
@@ -548,6 +570,8 @@ public struct Message: View {
                       showVisualAttachment: props.showLightbox,
                       showMediaNoLongerAvailableToast: props.showMediaNoLongerAvailableToast,
                       cancelDownload: props.cancelAttachmentDownload, startDownload: props.kickOffAttachmentDownload)
+                .environment(\.inlineVideo, props.attachments.count == 1 && props.attachments[0].isVideo
+                             ? InlineVideo(player: props.inlineVideoPlayer, play: props.playVideoInline) : InlineVideo())
                 }
             }
                 .frame(maxWidth: .infinity)
@@ -594,7 +618,7 @@ public struct Message: View {
             let hasText = !(props.text ?? "").isEmpty
             let willShowMetadata = props.expirationLength > 0 || props.expirationTimestamp != nil || props.isPinned || !props.shouldHideMetadata
             MessageGenericAttachment(attachment: first, direction: props.direction, textColor: textColor, withContentAbove: quoteModel != nil || shouldRenderAuthor,
-                                     withContentBelow: hasText, metadata: !hasText && willShowMetadata ? metadata : nil)
+                                     withContentBelow: hasText, metadata: !hasText && willShowMetadata ? metadata : nil, onClick: openGenericAttachment)
         }
         if let preview = linkPreview {
             // withContentAbove: a quote, or the author line (its 3px margin collapses into the
@@ -848,13 +872,26 @@ public struct Message: View {
 /// CSS shrink-to-fit: the content's natural width, or the whole available width once it
 /// has to wrap.
 struct ShrinkToFitBlock: Layout {
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let child = subviews.first else { return .zero }
-        let natural = child.sizeThatFits(.unspecified)
-        guard let available = proposal.width, natural.width > available else { return natural }
-        return CGSize(width: available, height: child.sizeThatFits(ProposedViewSize(width: available, height: nil)).height)
+    /// Measurements until the content changes (SwiftUI asks the same sizes many times a pass,
+    /// and each one measures the whole bubble).
+    struct Cache {
+        var natural: CGSize?
+        var heights: [CGFloat: CGFloat] = [:]
     }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let natural = cache.natural ?? child.sizeThatFits(.unspecified)
+        cache.natural = natural
+        guard let available = proposal.width, natural.width > available else { return natural }
+        if let h = cache.heights[available] { return CGSize(width: available, height: h) }
+        let h = child.sizeThatFits(ProposedViewSize(width: available, height: nil)).height
+        cache.heights[available] = h
+        return CGSize(width: available, height: h)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: nil))
     }
 }

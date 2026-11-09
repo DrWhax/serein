@@ -80,6 +80,8 @@ public struct ConversationDetailsCallbacks {
     public var openLink: (URL) -> Void = { _ in }
     public var actions = ConversationDetailsActions.Callbacks()
     public var editGroup: () -> Void = {}
+    /// The header's avatar: shown large (`ShowingAvatar`, AvatarLightbox).
+    public var showAvatar: () -> Void = {}
     public var addMembers: () -> Void = {}
     public init() {}
 }
@@ -254,7 +256,8 @@ public struct ConversationDetails: View {
             ConversationDetailsHeader(avatar: m.avatar, title: m.title, canEdit: m.canEditGroupInfo, isGroup: m.isGroup, isMe: m.isMe,
                                       isSignalConversation: m.isSignalConversation, isInSystemContacts: m.isInSystemContacts, terminated: m.terminated,
                                       groupDescription: m.groupDescription, about: m.about, membersCount: m.membersCount,
-                                      startEditing: { _ in callbacks.editGroup() }, toggleAboutContactModal: callbacks.toggleAboutContactModal)
+                                      showAvatar: callbacks.showAvatar, startEditing: { _ in callbacks.editGroup() },
+                                      toggleAboutContactModal: callbacks.toggleAboutContactModal)
             headerButtons
             AxoList.Group {
                 if m.isSignalConversation { signalConversationLists }

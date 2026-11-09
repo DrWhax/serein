@@ -61,17 +61,15 @@ public final class DeviceLinker: Sendable {
     }
 
     func finishLink(_ m: Signalservice_ProvisionMessage, options: LinkOptions) async throws -> Account {
-        guard m.hasAciIdentityKeyPrivate, m.hasAciIdentityKeyPublic, m.hasProvisioningCode, m.hasNumber else {
+        guard m.hasAciIdentityKeyPrivate, m.hasProvisioningCode, m.hasNumber else {
             throw LinkError.invalidProvisionMessage("missing identity, number or provisioning code")
         }
         let aci = try Self.aci(from: m)
-        let aciIdentity = IdentityKeyPair(publicKey: try PublicKey(m.aciIdentityKeyPublic), privateKey: try PrivateKey(m.aciIdentityKeyPrivate))
-        let pniIdentity: IdentityKeyPair? = m.hasPniIdentityKeyPrivate && m.hasPniIdentityKeyPublic
-            ? IdentityKeyPair(publicKey: try PublicKey(m.pniIdentityKeyPublic), privateKey: try PrivateKey(m.pniIdentityKeyPrivate))
-            : nil
+        let aciIdentity = try Self.identity(privateKey: m.aciIdentityKeyPrivate)
+        let pniIdentity = m.hasPniIdentityKeyPrivate && !m.pniIdentityKeyPrivate.isEmpty ? try Self.identity(privateKey: m.pniIdentityKeyPrivate) : nil
         let pni = Self.pni(from: m)
 
-        let password = SignalCrypto.randomBytes(16).base64EncodedString()
+        let password = Self.newPassword()
         let aciReg = Self.registrationId()
         let pniReg = Self.registrationId()
         let aciKeys = KeyBundle.generate(identity: aciIdentity, oneTimeCount: options.oneTimePreKeyCount)
@@ -154,8 +152,18 @@ public final class DeviceLinker: Sendable {
         return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
     }
 
-    /// Desktop generateRegistrationId: 14-bit, 1...16380.
-    static func registrationId() -> UInt32 { UInt32.random(in: 1...16380) }
+    /// Desktop generateRegistrationId: `randomInt(1, 16383)`, both ends included.
+    static func registrationId() -> UInt32 { UInt32.random(in: 1...16383) }
+
+    /// Upstream `createKeyPair`: an identity is its private key; the public half is derived
+    /// from it, never taken from the provisioning message's separate field.
+    static func identity(privateKey bytes: Data) throws -> IdentityKeyPair {
+        let privateKey = try PrivateKey(bytes)
+        return IdentityKeyPair(publicKey: privateKey.publicKey, privateKey: privateKey)
+    }
+
+    /// Upstream: 16 random bytes in base64 without the two padding characters.
+    static func newPassword() -> String { String(SignalCrypto.randomBytes(16).base64EncodedString().dropLast(2)) }
 }
 
 /// Freshly generated pre-keys for one identity.

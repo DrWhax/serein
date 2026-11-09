@@ -12,6 +12,7 @@ public struct ChatsTab<LeftPaneView: View, ConversationView: View, MiniPlayer: V
     let renderConversationView: (String) -> ConversationView
     let renderMiniPlayer: () -> MiniPlayer
     @Environment(\.i18n) var i18n
+    @Environment(\.brandLogo) var brandLogo
 
     public init(isStaging: Bool = false, selectedConversationId: String?, showWhatsNewModal: @escaping () -> Void = {},
                 @ViewBuilder renderLeftPane: @escaping () -> LeftPaneView,
@@ -52,11 +53,17 @@ public struct ChatsTab<LeftPaneView: View, ConversationView: View, MiniPlayer: V
     var noConversationOpen: some View {
         VStack(spacing: 0) {
             renderMiniPlayer()
-            SignalIcon("signal-logo", size: 96, color: AxoColor(light: LegacyColor.ultramarineLogo, dark: LegacyColor.white), mask: true)
+            if let brandLogo {
+                PixelImage(brandLogo, fit: .contain).frame(width: 96, height: 96)
+            } else {
+                SignalIcon("signal-logo", size: 96, color: AxoColor(light: LegacyColor.ultramarineLogo, dark: LegacyColor.white), mask: true)
+            }
             CSSText(isStaging ? "THIS IS A STAGING DESKTOP" : i18n("icu:welcomeToSignal"), style: Self.welcomeStyle, wrap: .nowrap,
                     color: .labelPrimary)
                 .padding(.top, 20).padding(.bottom, 6)
-            WhatsNewLink(showWhatsNewModal: showWhatsNewModal)
+            if brandLogo == nil {
+                WhatsNewLink(showWhatsNewModal: showWhatsNewModal)    // Signal's release notes
+            }
             Color.clear.frame(width: 0, height: 28)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

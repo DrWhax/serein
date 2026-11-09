@@ -254,7 +254,7 @@ public struct StoriesAddStoryMenu<Trigger: View>: View {
 
     public var body: some View {
         AxoDropdownMenu.Root(isOpen: $open) {
-            trigger.contentShape(Rectangle()).onTapGesture { open.toggle() }
+            trigger.contentShape(Rectangle())
         } items: {
             AxoDropdownMenu.Item(i18n("icu:Stories__add-story--media"), action: onAddMedia)
             AxoDropdownMenu.Item(i18n("icu:Stories__add-story--text"), action: onAddText)
@@ -565,7 +565,8 @@ public struct MyStories: View {
                 }
             }
         }
-        .overlay {
+        // Over the whole window (upstream's dialogs portal to the app root), not the sidebar.
+        .viewportPortal {
             if let story = confirmDelete {
                 AxoBaseDialog.Host {
                     AxoConfirmDialog.Root(title: nil, description: i18n("icu:MyStories__delete")) {
@@ -596,7 +597,7 @@ struct MyStoryMoreMenu: View {
             // Radix opens the tooltip on keyboard focus too (a closed menu returns focus here).
             AxoTooltip.Root(label: i18n("icu:MyStories__more"), forceOpen: autoFocus && showsTooltip && !open) {
                 AxoIconButton.Root(label: i18n("icu:MyStories__more"), tooltip: false, variant: .strongSecondary, size: .sm, symbol: "more",
-                                   autoFocus: autoFocus) { open.toggle() }
+                                   autoFocus: autoFocus)
             }
         } items: {
             AxoDropdownMenu.Item(i18n("icu:forward"), symbol: "forward") { actions.forwardStory(story) }
@@ -658,9 +659,7 @@ public struct StoriesTab<StoryCreatorView: View>: View {
                         AxoIconButton.Root(label: i18n("icu:Stories__add"), variant: .impliedSecondary, size: .sm, symbol: "plus")
                     }
                     AxoDropdownMenu.Root(isOpen: $moreOpen) {
-                        AxoIconButton.Root(label: i18n("icu:StoriesTab__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more") {
-                            moreOpen.toggle()
-                        }
+                        AxoIconButton.Root(label: i18n("icu:StoriesTab__MoreActionsLabel"), variant: .impliedSecondary, size: .sm, symbol: "more")
                     } items: {
                         AxoDropdownMenu.Item(i18n("icu:StoriesSettings__context-menu"), symbol: "lock", action: actions.showStoriesSettings)
                     }

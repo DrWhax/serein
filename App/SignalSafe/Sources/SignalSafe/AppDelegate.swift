@@ -11,7 +11,13 @@ import SwiftUI
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = AppModel()
     let session = SignalSession()
-    let i18n = Localizer(locale: Localizer.match(Locale.preferredLanguages))
+    var keyMonitor: Any?
+    /// Serein: upstream's strings that name the desktop app say "Serein"; the nonprofit line
+    /// becomes the non-affiliation notice.
+    let i18n = Localizer(locale: Localizer.match(Locale.preferredLanguages), rebrand: Rebrand(name: "Serein", messages: [
+        "icu:signalNonProfit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
+        "icu:EntryPoint--nonprofit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
+    ]))
     var window: NSWindow?
     var isQuitting = false
     var badgeTask: Task<Void, Never>?
@@ -20,11 +26,13 @@ import SwiftUI
     func applicationDidFinishLaunching(_ notification: Notification) {
         AxoFonts.register()
         CallingLink.smokeTestIfRequested()
-        let options = MainMenu.Options(platform: "darwin", isProduction: true, includeSetup: model.appView == .installer)
+        let options = MainMenu.Options(platform: "darwin", isProduction: true, includeSetup: model.appView == .installer,
+                                          includeSignalLinks: false)
         NSApp.mainMenu = MainMenu.build(MainMenu.template(options, i18n: i18n)) { [weak self] in self?.perform($0) }
         model.applyTheme()
         createWindow()
         session.start()
+        installKeyboardShortcuts()
         wireNotifications()
         model.contentProtection.setEnabled(model.hasContentProtection)
         model.pendingCrashReports = model.crashReports.count
@@ -45,6 +53,9 @@ import SwiftUI
         session.onEvent = { [weak self] event, session in
             guard let self else { return }
             switch event {
+            case .typing(let sender, let started, _, let groupId):
+                session.receivedTyping(sender: sender, started: started, groupId: groupId)
+                return
             case .message(let messageId, let conversationId, _, _, _, _, _, _), .storyReply(let messageId, _, let conversationId, _):
                 // Visible in the open chat of the focused window: read now, no notification.
                 if NSApp.isActive, conversationId == session.selectedConversationId, model.selectedTab == .chats {
@@ -81,7 +92,8 @@ import SwiftUI
         window.minSize = NSSize(width: 300, height: 200)
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let host = NSHostingView(rootView: RootView(model: model, session: session, i18n: i18n).environment(\.spellCheckEnabled, model.spellCheckAtLaunch))
+        let host = NSHostingView(rootView: RootView(model: model, session: session, i18n: i18n).environment(\.spellCheckEnabled, model.spellCheckAtLaunch)
+            .environment(\.brandLogo, BundledImage.named("serein-logo")))
         host.sizingOptions = [.minSize]    // the window keeps its own size; SwiftUI only sets the minimum
         window.contentView = host
         window.setContentSize(NSSize(width: 800, height: 610))
@@ -112,9 +124,29 @@ import SwiftUI
         case .openJoinTheBeta: open("https://support.signal.org/hc/articles/360007318471")
         case .openArtCreator:
             StickerCreatorWindow.show(session: session, i18n: i18n)
-        case .showAbout, .showDebugLog, .setupAsNewDevice:
+        case .showAbout:
+            showAbout()
+        case .showDebugLog, .setupAsNewDevice:
             break
         }
+    }
+
+    private var aboutWindow: NSWindow?
+
+    /// app/main.main.ts showAbout: a 500×500 fixed-size window, titled "About …".
+    func showAbout() {
+        if let aboutWindow { return aboutWindow.makeKeyAndOrderFront(nil) }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 500), styleMask: [.titled, .closable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.title = i18n("icu:aboutSignalDesktop")
+        window.isReleasedWhenClosed = false
+        let about = About(appEnv: "production", version: version, closeAbout: { [weak window] in window?.close() })
+        window.contentView = NSHostingView(rootView: about.environment(\.i18n, i18n).environment(\.brandLogo, BundledImage.named("serein-logo")))
+        window.center()
+        aboutWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     /// ts/util/createSupportUrl.std.ts
@@ -150,4 +182,24 @@ import SwiftUI
 
     func windowWillEnterFullScreen(_ notification: Notification) { model.isFullScreen = true }
     func windowDidExitFullScreen(_ notification: Notification) { model.isFullScreen = false }
+
+    /// The timeline's keyboard shortcuts that are not menu items (upstream's keydown handlers):
+    /// ⌘⇧E toggles the reaction picker.
+    func installKeyboardShortcuts() {
+        let session = session, model = model
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Escape in the call lobby: don't call after all (the lobby's ✕ does the same).
+            if event.keyCode == 53, mods.isEmpty, MainActor.assumeIsolated({ session.activeCall?.stage == .lobby }) {
+                MainActor.assumeIsolated { session.endCallUI() }
+                return nil
+            }
+            if mods == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "e",
+               model.selectedTab == .chats, session.selectedConversationId != nil {
+                MainActor.assumeIsolated { session.toggleReactionPickerShortcut() }
+                return nil
+            }
+            return event
+        }
+    }
 }

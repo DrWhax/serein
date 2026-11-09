@@ -125,6 +125,8 @@ public struct ConversationImage: View {
 
     static func icon(_ name: String) -> some View { SignalIcon(name, size: 24, color: .labelPrimaryOncolor) }
 
+    @Environment(\.inlineVideo) var inlineVideo
+
     public var body: some View {
         let shape = UnevenRoundedRectangle(cornerRadii: corners.radii)
         let o = options
@@ -137,6 +139,10 @@ public struct ConversationImage: View {
             // clips it); the background and border overlay are curved.
             if let shown = url ?? resolvedBlurHash {
                 if cropWidth > 0 || cropHeight > 0 { PixelImage(shown, fit: .cover, snapsContentRect: true).clipShape(shape) } else { PixelImage(shown, fit: .cover, snapsContentRect: true) }
+            }
+            // A video playing in place (InlineVideo): its frames over the poster.
+            if attachment.isVideo, let player = inlineVideo.player {
+                VideoView(engine: player, fit: .cover).clipShape(shape)
             }
             if startDownload != nil {
                 if undownloadable {
@@ -175,8 +181,15 @@ public struct ConversationImage: View {
             if o.bottomOverlay {
                 BottomOverlayGradient().frame(height: 48).frame(maxHeight: .infinity, alignment: .bottom)
             }
-            if (path || o.incremental) && !undownloadable && o.playIconOverlay {
-                Self.circle().overlay { Self.icon("v3/play/play-fill") }
+            if (path || o.incremental) && !undownloadable && o.playIconOverlay && inlineVideo.player?.isPlaying != true {
+                if attachment.isVideo, path, let play = inlineVideo.play {
+                    // Plays here (with sound); the rest of the image still opens the lightbox.
+                    SwiftUI.Button(action: play) { Self.circle().overlay { Self.icon("v3/play/play-fill") } }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(i18n("icu:MessageAudio--play"))
+                } else {
+                    Self.circle().overlay { Self.icon("v3/play/play-fill") }
+                }
             }
             if let text = o.overlayText, !text.isEmpty {
                 CSSText(text, style: LegacyType.body1(), alignment: .center, color: AxoColor(LegacyColor.white))
@@ -205,7 +218,14 @@ public struct ConversationImage: View {
         .frame(width: width - cropWidth, height: height - cropHeight)
         .clipped()
         .contentShape(shape)
-        .onTapGesture { if attachment.isDownloaded { showVisualAttachment?() } }
+        .onTapGesture {
+            // A video playing in place pauses on a click; otherwise the lightbox opens.
+            if attachment.isVideo, let player = inlineVideo.player, player.isPlaying {
+                player.pause()
+            } else if attachment.isDownloaded {
+                showVisualAttachment?()
+            }
+        }
         .accessibilityAddTraits(showVisualAttachment != nil ? .isButton : [])
         .accessibilityLabel(i18n("icu:imageOpenAlt"))
     }
@@ -235,4 +255,19 @@ public struct ImageOrBlurhash: View {
     public var body: some View {
         if let shown = image ?? blurHash { PixelImage(shown, fit: .cover, snapsContentRect: true) } else { Color.clear }
     }
+}
+
+/// A message's video played in the bubble: its player once started, and the action that starts
+/// (or resumes) it. Set by Message for a message whose one attachment is a video.
+public struct InlineVideo {
+    public var player: VideoPlaybackEngine?
+    public var play: (() -> Void)?
+    public init(player: VideoPlaybackEngine? = nil, play: (() -> Void)? = nil) {
+        self.player = player
+        self.play = play
+    }
+}
+
+extension EnvironmentValues {
+    @Entry public var inlineVideo = InlineVideo()
 }

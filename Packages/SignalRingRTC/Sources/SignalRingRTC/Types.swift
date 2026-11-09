@@ -105,6 +105,14 @@ public struct CallLinkRootKey: Sendable, Hashable {
         return b
     }
 
+    /// `toFormattedString`: the consonant base-16 form used in call link URLs (`bcdf-ghkm-…`).
+    public func formatted() throws -> String {
+        guard let s = try NativeEndpoint.command(0, "callLinkRootKeyToFormattedString", ["bytes": .bytes(bytes)]).string else {
+            throw RingRTCError.invalidResponse
+        }
+        return s
+    }
+
     public func deriveRoomId() throws -> Data {
         guard let b = try NativeEndpoint.command(0, "callLinkRootKeyDeriveRoomId", ["bytes": .bytes(bytes)]).data else { throw RingRTCError.invalidResponse }
         return b

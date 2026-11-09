@@ -126,6 +126,8 @@ public struct ScaledImage: Codable, Equatable, Sendable {
 /// What a link-preview page says about itself (`parseMetadata`): raw strings, bounded.
 public struct LinkPreviewHTML: Codable, Equatable, Sendable {
     public static let maxLength = 4096
+    /// `MAX_HTML_BYTES_TO_LOAD` (1000 KiB): the most of a page that is parsed.
+    public static let maxInputBytes = 1000 * 1024
     public var title: String
     public var description: String?
     /// As written in the page; resolve against the page's final URL.
@@ -196,8 +198,6 @@ public struct StickerImage: Codable, Equatable, Sendable {
 public protocol MediaProcessing: Sendable {
     /// The sticker creator's conversion of a dropped image.
     func stickerImage(_ bytes: Data) async throws -> StickerImage
-    /// Link-preview HTML (at most 1000 KiB) → its metadata, nil without a title.
-    func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML?
     func imageInfo(_ bytes: Data) async throws -> ImageInfo
     func thumbnail(_ bytes: Data, size: Int) async throws -> Thumbnail
     /// The first frame, fitted within `maxDimension` (1…4096), as RGBA for the timeline.

@@ -13,7 +13,7 @@ struct RootView: View {
     var body: some View {
         Zoomed(factor: model.zoomFactor) {
             App(appView: appView, renderInstallScreen: { installScreen }, renderInbox: {
-                Inbox(navTabs: NavTabsState(selected: model.selectedTab, collapsed: model.navTabsCollapsed, storiesEnabled: true,
+                Inbox(navTabs: NavTabsState(selected: model.selectedTab, collapsed: model.navTabsCollapsed, storiesEnabled: !session.accountSettings.storiesDisabled,
                                             hasFailedStorySends: session.stories.contains { $0.isOutgoing && $0.sendStatuses.contains("Failed") },
                                             unreadChats: session.conversations.filter { $0.unreadCount > 0 && !$0.isArchived }.count,
                                             unreadStories: Set(session.stories.filter { !$0.isOutgoing && $0.isUnread }.map { $0.groupConversationId ?? $0.author }).count,
@@ -26,7 +26,7 @@ struct RootView: View {
                             if let c = session.conversation(id) {
                                 ConversationPane(session: session, conversation: c, i18n: i18n).id(id)
                             }
-                        } renderMiniPlayer: { EmptyView() }
+                        } renderMiniPlayer: { if session.activeAudioMessageId != nil { AudioMiniPlayer(session: session, i18n: i18n) } }
                             .background(AxoColor.surfacePrimary)
                             .opacity(tab == .chats ? 1 : 0)
                             .allowsHitTesting(tab == .chats)
@@ -36,6 +36,7 @@ struct RootView: View {
                 }
             }, renderOverlays: {
                 MediaLightbox(session: session, i18n: i18n)
+                AppCallManager(session: session, model: model, i18n: i18n)
                 if model.pendingCrashReports > 0 {
                     CrashReportDialog(onSend: { model.saveCrashReports() }, onErase: { model.eraseCrashReports() })
                 }
@@ -52,6 +53,7 @@ struct RootView: View {
                 }
                 if let id = session.contactModalId { MemberContactModal(session: session, serviceId: id, i18n: i18n) }
                 ChatDialogs(session: session, i18n: i18n)
+                callLinkModal
                 if let e = session.composeError {
                     ErrorModal(title: i18n("icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
                 }
@@ -73,6 +75,7 @@ struct RootView: View {
             })
             .environment(\.titleBarDragAreaHeight, model.isFullScreen ? 0 : 28 / model.zoomFactor)
             .axoModalHost()
+            .environment(\.axoDialogBackdropBlur, true)
             .axoViewport()
         }
         .environment(\.i18n, i18n)
@@ -143,6 +146,12 @@ struct RootView: View {
             model.selectedTab = .settings
         }
         context.renderNotificationProfilesMenu = { AnyView(notificationProfilesMenu) }
+        context.renderToastManager = {
+            var actions = ToastManagerActions()
+            actions.hideToast = { session.toast = nil }
+            actions.openFileInFolder = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) }
+            return AnyView(ToastManager(toast: session.toast, actions: actions))
+        }
         context.updateSearchTerm = { if session.isComposing { session.composeSearch = $0 } else { session.updateSearch($0) } }
         context.clearSearchQuery = { if session.isComposing { session.composeSearch = "" } else { session.updateSearch("") } }
         context.endConversationSearch = { session.endConversationSearch() }
@@ -237,15 +246,18 @@ struct RootView: View {
         case .setGroupMetadata:
             return LeftPaneSetGroupMetadataHelper(groupName: session.newGroupName, groupExpireTimer: session.newGroupTimer, isCreating: session.isCreatingGroup,
                                                   selectedContacts: selected, onChangeGroupName: { session.newGroupName = $0 },
-                                                  onChangeExpireTimer: { session.newGroupTimer = $0 })
+                                                  onChangeExpireTimer: { session.newGroupTimer = $0 },
+                                                  onEditAvatar: { session.isEditingNewGroupAvatar = true },
+                                                  groupAvatar: session.newGroupAvatarPreview)
         case .findByUsername:
             return LeftPaneFindByUsernameHelper(searchTerm: session.composeSearch, isFetching: session.isLookingUp,
                                                 doLookup: { session.lookUpUsername(session.composeSearch) })
         case .findByPhoneNumber:
-            let region = session.phoneRegion
-            return LeftPaneFindByPhoneNumberHelper(searchTerm: session.composeSearch, regionCode: region, isFetching: session.isLookingUp, doLookup: {
-                if let p = PhoneNumberParsing.parse(session.composeSearch, regionCode: region) { session.lookUpPhoneNumber(p) }
-            })
+            let region = session.phoneRegion, selected = session.composeSelectedRegion
+            return LeftPaneFindByPhoneNumberHelper(searchTerm: session.composeSearch, regionCode: region, selectedRegion: selected,
+                                                   isFetching: session.isLookingUp, doLookup: {
+                if let p = PhoneNumberParsing.parse(session.composeSearch, regionCode: selected ?? region) { session.lookUpPhoneNumber(p) }
+            }, onShowCountryModal: { session.isChoosingCountry = true })
         }
     }
 
@@ -354,6 +366,16 @@ struct RootView: View {
                                          lastUpdated: c.activeAt.map { Date(milliseconds: $0) }, unreadCount: c.unreadCount)
         d.isMe = isMe
         d.markedUnread = c.folderProps.markedUnread
+        d.isSomeoneTyping = session.isSomeoneTyping(c.id)
+        // A draft shows ("Draft: …") in every row but the open chat's (upstream shouldShowDraft).
+        if let draft = c.draft, c.id != session.selectedConversationId {
+            d.shouldShowDraft = true
+            d.draftPreview = ComposerController.displayText(body: draft, ranges: session.draftRanges(c))    // mentions as "@name"
+            if let t = c.draftTimestamp {
+                d.draftTimestamp = Date(milliseconds: t)
+                if t > c.activeAt ?? 0 { d.lastUpdated = Date(milliseconds: t) }
+            }
+        }
         if c.folderProps.muteExpiresAt > Int64(Date().timeIntervalSince1970 * 1000) { d.muteExpiresAt = Date(milliseconds: c.folderProps.muteExpiresAt) }
         return ListRow(data: d, isArchivedRow: c.isArchived, isPinnedRow: c.isPinned)
     }
@@ -363,6 +385,8 @@ struct RootView: View {
         func with(_ emoji: String, _ key: String) -> String {
             i18n("icu:message--getNotificationText--text-with-emoji", ["emoji": .string(emoji), "text": .string(m.body.isEmpty ? i18n(key) : m.body)])
         }
+        // A poll: "Poll: {question}" (upstream's poll preview).
+        if let poll = m.poll { return i18n("icu:Poll--preview", ["pollQuestion": .string(poll.question)]) }
         switch m.content {
         case .text: return m.body
         case .gif: return with("🎡", "icu:message--getNotificationText--gif")
@@ -388,30 +412,118 @@ struct RootView: View {
         }
     }
 
-    /// The Calls tab over demo call history (SignalCore's CallHistory is not wired in yet);
-    /// the search and the missed filter run over the demo rows as the app's SQL query will.
+    /// The Calls tab: the call history (CallHistoryStore groups, live), searched and filtered to
+    /// missed calls; new calls to accepted chats; calling from a row or the new-call list.
     var callsTab: some View {
-        let now = Date()
-        let items = DemoData.calls(now: now).filter { item in
-            let q = model.callsHistoryQuery.trimmingCharacters(in: .whitespaces).lowercased()
-            return (q.isEmpty || item.conversation.title.lowercased().contains(q)) && (!model.callsMissedOnly || item.wasMissedForDemo)
+        let q = model.callsHistoryQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        let items = session.callHistory.compactMap { g -> CallsListItem? in
+            let group = CallHistoryGroup(type: SignalUI.CallType(rawValue: g.type.rawValue) ?? .unknown,
+                                         direction: SignalUI.CallDirection(rawValue: g.direction.rawValue) ?? .unknown,
+                                         status: SignalUI.CallStatus(rawValue: g.status.rawValue) ?? .unknown, timestamp: Date(milliseconds: g.timestamp),
+                                         children: g.calls.map { .init(callId: $0.callId, timestamp: Date(milliseconds: $0.timestamp)) })
+            // A call link's row: its name (else "Signal Call").
+            if g.mode == .adhoc {
+                guard let link = session.callLink(g.peerId) else { return nil }
+                let conv = CallingConversation(id: link.roomId, title: session.callLinkTitle(link, i18n("icu:calling__call-link-default-title")),
+                                               color: "A200", conversationType: .callLink)
+                return CallsListItem(id: "\(g.peerId)|\(g.calls.first?.callId ?? "")", peerId: link.roomId, group: group, conversation: conv,
+                                     isInCall: session.activeCall?.conversationId == link.roomId)
+            }
+            guard let c = session.callPeer(g.peerId, mode: g.mode) else { return nil }
+            let conv = CallingConversation(id: c.id, title: title(c), color: c.color, avatar: session.avatarImage(c.avatar),
+                                           conversationType: c.kind == .group ? .group : .direct, aci: c.serviceId)
+            let _ = CallHistoryGroup(type: SignalUI.CallType(rawValue: g.type.rawValue) ?? .unknown,
+                                         direction: SignalUI.CallDirection(rawValue: g.direction.rawValue) ?? .unknown,
+                                         status: SignalUI.CallStatus(rawValue: g.status.rawValue) ?? .unknown, timestamp: Date(milliseconds: g.timestamp),
+                                         children: g.calls.map { .init(callId: $0.callId, timestamp: Date(milliseconds: $0.timestamp)) })
+            return CallsListItem(id: "\(g.peerId)|\(g.calls.first?.callId ?? "")", peerId: c.id, group: group, conversation: conv,
+                                 isInCall: session.activeCall?.conversationId == c.id)
+        }.filter { item in
+            (q.isEmpty || item.conversation.title.lowercased().contains(q))
+                && (!model.callsMissedOnly || item.group.status == .missed || item.group.status == .missedNotificationProfile)
         }
-        let people = DemoData.conversations(now: now).chats.map {
-            CallsNewCallConversation(conversation: CallingConversation(id: $0.id, title: $0.title, color: $0.avatar.color ?? "A100"), isGroup: false)
-        }.filter { model.newCallQuery.isEmpty || $0.conversation.title.lowercased().contains(model.newCallQuery.lowercased()) }
-        return CallsTab(preferredLeftPaneWidth: model.preferredLeftPaneWidth, navTabsCollapsed: model.navTabsCollapsed, hasAnyAdminCallLinks: false,
-                        hasActiveCall: false, callsListItems: items, historyQuery: $model.callsHistoryQuery, missedOnly: $model.callsMissedOnly,
-                        newCallConversations: people, newCallQuery: $model.newCallQuery, actions: {
+        let nq = model.newCallQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        let people = session.conversations.filter { $0.isAccepted && !isMe($0) && (nq.isEmpty || title($0).lowercased().contains(nq)) }.map { c in
+            CallsNewCallConversation(conversation: CallingConversation(id: c.id, title: title(c), color: c.color, avatar: session.avatarImage(c.avatar),
+                                                                       conversationType: c.kind == .group ? .group : .direct, aci: c.serviceId),
+                                     isGroup: c.kind == .group)
+        }
+        return CallsTab(preferredLeftPaneWidth: model.preferredLeftPaneWidth, navTabsCollapsed: model.navTabsCollapsed, hasAnyAdminCallLinks: session.callLinks.contains(where: \.isAdmin),
+                        hasActiveCall: session.activeCall != nil, callsListItems: items, historyQuery: $model.callsHistoryQuery,
+                        missedOnly: $model.callsMissedOnly, newCallConversations: people, newCallQuery: $model.newCallQuery, actions: {
                             var a = CallsTabActions()
                             a.onToggleNavTabsCollapse = { model.navTabsCollapsed = $0 }
                             a.savePreferredLeftPaneWidth = { model.preferredLeftPaneWidth = $0 }
+                            a.onCall = { item in
+                                if item.conversation.conversationType == .callLink {
+                                    session.openCallLinkLobby(item.peerId)
+                                } else {
+                                    session.openCallLobby(item.peerId, video: item.group.type == .video || item.conversation.conversationType == .group)
+                                }
+                            }
+                            a.onCreateCallLink = { session.createCallLink() }
+                            a.onOutgoingAudioCallInConversation = { session.openCallLobby($0, video: false) }
+                            a.onOutgoingVideoCallInConversation = { session.openCallLobby($0, video: true) }
+                            a.onClearCallHistory = { session.clearCallHistory() }
+                            a.onMarkCallHistoryRead = { id, _ in session.markCallHistoryRead(id) }
                             return a
-                        }()) { _, group, close in
-            CallLinkDetails(callLink: CallLinkInfo(name: "Book club", rootKey: "bpmc-mrgn-hntf-mffd-mndd-xbxk-zmgq-qszg", isAdmin: true),
-                            callHistoryGroup: group, onDeleteCallLink: close)
+                        }()) { roomId, group, close in
+            callLinkDetails(roomId, group, close)
         } renderConversationDetails: { _, _ in
             EmptyView()
         }
+        .task { session.observeCallHistory() }
+    }
+
+    /// CallLinkEditModal (after creating a link), CallLinkAddNameModal, and the screen-recording
+    /// permission modal.
+    @ViewBuilder var callLinkModal: some View {
+        switch session.callLinkModal {
+        case .edit(let roomId)?:
+            if let link = session.callLink(roomId) {
+                AxoBaseDialog.Host {
+                    CallLinkEditModal(callLink: session.callLinkInfo(link), hasActiveCall: session.activeCall != nil,
+                                      onClose: { session.callLinkModal = nil }, onCopyCallLink: { session.copyCallLink(roomId) },
+                                      onOpenCallLinkAddNameModal: { session.callLinkModal = .addName(roomId: roomId) },
+                                      onUpdateCallLinkRestrictions: { session.setCallLinkApproval(roomId, $0) },
+                                      onShareCallLinkViaSignal: {
+                                          session.shareCallLinkViaSignal(roomId) { i18n("icu:ShareCallLinkViaSignal__DraftMessageText", ["url": .string($0)]) }
+                                      },
+                                      onStartCallLinkLobby: { session.openCallLinkLobby(roomId) })
+                }
+            }
+        case .addName(let roomId)?:
+            if let link = session.callLink(roomId) {
+                AxoBaseDialog.Host {
+                    CallLinkAddNameModal(callLink: session.callLinkInfo(link), onClose: { session.callLinkModal = .edit(roomId: roomId) },
+                                         onUpdateCallLinkName: { name in
+                                             session.renameCallLink(roomId, name)
+                                             session.callLinkModal = .edit(roomId: roomId)
+                                         })
+                }
+            }
+        case .needsScreenRecordingPermission?:
+            AxoBaseDialog.Host { NeedsScreenRecordingPermissionsModal(toggleScreenRecordingPermissionsDialog: { _ in session.callLinkModal = nil }) }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    /// A call link's details (the Calls tab's right side).
+    func callLinkDetails(_ roomId: String, _ group: CallHistoryGroup, _ close: @escaping () -> Void) -> some View {
+        let link = session.callLink(roomId)
+        return CallLinkDetails(callLink: link.map(session.callLinkInfo), callHistoryGroup: group,
+                               isInCall: session.activeCall?.conversationId == roomId,
+                               isInAnotherCall: session.activeCall != nil && session.activeCall?.conversationId != roomId,
+                               onDeleteCallLink: {
+                                   session.deleteCallLink(roomId)
+                                   close()
+                               },
+                               onOpenCallLinkAddNameModal: { session.callLinkModal = .addName(roomId: roomId) },
+                               onStartCallLinkLobby: { session.openCallLinkLobby(roomId) },
+                               onShareCallLinkViaSignal: { session.shareCallLinkViaSignal(roomId) { i18n("icu:ShareCallLinkViaSignal__DraftMessageText", ["url": .string($0)]) } },
+                               onCopyCallLink: { _ in session.copyCallLink(roomId) },
+                               onUpdateCallLinkRestrictions: { session.setCallLinkApproval(roomId, $0) })
     }
 
     func title(_ tab: NavTab) -> String {

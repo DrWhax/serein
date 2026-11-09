@@ -11,6 +11,7 @@ public enum SettingsPage: String, Sendable, CaseIterable {
     case profile = "Profile", account = "Account", accountKeys = "AccountKeys", general = "General", signalPinAdvanced = "SignalPinAdvanced"
     case appearance = "Appearance", chatColor = "ChatColor", chats = "Chats", chatFolders = "ChatFolders", editChatFolder = "EditChatFolder"
     case calls = "Calls", notifications = "Notifications", whileMuted = "WhileMuted", notificationProfilesHome = "NotificationProfilesHome"
+    case notificationProfilesCreateFlow = "NotificationProfilesCreateFlow"
     case privacy = "Privacy", pnp = "PNP", blocked = "Blocked", dataUsage = "DataUsage", `internal` = "Internal"
 }
 
@@ -116,7 +117,7 @@ public struct Preferences<Page: View>: View {
                 button("appearance", "icu:Preferences__button--appearance", [.appearance, .chatColor], .appearance)
                 button("message", "icu:Preferences__button--chats", [.chats], .chats)
                 button("phone", "icu:Preferences__button--calls", [.calls], .calls)
-                button("bell", "icu:Preferences__button--notifications", [.notifications, .whileMuted], .notifications)
+                button("bell", "icu:Preferences__button--notifications", [.notifications, .whileMuted, .notificationProfilesHome, .notificationProfilesCreateFlow], .notifications)
                 button("lock", "icu:Preferences__button--privacy", [.privacy, .pnp, .blocked], .privacy)
                 button("piechart", "icu:Preferences__button--data-usage", [.dataUsage], .dataUsage)
                 if isInternalUser { button("bolt", "icu:Preferences__button--internal", [.internal], .internal) }

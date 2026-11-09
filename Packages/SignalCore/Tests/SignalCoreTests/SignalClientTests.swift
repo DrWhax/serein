@@ -36,10 +36,12 @@ struct FixedKeyStore: DatabaseKeyStore {
         #expect(account.deviceId > 1)
 
         // A new process: same folder and key, no linking.
-        await first.socket.disconnect()
+        await first.shutdown()
         let second = try SignalClient(config: config(), directory: dir, keyStore: keys, media: MediaDecoder())
         let session = try #require(try await second.resume())
         #expect(session.account.aci == account.aci)
+        // The resumed session keeps house: expiring messages and pins on a timer, pre-keys on theirs.
+        #expect(await session.maintenance.isRunning)
         let events = await second.events()
         let t = TestClock.next()
         try await server.call("sendText", ["from": "alice", "text": "after restart", "timestamp": t])
@@ -58,7 +60,7 @@ struct FixedKeyStore: DatabaseKeyStore {
             if next.last?.body == "reply", next.last?.status == .sent { break }
         }
         #expect(try await inbox.next()?.first?.lastMessage?.direction == .outgoing)
-        await second.socket.disconnect()
+        await second.shutdown()
         await server.stop()
     }
 }

@@ -57,14 +57,19 @@ public struct LinkPreviewDraft: Sendable, Equatable {
 public struct LinkPreviewService: Sendable {
     public static let timeout: Duration = .seconds(60)
     let transport: any LinkPreviewTransport
+    /// The page parser (SignalLinkPreviewParser.xpc) and the image decoder (SignalMediaDecoder.xpc).
+    let parser: any LinkPreviewParsing
     let media: any MediaProcessing
     let stickers: StickerService?
     let groups: GroupsService?
     let strings: LinkPreviewStrings
+    /// Why a page gave no preview (diagnostics; never the page's content).
+    public var log: @Sendable (String) -> Void = { _ in }
 
-    public init(transport: any LinkPreviewTransport, media: any MediaProcessing, stickers: StickerService?, groups: GroupsService?,
-                strings: LinkPreviewStrings) {
+    public init(transport: any LinkPreviewTransport, parser: any LinkPreviewParsing, media: any MediaProcessing, stickers: StickerService?,
+                groups: GroupsService?, strings: LinkPreviewStrings) {
         self.transport = transport
+        self.parser = parser
         self.media = media
         self.stickers = stickers
         self.groups = groups
@@ -95,7 +100,7 @@ public struct LinkPreviewService: Sendable {
             // Call link state comes with calling (Phase 6); the default title until then.
             return LinkPreviewDraft(url: url, title: strings.callLinkTitle, description: strings.callLinkDescription, date: nil, image: nil, isCallLink: true)
         }
-        guard LinkPreviewRules.shouldPreviewHref(url), let meta = await LinkPreviewFetch.metadata(transport, media: media, href: url) else { return nil }
+        guard LinkPreviewRules.shouldPreviewHref(url), let meta = await LinkPreviewFetch.metadata(transport, parser: parser, media: media, href: url, log: log) else { return nil }
         var image = meta.image
         if image == nil, let href = meta.imageHref, LinkPreviewRules.shouldPreviewHref(href) {
             image = await LinkPreviewFetch.image(transport, media: media, href: href)
