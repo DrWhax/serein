@@ -331,7 +331,7 @@ import Testing
             // …and alice's new installation has received nothing.
             #expect((try await c.server.json("pendingMessages", ["account": "alice"]))["count"] as? Int == 0)
 
-            try await c.messenger.approveIdentities([c.aliceAci])
+            try await c.messenger.approveIdentities([try await c.messenger.safetyNumber(with: c.aliceAci).identity])
             #expect(try await c.messenger.identitiesNeedingApproval(conversationId: conversationId).isEmpty)
             try await c.messenger.retrySend(messageId: messageId)
             // (The probe used above does see a delivered message before anyone waits for it.)
@@ -354,7 +354,7 @@ import Testing
             try await c.messenger.sendText("before", to: c.aliceAci)
             _ = try await c.waitForMessage(to: "alice")
             try await c.jobs.waitUntilIdle()
-            try await c.messenger.setVerified(c.aliceAci, true)
+            try await c.messenger.setVerified(try await c.messenger.safetyNumber(with: c.aliceAci).identity, true)
             try await c.jobs.waitUntilIdle()
 
             try await c.server.call("reregister", ["account": "alice"])
@@ -372,7 +372,7 @@ import Testing
             #expect(try await c.sendStatus(t, conversationWith: c.aliceAci) == "Failed")
             #expect((try await c.server.json("pendingMessages", ["account": "alice"]))["count"] as? Int == 0)
 
-            try await c.messenger.approveIdentities([c.aliceAci])
+            try await c.messenger.approveIdentities([try await c.messenger.safetyNumber(with: c.aliceAci).identity])
             let row = try await identity(c)
             #expect(row.verifiedStatus == .default && row.nonblockingApproval)
             try await c.messenger.retrySend(messageId: messageId)
@@ -386,7 +386,7 @@ import Testing
     @Test func keyChangeSeenOnAnIncomingMessageBlocksTheReply() async throws {
         try await LinkedClient.with { c in
             try await c.receiveFromAlice("hello")
-            try await c.messenger.setVerified(c.aliceAci, true)
+            try await c.messenger.setVerified(try await c.messenger.safetyNumber(with: c.aliceAci).identity, true)
             try await c.jobs.waitUntilIdle()
             let old = try await identity(c)
 
@@ -402,7 +402,7 @@ import Testing
             #expect(try await errorNames(c, t) == ["OutgoingIdentityKeyError"])
             #expect((try await c.server.json("pendingMessages", ["account": "alice"]))["count"] as? Int == 0)
 
-            try await c.messenger.approveIdentities([c.aliceAci])
+            try await c.messenger.approveIdentities([try await c.messenger.safetyNumber(with: c.aliceAci).identity])
             try await c.messenger.retrySend(messageId: messageId)
             let got = try await c.waitForMessage(to: "alice")
             #expect(got.body == "who is this?" && got.timestamp == t)
@@ -454,7 +454,7 @@ import Testing
             // Nobody got it, bob included: the user decides before anything is sent.
             for name in ["alice", "bob"] { #expect((try await c.server.json("pendingMessages", ["account": name]))["count"] as? Int == 0) }
 
-            try await c.messenger.approveIdentities([c.aliceAci])
+            try await c.messenger.approveIdentities([try await c.messenger.safetyNumber(with: c.aliceAci).identity])
             try await c.messenger.retrySend(messageId: messageId)
             for name in ["alice", "bob"] {
                 let m = try await c.server.json("waitForMessage", ["account": name])

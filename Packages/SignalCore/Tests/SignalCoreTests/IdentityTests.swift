@@ -24,7 +24,7 @@ import Testing
             let ownMatches = try await c.messenger.matchesScannedSafetyNumber(ours.qrData, with: c.aliceAci)
             #expect(matches && !ownMatches)   // our own code is not theirs
 
-            try await c.messenger.setVerified(c.aliceAci, true)
+            try await c.messenger.setVerified(try await c.messenger.safetyNumber(with: c.aliceAci).identity, true)
             #expect(try await c.database.pool.read { try ProtocolStore.verifiedStatus($0, serviceId: c.aliceAci) } == .verified)
             let sync = try await c.server.json("waitForSyncMessage", ["kind": "verified"])
             #expect(sync["kind"] as? String == "verified")

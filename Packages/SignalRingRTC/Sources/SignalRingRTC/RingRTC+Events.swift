@@ -19,7 +19,8 @@ extension RingRTC {
         case "onStartIncomingCall":
             onStartIncomingCall(peer, callId: e["callId"].uint64 ?? 0, isVideoCall: e["isVideoCall"].bool ?? false)
         case "onCallState":
-            guard let call, call.remoteUserId == peer, let s = e["state"].string else { return }
+            guard let call, call.remoteUserId == peer, call.callId == e["callId"].uint64, call.state != .ended,
+                  let s = e["state"].string else { return }
             // Upstream maps the native state names through its CallState enum.
             if let state = CallState(rawValue: s) { call.state = state }
         case "onCallRejected":
@@ -28,7 +29,7 @@ extension RingRTC {
         case "onCallEnded":
             let callId = e["callId"].uint64 ?? 0
             callInfoByCallId[callId] = nil
-            if let call {
+            if let call, call.callId == callId {
                 call.endedReason = CallEndReason(rawValue: e["reason"].int ?? 0)
                 call.summary = CallSummary(e["summary"])
                 call.state = .ended
@@ -152,10 +153,10 @@ extension RingRTC {
     }
 
     func onStartOutgoingCall(_ remoteUserId: UserId, callId: CallId) {
-        guard let call, call.remoteUserId == remoteUserId else { return }
-        call.callId = callId
+        guard let call, call.remoteUserId == remoteUserId, call.callId == callId, call.state != .ended else { return }
         guard let handleStartCall else { call.ignore(); return }
         Task { @MainActor in
+            guard self.call === call, call.state != .ended else { return }
             if !(await handleStartCall(call)) {
                 self.logWarn("RingRTC.handleStartCall failed for outgoing call. Call ignored.")
                 call.ignore()

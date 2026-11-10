@@ -43,6 +43,9 @@ public struct GroupSender: Sendable {
     public func send(_ payload: OutgoingPayload, keys: GroupKeys, recipients: [String], messageIds: [String] = [], attempt: Int = 0)
         async throws -> GroupSendResult
     {
+        var payload = payload
+        payload.groupId = keys.groupId
+        try sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds)()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let ourAci = account.aci
         let targets = Array(Set(recipients.filter { $0 != ourAci })).sorted()
@@ -154,9 +157,10 @@ public struct GroupSender: Sendable {
             }
             var content = Signalservice_Content()
             content.senderKeyDistributionMessage = skdm
+            var distribution = OutgoingPayload(content: content, timestamp: payload.timestamp, contentHint: .resendable, urgent: payload.urgent)
+            distribution.groupId = keys.groupId
             for id in Set(newDevices.map(\.serviceId)).sorted() {
-                _ = try await sender.send(OutgoingPayload(content: content, timestamp: payload.timestamp, contentHint: .resendable, urgent: payload.urgent),
-                                          to: id)
+                _ = try await sender.send(distribution, to: id)
             }
         }
         info.memberDevices = Array(current).sorted { ($0.serviceId, $0.id) < ($1.serviceId, $1.id) }
@@ -175,7 +179,8 @@ public struct GroupSender: Sendable {
             let usmc = try UnidentifiedSenderMessageContent(message, from: certificate, contentHint: payload.contentHint, groupId: keys.groupId)
             return try sealedSenderMultiRecipientEncrypt(usmc, for: addresses, identityStore: sender.store, sessionStore: sender.store, context: ctx)
         }
-        let gone = try await socket.sendMultiRecipient(multi, timestamp: payload.timestamp, token: token, online: payload.online, urgent: payload.urgent)
+        let gone = try await socket.sendMultiRecipient(multi, timestamp: payload.timestamp, token: token, online: payload.online, urgent: payload.urgent,
+                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds))
             .map { $0.serviceIdString.lowercased() }
         let delivered = devices.filter { !gone.contains($0.0) }
         try await database.pool.write { db in

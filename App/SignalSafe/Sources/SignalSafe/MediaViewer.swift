@@ -29,6 +29,7 @@ struct XPCVideoSource: VideoFrameSource {
 extension SignalSession {
     /// What the Lightbox shows: one message's visual attachments.
     struct LightboxState {
+        let id = UUID()
         var messageId: String
         var attachments: [SignalCore.MessageAttachment]
         var index: Int
@@ -47,6 +48,7 @@ extension SignalSession {
     func openLightbox(_ m: TimelineMessage, index: Int) {
         let visual = m.attachments.map(\.attachment).filter { AttachmentPolicy.isImage($0.contentType) || AttachmentPolicy.isVideo($0.contentType) }
         guard visual.indices.contains(index) else { return }
+        guard let path = visual[index].path, mediaIsAvailable(path: path, messageId: m.id) else { return }
         let author = m.direction == .outgoing ? nil : contactTitle(m.author)
         lightbox = LightboxState(messageId: m.id, attachments: visual, index: index, authorTitle: author,
                                  authorColor: m.direction == .outgoing ? "A200" : contactColor(m.author), timestamp: Date(milliseconds: m.sentAt))
@@ -77,11 +79,13 @@ extension SignalSession {
         }
         guard l.players[index] == nil else { Task { await l.players[index]?.play() }; return }
         let messageId = l.messageId
+        let instance = l.id
         if inlineVideo?.messageId == messageId { inlineVideo?.player.pause() }
         Task {
             do {
                 guard let (player, info) = try await makeVideoPlayer(a) else { return }
-                guard lightbox?.messageId == messageId else { await player.unload(); return }
+                guard lightbox?.id == instance, lightbox?.index == index, lightbox?.players[index] == nil,
+                      let path = a.path, mediaIsAvailable(path: path, messageId: messageId) else { await player.unload(); return }
                 lightbox?.players[index] = player
                 lightbox?.durations[index] = info.duration
                 Self.trace("video: playing \(info.width)x\(info.height), \(info.duration)s, audio \(info.hasAudio)")
@@ -118,6 +122,7 @@ extension SignalSession {
     /// A lone video played in its bubble (one at a time): started, or resumed if it is the one.
     func playVideoInline(_ m: TimelineMessage) {
         guard let a = m.attachments.first?.attachment, AttachmentPolicy.isVideo(a.contentType), a.isDownloaded else { return }
+        guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else { return }
         if let current = inlineVideo, current.messageId == m.id {
             Task { await current.player.play() }
             return
@@ -125,13 +130,20 @@ extension SignalSession {
         stopInlineVideo()
         stopAudio()
         let id = m.id
+        let generation = inlineVideoGeneration
         Task { [weak self] in
             guard let self else { return }
             do {
                 guard let (player, _) = try await makeVideoPlayer(a) else { return }
-                stopInlineVideo()
-                inlineVideo = (id, player)
-                player.onEnded = { [weak self] in Task { @MainActor in self?.stopInlineVideo() } }
+                guard generation == inlineVideoGeneration, let path = a.path, mediaIsAvailable(path: path, messageId: id) else {
+                    await player.unload()
+                    return
+                }
+                inlineVideo = (id, player, path)
+                player.onEnded = { [weak self] in Task { @MainActor in
+                    guard let self, self.inlineVideoGeneration == generation else { return }
+                    self.stopInlineVideo()
+                } }
                 await player.play()
             } catch {
                 Self.trace("inline video failed: \(error)")
@@ -140,6 +152,7 @@ extension SignalSession {
     }
 
     func stopInlineVideo() {
+        inlineVideoGeneration &+= 1
         guard let current = inlineVideo else { return }
         inlineVideo = nil
         Task { await current.player.unload() }
@@ -156,7 +169,11 @@ extension SignalSession {
         panel.nameFieldStringValue = name
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try session.attachmentStore.export(a, to: url)
+            guard let db = clientDatabase, let path = a.path else { return }
+            try db.pool.read { db in
+                guard try MediaAvailability.permits(db, path: path, messageId: l.messageId) else { throw AttachmentStoreError.invalidPath(path) }
+                try session.attachmentStore.export(a, to: url)
+            }
             toast = .fileSaved(fullPath: url.path, countOfFiles: 1)
         } catch {
             Self.trace("save failed: \(error)")
@@ -169,7 +186,7 @@ extension SignalSession {
         guard let path = a.path, a.isDownloaded else { return nil }
         let key = "large:" + path
         if let hit = images[key] { return hit }
-        return loadImage(key: key, maxDimension: Self.lightboxMaxDimension) { store in try store.plaintext(of: a) }
+        return loadImage(key: key, path: path, maxDimension: Self.lightboxMaxDimension) { store in try store.plaintext(of: a) }
     }
 
     /// A video's poster frame (the screenshot stored at download).
@@ -178,7 +195,7 @@ extension SignalSession {
         let key = "poster:" + s.path
         if let hit = images[key] { return hit }
         let file = LocalFile(path: s.path, localKey: s.localKey, size: s.size)
-        return loadImage(key: key, maxDimension: Self.displayMaxDimension) { store in try store.plaintext(of: file) }
+        return loadImage(key: key, path: s.path, maxDimension: Self.displayMaxDimension) { store in try store.plaintext(of: file) }
     }
 }
 

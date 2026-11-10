@@ -33,6 +33,7 @@ import Observation
     }
 
     var values: [Value] { slots.values.compactMap(\.value) }
+    var keys: [String] { slots.compactMap { key, slot in slot.value.map { _ in key } } }
 
     func removeAll() {
         for s in slots.values { s.value = nil }

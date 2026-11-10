@@ -124,6 +124,11 @@ public actor AttachmentDownloadManager {
     var active: [String: Task<Void, Never>] = [:]
     var visibleMessages: [String] = []
     var running = false
+    var starting = false
+    var generation: UInt64 = 0
+    var selecting = false
+    var draining = 0
+    var stateWaiters: [CheckedContinuation<Void, Never>] = []
     var wake: Task<Void, Never>?
     /// Test hook: the clock.
     var clock: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
@@ -142,15 +147,41 @@ public actor AttachmentDownloadManager {
     public func setClock(_ f: @escaping @Sendable () -> Int64) { clock = f }
 
     public func start() async throws {
+        guard !running, !starting, draining == 0 else { return }
+        starting = true
+        defer { starting = false; stateChanged() }
+        stop()
+        let generation = self.generation
+        while selecting { await withCheckedContinuation { stateWaiters.append($0) } }
+        for task in Array(active.values) { await task.value }
+        guard generation == self.generation else { return }
         try await db.write { try AttachmentDownloads.resetActive($0) }
+        guard generation == self.generation else { return }
         running = true
         await tick()
     }
 
     public func stop() {
+        generation &+= 1
         running = false
         wake?.cancel()
         for t in active.values { t.cancel() }
+    }
+
+    public func stopAndWait() async {
+        draining += 1
+        defer { draining -= 1 }
+        stop()
+        // Pending startup/selection writes must finish before a replacement can use the DB.
+        while starting || selecting { await withCheckedContinuation { stateWaiters.append($0) } }
+        let tasks = Array(active.values)
+        for task in tasks { await task.value }
+    }
+
+    func stateChanged() {
+        let waiters = stateWaiters
+        stateWaiters = []
+        for waiter in waiters { waiter.resume() }
     }
 
     /// `updateVisibleTimelineMessages`: these messages' jobs run first.
@@ -192,7 +223,10 @@ public actor AttachmentDownloadManager {
 
     /// Starts as many jobs as there is room for; schedules a wake-up for the next retry.
     public func tick() async {
-        guard running else { return }
+        guard running, !selecting else { return }
+        selecting = true
+        defer { selecting = false; stateChanged() }
+        let generation = self.generation
         let room = Self.maxConcurrentJobs - active.count
         guard room > 0 else { return }
         let now = clock(), prioritize = visibleMessages
@@ -201,6 +235,12 @@ public actor AttachmentDownloadManager {
             for j in jobs { try AttachmentDownloads.setActive(db, j, true) }
             return jobs
         }) ?? []
+        guard running, generation == self.generation else {
+            try? await db.write { db in
+                for job in jobs { try AttachmentDownloads.setActive(db, job, false) }
+            }
+            return
+        }
         for job in jobs {
             let id = "\(job.messageId)|\(job.attachmentType.rawValue)|\(job.signature)"
             active[id] = Task { [weak self] in
@@ -218,7 +258,9 @@ public actor AttachmentDownloadManager {
 
     func scheduleWake() async {
         wake?.cancel()
+        let generation = self.generation
         let next = try? await db.read { try Int64.fetchOne($0, sql: "SELECT MIN(retryAfter) FROM attachment_downloads WHERE active = 0 AND retryAfter IS NOT NULL") }
+        guard running, generation == self.generation else { return }
         guard let next = next ?? nil else { return }
         let delay = max(0, next - clock())
         wake = Task { [weak self] in

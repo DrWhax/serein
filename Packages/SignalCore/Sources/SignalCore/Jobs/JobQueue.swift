@@ -53,6 +53,8 @@ public actor JobQueue {
     var notBefore: [String: ContinuousClock.Instant] = [:]
     var waiter: CheckedContinuation<Void, Never>?
     var loop: Task<Void, Never>?
+    var wantsRunning = false
+    var draining = 0
     var busy = false
 
     public nonisolated let events: AsyncStream<JobEvent>
@@ -95,14 +97,25 @@ public actor JobQueue {
 
     /// Starts processing (including jobs persisted by a previous run).
     public func start() {
+        guard draining == 0 else { return }
+        wantsRunning = true
         guard loop == nil else { return }
         loop = Task { await self.run() }
     }
 
     public func stop() {
+        wantsRunning = false
         loop?.cancel()
-        loop = nil
         poke()
+    }
+
+    /// Returns only after the active handler and its database work have finished.
+    public func stopAndWait() async {
+        draining += 1
+        let running = loop
+        stop()
+        await running?.value
+        draining -= 1
     }
 
     /// Wakes the run loop (new job committed).
@@ -132,6 +145,10 @@ public actor JobQueue {
     }
 
     func run() async {
+        defer {
+            loop = nil
+            if wantsRunning { start() }
+        }
         while !Task.isCancelled {
             let next: (Job?, ContinuousClock.Instant?)
             do { next = try nextJob() } catch { next = (nil, ContinuousClock.now + .seconds(1)) }
@@ -158,6 +175,8 @@ public actor JobQueue {
             finish(job)
             sink.yield(.succeeded(job))
         } catch {
+            // Cancellation does not consume retry attempts or discard persisted work.
+            if Task.isCancelled || error is CancellationError { return }
             let n = (attempts[job.id] ?? 0) + 1
             attempts[job.id] = n
             let permanent = (error as? JobError) != nil

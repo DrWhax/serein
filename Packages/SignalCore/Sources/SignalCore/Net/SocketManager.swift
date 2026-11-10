@@ -58,11 +58,14 @@ public actor SocketManager {
     /// REST request over the unauthenticated chat socket (optionally with explicit
     /// Basic auth, as `PUT /v1/devices/link` needs).
     public func unauthenticatedRequest(_ method: String, _ path: String, json: Data? = nil, basicAuth: (String, String)? = nil,
-                                       headers extra: [String: String] = [:]) async throws -> Data {
+                                       headers extra: [String: String] = [:], authorize: @Sendable () throws -> Void = {}) async throws -> Data {
         var headers = extra
         if json != nil { headers["content-type"] = "application/json" }
         if let (u, p) = basicAuth { headers["authorization"] = "Basic " + Data("\(u):\(p)".utf8).base64EncodedString() }
-        let response = try await unauthenticatedConnection().send(ChatRequest(method: method, pathAndQuery: path, headers: headers, body: json, timeout: 30))
+        let chat = try await unauthenticatedConnection()
+        try Task.checkCancellation()
+        try authorize()
+        let response = try await chat.send(ChatRequest(method: method, pathAndQuery: path, headers: headers, body: json, timeout: 30))
         return try Self.check(response)
     }
 
@@ -106,8 +109,10 @@ public actor SocketManager {
     }
 
 
-    public func authenticatedRequest(_ method: String, _ path: String, json: Data? = nil) async throws -> Data {
+    public func authenticatedRequest(_ method: String, _ path: String, json: Data? = nil, authorize: @Sendable () throws -> Void = {}) async throws -> Data {
         guard let chat = authenticated else { throw ChatRequestError.notConnected }
+        try Task.checkCancellation()
+        try authorize()
         let response = try await chat.send(ChatRequest(method: method, pathAndQuery: path,
                                                        headers: json == nil ? [:] : ["content-type": "application/json"],
                                                        body: json, timeout: 30))
@@ -122,8 +127,12 @@ public actor SocketManager {
 
     /// `sendMulti` (MessagesAnonymous/SendMultiRecipientMessage): a sealed-sender multi-recipient
     /// payload authorised by a group send token.
-    public func sendMultiRecipient(_ payload: Data, timestamp: UInt64, token: Data, online: Bool, urgent: Bool) async throws -> [ServiceId] {
-        let response = try await unauthenticatedConnection().sendMultiRecipientMessage(
+    public func sendMultiRecipient(_ payload: Data, timestamp: UInt64, token: Data, online: Bool, urgent: Bool,
+                                   authorize: @Sendable () throws -> Void = {}) async throws -> [ServiceId] {
+        let chat = try await unauthenticatedConnection()
+        try Task.checkCancellation()
+        try authorize()
+        let response = try await chat.sendMultiRecipientMessage(
             payload, timestamp: timestamp, auth: .groupSend(try GroupSendFullToken(contents: token)), onlineOnly: online, urgent: urgent)
         return response.unregisteredIds
     }

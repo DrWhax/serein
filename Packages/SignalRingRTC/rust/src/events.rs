@@ -167,7 +167,7 @@ fn event_json(ep: &mut CallEndpoint, event: Event) -> Option<Value> {
         Event::CallState(peer_id, call_id, CallState::Ended(reason, s)) => {
             json!({ "type": "onCallEnded", "remoteUserId": peer_id, "callId": call_id.as_u64().to_string(), "reason": reason as i32, "summary": summary(&s) })
         }
-        Event::CallState(peer_id, _call_id, state) => {
+        Event::CallState(peer_id, call_id, state) => {
             let s = match state {
                 CallState::Ringing => "ringing",
                 CallState::Connected => "connected",
@@ -182,7 +182,7 @@ fn event_json(ep: &mut CallEndpoint, event: Event) -> Option<Value> {
                 CallState::Ended(..) => "ended",
                 CallState::Rejected(_) => "rejected",
             };
-            json!({ "type": "onCallState", "remoteUserId": peer_id, "state": s })
+            json!({ "type": "onCallState", "remoteUserId": peer_id, "callId": call_id.as_u64().to_string(), "state": s })
         }
         Event::NetworkRouteChange(peer_id, route) => {
             json!({ "type": "onNetworkRouteChanged", "remoteUserId": peer_id, "localNetworkAdapterType": route.local_adapter_type as i32 })

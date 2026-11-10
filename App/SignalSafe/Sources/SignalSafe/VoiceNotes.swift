@@ -21,7 +21,7 @@ import SignalUI
         Task {
             defer { audioWaveformLoading.remove(path) }
             guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil,
-                  let summary = try? await media.audioSummary(bytes) else { return }
+                  let summary = try? await media.audioSummary(bytes), mediaIsAvailable(path: path) else { return }
             audioWaveforms[path] = AudioWaveform(waveform: summary.waveform, duration: summary.duration)
         }
         return nil
@@ -44,6 +44,7 @@ import SignalUI
     func playAudio(_ m: TimelineMessage, at position: Double) {
         guard let a = m.attachments.first?.attachment, AttachmentPolicy.isAudio(a.contentType), a.isDownloaded,
               let session = signalSession else { return }
+        guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else { return }
         let store = session.attachmentStore, media = media
         Task { [weak self] in
             guard let self else { return }
@@ -63,7 +64,13 @@ import SignalUI
                     Self.trace("audio failed: \(error)")
                     return
                 }
+                guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else {
+                    engine.pause()
+                    if audioEngine === engine { audioEngine = nil }
+                    return
+                }
                 activeAudioMessageId = m.id
+                activeAudioPath = path
                 activeAudioAuthor = m.direction == .outgoing ? nil : m.author
                 audioTime = 0
                 engine.onEnded = { [weak self] in Task { @MainActor in self?.audioEnded(m.id) } }
@@ -106,8 +113,10 @@ import SignalUI
     /// Stops playback (the mini-player's close, `unloadMessageAudio`).
     func stopAudio() {
         audioEngine?.pause()
+        audioEngine = nil
         audioClockTask?.cancel()
         activeAudioMessageId = nil
+        activeAudioPath = nil
         activeAudioAuthor = nil
         audioPlaying = false
         audioTime = 0

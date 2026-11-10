@@ -279,6 +279,7 @@ public final class Messenger: Sendable {
     }
 
     func sendGroupNormalMessage(messageId: String, group: GroupStore.Stored) async throws {
+        try sender.authorization(to: nil, groupId: group.keys.groupId, messageIds: [messageId])()
         guard let state = group.state else { throw JobError.permanent("group without state") }
         let fetched = try await database.pool.read { db -> (String, Int64)? in
             try Row.fetchOne(db, sql: "SELECT body, sent_at FROM messages WHERE id = ?", arguments: [messageId]).map { (($0["body"] as String?) ?? "", $0["sent_at"]) }
@@ -348,6 +349,7 @@ public final class Messenger: Sendable {
         guard let (body, sentAt, serviceId) = try await database.pool.read({ db in try MessageStore.outgoingText(db, messageId: messageId) }) else {
             throw JobError.permanent("message \(messageId) gone")
         }
+        try sender.authorization(to: serviceId, groupId: Data(), messageIds: [messageId])()
         var data = Signalservice_DataMessage()
         data.body = body
         data.bodyRanges = try await storedBodyRanges(messageId: messageId)

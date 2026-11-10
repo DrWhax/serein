@@ -111,7 +111,8 @@ public actor SignalClient {
         preKeys?.cancel()
         if let session {
             await session.maintenance.stopAndWait()
-            await session.jobs.stop()
+            await session.jobs.stopAndWait()
+            await session.downloads.stopAndWait()
         }
         // A pre-key check that is mid-request finishes (and records its result) first.
         await preKeys?.value

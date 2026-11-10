@@ -80,6 +80,33 @@ public final class MessageSender: Sendable {
 
     var store: ProtocolStore { account.aciStore() }
 
+    /// Re-evaluated after connection setup, immediately before transport submission.
+    /// Blocking a contact does not block shared group conversations; those have their own block state.
+    func authorization(to serviceId: String?, groupId: Data, messageIds: [String]) -> @Sendable () throws -> Void {
+        { [database, account] in
+            try database.pool.read { db in
+                if !groupId.isEmpty {
+                    if try BlockedList.groups.blockedAt(db, groupId.base64EncodedString()).blocked {
+                        throw JobError.permanent("group blocked")
+                    }
+                } else if let serviceId, serviceId != account.aci {
+                    let blocked = try BlockedList.serviceIds.blockedAt(db, serviceId).blocked
+                    let number = try String.fetchOne(db, sql: "SELECT e164 FROM conversations WHERE serviceId = ?", arguments: [serviceId])
+                    let numberBlocked = try number.map { try BlockedList.numbers.blockedAt(db, $0).blocked } ?? false
+                    if blocked || numberBlocked {
+                        throw JobError.permanent("recipient blocked")
+                    }
+                }
+                for id in messageIds {
+                    guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [id]),
+                          try MessageStore.jsonObject(json)["isErased"] as? Bool != true else {
+                        throw JobError.permanent("message removed")
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: send
 
     /// Sends `payload` to every device of `serviceId` (for our own ACI: every other device).
@@ -87,6 +114,8 @@ public final class MessageSender: Sendable {
     @discardableResult
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
                      logged: Bool = true) async throws -> SendResult {
+        let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds)
+        try authorize()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let isSelf = serviceId == account.aci
         var accessKey: Data? = nil
@@ -124,12 +153,12 @@ public final class MessageSender: Sendable {
             let path = "/v1/messages/\(serviceId)" + (storySend ? "?story=true" : "")
             do {
                 if storySend {
-                    _ = try await socket.unauthenticatedRequest("PUT", path, json: json, headers: [:])
+                    _ = try await socket.unauthenticatedRequest("PUT", path, json: json, headers: [:], authorize: authorize)
                 } else if let accessKey {
                     _ = try await socket.unauthenticatedRequest("PUT", path, json: json,
-                                                                headers: ["unidentified-access-key": accessKey.base64EncodedString()])
+                                                                headers: ["unidentified-access-key": accessKey.base64EncodedString()], authorize: authorize)
                 } else {
-                    _ = try await socket.authenticatedRequest("PUT", path, json: json)
+                    _ = try await socket.authenticatedRequest("PUT", path, json: json, authorize: authorize)
                 }
                 let sent = devices
                 if logged {

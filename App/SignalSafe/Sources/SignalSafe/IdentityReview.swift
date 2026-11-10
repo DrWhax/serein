@@ -17,6 +17,7 @@ import SwiftUI
     var contacts: [SafetyNumberChangeContact]
     var numbers: [String: SignalUI.SafetyNumber]
     var serviceIds: [String]
+    var identities: [ReviewedIdentity]
     /// Runs after the identities were approved ("Send anyway").
     var confirmed: @MainActor () -> Void
     var cancelled: @MainActor () -> Void
@@ -49,8 +50,10 @@ import SwiftUI
             return
         }
         var numbers: [String: SignalUI.SafetyNumber] = [:]
+        var identities: [ReviewedIdentity] = []
         for id in serviceIds {
             if let n = try? await session.messenger.safetyNumber(with: id) {
+                identities.append(n.identity)
                 numbers[id] = SignalUI.SafetyNumber(numberBlocks: n.numberBlocks, qrData: Array(n.qrData))
             }
         }
@@ -59,17 +62,20 @@ import SwiftUI
             return SafetyNumberChangeContact(id: id, title: info?.title ?? id, color: info?.color ?? "A200", avatar: avatarImage(info?.avatar),
                                              hasName: info != nil, serviceId: id)
         }
-        identityReview = IdentityReview(contacts: contacts, numbers: numbers, serviceIds: serviceIds, confirmed: confirmed, cancelled: cancelled)
+        identityReview = IdentityReview(contacts: contacts, numbers: numbers, serviceIds: serviceIds, identities: identities, confirmed: confirmed, cancelled: cancelled)
     }
 
-    /// "Send anyway": approve the keys on record, then let the waiting sends go.
+    /// "Send anyway": approve exactly the displayed keys, then let the waiting sends go.
     func confirmIdentityReview() {
         guard let review = identityReview, let session = signalSession else { return }
         identityReview = nil
         Task {
             do {
-                try await session.messenger.approveIdentities(review.serviceIds)
+                guard review.identities.count == review.serviceIds.count else { throw IdentityReviewError.identityChanged }
+                try await session.messenger.approveIdentities(review.identities)
                 review.confirmed()
+            } catch IdentityReviewError.identityChanged {
+                await self.review(review.serviceIds, confirmed: review.confirmed, cancelled: review.cancelled)
             } catch {
                 Self.trace("identity approval failed: \(error)")
                 review.cancelled()
@@ -119,6 +125,7 @@ struct SafetyNumberSheet {
     var title: String
     var number: SignalUI.SafetyNumber?
     var isVerified: Bool
+    var identity: ReviewedIdentity?
 }
 
 @MainActor extension SignalSession {
@@ -131,17 +138,19 @@ struct SafetyNumberSheet {
             let verified = (try? await session.messenger.verifiedStatus(serviceId)) == .verified
             safetyNumberSheet = SafetyNumberSheet(serviceId: serviceId, title: title,
                                                   number: number.map { SignalUI.SafetyNumber(numberBlocks: $0.numberBlocks, qrData: Array($0.qrData)) },
-                                                  isVerified: verified)
+                                                  isVerified: verified, identity: number?.identity)
         }
     }
 
     /// `toggleVerified`: marks the key on record as verified, or back to the default state.
     func toggleVerified() {
-        guard let sheet = safetyNumberSheet, let session = signalSession else { return }
+        guard let sheet = safetyNumberSheet, let identity = sheet.identity, let session = signalSession else { return }
         Task {
             do {
-                try await session.messenger.setVerified(sheet.serviceId, !sheet.isVerified)
-                if safetyNumberSheet?.serviceId == sheet.serviceId { safetyNumberSheet?.isVerified = !sheet.isVerified }
+                try await session.messenger.setVerified(identity, !sheet.isVerified)
+                if safetyNumberSheet?.identity == identity { safetyNumberSheet?.isVerified = !sheet.isVerified }
+            } catch IdentityReviewError.identityChanged {
+                if safetyNumberSheet?.identity == identity { showSafetyNumber(sheet.serviceId) }
             } catch {
                 Self.trace("verification change failed: \(error)")
             }

@@ -166,7 +166,7 @@ import SignalUI
     /// Which message text holds the mouse selection (one at a time).
     @ObservationIgnored let textSelection = TextSelectionCenter()
     /// The video playing in its bubble (one at a time), by message.
-    var inlineVideo: (messageId: String, player: VideoPlaybackEngine)?
+    var inlineVideo: (messageId: String, player: VideoPlaybackEngine, path: String)?
     /// A chat's avatar shown large (AvatarLightbox), by conversation.
     var avatarLightboxFor: String?
     /// The poll dialog (PollCreateModal) is open.
@@ -180,6 +180,7 @@ import SignalUI
     var toast: ToastType?
     /// Audio playback (VoiceNotes.swift): the playing (or paused) message, its play head.
     var activeAudioMessageId: String?
+    var activeAudioPath: String?
     /// The playing message's sender (nil: ours), for the mini-player's title.
     var activeAudioAuthor: String?
     var audioPlaying = false
@@ -293,6 +294,11 @@ import SignalUI
     /// Decoded attachment pixels for the timeline, by local attachment path.
     @ObservationIgnored let images = ObservedCache<RGBAImage>()
     @ObservationIgnored private var loadingImages: Set<String> = []
+    @ObservationIgnored var imagePaths: [String: String] = [:]
+    @ObservationIgnored var mediaAvailabilityTask: Task<Void, Never>?
+    @ObservationIgnored var mediaExpiryTask: Task<Void, Never>?
+    @ObservationIgnored var mediaObservationGeneration: UInt64 = 0
+    @ObservationIgnored var inlineVideoGeneration: UInt64 = 0
     /// The open Lightbox (MediaViewer).
     var lightbox: LightboxState?
     var signalSession: SignalClient.Session? { session }
@@ -519,6 +525,7 @@ import SignalUI
 
     private func becameReady(_ session: SignalClient.Session, client: SignalClient) {
         self.session = session
+        observeMediaAvailability()
         ourAci = session.account.aci
         phase = .ready
         // Startup storage-service sync (upstream runStorageServiceSyncJob): contacts, groups,
@@ -822,19 +829,22 @@ import SignalUI
     func image(for a: SignalCore.MessageAttachment) -> RGBAImage? {
         guard let path = a.path, a.isDownloaded, AttachmentPolicy.isImage(a.contentType) else { return nil }
         if let hit = images[path] { return hit }
-        return loadImage(key: path, maxDimension: Self.displayMaxDimension) { store in try store.plaintext(of: a) }
+        return loadImage(key: path, path: path, maxDimension: Self.displayMaxDimension) { store in try store.plaintext(of: a) }
     }
 
     /// Decodes a stored file's pixels once (plaintext from the local store → the media
     /// service → validated RGBA), caching them under `key`.
-    func loadImage(key: String, maxDimension: Int, plaintext: @escaping @Sendable (AttachmentStore) throws -> Data?) -> RGBAImage? {
+    func loadImage(key: String, path: String, maxDimension: Int, plaintext: @escaping @Sendable (AttachmentStore) throws -> Data?) -> RGBAImage? {
         guard let session, !loadingImages.contains(key) else { return nil }
+        let generation = mediaObservationGeneration
         loadingImages.insert(key)
         let store = session.attachmentStore, media = media
         Task {
             defer { loadingImages.remove(key) }
             guard let bytes = try? await Task.detached(operation: { try plaintext(store) }).value ?? nil,
-                  let shown = try? await media.displayImage(bytes, maxDimension: maxDimension) else { return }
+                  let shown = try? await media.displayImage(bytes, maxDimension: maxDimension),
+                  generation == mediaObservationGeneration, mediaIsAvailable(path: path) else { return }
+            imagePaths[key] = path
             images[key] = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
         }
         return nil

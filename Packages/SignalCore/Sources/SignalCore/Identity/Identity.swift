@@ -41,6 +41,8 @@ extension SocketManager {
 // MARK: safety numbers
 
 public struct SafetyNumber: Sendable, Equatable {
+    /// The exact identity used to generate the displayed fingerprint.
+    public let identity: ReviewedIdentity
     /// 12 blocks of 5 digits.
     public var numberBlocks: [String]
     /// The QR payload (scannable fingerprint).
@@ -63,7 +65,8 @@ public enum SafetyNumbers {
         let f = try fingerprint(ourAci: ourAci, ourKey: ourKey, theirAci: theirAci, theirKey: theirKey)
         let digits = Array(f.displayable.formatted)
         let blocks = stride(from: 0, to: digits.count, by: blockSize).map { String(digits[$0..<min($0 + blockSize, digits.count)]) }
-        return SafetyNumber(numberBlocks: blocks, qrData: f.scannable.encoding)
+        return SafetyNumber(identity: ReviewedIdentity(ourServiceId: ourAci, ourKey: ourKey.serialize(), serviceId: theirAci, key: theirKey.serialize()),
+                            numberBlocks: blocks, qrData: f.scannable.encoding)
     }
 }
 
@@ -90,9 +93,11 @@ extension Messenger {
 
     /// `setVerified` / `setUnverified`: the identity's state, a verified-change notice, the
     /// Verified sync to our devices (with a NullMessage-sized padding, as upstream), storage.
-    public func setVerified(_ aci: String, _ verified: Bool) async throws {
+    public func setVerified(_ identity: ReviewedIdentity, _ verified: Bool) async throws {
+        let aci = identity.serviceId
         let state: VerifiedStatus = verified ? .verified : .default
         let (key, changed) = try await database.pool.write { db -> (Data?, Bool) in
+            try identity.validate(db, account: self.account)
             guard let s = try String.fetchOne(db, sql: "SELECT json FROM identityKeys WHERE id = ?", arguments: [aci]),
                   let key = (try MessageStore.jsonObject(s)["publicKey"] as? String).flatMap({ Data(base64Encoded: $0) }) else { return (nil, false) }
             let old = try ProtocolStore.verifiedStatus(db, serviceId: aci)
@@ -104,6 +109,10 @@ extension Messenger {
             return (key, true)
         }
         guard let key, changed else { return }
+        try await sendVerifiedSync(aci, key: key, verified: verified)
+    }
+
+    func sendVerifiedSync(_ aci: String, key: Data, verified: Bool) async throws {
         var v = Signalservice_Verified()
         v.destinationAciBinary = StorageLocal.uuidBytes(aci) ?? Data()
         v.identityKey = key
