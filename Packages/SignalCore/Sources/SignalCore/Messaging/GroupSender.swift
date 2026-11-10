@@ -45,7 +45,7 @@ public struct GroupSender: Sendable {
     {
         var payload = payload
         payload.groupId = keys.groupId
-        try sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds)()
+        try sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds, retracting: payload.onlyRetracts)()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let ourAci = account.aci
         let targets = Array(Set(recipients.filter { $0 != ourAci })).sorted()
@@ -180,7 +180,7 @@ public struct GroupSender: Sendable {
             return try sealedSenderMultiRecipientEncrypt(usmc, for: addresses, identityStore: sender.store, sessionStore: sender.store, context: ctx)
         }
         let gone = try await socket.sendMultiRecipient(multi, timestamp: payload.timestamp, token: token, online: payload.online, urgent: payload.urgent,
-                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds))
+                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds, retracting: payload.onlyRetracts))
             .map { $0.serviceIdString.lowercased() }
         let delivered = devices.filter { !gone.contains($0.0) }
         try await database.pool.write { db in

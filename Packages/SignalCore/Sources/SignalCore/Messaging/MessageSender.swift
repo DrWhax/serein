@@ -56,6 +56,19 @@ public struct OutgoingPayload: Sendable {
         self.urgent = urgent
         self.online = online
     }
+
+    /// A delete for everyone, or our phone's recipient update after one: it follows the removal
+    /// of the messages it names and carries none of their content, so it is still sent once
+    /// they are gone (deleting a story removes it here first, then sends the deletes).
+    var onlyRetracts: Bool {
+        switch content.content {
+        case .dataMessage(let m)?: return m.hasDelete
+        case .syncMessage(let sync)?:
+            guard case .sent(let sent)? = sync.content else { return false }
+            return sent.hasMessage ? sent.message.hasDelete : sent.isRecipientUpdate
+        default: return false
+        }
+    }
 }
 
 public struct SendResult: Sendable, Equatable {
@@ -82,7 +95,8 @@ public final class MessageSender: Sendable {
 
     /// Re-evaluated after connection setup, immediately before transport submission.
     /// Blocking a contact does not block shared group conversations; those have their own block state.
-    func authorization(to serviceId: String?, groupId: Data, messageIds: [String]) -> @Sendable () throws -> Void {
+    /// `messageIds` must still exist, unerased, unless the payload only retracts them.
+    func authorization(to serviceId: String?, groupId: Data, messageIds: [String], retracting: Bool = false) -> @Sendable () throws -> Void {
         { [database, account] in
             try database.pool.read { db in
                 if !groupId.isEmpty {
@@ -97,7 +111,7 @@ public final class MessageSender: Sendable {
                         throw JobError.permanent("recipient blocked")
                     }
                 }
-                for id in messageIds {
+                for id in messageIds where !retracting {
                     guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [id]),
                           try MessageStore.jsonObject(json)["isErased"] as? Bool != true else {
                         throw JobError.permanent("message removed")
@@ -114,7 +128,7 @@ public final class MessageSender: Sendable {
     @discardableResult
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
                      logged: Bool = true) async throws -> SendResult {
-        let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds)
+        let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts)
         try authorize()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let isSelf = serviceId == account.aci

@@ -2,6 +2,7 @@
 import Foundation
 import GRDB
 import LibSignalClient
+import SignalProtos
 import Testing
 import Synchronization
 @testable import SignalCore
@@ -89,6 +90,16 @@ import Synchronization
             try authorize()
             try await c.database.pool.write { try MessageModifiers.erase($0, id) }
             #expect(throws: JobError.permanent("message removed")) { try authorize() }
+            // Deleting it for everyone still goes out (a story is removed here before its deletes).
+            var delete = Signalservice_Content()
+            delete.dataMessage.delete.targetSentTimestamp = 1
+            var update = Signalservice_Content()
+            update.syncMessage.sent.isRecipientUpdate = true
+            var resent = Signalservice_Content()
+            resent.syncMessage.sent.message.body = "never send"
+            #expect(OutgoingPayload(content: delete, timestamp: 1).onlyRetracts && OutgoingPayload(content: update, timestamp: 1).onlyRetracts)
+            #expect(!OutgoingPayload(content: resent, timestamp: 1).onlyRetracts)
+            try c.messenger.sender.authorization(to: c.aliceAci, groupId: Data(), messageIds: [id], retracting: true)()
             await c.jobs.start()
             try await c.jobs.waitUntilIdle()
             let pending = try await c.server.json("pendingMessages", ["account": "alice"])
