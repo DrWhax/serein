@@ -5,23 +5,24 @@
 import Foundation
 import Synchronization
 import LinkPreviewParser
-import SignalMediaDecoder
 import Testing
-@testable import SignalCore
+import WebFetch
+@testable import LinkPreviewFetcher
 
 @Suite struct LinkPreviewLiveTests {
     @Test func directFetch() async throws {
         guard let url = ProcessInfo.processInfo.environment["LINK_PREVIEW_LIVE"] else { return }
         let href = url.hasPrefix("https://") ? url : "https://www.nu.nl/"
         for proxy in [ContentProxy.direct, .signal] {
-            let transport = URLSessionLinkPreviewTransport(proxy: proxy)
+            let transport = URLSessionWebTransport(proxy: proxy)
             let log = LogBox()
-            let meta = await LinkPreviewFetch.metadata(transport, parser: LinkPreviewParser(), media: MediaDecoder(), href: href, log: { log.add($0) })
+            let fetcher = LinkPreviewPageFetcher(transport: transport, parser: LinkPreviewParser(), log: { log.add($0) })
+            let meta = try await fetcher.page(href)
             print("\(proxy): title \(meta?.title.prefix(60) ?? "-"), image \(meta?.imageHref?.prefix(80) ?? "-"), log \(log.lines)")
             if proxy == .direct {
                 #expect(meta?.title.isEmpty == false)
                 if let i = meta?.imageHref {
-                    let image = await LinkPreviewFetch.image(transport, media: MediaDecoder(), href: i)
+                    let image = try await fetcher.image(i)
                     print("image: \(image?.contentType ?? "-") \(image?.data.count ?? 0) bytes")
                 }
             }

@@ -23,6 +23,11 @@ public struct Profile: Sendable, Equatable {
     public var identityKey: IdentityKey
     public var sealedSender: SealedSenderMode
     public var capabilities: [String: Bool]
+    /// What re-writing our own profile must carry over unchanged (`writeProfile` re-sends every
+    /// field): the payment address as the server holds it (encrypted, passed through), and
+    /// the badges we show.
+    public var paymentAddress: String? = nil
+    public var visibleBadgeIds: [String] = []
 }
 
 public enum ProfileError: Error, Equatable {
@@ -60,6 +65,12 @@ public final class ProfileService: Sendable {
         var avatar: String?
         var unidentifiedAccess: String?
         var unrestrictedUnidentifiedAccess: Bool?
+        var paymentAddress: String?
+        struct Badge: Decodable {
+            var id: String
+            var visible: Bool?
+        }
+        var badges: [Badge]?
     }
 
     @discardableResult
@@ -105,6 +116,8 @@ public final class ProfileService: Sendable {
         }
         var profile = Profile(serviceId: serviceId, identityKey: identity, sealedSender: .disabled, capabilities: capabilities)
         profile.avatarPath = r.avatar
+        profile.paymentAddress = r.paymentAddress
+        profile.visibleBadgeIds = (r.badges ?? []).filter { $0.visible == true }.map(\.id)
         if let profileKey {
             if let n = r.name.flatMap({ Data(base64Encoded: $0) }) { (profile.givenName, profile.familyName) = try Self.decryptName(n, profileKey: profileKey) }
             if let a = r.about.flatMap({ Data(base64Encoded: $0) }) { profile.about = try Self.decryptString(a, profileKey: profileKey) }
@@ -272,10 +285,20 @@ public final class ProfileService: Sendable {
     /// Encrypts a name the way clients upload it (padded to 53 or 257 bytes).
     public static func encryptName(given: String, family: String?, profileKey: Data) throws -> Data {
         var plain = Data(given.utf8)
-        if let family { plain.append(0); plain.append(contentsOf: family.utf8) }
-        let padded = plain.count <= 53 ? 53 : 257
-        guard plain.count <= padded else { throw ProfileError.invalidResponse("name too long") }
-        plain.append(contentsOf: repeatElement(0, count: padded - plain.count))
-        return try SignalCrypto.aes256GCMEncrypt(key: profileKey, plain)
+        if let family, !family.isEmpty { plain.append(0); plain.append(contentsOf: family.utf8) }
+        return try encryptPadded(plain, lengths: PaddedLengths.name, profileKey: profileKey)
+    }
+
+    /// `PaddedLengths`
+    public enum PaddedLengths {
+        public static let name = [53, 257]
+        public static let about = [128, 254, 512]
+        public static let aboutEmoji = [32]
+    }
+
+    /// `encryptProfileItemWithPadding`: zero-padded to the first length that fits.
+    public static func encryptPadded(_ item: Data, lengths: [Int], profileKey: Data) throws -> Data {
+        guard let length = lengths.first(where: { item.count <= $0 }) else { throw ProfileWriteError.tooLong }
+        return try SignalCrypto.aes256GCMEncrypt(key: profileKey, item + Data(count: length - item.count))
     }
 }

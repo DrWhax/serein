@@ -51,6 +51,11 @@ struct HEVCSliceDecoder {
     /// Contexts at the end of this segment (for a following dependent segment).
     var endState = InlineArray<157, UInt8>(repeating: 0)
     var endStat: [Int] = []
+    /// Tile-parallel parsing (HEVCDecoder.decodeTilesInParallel): start at this tile's first
+    /// CTB (tile-scan address) and entry point, and stop at the end of the tile.
+    var startTs: Int? = nil
+    var startEntry = 0
+    var stopAtTileEnd = false
 
     let qpBdOffsetY: Int, qpBdOffsetC: Int
     /// Scratch for one transform block (32x32 at most): levels / scaled coefficients, the
@@ -121,12 +126,16 @@ struct HEVCSliceDecoder {
     // MARK: CTU loop
 
     mutating func decode() throws(HEVCDecodeError) {
-        ctbAddrTs = geom.rsToTs[header.segmentAddress]
-        ctbAddrRs = header.segmentAddress
-        var entry = 0
+        ctbAddrTs = startTs ?? geom.rsToTs[header.segmentAddress]
+        ctbAddrRs = geom.tsToRs[ctbAddrTs]
+        var entry = startEntry
         // Entry points count payload bytes (emulation prevention included) from the data start.
         let rawStart = nal.payloadOffset(rbspOffset: header.dataOffset)
         let entryStarts = header.entryPointOffsets.reduce(into: [rawStart]) { $0.append($0.last! + $1) }.map { nal.rbspOffset(payloadOffset: $0) }
+        if entry > 0 {
+            guard entry < entryStarts.count else { throw .malformed("missing entry point \(entry)") }
+            cabac.restart(at: entryStarts[entry])
+        }
         while true {
             ctbAddrRs = geom.tsToRs[ctbAddrTs]
             let xCtb = (ctbAddrRs % geom.widthCtbs) << sps.log2CtbSize, yCtb = (ctbAddrRs / geom.widthCtbs) << sps.log2CtbSize
@@ -185,6 +194,11 @@ struct HEVCSliceDecoder {
             let nextRowStart = pps.entropyCodingSync && geom.colBd.contains(nextRs % geom.widthCtbs)
             if (pps.tilesEnabled && nextTileStart) || nextRowStart {
                 guard cabac.terminate() == 1 else { throw .malformed("end_of_subset_one_bit is 0") }
+                if stopAtTileEnd && nextTileStart {
+                    endState = cabac.state
+                    endStat = cabac.statCoeff
+                    return
+                }
                 entry += 1
                 guard entry < entryStarts.count else { throw .malformed("missing entry point \(entry)") }
                 cabac.restart(at: entryStarts[entry])

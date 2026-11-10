@@ -8,12 +8,14 @@
 #   compiles its Swift API (SIGNAL_MEDIA_SUPPORTED); used on outgoing stickers and media.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+root=$(pwd)
+# In name order: libsignal-media.patch is made on top of the other libsignal patches.
 for p in Tools/vendor-patches/*.patch; do
   repo=vendor/libsignal; case "$p" in *grdb-*) repo=vendor/GRDB.swift;; esac
-  if git -C "$repo" apply --reverse --check "../../$p" 2>/dev/null; then
+  if git -C "$repo" apply --reverse --check "$root/$p" 2>/dev/null; then
     echo "already applied: $p"
   else
-    git -C "$repo" apply "../../$p"
+    git -C "$repo" apply "$root/$p"
     echo "applied: $p"
   fi
 done

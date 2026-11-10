@@ -1,10 +1,12 @@
 import Foundation
 import Synchronization
 import Testing
-@testable import SignalCore
+import MediaXPCInterface
+import WebFetch
+@testable import GifSearch
 
 /// Serves JSON for the API and byte ranges of `file` for the CDN, recording requests.
-final class FakeGiphy: ProxyHTTPTransport {
+final class FakeGiphy: WebTransport {
     struct State { var requests: [(String, URL, [String: String])] = []; var json = Data(); var file = Data(); var lie = false }
     let state = Mutex(State())
     var requests: [(String, URL, [String: String])] { state.withLock { $0.requests } }
@@ -12,15 +14,15 @@ final class FakeGiphy: ProxyHTTPTransport {
     var file: Data { get { state.withLock { $0.file } } set { state.withLock { $0.file = newValue } } }
     var lie: Bool { get { state.withLock { $0.lie } } set { state.withLock { $0.lie = newValue } } }
 
-    func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> LinkPreviewHTTPResponse {
+    func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> WebResponse {
         let (json, file, lie) = state.withLock { s in s.requests.append((method, url, headers)); return (s.json, s.file, s.lie) }
-        if url.host == "api.giphy.com" { return LinkPreviewHTTPResponse(status: 200, headers: [:], body: json, url: url) }
-        if method == "HEAD" { return LinkPreviewHTTPResponse(status: 200, headers: ["content-length": "\(file.count)"], body: Data(), url: url) }
+        if url.host == "api.giphy.com" { return WebResponse(status: 200, headers: [:], body: json, url: url) }
+        if method == "HEAD" { return WebResponse(status: 200, headers: ["content-length": "\(file.count)"], body: Data(), url: url) }
         let spec = headers["Range"]!.dropFirst("bytes=".count).split(separator: "-").map { Int($0)! }
         let end = min(spec[1], file.count - 1)
         let body = file.subdata(in: spec[0] ..< end + 1)
         let range = lie ? "bytes 0-\(end)/\(file.count)" : "bytes \(spec[0])-\(end)/\(file.count)"
-        return LinkPreviewHTTPResponse(status: 206, headers: ["content-length": "\(body.count)", "content-range": range], body: body, url: url)
+        return WebResponse(status: 206, headers: ["content-length": "\(body.count)", "content-range": range], body: body, url: url)
     }
 }
 

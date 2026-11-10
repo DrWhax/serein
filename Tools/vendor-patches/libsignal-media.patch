@@ -142,25 +142,15 @@ index b2babb8..c9fb906 100644
 +}
 +
  #endif
-diff --git a/swift/build_ffi.sh b/swift/build_ffi.sh
-index 72e189d..3f28431 100755
---- a/swift/build_ffi.sh
-+++ b/swift/build_ffi.sh
-@@ -104,6 +104,8 @@ export CFLAGS_aarch64_apple_ios_macabi="--target=arm64-apple-ios-macabi ${CFLAGS
- export CFLAGS_x86_64_apple_ios_macabi="--target=x86_64-apple-ios-macabi ${CFLAGS:-}"
- 
- FEATURES=()
-+# SignalSafe: WebpSanitizer / Mp4Sanitizer for outgoing media.
-+FEATURES+=("signal-media")
- if [[ "${CARGO_BUILD_TARGET:-}" != "aarch64-apple-ios" ]]; then
-   FEATURES+=("libsignal-bridge-testing")
- fi
+diff --git a/swift/Sources/SignalFfi/signal_ffi.h b/swift/Sources/SignalFfi/signal_ffi.h
+index 5039eda..9f7ecc0 100644
 --- a/swift/Sources/SignalFfi/signal_ffi.h
 +++ b/swift/Sources/SignalFfi/signal_ffi.h
-@@ -7204,6 +7204,39 @@
+@@ -7203,6 +7203,40 @@ SignalFfiError* signal_zk_credential_public_key_check_valid_contents(
+ );
  typedef SignalBytestringArray SignalStringArray;
  typedef SignalConstPointerFfiSyncInputStreamStruct SignalConstPointerFfiInputStreamStruct;
- 
++
 +/* SignalSafe (libsignal-media.patch): from the signal-media feature, absent from the generated header. */
 +SignalFfiError *signal_webp_sanitizer_sanitize(SignalConstPointerFfiSyncInputStreamStruct input);
 +typedef struct SignalSanitizedMetadata SignalSanitizedMetadata;
@@ -197,3 +187,16 @@ index 72e189d..3f28431 100755
  typedef SignalFfiIdentityKeyStoreStruct SignalIdentityKeyStore;
  typedef SignalFfiKyberPreKeyStoreStruct SignalKyberPreKeyStore;
  typedef SignalFfiPreKeyStoreStruct SignalPreKeyStore;
+diff --git a/swift/build_ffi.sh b/swift/build_ffi.sh
+index 72e189d..3f28431 100755
+--- a/swift/build_ffi.sh
++++ b/swift/build_ffi.sh
+@@ -104,6 +104,8 @@ export CFLAGS_aarch64_apple_ios_macabi="--target=arm64-apple-ios-macabi ${CFLAGS
+ export CFLAGS_x86_64_apple_ios_macabi="--target=x86_64-apple-ios-macabi ${CFLAGS:-}"
+ 
+ FEATURES=()
++# SignalSafe: WebpSanitizer / Mp4Sanitizer for outgoing media.
++FEATURES+=("signal-media")
+ if [[ "${CARGO_BUILD_TARGET:-}" != "aarch64-apple-ios" ]]; then
+   FEATURES+=("libsignal-bridge-testing")
+ fi

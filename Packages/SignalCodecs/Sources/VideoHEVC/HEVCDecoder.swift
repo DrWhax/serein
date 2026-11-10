@@ -3,6 +3,8 @@
 // conformance window. Errors in one picture leave the stream decodable from the next IRAP.
 
 public import CodecCore
+import Dispatch
+import Synchronization
 
 /// A decoded picture, cropped: planes of `bitDepth`-bit samples (UInt16), 4:2:0 or 4:0:0.
 public struct HEVCFrame: Sendable {
@@ -53,6 +55,8 @@ public final class HEVCDecoder {
     /// The current picture's slice segments, recorded for the stage.
     var currentSlices: [HEVCSliceWork] = []
     public private(set) var errorCount = 0
+    /// Slice segments whose tiles were parsed in parallel.
+    public private(set) var tileParallelSegments = 0
     /// How frames come out (packed on the reconstruction thread).
     public enum PackedOutput: Sendable { case none, eightBit, littleEndian16 }
     public var packedOutput = PackedOutput.none
@@ -146,6 +150,11 @@ public final class HEVCDecoder {
         if h.type == .i {
             while pic.sliceRefPocs.count <= sliceIndex { pic.sliceRefPocs.append([[], []]); pic.sliceRefLongTerm.append([[], []]) }
         }
+        if h.type == .i, p.tilesEnabled, !p.entropyCodingSync, !h.dependentSliceSegment, !h.entryPointOffsets.isEmpty,
+           let starts = Self.tileStarts(geom, from: geom.rsToTs[h.segmentAddress], count: h.entryPointOffsets.count + 1) {
+            try decodeTilesInParallel(u, header: h, sps: s, pps: p, pic: pic, geom: geom, starts: starts)
+            return
+        }
         var d = try HEVCSliceDecoder(sps: s, pps: p, header: h, nal: u, pic: pic, geom: geom, sliceAddrRs: lastSliceAddrRs, sliceIndex: sliceIndex,
                                      dependentState: h.dependentSliceSegment ? dependentState : nil, inter: inter)
         if h.dependentSliceSegment, let carry = wppCarry { d.wppState = carry }
@@ -153,6 +162,61 @@ public final class HEVCDecoder {
         currentSlices.append(d.recorded())
         dependentState = (d.endState, d.endStat)
         wppCarry = d.wppState
+    }
+
+    /// The first CTBs (tile scan) of the `count` tiles from the one starting at `ts0`; nil
+    /// unless `ts0` starts a tile and that many tiles follow.
+    static func tileStarts(_ g: HEVCGeometry, from ts0: Int, count: Int) -> [Int]? {
+        guard ts0 == 0 || g.tileId[ts0] != g.tileId[ts0 - 1] else { return nil }
+        var starts = [ts0]
+        var ts = ts0 + 1
+        while starts.count < count && ts < g.tileId.count {
+            if g.tileId[ts] != g.tileId[ts - 1] { starts.append(ts) }
+            ts += 1
+        }
+        return starts.count == count ? starts : nil
+    }
+
+    /// An intra slice segment of whole tiles, parsed tile by tile in parallel: within a tile
+    /// every neighbour (availability, MPM, contexts, QP prediction, SAO merge) stops at the
+    /// tile's edge, and each tile restarts CABAC at its entry point with the slice's contexts
+    /// and QP (9.3.1, 8.6.1). Each tile parses into a shadow picture whose decoded CTBs are
+    /// merged back; its recorded reconstruction becomes one slice work.
+    func decodeTilesInParallel(_ u: HEVCNALUnit, header h: HEVCSliceHeader, sps s: HEVCSPS, pps p: HEVCPPS, pic: HEVCPicture, geom: HEVCGeometry,
+                               starts: [Int]) throws {
+        let sliceAddrRs = lastSliceAddrRs, index = sliceIndex
+        let results = Mutex<[Result<HEVCTileParse, HEVCDecodeError>?]>(Array(repeating: nil, count: starts.count))
+        DispatchQueue.concurrentPerform(iterations: starts.count) { k in
+            let r: Result<HEVCTileParse, HEVCDecodeError>
+            do throws(HEVCDecodeError) {
+                let shadow = HEVCPicture(sps: s, id: -1)
+                var d = try HEVCSliceDecoder(sps: s, pps: p, header: h, nal: u, pic: shadow, geom: geom, sliceAddrRs: sliceAddrRs, sliceIndex: index,
+                                             dependentState: nil, inter: nil)
+                d.startTs = starts[k]
+                d.startEntry = k
+                d.stopAtTileEnd = k < starts.count - 1
+                try d.decode()
+                r = .success(HEVCTileParse(shadow, work: d.recorded(), endState: d.endState, endStat: d.endStat))
+            } catch {
+                r = .failure(error)
+            }
+            results.withLock { $0[k] = r }
+        }
+        var parsed: [HEVCTileParse] = []
+        for r in results.withLock({ $0 }) {
+            switch r {
+            case .success(let t): parsed.append(t)
+            case .failure(let e): throw e
+            case nil: throw HEVCDecodeError.malformed("tile not parsed")
+            }
+        }
+        for t in parsed {
+            pic.merge(t, geometry: geom)
+            currentSlices.append(t.work)
+        }
+        if let last = parsed.last { dependentState = (last.endState, last.endStat) }
+        wppCarry = nil
+        tileParallelSegments += 1
     }
 
     /// 8.3.1: PicOrderCntVal from slice_pic_order_cnt_lsb.

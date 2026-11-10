@@ -32,7 +32,13 @@ public struct CrashReports {
     let defaults: UserDefaults
     static let seenKey = "crashReports.lastSeen"
 
-    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"),
+    /// In the user's real home (the sandbox's home is the container); the app's entitlements
+    /// let it read DiagnosticReports there, nothing else.
+    public static var reportsDirectory: URL {
+        URL(fileURLWithPath: AppSandbox.realHome).appendingPathComponent("Library/Logs/DiagnosticReports")
+    }
+
+    public init(directory: URL = CrashReports.reportsDirectory,
                 processName: String = ProcessInfo.processInfo.processName, defaults: UserDefaults = .standard) {
         self.directory = directory
         self.processName = processName

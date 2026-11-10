@@ -63,7 +63,7 @@ public final class Messenger: Sendable {
     /// and blurhash from the media service for images) and uploaded by the send job.
     @discardableResult
     public func sendMessage(_ body: String, attachments outgoing: [OutgoingAttachment], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                            bodyRanges: [MessageBodyRange] = [], to serviceId: String, timestamp: UInt64? = nil) async throws
+                            bodyRanges: [MessageBodyRange] = [], to serviceId: String, timestamp: UInt64? = nil, highQuality: Bool = false) async throws
         -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -71,7 +71,9 @@ public final class Messenger: Sendable {
         if !outgoing.isEmpty {
             guard let services = attachments else { throw AttachmentDownloadError.missingPointer }
             let number = account.number
-            let level = try await database.pool.read { try MediaQuality.level($0, e164: number) }
+            // `scaleImageToLevel`: a high-quality send uses level three, otherwise the remote
+            // config's level for our number.
+            let level = highQuality ? .three : try await database.pool.read { try MediaQuality.level($0, e164: number) }
             for o in outgoing { preparing.append(try await services.prepare(o, level: level)) }
         }
         let prepared = preparing
@@ -227,7 +229,7 @@ public final class Messenger: Sendable {
     /// Queues a message to a Groups v2 conversation (members from the stored group state).
     @discardableResult
     public func sendGroupMessage(_ body: String, attachments outgoing: [OutgoingAttachment] = [], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                                 bodyRanges: [MessageBodyRange] = [], masterKey: Data, timestamp: UInt64? = nil)
+                                 bodyRanges: [MessageBodyRange] = [], masterKey: Data, timestamp: UInt64? = nil, highQuality: Bool = false)
         async throws -> (messageId: String, timestamp: UInt64)
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
@@ -235,7 +237,9 @@ public final class Messenger: Sendable {
         if !outgoing.isEmpty {
             guard let services = attachments else { throw AttachmentDownloadError.missingPointer }
             let number = account.number
-            let level = try await database.pool.read { try MediaQuality.level($0, e164: number) }
+            // `scaleImageToLevel`: a high-quality send uses level three, otherwise the remote
+            // config's level for our number.
+            let level = highQuality ? .three : try await database.pool.read { try MediaQuality.level($0, e164: number) }
             for o in outgoing { preparing.append(try await services.prepare(o, level: level)) }
         }
         let prepared = preparing

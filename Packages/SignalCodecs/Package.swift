@@ -50,6 +50,8 @@ let package = Package(
         .library(name: "AudioMP3", targets: ["AudioMP3"]),
         .library(name: "VideoH264", targets: ["VideoH264"]),
         .library(name: "VideoHEVC", targets: ["VideoHEVC"]),
+        .library(name: "VideoAV1", targets: ["VideoAV1"]),
+        .library(name: "ImageHEIF", targets: ["ImageHEIF"]),
         .library(name: "MetadataStrip", targets: ["MetadataStrip"]),
     ],
     targets: [
@@ -70,6 +72,8 @@ let package = Package(
         .target(name: "AudioMP3", dependencies: ["CodecCore"], swiftSettings: strict),
         .target(name: "VideoH264", dependencies: ["CodecCore"], swiftSettings: strict),
         .target(name: "VideoHEVC", dependencies: ["CodecCore"], swiftSettings: strict),
+        .target(name: "VideoAV1", dependencies: ["CodecCore"], swiftSettings: strict),
+        .target(name: "ImageHEIF", dependencies: ["CodecCore", "ContainerMP4", "VideoHEVC", "VideoAV1"], swiftSettings: strict),
         .target(name: "MetadataStrip", dependencies: ["CodecCore", "ImageJPEG"], swiftSettings: strict),
         .executableTarget(name: "codec-fuzz", dependencies: ["CodecCore", "ImagePNG", "ContainerMP4", "VideoH264", "AudioAAC", "AudioMP3"],
                           swiftSettings: memorySafety),
@@ -78,6 +82,9 @@ let package = Package(
         .testTarget(name: "AudioMP3Tests", dependencies: ["AudioMP3", "CodecCore"], swiftSettings: memorySafety),
         .testTarget(name: "VideoHEVCTests", dependencies: ["VideoHEVC", "ContainerMP4", "CodecCore"], resources: [.copy("Resources")],
                     swiftSettings: memorySafety),
+        .testTarget(name: "ImageHEIFTests", dependencies: ["ImageHEIF", "ContainerMP4", "ImagePNG", "CodecCore"], resources: [.copy("Resources")],
+                    swiftSettings: memorySafety),
+        .testTarget(name: "VideoAV1Tests", dependencies: ["VideoAV1", "CodecCore"], resources: [.copy("Resources")], swiftSettings: memorySafety),
         .testTarget(name: "MetadataStripTests", dependencies: ["MetadataStrip", "CodecCore", "ImageJPEG", "ImagePNG", "ImageWebP", "ImageGIF", "ContainerMP4", "VideoH264"],
                     resources: [.copy("Resources")], swiftSettings: memorySafety),
         .testTarget(name: "AudioAACTests", dependencies: ["AudioAAC", "CodecCore"], swiftSettings: memorySafety),
@@ -85,7 +92,8 @@ let package = Package(
         .testTarget(name: "ImagePNGTests", dependencies: ["ImagePNG", "CodecCore"], swiftSettings: memorySafety),
         .testTarget(
             name: "DifferentialTests",
-            dependencies: ["CodecCore", "ImagePNG", "ImageGIF", "ImageBMP", "Blurhash", "ImageJPEG", "EncodePNG", "EncodeJPEG", "ImageWebP", "ContainerMP4", "AudioAAC", "AudioMP3", "VideoH264"],
+            dependencies: ["CodecCore", "ImagePNG", "ImageGIF", "ImageBMP", "Blurhash", "ImageJPEG", "EncodePNG", "EncodeJPEG", "ImageWebP", "ContainerMP4", "AudioAAC", "AudioMP3", "VideoH264",
+                           "ImageHEIF"],
             resources: [.copy("Resources")],
             swiftSettings: memorySafety
         ),

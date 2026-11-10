@@ -56,9 +56,9 @@ public struct LinkPreviewDraft: Sendable, Equatable {
 
 public struct LinkPreviewService: Sendable {
     public static let timeout: Duration = .seconds(60)
-    let transport: any LinkPreviewTransport
-    /// The page parser (SignalLinkPreviewParser.xpc) and the image decoder (SignalMediaDecoder.xpc).
-    let parser: any LinkPreviewParsing
+    /// The fetcher (SignalLinkPreviewFetcher.xpc, which has pages parsed by
+    /// SignalLinkPreviewParser.xpc) and the image decoder (SignalMediaDecoder.xpc).
+    let fetcher: any LinkPreviewFetching
     let media: any MediaProcessing
     let stickers: StickerService?
     let groups: GroupsService?
@@ -66,10 +66,9 @@ public struct LinkPreviewService: Sendable {
     /// Why a page gave no preview (diagnostics; never the page's content).
     public var log: @Sendable (String) -> Void = { _ in }
 
-    public init(transport: any LinkPreviewTransport, parser: any LinkPreviewParsing, media: any MediaProcessing, stickers: StickerService?,
+    public init(fetcher: any LinkPreviewFetching, media: any MediaProcessing, stickers: StickerService?,
                 groups: GroupsService?, strings: LinkPreviewStrings) {
-        self.transport = transport
-        self.parser = parser
+        self.fetcher = fetcher
         self.media = media
         self.stickers = stickers
         self.groups = groups
@@ -100,11 +99,22 @@ public struct LinkPreviewService: Sendable {
             // Call link state comes with calling (Phase 6); the default title until then.
             return LinkPreviewDraft(url: url, title: strings.callLinkTitle, description: strings.callLinkDescription, date: nil, image: nil, isCallLink: true)
         }
-        guard LinkPreviewRules.shouldPreviewHref(url), let meta = await LinkPreviewFetch.metadata(transport, parser: parser, media: media, href: url, log: log) else { return nil }
-        var image = meta.image
-        if image == nil, let href = meta.imageHref, LinkPreviewRules.shouldPreviewHref(href) {
-            image = await LinkPreviewFetch.image(transport, media: media, href: href)
+        guard LinkPreviewRules.shouldPreviewHref(url) else { return nil }
+        let meta: FetchedLinkPreview
+        do {
+            guard let m = try await fetcher.page(url) else { log("no preview"); return nil }
+            meta = m
+        } catch {
+            log("fetcher failed: \(error)")
+            return nil
         }
+        var image: LinkPreviewImage? = nil
+        if let fetched = meta.image {
+            image = await LinkPreviewFetch.processImage(fetched, media: media)
+        } else if let href = meta.imageHref, LinkPreviewRules.shouldPreviewHref(href), let fetched = try? await fetcher.image(href) {
+            image = await LinkPreviewFetch.processImage(fetched, media: media)
+        }
+        if meta.image != nil && image == nil { return nil }
         guard !Task.isCancelled else { return nil }
         return LinkPreviewDraft(url: url, title: meta.title, description: meta.description, date: meta.date, image: image)
     }

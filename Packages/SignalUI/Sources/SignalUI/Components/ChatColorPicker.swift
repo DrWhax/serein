@@ -96,6 +96,9 @@ public struct ChatColorPicker: View {
     let onResetChatColor: () -> Void
     let onResetAll: () -> Void
     @State private var menuOpenFor: Int?
+    /// `confirmResetAll` (a chat's picker) and `confirmResetWhat` (Settings, no chat).
+    @State private var confirmResetAll = false
+    @State private var confirmResetWhat = false
     @Environment(\.i18n) var i18n
     @Environment(\.axoStaticRendering) var staticRendering
 
@@ -205,8 +208,42 @@ public struct ChatColorPicker: View {
                             if conversationId != nil {
                                 AxoClickableItem.Root(label: i18n("icu:ChatColorPicker__reset"), onClick: onResetChatColor)
                             }
-                            AxoClickableItem.Root(label: i18n("icu:ChatColorPicker__resetAll"), onClick: onResetAll)
+                            AxoClickableItem.Root(label: i18n("icu:ChatColorPicker__resetAll")) {
+                                if conversationId == nil { confirmResetWhat = true } else { confirmResetAll = true }
+                            }
                         }
+                    }
+                }
+            }
+        }
+        .viewportPortal { resetDialogs }
+    }
+
+    /// The reset confirmations (upstream's two AxoConfirmDialogs).
+    @ViewBuilder var resetDialogs: some View {
+        if confirmResetWhat {
+            AxoBaseDialog.Host {
+                AxoConfirmDialog.Root(title: i18n("icu:ChatColorPicker__resetDefault"), description: i18n("icu:ChatColorPicker__confirm-reset-message")) {
+                    AxoConfirmDialog.Cancel(i18n("icu:cancel")) { confirmResetWhat = false }
+                    AxoConfirmDialog.Action(i18n("icu:ChatColorPicker__confirm-reset-default"), variant: .strongPrimary) {
+                        confirmResetWhat = false
+                        onResetChatColor()
+                    }
+                    AxoConfirmDialog.Action(i18n("icu:ChatColorPicker__resetAll"), variant: .strongPrimary) {
+                        confirmResetWhat = false
+                        onResetChatColor()
+                        onResetAll()
+                    }
+                }
+            }
+        }
+        if confirmResetAll {
+            AxoBaseDialog.Host {
+                AxoConfirmDialog.Root(title: i18n("icu:ChatColorPicker__resetAll"), description: i18n("icu:ChatColorPicker__confirm-reset-message")) {
+                    AxoConfirmDialog.Cancel(i18n("icu:cancel")) { confirmResetAll = false }
+                    AxoConfirmDialog.Action(i18n("icu:ChatColorPicker__confirm-reset"), variant: .strongPrimary) {
+                        confirmResetAll = false
+                        onResetAll()
                     }
                 }
             }

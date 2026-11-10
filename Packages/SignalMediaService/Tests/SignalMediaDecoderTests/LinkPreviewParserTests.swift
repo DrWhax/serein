@@ -39,7 +39,7 @@ import Testing
         final class Hostile: NSObject, MediaXPCProtocol, NSXPCListenerDelegate, Sendable {
             func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
                 let bad = LinkPreviewHTML(title: String(repeating: "y", count: LinkPreviewHTML.maxLength + 1), description: nil, imageHref: nil, rawDate: nil)
-                reply(try? MediaXPCWire.encode([bad]), nil)
+                reply(try? MediaXPCWire.encode(Optional(bad)), nil)
             }
             func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
                 c.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)

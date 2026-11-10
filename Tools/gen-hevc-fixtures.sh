@@ -13,6 +13,18 @@ gen() {   # name size frames pix_fmt encoder-args…
   ffmpeg -hide_banner -loglevel error -i "$out/$name.mp4" -f framemd5 -pix_fmt "$pix" -y "$out/$name.framemd5"
   ffmpeg -hide_banner -i "$out/$name.mp4" -c copy -bsf:v trace_headers -f null - 2>&1 | python3 -I "$root/Tools/hevc-trace-golden.py" > "$out/$name.headers.json"
 }
+# kvazaar (x265 has no tiles): intra-only pictures of several tiles in one slice, which
+# VideoHEVC parses tile by tile in parallel; and one slice per tile (the serial path).
+gen_kvz() {   # name size frames kvazaar-args…
+  name=$1 size=$2 frames=$3; shift 3
+  ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=size=$size:rate=30" -frames:v "$frames" -pix_fmt yuv420p -f rawvideo -y "$out/$name.yuv"
+  kvazaar -i "$out/$name.yuv" --input-res "$size" -o "$out/$name.hevc" "$@" 2>/dev/null
+  rm "$out/$name.yuv"
+  ffmpeg -hide_banner -loglevel error -i "$out/$name.hevc" -c copy -tag:v hvc1 -movflags +faststart -y "$out/$name.mp4"
+  rm "$out/$name.hevc"
+  ffmpeg -hide_banner -loglevel error -i "$out/$name.mp4" -f framemd5 -pix_fmt yuv420p -y "$out/$name.framemd5"
+  ffmpeg -hide_banner -i "$out/$name.mp4" -c copy -bsf:v trace_headers -f null - 2>&1 | python3 -I "$root/Tools/hevc-trace-golden.py" > "$out/$name.headers.json"
+}
 x="log-level=error"
 gen intra8_nolf   64x64   4 yuv420p     -c:v libx265 -x265-params "$x:keyint=1:no-deblock=1:no-sao=1:no-wpp=1"
 gen intra8        64x64   4 yuv420p     -c:v libx265 -x265-params "$x:keyint=1"
@@ -27,4 +39,7 @@ gen ipb10         136x72 12 yuv420p10le -c:v libx265 -x265-params "$x:bframes=3:
 gen scaling8      64x64   6 yuv420p     -c:v libx265 -x265-params "$x:scaling-list=default:bframes=2"
 gen tiles8        256x128 4 yuv420p     -c:v libx265 -x265-params "$x:no-wpp=1:bframes=0" -x265-params "$x:no-wpp=1"
 gen vt10          192x112 10 yuv420p10le -c:v hevc_videotoolbox -profile:v main10 -b:v 400k
+gen_kvz kvz_tiles     320x192 3 -p 1 --tiles 3x2 --no-wpp
+gen_kvz kvz_tiles_lf  416x240 2 -p 1 --tiles 4x3 --no-wpp --sao full
+gen_kvz kvz_tileslices 320x192 2 -p 1 --tiles 2x2 --no-wpp --slices tiles
 ls -la "$out"

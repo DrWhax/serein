@@ -42,8 +42,22 @@ extension String {
 }
 
 @Suite struct HEVCDecodeTests {
+    /// kvazaar's intra pictures of 6 and 12 tiles in one slice take the tile-parallel parse;
+    /// one slice per tile (no entry points) stays serial. Both are checked bit-exact below.
+    @Test(arguments: [("kvz_tiles", true), ("kvz_tiles_lf", true), ("kvz_tileslices", false)])
+    func tilesParseInParallel(_ name: String, _ parallel: Bool) throws {
+        let f = try HEVCFixture(name)
+        let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+        var frames: [HEVCFrame] = []
+        for (i, s) in f.samples().enumerated() { frames += d.decode(sample: ByteSlice(s), pts: Int64(i)) }
+        frames += d.flush()
+        #expect(d.errorCount == 0 && !frames.isEmpty)
+        #expect((d.tileParallelSegments > 0) == parallel, "\(name): \(d.tileParallelSegments) parallel segments")
+    }
+
     @Test(arguments: ["intra8_nolf", "intra10_nolf", "intra8big_nolf", "lossless_nolf", "scaling_intra_nolf", "intra8", "intra10",
-                       "ipb8", "ipb10", "scaling8", "tiles8", "vt10"]) func intraBitExact(_ name: String) throws {
+                       "ipb8", "ipb10", "scaling8", "tiles8", "vt10", "kvz_tiles", "kvz_tiles_lf", "kvz_tileslices"]) func intraBitExact(_ name: String) throws {
         let f = try HEVCFixture(name)
         let (frames, errors) = try f.decodeAll()
         let expected = try f.expectedMD5s()

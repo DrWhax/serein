@@ -81,7 +81,7 @@ struct ComposerLinkPreview {
 
     private func linkPreviewService() -> LinkPreviewService? {
         guard let session = signalSession, let strings = linkPreviewStrings else { return nil }
-        var service = LinkPreviewService(transport: linkPreviewTransport, parser: linkPreviewParser, media: media,
+        var service = LinkPreviewService(fetcher: linkPreviewFetcher, media: media,
                                          stickers: session.stickers, groups: session.groups, strings: strings)
         service.log = { Self.trace("link preview: \($0)") }
         return service

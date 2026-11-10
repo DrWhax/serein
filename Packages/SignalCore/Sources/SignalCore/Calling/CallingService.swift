@@ -58,6 +58,8 @@ public enum CallingError: Error, Equatable {
     case noRecipient
     case callLinkRequestFailed(status: Int)
     case missingAdminKey
+    /// The call was hung up while it was being set up.
+    case cancelled
 }
 
 @MainActor
@@ -97,6 +99,19 @@ public final class CallingService {
     public internal(set) var cameraEnabled = false
     /// Called when a call should start or stop sending camera frames (Phase 6 step 3).
     public var onCameraNeeded: ((Bool) -> Void)?
+    /// Bumped by `hangup()`. Call setup waits on the database, credentials and the group's
+    /// state; it notes the generation when it begins and checks it after every suspension,
+    /// so a hang-up during setup (before the call is in `callsLookup` for `hangup` to end)
+    /// cannot be followed by the call starting anyway.
+    public private(set) var setupGeneration: UInt64 = 0
+    /// Tests: awaited at each of setup's suspension points, just before the check.
+    var setupCheckpoint: ((String) async -> Void)?
+
+    /// Throws `cancelled` when there was a hang-up since setup noted `generation`.
+    func checkSetup(_ generation: UInt64, _ step: String) async throws {
+        if let setupCheckpoint { await setupCheckpoint(step) }
+        guard generation == setupGeneration else { throw CallingError.cancelled }
+    }
 
     public init(account: Account, database: SignalDatabase, socket: SocketManager, http: HTTPClient, messenger: Messenger, groups: GroupsAPI,
                 credentials: GroupCredentials, config: CallingConfig, fieldTrials: [String: String] = [:]) throws {
@@ -376,20 +391,30 @@ public final class CallingService {
 
     /// `startOutgoingDirectCall`
     public func startOutgoingDirectCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool) async throws {
+        let generation = setupGeneration
         guard let peer = try await database.pool.read({ db in
             try String.fetchOne(db, sql: "SELECT serviceId FROM conversations WHERE id = ? AND type = 'private'", arguments: [conversationId])
         }) else { throw CallingError.noRecipient }
+        try await checkSetup(generation, "direct.recipient")
         if let call = rtc.call, call.state != .ended { return }
         let call = try rtc.startOutgoingCall(remoteUserId: peer, isVideoCall: hasLocalVideo, localDeviceId: localDeviceId)
-        // Call messages carry no profile key: share it now (`ProfileKeyForCall`).
-        try await database.pool.write { db in
-            try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["profileSharing"] = true }
-        }
-        sendProfileKey(to: peer)
         cameraEnabled = hasLocalVideo
         call.setOutgoingAudioMuted(!hasLocalAudio)
         call.setOutgoingVideoMuted(!hasLocalVideo)
+        // In callsLookup before the next suspension, so that a hang-up meanwhile ends it.
         attach(call, conversationId: conversationId)
+        do {
+            // Call messages carry no profile key: share it now (`ProfileKeyForCall`).
+            try await database.pool.write { db in
+                try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["profileSharing"] = true }
+            }
+            try await checkSetup(generation, "direct.profileSharing")
+            guard call.state != .ended else { throw CallingError.cancelled }
+        } catch {
+            if call.state != .ended { rtc.hangup(call.callId) }
+            throw error
+        }
+        sendProfileKey(to: peer)
         emit(.outgoingCall(conversationId: conversationId, hasLocalAudio: hasLocalAudio, hasLocalVideo: hasLocalVideo))
     }
 
@@ -445,6 +470,7 @@ public final class CallingService {
             if call.state == .ended {
                 self.onCameraNeeded?(false)
                 self.callsLookup[conversationId] = nil
+                if self.callsLookup.isEmpty { self.isPresenting = false }
             }
             if let local = Self.localEvent(call) {
                 let event = self.directEvent(call, local, timestamp: MessageStore.now(), source: "call.handleStateChanged")
@@ -530,7 +556,11 @@ public final class CallingService {
     }
 
     /// `hangup` / `hangupAllCalls`: upstream ends every call (only one is active at a time).
+    /// Also cancels setup still in progress (`setupGeneration`), stops presenting and stops
+    /// microphone warmup at once. Safe to call any number of times.
     public func hangup(excludeRinging: Bool = false) {
+        setupGeneration &+= 1
+        isPresenting = false
         onCameraNeeded?(false)
         for call in callsLookup.values {
             switch call {
@@ -544,7 +574,23 @@ public final class CallingService {
                 g.disconnect()
             }
         }
-        Task { _ = try? await self.rtc.setMicrophoneWarmupEnabled(false) }
+        rtc.stopMicrophoneWarmup()
+    }
+
+    /// Ends one call (a call the app is not showing: it must not keep our media).
+    public func endCall(conversationId: String) {
+        switch callsLookup[conversationId] {
+        case .direct(let c)?:
+            c.setOutgoingAudioMuted(true)
+            c.setOutgoingVideoMuted(true)
+            rtc.hangup(c.callId)
+        case .group(let g)?:
+            g.setOutgoingAudioMuted(true)
+            g.setOutgoingVideoMuted(true)
+            g.disconnect()
+            rtc.stopMicrophoneWarmup()
+        case nil: break
+        }
     }
 
     /// Whether we are presenting (frames are then the screen share's, not the camera's).
@@ -553,7 +599,10 @@ public final class CallingService {
     /// `#startPresenting` / `#stopPresenting`: the call's video becomes the screen share
     /// (ScreenShareCapture's frames, 2880×1800@5) and back to the camera, if it was on.
     public func setPresenting(conversationId: String, _ presenting: Bool) {
-        guard let call = callsLookup[conversationId] else { return }
+        guard let call = callsLookup[conversationId] else {
+            if !presenting { isPresenting = false }   // the call already ended
+            return
+        }
         isPresenting = presenting
         if presenting {
             onCameraNeeded?(false)

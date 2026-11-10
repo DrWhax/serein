@@ -322,8 +322,14 @@ public final class RingRTC {
 
     public func setMicrophoneWarmupEnabled(_ warmup: Bool) async throws -> AudioDevice? {
         if warmup { return try await audioRequest("setMicrophoneWarmupEnabled", ["enabled": .bool(true)]) }
-        do { _ = try run("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)]) } catch { logWarn("Failed to stop microphone warmup: \(error)") }
+        stopMicrophoneWarmup()
         return nil
+    }
+
+    /// Stops microphone warmup (which records) now, without waiting: the request is queued to
+    /// the audio module before this returns, behind any earlier start.
+    public func stopMicrophoneWarmup() {
+        do { _ = try run("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)]) } catch { logWarn("Failed to stop microphone warmup: \(error)") }
     }
 
     // MARK: logging

@@ -2,13 +2,14 @@
 
 import Foundation
 import Testing
-@testable import SignalCore
+import WebFetch
+@testable import GifSearch
 
 @Suite struct GiphyLiveTests {
     @Test func trendingThroughContentProxy() async throws {
         guard ProcessInfo.processInfo.environment["GIPHY_LIVE"] != nil else { return }
-        for (label, roots) in [("system roots", [Data]()), ("signal roots", try SignalEnvironment.production.endpoints.rootCertificatesDER)] {
-            let giphy = GiphyClient(transport: URLSessionLinkPreviewTransport(proxy: .signal, rootCertificatesDER: roots))
+        for label in ["system roots"] {
+            let giphy = GiphyClient(transport: URLSessionWebTransport(proxy: .signal))
             do {
                 let page = try await giphy.trending(limit: 4, offset: nil)
                 print("giphy \(label): \(page.gifs.count) gifs, next \(page.next.map(String.init) ?? "-")")

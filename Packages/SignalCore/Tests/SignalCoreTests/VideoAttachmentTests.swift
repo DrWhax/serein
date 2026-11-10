@@ -91,6 +91,24 @@ struct NoForms: UploadFormSource {
         }
     }
 
+    /// handleImageAttachment: HEIC (by type or by name) is sent as a JPEG converted at quality
+    /// 0.75 and then scaled; without transcoding it stays HEIC, stripped.
+    @Test func heicIsSentAsJPEG() async throws {
+        let store = try AttachmentStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("att-\(UUID())"))
+        let services = AttachmentServices(store: store, uploader: AttachmentUploader(http: HTTPClient(rootCertificatesDER: []), forms: NoForms()),
+                                          media: MediaDecoder())
+        let heic = try Self.metadataFixture("grid.heic")
+        for (type, name) in [("image/heic", "IMG_0001.HEIC"), ("application/octet-stream", "IMG_0002.heif"), ("image/heif", nil as String?)] {
+            let a = try await services.prepare(OutgoingAttachment(data: heic, contentType: type, fileName: name))
+            let sent = try #require(try store.plaintext(of: a))
+            #expect(a.contentType == "image/jpeg" && sent.prefix(2) == Data([0xFF, 0xD8]), "\(type) \(name ?? "-")")
+            #expect(a.fileName == nil && a.width == 700 && a.height == 450 && a.blurHash != nil && a.thumbnail != nil)
+        }
+        let kept = try await services.prepare(OutgoingAttachment(data: heic, contentType: "image/heic", fileName: "IMG_0003.HEIC"), transcode: false)
+        #expect(kept.contentType == "image/heic")
+        #expect(AttachmentServices.isHeic("image/jpeg", fileName: "photo.Heic") && !AttachmentServices.isHeic("image/avif", fileName: "x.avif"))
+    }
+
     @Test func refusesWhatCannotBeStripped() async throws {
         let store = try AttachmentStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("att-\(UUID())"))
         let services = AttachmentServices(store: store, uploader: AttachmentUploader(http: HTTPClient(rootCertificatesDER: []), forms: NoForms()),

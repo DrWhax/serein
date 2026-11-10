@@ -23,6 +23,15 @@ public struct AccountSettings: Sendable, Equatable {
     public var incomingCallNotification = true
     public var callRingtoneNotification = true
     public var alwaysRelayCalls = false
+    /// Settings → Data usage (local to this device, as upstream): which received attachments
+    /// download without asking (`auto-download-attachment`), and whether images go out in high
+    /// quality unless the composer's HD button says otherwise (`sent-media-quality`).
+    public var autoDownload = AttachmentPolicy.AutoDownload()
+    public var sentMediaQuality = SentMediaQuality.standard
+    /// Settings → Privacy → Phone number (synced; changed through ProfileWriter, which talks
+    /// to the server first, so `save` leaves them alone). Defaults as upstream's page shows them.
+    public var sharesPhoneNumber = false
+    public var discoverableByPhoneNumber = false
     /// Stories (AccountRecord): view receipts (unset follows read receipts) and stories off.
     public var storyViewReceipts = false
     public var storiesDisabled = false
@@ -43,6 +52,10 @@ public struct AccountSettings: Sendable, Equatable {
         s.incomingCallNotification = try Items.get(db, "incoming-call-notification", as: Bool.self) ?? true
         s.callRingtoneNotification = try Items.get(db, "call-ringtone-notification", as: Bool.self) ?? true
         s.alwaysRelayCalls = try Items.get(db, "always-relay-calls", as: Bool.self) ?? false
+        s.autoDownload = try AttachmentPolicy.autoDownload(db)
+        s.sentMediaQuality = try Items.get(db, "sent-media-quality", as: String.self).flatMap(SentMediaQuality.init) ?? .standard
+        s.sharesPhoneNumber = try Items.get(db, "phoneNumberSharingMode", as: String.self) == "Everybody"
+        s.discoverableByPhoneNumber = try Items.get(db, "phoneNumberDiscoverability", as: String.self) == "Discoverable"
         s.storyViewReceipts = try Items.get(db, "storyViewReceiptsEnabled", as: Bool.self) ?? s.readReceipts
         s.storiesDisabled = try Items.get(db, "hasStoriesDisabled", as: Bool.self) ?? false
         s.blockedContacts = Set(try BlockedList.serviceIds.entries(db).map(\.id)).union(try BlockedList.numbers.entries(db).map(\.id)).count
@@ -67,8 +80,15 @@ public struct AccountSettings: Sendable, Equatable {
         try Items.set(db, "incoming-call-notification", incomingCallNotification)
         try Items.set(db, "call-ringtone-notification", callRingtoneNotification)
         try Items.set(db, "always-relay-calls", alwaysRelayCalls)
+        try Items.set(db, "auto-download-attachment", autoDownload)
+        try Items.set(db, "sent-media-quality", sentMediaQuality.rawValue)
         if let account = try Account.load(db) { try StorageWriteBack.accountChanged(db, account: account) }
     }
+}
+
+/// `SentMediaQualitySettingType`
+public enum SentMediaQuality: String, Sendable, CaseIterable {
+    case standard, high
 }
 
 extension SignalDatabase {

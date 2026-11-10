@@ -8,6 +8,7 @@
 
 import AudioAAC
 import AudioMP3
+import VoiceNoteEncoder
 import CodecCore
 import ContainerMP4
 import Foundation
@@ -204,47 +205,8 @@ extension MediaDecoder {
 
 // MARK: voice notes
 
-/// Recording sessions (upstream's mp3Encoder worklet: the encoder plus the waveform of the
-/// input samples).
-actor VoiceNoteSessions {
-    struct Session {
-        var encoder: MP3Encoder
-        var waveform = WaveformBuilder()
-        var bytes: [UInt8] = []
-        var samples = 0
-        let sampleRate: Int
-    }
-    var sessions: [UUID: Session] = [:]
-    static let maxSessions = 4
-
-    func start(sampleRate: Int) throws -> UUID {
-        guard sessions.count < Self.maxSessions else { throw MediaProcessingError.undecodable("too many recordings") }
-        guard let encoder = try? MP3Encoder(inputSampleRate: sampleRate) else { throw MediaProcessingError.unsupportedFormat }
-        let id = UUID()
-        sessions[id] = Session(encoder: encoder, sampleRate: sampleRate)
-        return id
-    }
-
-    func append(_ id: UUID, _ samples: [Float]) throws {
-        guard var s = sessions[id] else { throw MediaProcessingError.invalidResult }
-        let clean = samples.map { $0.isFinite ? min(max($0, -1), 1) : 0 }
-        for v in clean { s.waveform.push(v) }
-        s.samples += clean.count
-        s.bytes += s.encoder.encode(clean)
-        sessions[id] = s
-    }
-
-    func finish(_ id: UUID) throws -> VoiceNote {
-        guard var s = sessions.removeValue(forKey: id) else { throw MediaProcessingError.invalidResult }
-        s.bytes += s.encoder.flush()
-        let tag = s.encoder.tagFrame()
-        for (i, b) in tag.enumerated() where i < s.bytes.count { s.bytes[i] = b }
-        return VoiceNote(data: Data(s.bytes), waveform: s.waveform.collect(), duration: Double(s.samples) / Double(s.sampleRate))
-    }
-
-    func cancel(_ id: UUID) { sessions[id] = nil }
-}
-
+// Recording runs in SignalVoiceNoteEncoder.xpc (VoiceNoteEncoder); the in-process decoder
+// (tests) uses the same sessions.
 extension MediaDecoder {
     static let voiceNotes = VoiceNoteSessions()
 

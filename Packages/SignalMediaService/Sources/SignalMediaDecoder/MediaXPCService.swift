@@ -6,12 +6,20 @@ import MediaXPCInterface
 
 public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
     let decoder = MediaDecoder()
+    /// Bounded concurrency and queue; a request past its budget (plus grace) ends the process
+    /// (Containment.swift).
+    let gate: RequestGate
+
+    public init(gate: RequestGate = RequestGate()) { self.gate = gate }
 
     public func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        let decoder = decoder
+        let decoder = decoder, gate = gate
         Task {
             do {
-                reply(try await Self.run(try MediaXPCWire.decode(MediaRequest.self, request), decoder), nil)
+                let decoded = try MediaXPCWire.decode(MediaRequest.self, request, maxBytes: MediaRequest.maxBytes)
+                // Recording is SignalVoiceNoteEncoder.xpc's (VoiceNoteEncoder), never this process's.
+                guard !decoded.isVoiceNote else { throw MediaProcessingError.unsupportedFormat }
+                reply(try await gate.run(budget: decoded.budget) { try await Self.run(decoded, decoder) }, nil)
             } catch {
                 reply(nil, String(describing: error))
             }
@@ -26,6 +34,7 @@ public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
         case .thumbnail(let b, let size): return try MediaXPCWire.encode(try await d.thumbnail(b, size: size))
         case .scaleForSending(let b, let type, let level): return try MediaXPCWire.encode(try await d.scaleForSending(b, contentType: type, level: level))
         case .stripMetadata(let b, let type): return try MediaXPCWire.encode(try await d.stripMetadata(b, contentType: type))
+        case .convertHEIC(let b): return try MediaXPCWire.encode(try await d.convertHEIC(b))
         case .audioSummary(let b): return try MediaXPCWire.encode(try await d.audioSummary(b))
         case .decodeAudio(let b, let start, let max): return try MediaXPCWire.encode(try await d.decodeAudio(b, startFrame: start, maxFrames: max))
         case .startVoiceNote(let rate): return try MediaXPCWire.encode(try await d.startVoiceNote(sampleRate: rate))
@@ -52,11 +61,17 @@ public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
     }
 }
 
-/// Accepts connections and exports one handler (shared state) to each.
+/// Accepts connections (only from a process signed as `peer` says, when given) and exports one
+/// handler (shared state) to each.
 public final class MediaXPCListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
-    let handler = MediaXPCHandler()
-    public override init() {}
+    let handler: MediaXPCHandler
+    let peer: String?
+    public init(peer: String? = nil, handler: MediaXPCHandler = MediaXPCHandler()) {
+        self.peer = peer
+        self.handler = handler
+    }
     public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        if let peer { connection.setCodeSigningRequirement(peer) }
         connection.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
         connection.exportedObject = handler
         connection.resume()

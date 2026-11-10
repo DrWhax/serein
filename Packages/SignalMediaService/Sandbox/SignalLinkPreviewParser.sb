@@ -7,14 +7,21 @@
 ; Tools/check-sandbox-profile.sh runs a probe service under these rules.
 ;
 ; Files: nothing read (not even system files), written, or ioctl'd.
-(deny file-read* (subpath "/"))
+; Its own bundle (SignalLinkPreviewParser.xpc: the executable, Info.plist with its peers' code-signing
+; requirements, the signature) stays readable; nothing else is.
+; Security.framework's own (read-only) resources stay readable too: compiling the peers'
+; code-signing requirements needs them (Tools/check-sandbox-profile.sh probes it).
+(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalLinkPreviewParser\.xpc(/.*)?$")) (require-not (subpath "/System/Library/Frameworks/Security.framework"))))
 (deny file-write* (subpath "/"))
 (deny file-ioctl (subpath "/"))
 ; No other programs, no children.
 (deny process-exec* (subpath "/"))
 (deny process-fork)
 ; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any.
-(deny mach-lookup (global-name-regex #".*"))
+; Except com.apple.CodeSigningHelper: checking each message's sender against the peer's
+; code-signing requirement (NSXPCConnection.setCodeSigningRequirement) asks it about the
+; sender's code; without it every message is refused (Tools/check-sandbox-profile.sh).
+(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.CodeSigningHelper"))))
 (deny mach-lookup (local-name-regex #".*"))
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))

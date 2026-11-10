@@ -123,6 +123,28 @@ public struct ScaledImage: Codable, Equatable, Sendable {
     }
 }
 
+/// A HEIC / HEIF photo re-encoded as a full-size JPEG for sending (upstream heicConverterWorker:
+/// heic-convert to JPEG at quality 0.75, alpha dropped, before autoScale).
+public struct ConvertedImage: Codable, Equatable, Sendable {
+    public static let quality = 75
+    public var data: Foundation.Data
+    public var width: Int
+    public var height: Int
+
+    public init(data: Foundation.Data, width: Int, height: Int) {
+        self.data = data
+        self.width = width
+        self.height = height
+    }
+
+    /// A JPEG (SOI … EOI) of plausible size and dimensions.
+    public func validated() throws -> ConvertedImage {
+        guard (1...16384).contains(width), (1...16384).contains(height), data.count >= 4, data.count <= 256 << 20,
+              data.prefix(2) == Foundation.Data([0xFF, 0xD8]), data.suffix(2) == Foundation.Data([0xFF, 0xD9]) else { throw MediaProcessingError.invalidResult }
+        return self
+    }
+}
+
 /// What a link-preview page says about itself (`parseMetadata`): raw strings, bounded.
 public struct LinkPreviewHTML: Codable, Equatable, Sendable {
     public static let maxLength = 4096
@@ -204,6 +226,10 @@ public protocol MediaProcessing: Sendable {
     func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage
     /// `scaleImageToLevel`. Callers skip GIFs and non-images (`canBeTranscoded`).
     func scaleForSending(_ bytes: Data, contentType: String, level: MediaQualityLevel) async throws -> ScaledImage
+    /// The sending side's HEIC conversion (handleImageAttachment → heicConverterWorker). The
+    /// only request that decodes HEVC images: received HEIC is never displayed (upstream shows
+    /// it as a file), so display / thumbnail / info refuse it.
+    func convertHEIC(_ bytes: Data) async throws -> ConvertedImage
     /// The file without its metadata (Exif / XMP / IPTC / comments in images, user data and
     /// times in videos); throws when it cannot be parsed or its type has no stripper.
     func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data

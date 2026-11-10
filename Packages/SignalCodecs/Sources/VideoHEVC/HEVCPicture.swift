@@ -118,6 +118,62 @@ final class HEVCPicture {
     }
 }
 
+/// One tile's parse (HEVCDecoder.decodeTilesInParallel): the shadow picture's metadata, its
+/// recorded reconstruction, and the contexts it ended with.
+struct HEVCTileParse: Sendable {
+    let w4: Int
+    var ctbs: [Int]
+    var predMode: [UInt8], intraMode: [UInt8], qpY: [Int8], ctDepth: [UInt8], bypass: [Bool]
+    var tuEdgeV: [UInt8], tuEdgeH: [UInt8], puEdgeV: [UInt8], puEdgeH: [UInt8], nonZeroCoeff: [Bool], motion: [HEVCMotion]
+    var ctbSliceAddr: [Int], ctbSliceIndex: [Int16], ctbDeblockDisabled: [Bool], ctbFilterAcrossSlices: [Bool]
+    var ctbBetaOffset: [Int8], ctbTcOffset: [Int8], ctbCbQpOffset: [Int8], ctbCrQpOffset: [Int8]
+    var sao: [[HEVCSAO]]
+    var work: HEVCSliceWork
+    var endState: InlineArray<157, UInt8>
+    var endStat: [Int]
+
+    init(_ p: HEVCPicture, work: HEVCSliceWork, endState: InlineArray<157, UInt8>, endStat: [Int]) {
+        w4 = p.w4
+        ctbs = p.ctbDecoded.indices.filter { p.ctbDecoded[$0] }
+        predMode = p.predMode; intraMode = p.intraMode; qpY = p.qpY; ctDepth = p.ctDepth; bypass = p.bypass
+        tuEdgeV = p.tuEdgeV; tuEdgeH = p.tuEdgeH; puEdgeV = p.puEdgeV; puEdgeH = p.puEdgeH; nonZeroCoeff = p.nonZeroCoeff; motion = p.motion
+        ctbSliceAddr = p.ctbSliceAddr; ctbSliceIndex = p.ctbSliceIndex; ctbDeblockDisabled = p.ctbDeblockDisabled
+        ctbFilterAcrossSlices = p.ctbFilterAcrossSlices; ctbBetaOffset = p.ctbBetaOffset; ctbTcOffset = p.ctbTcOffset
+        ctbCbQpOffset = p.ctbCbQpOffset; ctbCrQpOffset = p.ctbCrQpOffset; sao = p.sao
+        self.work = work
+        self.endState = endState
+        self.endStat = endStat
+    }
+}
+
+extension HEVCPicture {
+    /// Copies a tile's decoded CTBs (their per-CTB state and 4x4 grid) from its shadow picture.
+    func merge(_ t: HEVCTileParse, geometry g: HEVCGeometry) {
+        let ctb = sps.ctbSize
+        for rs in t.ctbs {
+            ctbDecoded[rs] = true
+            ctbSliceAddr[rs] = t.ctbSliceAddr[rs]
+            ctbSliceIndex[rs] = t.ctbSliceIndex[rs]
+            ctbDeblockDisabled[rs] = t.ctbDeblockDisabled[rs]
+            ctbFilterAcrossSlices[rs] = t.ctbFilterAcrossSlices[rs]
+            ctbBetaOffset[rs] = t.ctbBetaOffset[rs]
+            ctbTcOffset[rs] = t.ctbTcOffset[rs]
+            ctbCbQpOffset[rs] = t.ctbCbQpOffset[rs]
+            ctbCrQpOffset[rs] = t.ctbCrQpOffset[rs]
+            for c in 0..<sao.count { sao[c][rs] = t.sao[c][rs] }
+            let x0 = (rs % g.widthCtbs) * ctb, y0 = (rs / g.widthCtbs) * ctb
+            for y4 in (y0 >> 2)..<min(h4, (y0 + ctb) >> 2) {
+                for x4 in (x0 >> 2)..<min(w4, (x0 + ctb) >> 2) {
+                    let i = x4 + y4 * w4
+                    predMode[i] = t.predMode[i]; intraMode[i] = t.intraMode[i]; qpY[i] = t.qpY[i]; ctDepth[i] = t.ctDepth[i]; bypass[i] = t.bypass[i]
+                    tuEdgeV[i] = t.tuEdgeV[i]; tuEdgeH[i] = t.tuEdgeH[i]; puEdgeV[i] = t.puEdgeV[i]; puEdgeH[i] = t.puEdgeH[i]
+                    nonZeroCoeff[i] = t.nonZeroCoeff[i]; motion[i] = t.motion[i]
+                }
+            }
+        }
+    }
+}
+
 /// A parsed picture's samples with the metadata reconstruction and the in-loop filters read
 /// (a value: it moves to the reconstruction thread).
 struct HEVCPictureState: Sendable {

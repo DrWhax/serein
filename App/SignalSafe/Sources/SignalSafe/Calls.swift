@@ -30,6 +30,8 @@ struct ActiveCallState: Equatable {
     var isCallLink = false
     /// Bumped when a group call changes (participants, join state): the screen re-reads it.
     var groupRevision = 0
+    /// The call can carry our media: not merely its ended-call screen.
+    var isLive: Bool { !endedNeedingPermission }
 }
 
 /// Settings → Calls' device lists.
@@ -111,6 +113,8 @@ struct CallDevices {
     func handleCallingEvent(_ e: CallingEvent) {
         switch e {
         case .outgoingCall(let id, _, let video):
+            // Only the call this lobby started; one the user already left is ended instead.
+            guard activeCall?.conversationId == id, activeCall?.isLive == true else { return endStrayCall(id) }
             activeCall = ActiveCallState(conversationId: id, isGroup: false, stage: .inCall, directState: .prering)
             callLocalVideo = video
         case .incomingDirectCall(let id, let isVideo):
@@ -119,7 +123,10 @@ struct CallDevices {
             if accountSettings.incomingCallNotification { NSApp.requestUserAttention(.criticalRequest) }
         case .callStateChange(let id, let state, let reason, let acceptedTime):
             if ringingCall?.conversationId == id, state == .ended || state == .accepted { if state == .ended { ringingCall = nil } }
-            guard activeCall?.conversationId == id else { return }
+            guard activeCall?.conversationId == id, activeCall?.isLive == true else {
+                if state == .accepted { endStrayCall(id) }   // connected, but not on screen
+                return
+            }
             switch state {
             case .prering: activeCall?.directState = .prering
             case .ringing: activeCall?.directState = .ringing
@@ -129,7 +136,9 @@ struct CallDevices {
             case .reconnecting: activeCall?.directState = .reconnecting
             case .ended:
                 if reason == .remoteHangupNeedPermission {
+                    // The ended-call screen stays, but nothing of the call does.
                     activeCall?.endedNeedingPermission = true
+                    releaseCallMedia(conversationId: id)
                 } else {
                     endCallUI()
                 }
@@ -144,7 +153,7 @@ struct CallDevices {
                 activeCall?.remoteAudioLevel = remote
             }
         case .groupCallChanged(let id, _):
-            guard activeCall?.conversationId == id else { return }
+            guard activeCall?.conversationId == id, activeCall?.isLive == true else { return endStrayCall(id) }
             if calling?.groupCall(for: id)?.localDeviceState.joinState == .joined { activeCall?.stage = .inCall }
             activeCall?.groupRevision += 1
             requestGroupVideo(id)
@@ -157,13 +166,36 @@ struct CallDevices {
         }
     }
 
+    /// Closes the call screen (or lobby) and releases everything the call held.
     func endCallUI() {
-        stopPresenting()
+        let id = activeCall?.conversationId
         activeCall = nil
         callPip = false
+        releaseCallMedia(conversationId: id)
+    }
+
+    /// The one teardown for every way a call ends, idempotent: setup still in progress and
+    /// screen-share starts are invalidated (`callGeneration`), the service ends its calls and
+    /// cancels its own setup, presenting stops, the camera stops and no longer sends, and the
+    /// ringtone stops. A ringing incoming call is left ringing.
+    func releaseCallMedia(conversationId: String?) {
+        callGeneration &+= 1
+        callSetupTask?.cancel()
+        callSetupTask = nil
+        stopPresenting(conversationId: conversationId)
+        calling?.hangup(excludeRinging: true)
         cameraSends = false
         updateCamera()
         stopRingtone()
+    }
+
+    /// A call the screen is not showing (its setup outlived a hang-up): it must not keep our
+    /// microphone or camera, so it is ended.
+    func endStrayCall(_ conversationId: String) {
+        guard let calling, calling.activeConversationIds.contains(conversationId) else { return }
+        if calling.directCall(for: conversationId)?.state == .ringing, ringingCall?.conversationId == conversationId { return }
+        Self.trace("calling: ending a call that is not on screen")
+        calling.endCall(conversationId: conversationId)
     }
 
     // MARK: actions
@@ -180,12 +212,15 @@ struct CallDevices {
 
     /// The lobby's "Start call" / "Join".
     func startCallFromLobby() {
-        guard let a = activeCall, let calling else { return }
+        guard let a = activeCall, a.isLive, callSetupTask == nil, let calling else { return }
         applyAudioDevices()
         let audio = callLocalAudio, video = callLocalVideo
-        Task {
+        let generation = callGeneration
+        let link = a.isCallLink ? callLinks.first(where: { $0.roomId == a.conversationId }) : nil
+        callSetupTask = Task { [weak self] in
+            defer { if self?.callGeneration == generation { self?.callSetupTask = nil } }
             do {
-                if a.isCallLink, let link = callLinks.first(where: { $0.roomId == a.conversationId }) {
+                if let link {
                     try await calling.joinCallLinkCall(roomId: link.roomId, rootKey: try CallLinkRootKey.fromBytes(link.rootKey), adminPasskey: link.adminKey,
                                                        hasLocalAudio: audio, hasLocalVideo: video)
                 } else if a.isGroup {
@@ -193,7 +228,10 @@ struct CallDevices {
                 } else {
                     try await calling.startOutgoingDirectCall(conversationId: a.conversationId, hasLocalAudio: audio, hasLocalVideo: video)
                 }
+                // Left during setup (the service's own check should already have stopped it).
+                if self?.callGeneration != generation { calling.endCall(conversationId: a.conversationId) }
             } catch {
+                guard let self, self.callGeneration == generation else { return }   // already torn down
                 Self.trace("call failed: \(error)")
                 endCallUI()
             }
@@ -219,7 +257,6 @@ struct CallDevices {
     }
 
     func hangUp() {
-        stopPresenting()
         calling?.hangup()
         endCallUI()
     }
@@ -252,42 +289,36 @@ struct CallDevices {
         updateCamera()
     }
 
-    /// The camera runs while a call (or its lobby) is up with our video on.
-    func updateCamera() {
-        let wanted = activeCall != nil && callLocalVideo
-        wanted ? startCamera() : stopCamera()
-    }
+    /// The camera runs while a live call (or its lobby) is up with our video on.
+    var cameraWanted: Bool { activeCall?.isLive == true && callLocalVideo }
 
-    /// Camera starts and stops run one after another, in the order asked.
-    private func enqueueCamera(_ op: @escaping @MainActor (SignalSession) async -> Void) {
-        let previous = cameraOp
-        cameraOp = Task { [weak self] in
-            await previous?.value
-            guard let self else { return }
-            await op(self)
-        }
-    }
+    func updateCamera() { cameraReconciler.update() }
 
-    func startCamera() {
-        enqueueCamera { s in
-            guard await CameraCapture.requestAccess() else { return Self.trace("camera: no permission") }
-            let capture = s.camera ?? CameraCapture { [weak s] frame in
-                Task { @MainActor in s?.cameraFrame(frame) }
-            }
-            s.camera = capture
-            if await capture.isCapturing { return }
-            do { try await capture.start(deviceId: s.preferredCameraId) } catch { Self.trace("camera failed: \(error)") }
-        }
-    }
-
-    func stopCamera() {
-        enqueueCamera { s in
-            if let camera = s.camera { await camera.stop() }
-            s.callLocalVideoModel.clear()
-        }
+    /// Starts and stops run one after another; each reads `cameraWanted` again after every
+    /// wait (the permission prompt, the camera starting), so a hang-up meanwhile wins.
+    var cameraReconciler: CaptureReconciler {
+        if let cameraControl { return cameraControl }
+        let device = CaptureReconciler.Device(
+            requestAccess: { await CameraCapture.requestAccess() },
+            start: { [weak self] in
+                guard let self else { return }
+                let capture = camera ?? CameraCapture { [weak self] frame in
+                    Task { @MainActor in self?.cameraFrame(frame) }
+                }
+                camera = capture
+                try await capture.start(deviceId: preferredCameraId)
+            },
+            stop: { [weak self] in
+                await self?.camera?.stop()
+                self?.callLocalVideoModel.clear()
+            })
+        let r = CaptureReconciler(device: device, wanted: { [weak self] in self?.cameraWanted ?? false }, report: { Self.trace($0) })
+        cameraControl = r
+        return r
     }
 
     func cameraFrame(_ frame: CapturedFrame) {
+        guard cameraWanted else { return }   // a frame already queued when the camera stopped
         callLocalVideoModel.present(frame)
         // While presenting, the screen's frames go out instead.
         if cameraSends && calling?.isPresenting != true { calling?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12) }
@@ -396,7 +427,7 @@ struct CallDevices {
     func selectCamera(_ id: String) {
         preferredCameraId = id
         UserDefaults.standard.set(id, forKey: "preferredCamera")
-        if camera != nil, callLocalVideo, activeCall != nil { stopCamera(); startCamera() }
+        if cameraWanted { cameraReconciler.restart() }
     }
 
     /// The chosen microphone and speaker (the system default when none is chosen) and the call

@@ -94,9 +94,17 @@ public enum ScreenShareError: Error, Equatable {
     case sourceGone
 }
 
+/// What `ScreenShareCapture` needs of an SCStream (tests stand in one that starts slowly).
+@MainActor protocol ScreenStream: AnyObject {
+    func startCapture() async throws
+    func stopCapture() async throws
+}
+
+extension SCStream: ScreenStream {}
+
 @MainActor
 public final class ScreenShareCapture {
-    var stream: SCStream?
+    var stream: (any ScreenStream)?
     var output: ScreenStreamOutput?
     var repeater: Task<Void, Never>?
     let onFrame: @Sendable (CapturedFrame) -> Void
@@ -104,6 +112,9 @@ public final class ScreenShareCapture {
     let queue = DispatchQueue(label: "signalsafe.screen-share")
     /// The shareable content from the last `sources()`, to resolve a picked id.
     var content: SCShareableContent?
+    /// Bumped by every start and stop: a start that was overtaken while it waited (on the
+    /// previous stream stopping, or on its own stream starting) gives up, and stops its stream.
+    var generation: UInt64 = 0
 
     public init(onFrame: @escaping @Sendable (CapturedFrame) -> Void, onStop: @escaping @Sendable ((any Error)?) -> Void) {
         self.onFrame = onFrame
@@ -175,14 +186,33 @@ public final class ScreenShareCapture {
         return c
     }
 
-    /// Starts sharing `filter` (from `filter(for:)` or the system picker).
+    /// Starts sharing `filter` (from `filter(for:)` or the system picker). Throws
+    /// CancellationError if `stop()` (or another start) came first; nothing is then captured.
     public func start(_ filter: SCContentFilter) async throws {
-        await stop()
+        let generation = begin()
+        await teardown()
+        guard generation == self.generation else { throw CancellationError() }
         let out = ScreenStreamOutput(onFrame: onFrame, onStop: onStop)
         let s = SCStream(filter: filter, configuration: Self.configuration(contentSize: filter.contentRect.size, scale: CGFloat(filter.pointPixelScale)),
                          delegate: out)
         try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: queue)
+        try await install(s, output: out, generation)
+    }
+
+    func begin() -> UInt64 {
+        generation &+= 1
+        return generation
+    }
+
+    /// Starts `s` and keeps it, unless a stop came while it was starting: then it is stopped
+    /// again at once and never kept.
+    func install(_ s: any ScreenStream, output out: ScreenStreamOutput, _ generation: UInt64) async throws {
         try await s.startCapture()
+        guard generation == self.generation else {
+            out.stop()
+            try? await s.stopCapture()
+            throw CancellationError()
+        }
         stream = s
         output = out
         repeater = Task { [out] in
@@ -193,14 +223,24 @@ public final class ScreenShareCapture {
         }
     }
 
+    /// Stops sharing, including a start still in progress.
     public func stop() async {
+        _ = begin()
+        await teardown()
+    }
+
+    func teardown() async {
         repeater?.cancel()
         repeater = nil
         output?.stop()
-        if let stream { try? await stream.stopCapture() }
+        let s = stream
         stream = nil
         output = nil
+        if let s { try? await s.stopCapture() }
     }
+
+    /// Whether a stream is being captured.
+    public var isCapturing: Bool { stream != nil }
 }
 
 /// What the system picker chose, as ids (SCContentFilter is not Sendable; the filter is

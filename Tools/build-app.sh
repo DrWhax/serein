@@ -7,6 +7,13 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 pkg="$root/App/SignalSafe"
+# Serein's changes to the submodules (SQLCipher for GRDB; libsignal's AES-CBC bridge and
+# media sanitizers) live in Tools/vendor-patches; applying them is idempotent.
+"$root/Tools/apply-vendor-patches.sh" >/dev/null
+for lib in vendor/libsignal/target/aarch64-apple-darwin/release/libsignal_ffi.a \
+           Packages/SignalRingRTC/rust/target/aarch64-apple-darwin/release/libsignal_ringrtc.dylib; do
+  [ -f "$root/$lib" ] || { echo "build-app: $lib is missing; see README.md, Building" >&2; exit 1; }
+done
 cd "$pkg"
 swift build -c release
 products="$pkg/.build/out/Products/Release"
@@ -33,69 +40,94 @@ cp "$ringrtc/libsignal_ringrtc.dylib" "$app/Contents/Frameworks/"
 bin="$app/Contents/MacOS/Serein"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$bin"
 install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
-# SignalMediaDecoder.xpc (plan.md, sandboxed decoder): built from Packages/SignalMediaService,
-# signed with App Sandbox and its Seatbelt profile (below) — no network, no file access.
+# The XPC services (Packages/SignalMediaService), each signed with App Sandbox plus its own
+# Seatbelt profile (Sandbox/<Service>.sb; Tools/sbpl-entitlements.sh puts the rules in
+# com.apple.security.temporary-exception.sbpl, and `;!` lines add entitlements). Each refuses
+# to run unless its profile is in force; Tools/check-sandbox-profile.sh probes them.
+#   SignalMediaDecoder.xpc       every image, audio and video decode (no network, no files)
+#   SignalLinkPreviewParser.xpc  link-preview HTML (no network, no files)
+#   SignalLinkPreviewFetcher.xpc fetches link previews from the web (outgoing network only)
+#   SignalGifSearch.xpc          Giphy through Signal's content proxy (outgoing network only)
+#   SignalVoiceNoteEncoder.xpc   encodes recorded voice notes to MP3 (no network, no files)
 svcpkg="$root/Packages/SignalMediaService"
-(cd "$svcpkg" && swift build -c release --product SignalMediaDecoderService)
+sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
+# Who may talk to whom (MediaXPCInterface/XPCPeer.swift): every bundle gets every component's
+# code-signing requirement. With a signing identity it pins the Team ID under an Apple anchor;
+# ad-hoc signatures have no Team ID, so only the identifier can be required.
+team=""
+if [ "$sign" != "-" ]; then
+  tprobe="$pkg/.build/teamid-probe"
+  cp /usr/bin/true "$tprobe"
+  codesign --force --sign "$sign" --timestamp=none "$tprobe" 2>/dev/null
+  team=$(codesign -dv "$tprobe" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+  rm -f "$tprobe"
+  [ "$team" = "not set" ] && team=""
+fi
+req() {
+  if [ -n "$team" ]; then printf 'anchor apple generic and identifier "%s" and certificate leaf[subject.OU] = "%s"' "$1" "$team"
+  else printf 'identifier "%s"' "$1"; fi
+}
+peers="  <key>SereinXPCPeers</key>
+  <dict>
+    <key>app</key><string>$(req org.signalsafe.SignalSafe)</string>
+    <key>decoder</key><string>$(req org.signalsafe.SignalMediaDecoder)</string>
+    <key>parser</key><string>$(req org.signalsafe.SignalLinkPreviewParser)</string>
+    <key>fetcher</key><string>$(req org.signalsafe.SignalLinkPreviewFetcher)</string>
+    <key>gifs</key><string>$(req org.signalsafe.SignalGifSearch)</string>
+    <key>voice</key><string>$(req org.signalsafe.SignalVoiceNoteEncoder)</string>
+  </dict>"
+services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder"
+service() {   # name product [extra Info.plist lines]
+  name=$1 product=$2 extra=${3:-}
+  (cd "$svcpkg" && swift build -c release --product "$product")
+  dir="$app/Contents/XPCServices/$name.xpc"
+  mkdir -p "$dir/Contents/MacOS"
+  cp "$svcpkg/.build/out/Products/Release/$product" "$dir/Contents/MacOS/$name"
+  cat > "$dir/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>$name</string>
+  <key>CFBundleIdentifier</key><string>org.signalsafe.$name</string>
+  <key>CFBundleName</key><string>$name</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>XPCService</key>
+  <dict>
+    <key>ServiceType</key><string>Application</string>
+    <key>RunLoopType</key><string>NSRunLoop</string>
+  </dict>
+$peers
+$extra
+</dict>
+</plist>
+PLIST
+  plutil -lint -s "$dir/Contents/Info.plist"
+  "$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/$name.sb" > "$pkg/.build/$name.entitlements"
+  plutil -lint -s "$pkg/.build/$name.entitlements"
+}
+service SignalMediaDecoder SignalMediaDecoderService
+service SignalVoiceNoteEncoder SignalVoiceNoteEncoderService
+service SignalLinkPreviewParser SignalLinkPreviewParserService
+service SignalLinkPreviewFetcher SignalLinkPreviewFetcherService
+# Signal's content proxy, as the app's ATS exceptions below have it.
+service SignalGifSearch SignalGifSearchService '  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>contentproxy.signal.org</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSExceptionMinimumTLSVersion</key><string>TLSv1.2</string>
+        <key>NSExceptionRequiresForwardSecrecy</key><true/>
+      </dict>
+    </dict>
+  </dict>'
 xpc="$app/Contents/XPCServices/SignalMediaDecoder.xpc"
-mkdir -p "$xpc/Contents/MacOS"
-cp "$svcpkg/.build/out/Products/Release/SignalMediaDecoderService" "$xpc/Contents/MacOS/SignalMediaDecoder"
-cat > "$xpc/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>SignalMediaDecoder</string>
-  <key>CFBundleIdentifier</key><string>org.signalsafe.SignalMediaDecoder</string>
-  <key>CFBundleName</key><string>SignalMediaDecoder</string>
-  <key>CFBundlePackageType</key><string>XPC!</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
-  <key>XPCService</key>
-  <dict>
-    <key>ServiceType</key><string>Application</string>
-    <key>RunLoopType</key><string>NSRunLoop</string>
-  </dict>
-</dict>
-</plist>
-PLIST
-# App Sandbox plus the Seatbelt rules of Sandbox/SignalMediaDecoder.sb (no files, network,
-# processes, Mach services or preferences); the service refuses to run without them.
-ent="$pkg/.build/SignalMediaDecoder.entitlements"
-"$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/SignalMediaDecoder.sb" > "$ent"
-plutil -lint -s "$ent"
-# SignalLinkPreviewParser.xpc: link-preview HTML only, signed with App Sandbox plus the
-# Seatbelt rules of Packages/SignalMediaService/Sandbox/SignalLinkPreviewParser.sb (each rule
-# one line, put in com.apple.security.temporary-exception.sbpl). It refuses to run when the
-# rules are not in force. Tools/check-sandbox-profile.sh probes the profile.
-(cd "$svcpkg" && swift build -c release --product SignalLinkPreviewParserService)
 lpxpc="$app/Contents/XPCServices/SignalLinkPreviewParser.xpc"
-mkdir -p "$lpxpc/Contents/MacOS"
-cp "$svcpkg/.build/out/Products/Release/SignalLinkPreviewParserService" "$lpxpc/Contents/MacOS/SignalLinkPreviewParser"
-cat > "$lpxpc/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>SignalLinkPreviewParser</string>
-  <key>CFBundleIdentifier</key><string>org.signalsafe.SignalLinkPreviewParser</string>
-  <key>CFBundleName</key><string>SignalLinkPreviewParser</string>
-  <key>CFBundlePackageType</key><string>XPC!</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
-  <key>XPCService</key>
-  <dict>
-    <key>ServiceType</key><string>Application</string>
-    <key>RunLoopType</key><string>NSRunLoop</string>
-  </dict>
-</dict>
-</plist>
-PLIST
-lpent="$pkg/.build/SignalLinkPreviewParser.entitlements"
-"$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/SignalLinkPreviewParser.sb" > "$lpent"
-plutil -lint -s "$lpent"
 # Everything runs under the hardened runtime. Ad-hoc signatures (the default) carry no Team ID,
 # so library validation would refuse the bundled SQLCipher/ringrtc: ad-hoc builds add the
 # disable-library-validation entitlement (the rest of the hardened runtime stays: no DYLD_*
@@ -103,7 +135,6 @@ plutil -lint -s "$lpent"
 # SIGNALSAFE_SIGN_IDENTITY set to an "Apple Development: …" (free Personal Team from Xcode →
 # Settings → Accounts) or "Developer ID Application: …" identity, all code shares one Team ID
 # and the exception is left out (`security find-identity -v -p codesigning` lists them). The XPC service never needs it (it loads no libraries of ours).
-sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
 hardened="--options runtime"
 adhoc_ent=""
 timestamp="--timestamp=none"
@@ -117,20 +148,29 @@ fi
 hardened="$hardened $timestamp"
 codesign --force --sign "$sign" $hardened "$app/Contents/Frameworks/libsignal_ringrtc.dylib"
 codesign --force --sign "$sign" $hardened "$app/Contents/Frameworks/SQLCipher.framework"
-codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$ent" "$xpc"
-codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$lpent" "$lpxpc"
-# The services stay apart: no HTML parser in the media decoder, no image decoder in the parser.
-if nm "$xpc/Contents/MacOS/SignalMediaDecoder" | grep -E '\$s(8HTMLMeta|17LinkPreviewParser)' >/dev/null; then
-  echo "error: HTML parser linked into the media decoder" >&2; exit 1
-fi
-if nm "$lpxpc/Contents/MacOS/SignalLinkPreviewParser" | grep -E '\$s(8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8AudioAAC|8AudioMP3|18SignalMediaDecoder)' >/dev/null; then
-  echo "error: media decoders linked into the link-preview parser" >&2; exit 1
-fi
-# The app must not contain decoders: every untrusted parse goes through the service.
-# (ImagePNG is the one exception: SignalUI's BundledImage decodes our own Resources/Images.)
-if nm "$app/Contents/MacOS/Serein" | grep -E '\$s(9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8AudioAAC|8AudioMP3|8HTMLMeta)' >/dev/null; then
-  echo "error: decoder symbols linked into the app binary" >&2; exit 1
-fi
+for name in $services; do
+  codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$pkg/.build/$name.entitlements" "$app/Contents/XPCServices/$name.xpc"
+done
+# Each process holds only its own parsers. Swift symbols name their module ($s<length><name>).
+decoders='8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|18SignalMediaDecoder'
+web='8WebFetch|18LinkPreviewFetcher|9GifSearch'
+links() {   # binary pattern message
+  if nm "$1" | grep -E "\\\$s($2)" >/dev/null; then echo "error: $3" >&2; exit 1; fi
+}
+links "$xpc/Contents/MacOS/SignalMediaDecoder" "8HTMLMeta|17LinkPreviewParser|$web" "HTML parser or web client linked into the media decoder"
+links "$lpxpc/Contents/MacOS/SignalLinkPreviewParser" "$decoders|$web" "media decoders or web client linked into the link-preview parser"
+links "$app/Contents/XPCServices/SignalLinkPreviewFetcher.xpc/Contents/MacOS/SignalLinkPreviewFetcher" "$decoders|8HTMLMeta|9GifSearch" \
+  "decoders, HTML parser or GIF search linked into the link-preview fetcher"
+links "$app/Contents/XPCServices/SignalGifSearch.xpc/Contents/MacOS/SignalGifSearch" "$decoders|8HTMLMeta|18LinkPreviewFetcher" \
+  "decoders, HTML parser or link-preview fetcher linked into the GIF service"
+# The voice-note encoder links the MP3 module (its encoder) and nothing else that reads media.
+links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/SignalVoiceNoteEncoder" \
+  "8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
+  "decoders, HTML parser or web client linked into the voice-note encoder"
+# The app neither decodes nor fetches or parses web content: every untrusted parse is in a
+# service. (ImagePNG is the one exception: SignalUI's BundledImage decodes our own Resources/Images.)
+links "$app/Contents/MacOS/Serein" "9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
+  "decoder or web-client symbols linked into the app binary"
 # Notification and call sounds (generated WAVs; UNNotificationSound looks in Library/Sounds).
 [ -f "$pkg/Resources/Sounds/pop.wav" ] || "$root/Tools/gen-sounds.sh" >/dev/null
 mkdir -p "$app/Contents/Library/Sounds"
@@ -152,12 +192,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+$peers
   <key>NSSupportsAutomaticTermination</key><false/>
   <!-- Upstream's usage strings (package.json mac.extendInfo), with the app's name. -->
   <key>NSCameraUsageDescription</key><string>Serein uses your camera for video calling.</string>
   <key>NSMicrophoneUsageDescription</key><string>Serein needs access to your microphone to make and receive phone calls and record voice messages.</string>
   <!-- Signal's own-CA hosts: ATS's system-trust check would reject Signal's private root, so it is
-       lifted for exactly these hosts; HTTPClient / LinkPreviewFetch still require the chain to end at
+       lifted for exactly these hosts; HTTPClient still requires the chain to end at
        the pinned Signal root, and HTTPClient refuses http:// URLs and redirects. -->
   <key>NSAppTransportSecurity</key>
   <dict>
@@ -182,12 +223,6 @@ cat > "$app/Contents/Info.plist" <<PLIST
         <key>NSExceptionRequiresForwardSecrecy</key><true/>
       </dict>
       <key>cdn3.signal.org</key>
-      <dict>
-        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
-        <key>NSExceptionMinimumTLSVersion</key><string>TLSv1.2</string>
-        <key>NSExceptionRequiresForwardSecrecy</key><true/>
-      </dict>
-      <key>contentproxy.signal.org</key>
       <dict>
         <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
         <key>NSExceptionMinimumTLSVersion</key><string>TLSv1.2</string>
@@ -234,20 +269,32 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-appent="$pkg/.build/SignalSafe.entitlements"
-cat > "$appent" <<PLIST
+# The app's data moves into its sandbox container on the first sandboxed launch (macOS reads
+# Resources/container-migration.plist when it creates the container): the databases, their
+# attachments and the preferences. The Keychain item holding the database key is unaffected.
+cat > "$app/Contents/Resources/container-migration.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>com.apple.security.device.audio-input</key><true/>
-  <key>com.apple.security.device.camera</key><true/>
-$adhoc_ent
+  <key>Move</key>
+  <array>
+    <string>${ApplicationSupport}/signal-safe</string>
+    <string>${ApplicationSupport}/signal-safe-staging</string>
+    <string>${Library}/Preferences/org.signalsafe.SignalSafe.plist</string>
+  </array>
 </dict>
 </plist>
 PLIST
+plutil -lint -s "$app/Contents/Resources/container-migration.plist"
+# The app: App Sandbox, network client, camera, microphone, user-selected files, its crash
+# reports read-only, and the Seatbelt rules of Sandbox/Serein.sb; it refuses to start without them.
+appent="$pkg/.build/SignalSafe.entitlements"
+"$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/Serein.sb" "$adhoc_ent" > "$appent"
+plutil -lint -s "$appent"
 codesign --force --sign "$sign" $hardened --entitlements "$appent" "$app"
-codesign -d --entitlements - "$xpc" 2>/dev/null | grep -q "com.apple.security.app-sandbox" || { echo "error: service not sandboxed" >&2; exit 1; }
-codesign -d --entitlements - "$xpc" 2>/dev/null | grep -q "com.apple.security.temporary-exception.sbpl" || { echo "error: decoder lacks its Seatbelt profile" >&2; exit 1; }
-codesign -d --entitlements - "$lpxpc" 2>/dev/null | grep -q "com.apple.security.temporary-exception.sbpl" || { echo "error: parser lacks its Seatbelt profile" >&2; exit 1; }
+for target in "$app" $(for n in $services; do echo "$app/Contents/XPCServices/$n.xpc"; done); do
+  codesign -d --entitlements - "$target" 2>/dev/null | grep -q "com.apple.security.app-sandbox" || { echo "error: $target not sandboxed" >&2; exit 1; }
+  codesign -d --entitlements - "$target" 2>/dev/null | grep -q "com.apple.security.temporary-exception.sbpl" || { echo "error: $target lacks its Seatbelt profile" >&2; exit 1; }
+done
 echo "$app"

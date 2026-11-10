@@ -83,10 +83,14 @@ public struct SettingsRadio<Value: Hashable>: View {
 }
 
 /// `.Preferences__back-icon`: a 20px chevron 12px from the start, centred vertically.
-struct PreferencesBackButton: View {
+public struct PreferencesBackButton: View {
     let label: String
     let action: () -> Void
-    var body: some View {
+    public init(label: String, action: @escaping () -> Void) {
+        self.label = label
+        self.action = action
+    }
+    public var body: some View {
         Button(action: action) { SignalIcon("v3/chevron/chevron-left", size: 20, color: .labelPrimary, mask: true) }
             .buttonStyle(.plain)
             .padding(.leading, 12)

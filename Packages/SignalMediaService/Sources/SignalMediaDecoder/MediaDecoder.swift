@@ -1,14 +1,18 @@
 // MediaProcessing over SignalCodecs: the service side. Formats are sniffed from the bytes
-// (never trusted from a content type); every decoder runs with its default limits.
+// (never trusted from a content type); every decoder runs with its default limits. AVIF is
+// displayed like the other image types (upstream's isImageTypeSupported lists it); HEIC is
+// decoded only by convertHEIC, the sending side's conversion to JPEG.
 
 import Blurhash
 import CodecCore
+import ContainerMP4
 import EncodeJPEG
 import EncodePNG
 import EncodeWebP
 import Foundation
 import ImageBMP
 import ImageGIF
+import ImageHEIF
 import ImageJPEG
 import ImagePNG
 import ImageWebP
@@ -18,9 +22,17 @@ import MetadataStrip
 public struct MediaDecoder: MediaProcessing {
     public init() {}
 
-    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico }
+    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico, avif, heic }
 
     public static func sniff(_ b: [UInt8]) -> Format? {
+        // HEIF: an ftyp, then whatever codec the primary item uses (brands only hint at it).
+        if HEIFParser.brands(b) != nil {
+            switch HEIFDecoder.primaryCodec(b) {
+            case .av1: return .avif
+            case .hevc: return .heic
+            case nil: return nil
+            }
+        }
         func starts(_ p: [UInt8], at o: Int = 0) -> Bool { b.count >= o + p.count && Array(b[o..<(o + p.count)]) == p }
         if starts([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return .png }
         if starts([0xFF, 0xD8, 0xFF]) { return .jpeg }
@@ -31,12 +43,15 @@ public struct MediaDecoder: MediaProcessing {
         return nil
     }
 
-    /// The decoded image (its still frame) and whether it animates.
-    public static func decode(_ bytes: Data) throws -> (PixelBuffer, animated: Bool) {
+    /// The decoded image (its still frame) and whether it animates. HEIC only with `allowHEIC`
+    /// (the sending side's conversion); everywhere else it is an unsupported format.
+    public static func decode(_ bytes: Data, allowHEIC: Bool = false) throws -> (PixelBuffer, animated: Bool) {
         let b = Array(bytes)
-        guard let format = sniff(b) else { throw MediaProcessingError.unsupportedFormat }
+        guard let format = sniff(b), format != .heic || allowHEIC else { throw MediaProcessingError.unsupportedFormat }
         do {
             switch format {
+            case .avif: return (try HEIFDecoder.decode(b, codecs: [.av1]).image, false)
+            case .heic: return (try HEIFDecoder.decode(b, codecs: [.hevc]).image, false)
             case .png: return still(try PNGDecoder.decode(b))
             case .jpeg: return (try JPEGDecoder.decode(b), false)
             case .gif: return still(try GIFDecoder.decode(b))
@@ -142,6 +157,15 @@ public struct MediaDecoder: MediaProcessing {
             if out.data.count <= d.size { return out }
         }
         return jpeg(MediaQualityLevel.minDimensions)
+    }
+
+    /// heic-convert (libheif → RGBA with an opaque alpha → JPEG at quality 0.75): the primary
+    /// image with its geometry, colours kept as decoded (not composited), full size.
+    public func convertHEIC(_ bytes: Data) async throws -> ConvertedImage {
+        guard Self.sniff(Array(bytes)) == .heic else { throw MediaProcessingError.unsupportedFormat }
+        var (image, _) = try Self.decode(bytes, allowHEIC: true)
+        for i in stride(from: 3, to: image.rgba.count, by: 4) { image.rgba[i] = 255 }
+        return ConvertedImage(data: Data(JPEGEncoder.encode(image, quality: ConvertedImage.quality)), width: image.width, height: image.height)
     }
 
     public func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data {

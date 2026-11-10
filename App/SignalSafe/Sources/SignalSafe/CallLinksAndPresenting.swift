@@ -135,60 +135,95 @@ enum CallLinkModal: Equatable {
             callLinkModal = .needsScreenRecordingPermission
             return
         }
+        lastScreenShareToken &+= 1
+        let token = lastScreenShareToken
         let capture = ScreenShareCapture(onFrame: { [weak self] frame in
-            Task { @MainActor in self?.screenFrame(frame) }
+            Task { @MainActor in self?.screenFrame(frame, token: token) }
         }, onStop: { [weak self] error in
-            Task { @MainActor in
-                if let error { Self.trace("screen share stopped: \(error)") }
-                self?.stopPresenting()
-            }
+            Task { @MainActor in self?.screenShareStopped(token: token, error: error) }
         })
         screenCapture = capture
+        screenShareToken = token
+        let generation = callGeneration
         Task {
             do {
-                presentingSources = try await capture.sources()
+                let sources = try await capture.sources()
+                guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }   // the call ended meanwhile
+                presentingSources = sources
             } catch {
                 Self.trace("screen sources failed: \(error)")
-                screenCapture = nil
+                if screenShareToken == token { clearScreenShare() }
             }
         }
-        _ = id
+    }
+
+    /// Whether the share `token` is still the one wanted: the same call (no teardown since
+    /// `generation`), still live, and no other share or stop since.
+    func isCurrentScreenShare(_ token: UInt64, generation: UInt64, conversationId: String) -> Bool {
+        screenShareToken == token && screenCapture != nil && callGeneration == generation
+            && activeCall?.conversationId == conversationId && activeCall?.isLive == true
+    }
+
+    func clearScreenShare() {
+        screenCapture = nil
+        screenShareToken = nil
+    }
+
+    /// The stream stopped on its own (an error, the source went away): only the share it
+    /// belonged to stops.
+    func screenShareStopped(token: UInt64, error: (any Error)?) {
+        if let error { Self.trace("screen share stopped: \(error)") }
+        guard screenShareToken == token else { return }
+        stopPresenting()
     }
 
     /// A source picked: its frames replace the camera's.
     func startPresenting(_ sourceId: String) {
         presentingSources = nil
-        guard let id = activeCall?.conversationId, let calling, let capture = screenCapture else { return }
+        guard let id = activeCall?.conversationId, activeCall?.isLive == true, let calling, let capture = screenCapture,
+              let token = screenShareToken else { return }
+        let generation = callGeneration
         Task {
+            // The task may start after a hang-up or another pick: then nothing is captured.
+            guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
             do {
                 try await capture.start(try capture.filter(for: sourceId))
+                // The call ended, or sharing was stopped, while the stream was starting.
+                guard isCurrentScreenShare(token, generation: generation, conversationId: id) else {
+                    await capture.stop()
+                    return
+                }
                 calling.setPresenting(conversationId: id, true)
                 activeCall?.groupRevision += 1
+            } catch is CancellationError {
+                // Stopped while starting: stopPresenting already cleaned up.
             } catch {
                 Self.trace("screen share failed: \(error)")
-                screenCapture = nil
+                if screenShareToken == token { clearScreenShare() }
             }
         }
     }
 
     func cancelPresentingSources() {
         presentingSources = nil
-        screenCapture = nil
+        clearScreenShare()
     }
 
-    func stopPresenting() {
+    /// `conversationId`: the call's, when the screen has already closed.
+    func stopPresenting(conversationId: String? = nil) {
         presentingSources = nil
         let capture = screenCapture
-        screenCapture = nil
+        clearScreenShare()
         if let capture { Task { await capture.stop() } }
-        if let id = activeCall?.conversationId, calling?.isPresenting == true {
-            calling?.setPresenting(conversationId: id, false)
+        if calling?.isPresenting == true {
+            calling?.setPresenting(conversationId: conversationId ?? activeCall?.conversationId ?? "", false)
             activeCall?.groupRevision += 1
         }
     }
 
-    func screenFrame(_ frame: CapturedFrame) {
-        guard calling?.isPresenting == true else { return }
+    func screenFrame(_ frame: CapturedFrame, token: UInt64) {
+        // Frames of an older share, or queued when sharing stopped, are dropped.
+        guard screenShareToken == token, screenCapture != nil, calling?.isPresenting == true, activeCall?.isLive == true else { return }
         calling?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12)
     }
 }

@@ -183,4 +183,108 @@ private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d))
             #expect(groups[0].status == .missed && groups[0].timestamp == 10 * h && groups[2].direction == .outgoing)
         }
     }
+
+    // MARK: hanging up during setup
+
+    @MainActor static func makeCalling(_ c: LinkedClient) throws -> CallingService {
+        let http = HTTPClient(rootCertificatesDER: c.endpoints.rootCertificatesDER)
+        let sfu = URL(string: "https://localhost:\(c.server.ready.port)/callingService")!
+        return try CallingService(account: c.account, database: c.database, socket: c.socket, http: http, messenger: c.messenger,
+                                  groups: GroupsAPI(http: http, endpoints: c.endpoints, credentials: c.groupCredentials),
+                                  credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu))
+    }
+
+    /// Polls `condition` for up to five seconds.
+    @MainActor static func eventually(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() {
+            guard ContinuousClock.now < deadline else { Issue.record("timed out: \(what)"); return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// A hang-up at each of a direct call's setup suspensions (the recipient lookup, the
+    /// profile-sharing write): setup gives up, the call is never announced, and none is left.
+    @Test func hangupDuringDirectCallSetup() async throws {
+        try await LinkedClient.with { c in
+            let alice = c.aliceAci
+            let t = TestClock.next()
+            try await c.server.call("sendText", ["from": "alice", "text": "call me", "timestamp": t])
+            _ = try await c.log.waitFor("alice's message") { if case .message(_, _, _, _, t, _, _, _) = $0 { true } else { false } }
+            let id = try #require(try await c.database.pool.read { db in
+                try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [alice])
+            })
+            try await Self.directSetupHangups(c, id)
+        }
+    }
+
+    @MainActor static func directSetupHangups(_ c: LinkedClient, _ id: String) async throws {
+        try await makeCalling(c).withSteps(["direct.recipient", "direct.profileSharing"]) { calling, events in
+            await #expect(throws: CallingError.cancelled) {
+                try await calling.startOutgoingDirectCall(conversationId: id, hasLocalAudio: true, hasLocalVideo: true)
+            }
+            try await eventually("no call left") { calling.callsLookup.isEmpty && (calling.rtc.call?.state ?? .ended) == .ended }
+            #expect(!events.announcedACall && !calling.isPresenting)
+        }
+    }
+
+    /// The same for a group call (looking up the group, then joining the connected call): the
+    /// call is never joined, and a joined-callback still pending for it would not warm up the
+    /// microphone.
+    @Test func hangupDuringGroupCallSetup() async throws {
+        try await LinkedClient.with { c in
+            let g = try await c.server.json("createGroup", ["title": "Calls", "members": ["alice", "phone"]])
+            let groupId = try #require(g["id"] as? String)
+            _ = try await c.server.json("sendGroupText", ["groupId": groupId, "text": "hi", "timestamp": TestClock.next()])
+            _ = try await c.log.waitFor("group update") { if case .other("groupUpdated", _) = $0 { return true } else { return false } }
+            let id = try #require(try await c.database.pool.read { db in try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE type = 'group'") })
+            try await Self.groupSetupHangups(c, id)
+        }
+    }
+
+    @MainActor static func groupSetupHangups(_ c: LinkedClient, _ id: String) async throws {
+        var sawConnectedCall = false
+        try await makeCalling(c).withSteps(["group.info", "group.join"]) { calling, events in
+            let generation = calling.setupGeneration
+            var connected: GroupCall?
+            let checkpoint = calling.setupCheckpoint
+            calling.setupCheckpoint = { step in
+                connected = connected ?? calling.groupCall(for: id)
+                await checkpoint?(step)
+            }
+            await #expect(throws: CallingError.cancelled) {
+                try await calling.joinGroupCall(conversationId: id, hasLocalAudio: true, hasLocalVideo: false, shouldRing: false)
+            }
+            #expect((calling.groupCall(for: id)?.localDeviceState.joinState ?? .notJoined) == .notJoined)
+            if let connected {
+                sawConnectedCall = true
+                let observer = GroupObserver(service: calling, conversationId: id, mode: .group, keys: nil)
+                #expect(!observer.isCurrent(connected, generation: generation))
+            }
+            try await eventually("no call left") { calling.callsLookup.isEmpty }
+            #expect(!events.announcedACall)
+        }
+        #expect(sawConnectedCall)   // the second step really had a call to cancel
+    }
+}
+
+/// The events a CallingService emitted.
+@MainActor final class CallEvents {
+    var all: [CallingEvent] = []
+    var announcedACall: Bool {
+        all.contains { if case .outgoingCall = $0 { true } else if case .joinedAdhocCall = $0 { true } else { false } }
+    }
+}
+
+extension CallingService {
+    /// Runs `body` once per step, with a hang-up at that step's checkpoint.
+    @MainActor func withSteps(_ steps: [String], _ body: @MainActor (CallingService, CallEvents) async throws -> Void) async throws {
+        for step in steps {
+            let events = CallEvents()
+            onEvent = { events.all.append($0) }
+            setupCheckpoint = { [unowned self] s in if s == step { self.hangup() } }
+            try await body(self, events)
+            setupCheckpoint = nil
+        }
+    }
 }

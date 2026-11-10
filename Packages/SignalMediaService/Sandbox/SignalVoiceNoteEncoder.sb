@@ -1,0 +1,41 @@
+; Seatbelt rules for SignalVoiceNoteEncoder.xpc, on top of App Sandbox (the only other
+; entitlement). Tools/build-app.sh puts each rule (one per line; `;` lines are comments) in the
+; service's com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox
+; profile. App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every
+; deny has a filter that matches everything. The encoder needs none of this: it is handed the
+; recorded samples over its XPC connection and returns the MP3 and its waveform, in memory.
+; Tools/check-sandbox-profile.sh runs a probe service under these rules.
+;
+; Files: nothing read (not even system files), written, or ioctl'd.
+; Its own bundle (SignalVoiceNoteEncoder.xpc: the executable, Info.plist with its peers' code-signing
+; requirements, the signature) stays readable; nothing else is.
+; Security.framework's own (read-only) resources stay readable too: compiling the peers'
+; code-signing requirements needs them (Tools/check-sandbox-profile.sh probes it).
+(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalVoiceNoteEncoder\.xpc(/.*)?$")) (require-not (subpath "/System/Library/Frameworks/Security.framework"))))
+(deny file-write* (subpath "/"))
+(deny file-ioctl (subpath "/"))
+; No other programs, no children.
+(deny process-exec* (subpath "/"))
+(deny process-fork)
+; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any.
+; Except com.apple.CodeSigningHelper: checking each message's sender against the peer's
+; code-signing requirement (NSXPCConnection.setCodeSigningRequirement) asks it about the
+; sender's code; without it every message is refused (Tools/check-sandbox-profile.sh).
+(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.CodeSigningHelper"))))
+(deny mach-lookup (local-name-regex #".*"))
+(deny mach-register (global-name-regex #".*"))
+(deny mach-register (local-name-regex #".*"))
+; No network of any kind (App Sandbox without network entitlements already denies IP sockets).
+(deny network* (remote ip))
+(deny network* (local ip))
+(deny network* (remote unix-socket))
+(deny network* (local unix-socket))
+; No preferences, devices, shared memory or semaphores.
+(deny user-preference-read (preference-domain-regex #".*"))
+(deny user-preference-write (preference-domain-regex #".*"))
+(deny iokit-open (iokit-user-client-class-regex #".*"))
+(deny ipc-posix-shm* (ipc-posix-name-regex #".*"))
+(deny ipc-posix-sem (ipc-posix-name-regex #".*"))
+; No changing kernel state, no signalling other processes.
+(deny sysctl-write)
+(deny signal (target others))

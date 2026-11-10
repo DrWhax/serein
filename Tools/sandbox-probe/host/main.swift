@@ -1,9 +1,13 @@
 // The probe host (Tools/check-sandbox-profile.sh), compiled together with MediaXPCInterface's
-// sources so it talks to the services exactly as the app does:
+// sources so it talks to the services exactly as the app does (and signed with the app's
+// identifier, which the services require of their clients):
 //   1. each probe service (one per profile) reports what it could do;
 //   2. the real SignalMediaDecoder.xpc decodes every kind of media under its profile;
-//   3. the real SignalLinkPreviewParser.xpc parses a page under its profile.
-// Prints a line per check; exits non-zero when any XPC call fails.
+//   3. the real SignalLinkPreviewFetcher.xpc fetches a page (live network) and has it parsed by
+//      the real SignalLinkPreviewParser.xpc, which refuses HTML from the host itself;
+//   4. the real SignalGifSearch.xpc lists trending GIFs through Signal's content proxy.
+// With --refused it only checks that the services turn it away (a copy signed otherwise).
+// Prints a line per check; exits non-zero when any check fails.
 // Arguments: probe service names, then "--", then media files (by extension).
 
 import Foundation
@@ -34,6 +38,17 @@ var failed = false
 }
 
 let args = CommandLine.arguments.dropFirst()
+if args.first == "--refused" {
+    // Signed with another identifier: every service must refuse the connection.
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    let refusedDecoder = (try? await MediaXPCClient(timeout: .seconds(10)).imageInfo(png)) == nil
+    let refusedFetcher = (try? await LinkPreviewFetcherClient(timeout: .seconds(10)).page("https://signal.org/")) == nil
+    let refusedGifs = (try? await GifSearchClient(timeout: .seconds(10)).trending(limit: 1, offset: nil)) == nil
+    let refusedVoice = (try? await MediaXPCClient(timeout: .seconds(10)).startVoiceNote(sampleRate: 48_000)) == nil
+    print("\(refusedDecoder ? "refused" : "SERVED"): decoder; \(refusedFetcher ? "refused" : "SERVED"): fetcher; \(refusedGifs ? "refused" : "SERVED"): gifs; "
+          + "\(refusedVoice ? "refused" : "SERVED"): voice notes")
+    exit(refusedDecoder && refusedFetcher && refusedGifs && refusedVoice ? 0 : 1)
+}
 let probes = args.prefix { $0 != "--" }
 let files = args.drop { $0 != "--" }.dropFirst().map { URL(fileURLWithPath: $0) }
 
@@ -60,6 +75,13 @@ for url in files {
         if type == "image/png" {
             await check("\(name) stickerImage") { let s = try await media.stickerImage(bytes); return "\(s.contentType) \(s.data.count) bytes" }
         }
+    case "avif":
+        await check("\(name) imageInfo") { let i = try await media.imageInfo(bytes); return "\(i.width)×\(i.height)" }
+        await check("\(name) displayImage") { let d = try await media.displayImage(bytes, maxDimension: 256); return "\(d.width)×\(d.height)" }
+        await check("\(name) stripMetadata") { "\(try await media.stripMetadata(bytes, contentType: "image/avif").count) bytes" }
+    case "heic":
+        await check("\(name) convertHEIC") { let j = try await media.convertHEIC(bytes); return "\(j.width)×\(j.height) JPEG \(j.data.count) bytes" }
+        await check("\(name) stripMetadata") { "\(try await media.stripMetadata(bytes, contentType: "image/heic").count) bytes" }
     case "mp3", "m4a", "aac":
         await check("\(name) audioSummary") { let s = try await media.audioSummary(bytes); return "\(s.duration) s" }
         await check("\(name) decodeAudio") { let c = try await media.decodeAudio(bytes, startFrame: 0, maxFrames: 8192); return "\(c.samples.count) bytes of samples" }
@@ -85,11 +107,28 @@ await check("voice note") {
     let note = try await media.finishVoiceNote(session)
     return "\(note.data.count) bytes mp3"
 }
+// Recording is the voice-note service's alone: the decoder, asked directly, refuses.
+await check("decoder refuses voice notes") {
+    let direct = MediaXPCClient(timeout: .seconds(10), makeVoiceConnection: { NSXPCConnection(serviceName: MediaXPCClient.serviceName) })
+    return (try? await direct.startVoiceNote(sampleRate: 48_000)) == nil ? "refused" : "SERVED"
+}
 
-let parser = LinkPreviewParserClient()
-await check("link preview page") {
-    let m = try await parser.linkPreviewHTML(Data("<meta property=\"og:title\" content=\"Probe page\">".utf8), httpCharset: nil)
-    guard m?.title == "Probe page" else { throw MediaProcessingError.invalidResult }
-    return "parsed"
+// The app's path: the fetcher fetches, the parser (reached through the endpoint the parser
+// hands out) parses, and only fields come back.
+let previews = LinkPreviewFetcherClient(timeout: .seconds(60))
+let site = ProcessInfo.processInfo.environment["SANDBOX_CHECK_SITE"] ?? "https://signal.org/"
+await check("link preview fetch") {
+    guard let p = try await previews.page(site), !p.title.isEmpty else { throw MediaProcessingError.invalidResult }
+    return "\(p.title.prefix(40)), image \(p.imageHref != nil)"
+}
+// The parser takes no HTML from the app: its service interface only hands out the endpoint.
+await check("parser refuses html from the app") {
+    let direct = LinkPreviewParserClient(timeout: .seconds(10)) { NSXPCConnection(serviceName: LinkPreviewParserClient.serviceName) }
+    if (try? await direct.linkPreviewHTML(Data("<title>x</title>".utf8), httpCharset: nil)) != nil { throw MediaProcessingError.invalidResult }
+    return "refused"
+}
+await check("gif search") {
+    let page = try await GifSearchClient(timeout: .seconds(60)).trending(limit: 4, offset: nil)
+    return "\(page.gifs.count) gifs"
 }
 exit(failed ? 1 : 0)

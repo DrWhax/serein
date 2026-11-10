@@ -97,6 +97,7 @@ struct ConversationPane: View {
                 a.onEditLastMessage = { [isNoteToSelf] in session.editLastMessage(noteToSelf: isNoteToSelf) }
                 a.discardEditMessage = { session.discardEdit() }
                 a.onSubmit = { session.sendDraft() }
+                a.setMediaQualitySetting = { session.composerHighQuality = $0 }
                 a.launchMediaPicker = { session.pickAttachments(mediaOnly: true) }
                 a.launchFilePicker = { session.pickAttachments(mediaOnly: false) }
                 a.onAddAttachment = { session.pickAttachments(mediaOnly: false) }
@@ -326,6 +327,7 @@ struct ConversationPane: View {
             a.image = s.preview
             return a
         }
+        m.shouldSendHighQualityAttachments = session.sendsHighQuality
         m.conversationType = conversation.kind == .group ? .group : .direct
         m.groupVersion = conversation.kind == .group ? 2 : nil
         return m

@@ -5,6 +5,7 @@
 
 import AppKit
 import Foundation
+import MediaXPCInterface
 import SignalCore
 import SignalUI
 
@@ -270,10 +271,10 @@ struct PinMessageRequest {
             })
         }
         return FunGifsDataSource(trending: { limit, offset in
-            guard let giphy else { throw GiphyError.invalidResponse("not ready") }
+            guard let giphy else { throw MediaProcessingError.undecodable("not ready") }
             return page(try await giphy.trending(limit: limit, offset: offset))
         }, search: { q, limit, offset in
-            guard let giphy else { throw GiphyError.invalidResponse("not ready") }
+            guard let giphy else { throw MediaProcessingError.undecodable("not ready") }
             return page(try await giphy.search(q, limit: limit, offset: offset))
         }, previewPlayer: { [weak self] item in
             // The fixed-width preview MP4, decoded in the media service, looping.

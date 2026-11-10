@@ -1,0 +1,25 @@
+; Seatbelt rules and entitlements for Serein.app itself, on top of App Sandbox. App Sandbox
+; already confines it to its container and to what the user picks in open/save panels or drags
+; in; these rules take away what the app never does. Tools/build-app.sh turns this file into
+; the app's entitlements (Tools/sbpl-entitlements.sh): `;!` lines are entitlements, rules go in
+; com.apple.security.temporary-exception.sbpl. Every deny has a match-everything filter (App
+; Sandbox's filtered allows win over unfiltered denies). The app checks at start-up that the
+; sandbox is in force and exits otherwise.
+;
+; Signal's servers (chat, storage, CDN, SFU), calls (ringrtc), contacts discovery.
+;! com.apple.security.network.client
+; Video calls and voice messages / calls.
+;! com.apple.security.device.camera
+;! com.apple.security.device.audio-input
+; Attachments, exports and saves the user picks (open/save panels, drag and drop).
+;! com.apple.security.files.user-selected.read-write
+; The crash-report dialog reads macOS's reports for this app (read-only).
+;!+ com.apple.security.temporary-exception.files.home-relative-path.read-only /Library/Logs/DiagnosticReports/
+;
+; No other programs, no children (links open through Launch Services, not a process).
+(deny process-exec* (subpath "/"))
+(deny process-fork)
+; No scripting other apps, no changing kernel state, no signalling other processes.
+(deny appleevent-send)
+(deny sysctl-write)
+(deny signal (target others))

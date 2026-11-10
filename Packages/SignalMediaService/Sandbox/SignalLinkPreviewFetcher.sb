@@ -1,0 +1,41 @@
+; Seatbelt rules for SignalLinkPreviewFetcher.xpc, on top of App Sandbox with outgoing network
+; (com.apple.security.network.client, below). Tools/build-app.sh puts each rule (one per line;
+; `;` lines are comments, `;!` lines entitlements) in the service's
+; com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox profile.
+; App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every deny
+; here has a filter that matches everything. The fetcher opens HTTPS connections to the web
+; (DNS, TLS trust evaluation and the network stack need their system services, so Mach lookups
+; stay as App Sandbox allows them) and talks XPC to the app and the parser; it reads no user
+; data, writes nothing, runs nothing, and cannot reach this machine's own services.
+; Tools/check-sandbox-profile.sh runs a probe service under these rules.
+;
+;! com.apple.security.network.client
+;
+; No user data: nothing under /Users (the home directory and this service's container),
+; mounted volumes, or other users' temporary folders.
+; Its own bundle (SignalLinkPreviewFetcher.xpc: the executable, Info.plist with its peers' code-signing
+; requirements, the signature) stays readable; nothing else is.
+(deny file-read* (require-all (subpath "/Users") (require-not (regex #"/SignalLinkPreviewFetcher\.xpc(/.*)?$"))))
+(deny file-read* (require-all (subpath "/Volumes") (require-not (regex #"/SignalLinkPreviewFetcher\.xpc(/.*)?$"))))
+; Nothing written or ioctl'd, anywhere.
+(deny file-write* (subpath "/"))
+(deny file-ioctl (subpath "/"))
+; No other programs, no children.
+(deny process-exec* (subpath "/"))
+(deny process-fork)
+; Registers no Mach services.
+(deny mach-register (global-name-regex #".*"))
+(deny mach-register (local-name-regex #".*"))
+; Outgoing connections only, and never to this machine (DNS rebinding cannot turn a preview
+; into a request to a local service); nothing listens.
+(deny network-outbound (remote ip "localhost:*"))
+(deny network-inbound (local ip))
+(deny network-bind (local ip "*:*"))
+; No preferences written, no devices, no shared memory or semaphores.
+(deny user-preference-write (preference-domain-regex #".*"))
+(deny iokit-open (iokit-user-client-class-regex #".*"))
+(deny ipc-posix-shm-write* (ipc-posix-name-regex #".*"))
+(deny ipc-posix-sem (ipc-posix-name-regex #".*"))
+; No changing kernel state, no signalling other processes.
+(deny sysctl-write)
+(deny signal (target others))

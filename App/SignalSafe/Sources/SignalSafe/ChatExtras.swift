@@ -15,6 +15,9 @@ import SwiftUI
 struct CustomColorEditing {
     var editing: SignalCore.CustomChatColor?
     var duplicate = false
+    /// Opened from Settings → Appearance → Chat color: a new colour becomes the default for
+    /// all chats instead of the open chat's.
+    var forDefault = false
 }
 
 @MainActor extension SignalSession {
@@ -243,7 +246,8 @@ struct CustomColorEditing {
 
     /// CustomColorEditorDialog's result: a new colour (selected for this chat), or the edited one.
     func saveCustomColor(_ color: BubbleColor, editing: CustomColorEditing) {
-        guard let db = clientDatabase, let id = selectedConversationId else { return }
+        let conversationId = editing.forDefault ? nil : selectedConversationId
+        guard let db = clientDatabase, editing.forDefault || conversationId != nil else { return }
         var solid: UInt32?
         var gradient: (start: UInt32, end: UInt32, angle: Int)?
         switch color {
@@ -258,11 +262,22 @@ struct CustomColorEditing {
                 if let existing = editing.editing, !editing.duplicate {
                     try ChatColors.updateCustomColor(db, SignalCore.CustomChatColor(id: existing.id, solid: s, gradient: g))
                 } else {
+                    // `addCustomColor`: selected for the chat, or as the default.
                     let new = try ChatColors.addCustomColor(db, solid: s, gradient: g)
-                    try ChatColors.setConversationColor(db, conversationId: id, .custom(new))
+                    if let conversationId {
+                        try ChatColors.setConversationColor(db, conversationId: conversationId, .custom(new))
+                    } else {
+                        try ChatColors.setDefaultColor(db, .custom(new))
+                    }
                 }
             }
         }
+    }
+
+    /// `setGlobalDefaultBubbleColor` (nil: `resetDefaultChatColor`).
+    func setDefaultChatColor(_ c: ChatBubbleColor?) {
+        guard let db = clientDatabase else { return }
+        Task { try? await db.pool.write { try ChatColors.setDefaultColor($0, c) } }
     }
 
     func removeCustomColor(_ id: Int64) {

@@ -82,7 +82,9 @@ extension CallingService {
             if existing.localDeviceState.connectionState == .notConnected { existing.connect() }
             return existing
         }
+        let generation = setupGeneration
         let info = try await groupInfo(conversationId: conversationId)
+        try await checkSetup(generation, "group.info")
         let observer = GroupObserver(service: self, conversationId: conversationId, mode: .group, keys: info.keys)
         guard let call = rtc.getGroupCall(groupId: info.keys.groupId, sfuUrl: config.sfuURL.absoluteString, hkdfExtraInfo: Data(),
                                           audioLevelsIntervalMillis: Self.audioLevelIntervalMillis, dredDuration: config.dredDuration,
@@ -96,7 +98,9 @@ extension CallingService {
 
     /// `joinGroupCall`
     public func joinGroupCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool, shouldRing: Bool) async throws {
+        let generation = setupGeneration
         let call = try await connectGroupCall(conversationId: conversationId)
+        try await joinCheck(call, generation)
         cameraEnabled = hasLocalVideo
         call.setOutgoingAudioMuted(!hasLocalAudio)
         call.setOutgoingVideoMuted(!hasLocalVideo)
@@ -112,7 +116,9 @@ extension CallingService {
             if existing.localDeviceState.connectionState == .notConnected { existing.connect() }
             return existing
         }
+        let generation = setupGeneration
         let presentation = try await credentials.callLinkAuthPresentation(rootKey: rootKey.bytes)
+        try await checkSetup(generation, "callLink.credentials")
         let endorsementKey = try credentials.serverParams().endorsementPublicKey
         let observer = GroupObserver(service: self, conversationId: roomId, mode: .adhoc, keys: nil)
         guard let call = rtc.getCallLinkCall(sfuUrl: config.sfuURL.absoluteString, endorsementPublicKey: endorsementKey,
@@ -128,12 +134,22 @@ extension CallingService {
 
     /// `joinCallLinkCall`
     public func joinCallLinkCall(roomId: String, rootKey: CallLinkRootKey, adminPasskey: Data?, hasLocalAudio: Bool, hasLocalVideo: Bool) async throws {
+        let generation = setupGeneration
         let call = try await connectCallLinkCall(roomId: roomId, rootKey: rootKey, adminPasskey: adminPasskey)
+        try await joinCheck(call, generation)
         cameraEnabled = hasLocalVideo
         call.setOutgoingAudioMuted(!hasLocalAudio)
         call.setOutgoingVideoMuted(!hasLocalVideo)
         onCameraNeeded?(hasLocalVideo)
         call.join()
+    }
+
+    /// Before joining a connected call: a hang-up since setup began disconnects it instead.
+    func joinCheck(_ call: GroupCall, _ generation: UInt64) async throws {
+        do { try await checkSetup(generation, "group.join") } catch {
+            call.disconnect()
+            throw error
+        }
     }
 
     /// `groupMembersChanged`: a group's roster changed while connected.
@@ -488,6 +504,7 @@ final class GroupObserver: GroupCallObserver {
         guard let service else { return }
         updateMessageState = .sentJoin
         let id = conversationId
+        let generation = service.setupGeneration
         Task { @MainActor in
             if self.mode == .group {
                 await service.sendGroupCallUpdate(conversationId: id, eraId: eraId)
@@ -495,11 +512,23 @@ final class GroupObserver: GroupCallObserver {
                 service.emit(.joinedAdhocCall(roomId: id))
                 await service.sendProfileKeysForAdhoc(peekInfo: groupCall.peekInfo)
             }
-            // Alone in the call: warm up the microphone.
+            // Alone in the call: warm up the microphone (which records), but only if this is
+            // still our call and we are still in it: the call may have ended while the update
+            // was sent.
+            guard self.isCurrent(groupCall, generation: generation) else { return }
             if groupCall.remoteDeviceStates?.isEmpty ?? true {
                 _ = try? await service.rtc.setMicrophoneWarmupEnabled(!groupCall.localDeviceState.audioMuted)
             }
         }
+    }
+
+    /// Whether `groupCall` is still the call for this conversation, joined, with no hang-up
+    /// since `generation`.
+    func isCurrent(_ groupCall: GroupCall, generation: UInt64) -> Bool {
+        guard let service, service.setupGeneration == generation,
+              case .group(let current)? = service.callsLookup[conversationId], current === groupCall else { return false }
+        let local = groupCall.localDeviceState
+        return local.connectionState != .notConnected && local.joinState == .joined
     }
 
     func onLocalDeviceStateChanged(_ groupCall: GroupCall) {
@@ -509,8 +538,10 @@ final class GroupObserver: GroupCallObserver {
         updateHistory(groupCall, onPeek: false)
         if local.connectionState == .notConnected {
             service.onCameraNeeded?(false)
+            service.rtc.stopMicrophoneWarmup()
             service.callsLookup[conversationId] = nil
             service.observers[conversationId] = nil
+            if service.callsLookup.isEmpty { service.isPresenting = false }
             if updateMessageState == .sentJoin, let era {
                 updateMessageState = .sentLeft
                 if mode == .group {

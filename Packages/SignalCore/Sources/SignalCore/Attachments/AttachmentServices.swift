@@ -44,15 +44,30 @@ public struct AttachmentServices: Sendable {
         self.maxOutgoingSize = maxOutgoingSize
     }
 
+    /// `isHeic` (ts/types/MIME.std.ts): by content type or by file name.
+    public static func isHeic(_ contentType: String, fileName: String?) -> Bool {
+        let name = fileName?.lowercased() ?? ""
+        return contentType == "image/heic" || contentType == "image/heif" || name.hasSuffix(".heic") || name.hasSuffix(".heif")
+    }
+
     /// `canBeTranscoded`: images other than GIFs are scaled for sending.
     public static func canBeTranscoded(_ contentType: String) -> Bool { AttachmentPolicy.isImage(contentType) && contentType != "image/gif" }
 
-    /// `autoScale` (at `level`; `highQuality` sends use level three), metadata removal for
+    /// HEIC converted to JPEG (handleImageAttachment), `autoScale` (at `level`; `highQuality` sends use level three), metadata removal for
     /// images and videos not re-encoded, then encrypts the result at rest and fills in image
     /// metadata (+ a 150 px thumbnail).
     public func prepare(_ original: OutgoingAttachment, level: MediaQualityLevel = .one, transcode: Bool = true) async throws -> MessageAttachment {
         var o = original
         var reencoded = false
+        // handleImageAttachment: a HEIC photo becomes a JPEG (heicConverterWorker, quality 0.75)
+        // before autoScale, and like every image draft it has no file name; one that cannot be
+        // converted goes on as the file it is (processAttachment), stripped below.
+        if transcode, Self.isHeic(o.contentType, fileName: o.fileName), let media,
+           let converted = try? await media.convertHEIC(o.data).validated() {
+            o.data = converted.data
+            o.contentType = "image/jpeg"
+            o.fileName = nil
+        }
         if transcode, Self.canBeTranscoded(o.contentType), let media,
            let scaled = try? await media.scaleForSending(o.data, contentType: o.contentType, level: level).validated(maxDimension: level.data.maxDimensions) {
             o.data = scaled.data

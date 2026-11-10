@@ -1,10 +1,12 @@
-// Link previews: ts/types/LinkPreview rules, the fetch-level cases of upstream's
-// linkPreviewFetch_test against a fake transport, and the real URLSession transport through a
-// CONNECT proxy (the harness's stand-in for contentproxy.signal.org) to an HTTPS site.
+// Link previews: ts/types/LinkPreview rules, the image step (the media decoder), and the
+// fetcher's logic through a CONNECT proxy (the harness's stand-in) to an HTTPS site. The
+// fetch-level cases are in SignalMediaService's LinkPreviewFetcherTests.
 
 import Foundation
+import LinkPreviewFetcher
 import LinkPreviewParser
 import GRDB
+import WebFetch
 import Synchronization
 import MediaXPCInterface
 import SignalMediaDecoder
@@ -37,97 +39,20 @@ struct LinkPreviewRuleTests {
         #expect(LinkPreviewRules.stickerPack("https://evil.art/addstickers/#pack_id=\(id)&pack_key=\(key)") == nil)
         #expect(LinkPreviewRules.groupInviteFragment("https://signal.group/#CjQKIA") == "CjQKIA")
         #expect(LinkPreviewRules.isCallLink("https://signal.link/call/#key=bcdf-ghkm") && !LinkPreviewRules.isCallLink("https://signal.link/other#k"))
-        #expect(LinkPreviewFetch.parseDate("2020-04-20T12:34:56.009Z") == 1_587_386_096_009)
-        #expect(LinkPreviewFetch.parseDate("2020-04-20T12:34:56Z") == 1_587_386_096_000 && LinkPreviewFetch.parseDate("3001-01-01") == nil)
-        #expect(LinkPreviewFetch.parseDate("Mon, 20 Apr 2020 12:34:56 GMT") == 1_587_386_096_000 && LinkPreviewFetch.parseDate("soon") == nil)
     }
 }
 
-/// A scripted web: URL → response; records requests.
-final class FakeTransport: LinkPreviewTransport {
-    struct Page: Sendable {
-        var status = 200
-        var headers: [String: String] = [:]
-        var body = Data()
-        static func html(_ head: String, type: String = "text/html; charset=utf-8") -> Page {
-            Page(headers: ["content-type": type], body: Data("<!doctype html><html><head>\(head)</head><body></body></html>".utf8))
-        }
-    }
-    let pages: [String: Page]
-    let log = Mutex<[(URL, [String: String])]>([])
-    var requests: [(URL, [String: String])] { log.withLock { $0 } }
-
-    init(_ pages: [String: Page]) { self.pages = pages }
-
-    func get(_ url: URL, headers: [String: String], limit: Int) async throws -> LinkPreviewHTTPResponse {
-        log.withLock { $0.append((url, headers)) }
-        guard let page = pages[url.absoluteString] else { throw URLError(.cannotConnectToHost) }
-        return LinkPreviewHTTPResponse(status: page.status, headers: page.headers, body: page.body.prefix(limit + 1), url: url)
-    }
-}
-
-struct LinkPreviewFetchTests {
-    let media = MediaDecoder()
-    let site = "https://site.signalsafe.app"
-
-    func meta(_ t: FakeTransport, _ path: String = "/") async -> LinkPreviewMetadata? {
-        await LinkPreviewFetch.metadata(t, parser: LinkPreviewParser(), media: media, href: site + path)
-    }
-
-    @Test func pagesAndHeaders() async {
-        let t = FakeTransport([site + "/": .html("<meta property=\"og:title\" content=\"test title\"><meta property=\"og:image\" content=\"image.jpg\">"
-                                                 + "<meta property=\"og:published_time\" content=\"2020-04-20T12:34:56.009Z\">")])
-        let m = await meta(t)
-        #expect(m?.title == "test title" && m?.imageHref == site + "/image.jpg" && m?.date == 1_587_386_096_009)
-        #expect(t.requests.first?.1["User-Agent"] == "WhatsApp/2" && t.requests.first?.1["Accept"] == "text/html,application/xhtml+xml")
-        // Not HTML, not inline, too short, not 2xx, uppercase content type.
-        let bad = FakeTransport([site + "/json": .init(headers: ["content-type": "application/json"], body: Data("{\"title\":1}".utf8)),
-                                 site + "/dl": .init(headers: ["content-type": "text/html", "content-disposition": "attachment; filename=a.html"],
-                                                     body: Data("<title>x</title>".utf8)),
-                                 site + "/short": .init(headers: ["content-type": "text/html", "content-length": "7"], body: Data("<title>".utf8)),
-                                 site + "/404": .init(status: 404, headers: ["content-type": "text/html"], body: Data("<title>x</title>".utf8)),
-                                 site + "/caps": .init(headers: ["content-type": "TEXT/HTML; CHARSET=UTF-8", "content-disposition": "inline"],
-                                                       body: Data("<title>caps</title>".utf8))])
-        for p in ["/json", "/dl", "/short", "/404"] { #expect(await meta(bad, p) == nil, "\(p)") }
-        #expect(await meta(bad, "/caps")?.title == "caps")
-    }
-
-    @Test func redirects() async {
-        for status in [301, 302, 303, 307, 308] {
-            let t = FakeTransport([site + "/a": .init(status: status, headers: ["location": "/b"]), site + "/b": .html("<title>moved</title><meta property=\"og:image\" content=\"i.png\">")])
-            let m = await meta(t, "/a")
-            #expect(m?.title == "moved" && m?.imageHref == site + "/i.png", "\(status)")   // relative to the final URL
-        }
-        let t = FakeTransport([site + "/nolocation": .init(status: 301),
-                               site + "/insecure": .init(status: 302, headers: ["location": "http://site.signalsafe.app/x"]),
-                               site + "/excluded": .init(status: 302, headers: ["location": "https://localhost/x"]),
-                               site + "/loop1": .init(status: 302, headers: ["location": "/loop2"]), site + "/loop2": .init(status: 302, headers: ["location": "/loop1"])])
-        for p in ["/nolocation", "/insecure", "/excluded", "/loop1"] { #expect(await meta(t, p) == nil, "\(p)") }
-        var chain: [String: FakeTransport.Page] = [:]
-        for i in 0..<21 { chain[site + "/r\(i)"] = .init(status: 302, headers: ["location": "/r\(i + 1)"]) }
-        chain[site + "/r21"] = .html("<title>too far</title>")
-        #expect(await meta(FakeTransport(chain), "/r0") == nil)
-    }
-
-    @Test func sizesAndImages() async throws {
-        // Only the first 1000 KiB of HTML is read.
-        let padding = String(repeating: "a", count: LinkPreviewFetch.maxHTMLBytes)
-        let big = FakeTransport([site + "/": .init(headers: ["content-type": "text/html"],
-                                                   body: Data("<title>foo bar</title><p>\(padding)</p><meta property=\"og:description\" content=\"should be ignored\">".utf8))])
-        let m = await meta(big)
-        #expect(m?.title == "foo bar" && m?.description == nil)
-        // A link straight to an image; GIFs are kept, others re-encoded by the media service.
+struct LinkPreviewImageTests {
+    /// `processImageResponse`: an image that does not decode is no image; GIFs are kept.
+    @Test func imagesGoThroughTheDecoder() async throws {
+        let media = MediaDecoder()
+        #expect(await LinkPreviewFetch.processImage(FetchedImage(data: Data("not a png at all".utf8), contentType: "image/png"), media: media) == nil)
         let png = AttachmentFlowTests.png()
-        let gif = (try? StickerFixtures.file("GIFTestSuite/255-codes.gif")) ?? Data()
-        let t = FakeTransport([site + "/pic.png": .init(headers: ["content-type": "image/png"], body: png),
-                               site + "/anim.gif": .init(headers: ["content-type": "image/gif"], body: gif),
-                               site + "/fake.png": .init(headers: ["content-type": "image/png"], body: Data("not a png at all".utf8)),
-                               site + "/huge.png": .init(headers: ["content-type": "image/png"], body: png + Data(count: LinkPreviewFetch.maxImageBytes)),
-                               site + "/text": .init(headers: ["content-type": "text/plain"], body: png)])
-        let direct = await meta(t, "/pic.png")
-        #expect(direct?.title == "pic.png" && direct?.image?.contentType == "image/png" && direct?.image?.data.isEmpty == false)
-        #expect(await LinkPreviewFetch.image(t, media: media, href: site + "/anim.gif")?.data == gif)
-        for p in ["/fake.png", "/huge.png", "/text"] { #expect(await LinkPreviewFetch.image(t, media: media, href: site + p) == nil, "\(p)") }
+        let out = await LinkPreviewFetch.processImage(FetchedImage(data: png, contentType: "image/png"), media: media)
+        #expect(out?.contentType == "image/png" || out?.contentType == "image/jpeg")
+        let gif = try StickerFixtures.file("GIFTestSuite/255-codes.gif")
+        #expect(await LinkPreviewFetch.processImage(FetchedImage(data: gif, contentType: "image/gif"), media: media)?.data == gif)
+        #expect(await LinkPreviewFetch.processImage(FetchedImage(data: png, contentType: "image/tiff"), media: media) == nil)
     }
 }
 
@@ -149,8 +74,11 @@ struct LinkPreviewFetchTests {
         ]
         let r = try await c.server.json("setPreviewSite", ["routes": routes])
         let port = try #require(r["proxyPort"] as? Int)
-        let transport = URLSessionLinkPreviewTransport(proxy: .custom(host: "127.0.0.1", port: port), rootCertificatesDER: c.endpoints.rootCertificatesDER)
-        return LinkPreviewService(transport: transport, parser: LinkPreviewParser(), media: MediaDecoder(), stickers: c.stickers, groups: c.groups, strings: Self.strings)
+        // The fetcher service's logic, in process: through the harness's CONNECT proxy, pages
+        // parsed by the in-process parser.
+        let transport = URLSessionWebTransport(proxy: .custom(host: "127.0.0.1", port: port), rootCertificatesDER: c.endpoints.rootCertificatesDER)
+        let fetcher = LinkPreviewPageFetcher(transport: transport, parser: LinkPreviewParser())
+        return LinkPreviewService(fetcher: fetcher, media: MediaDecoder(), stickers: c.stickers, groups: c.groups, strings: Self.strings)
     }
 
     @Test func pagePreviewThroughTheProxyAndSend() async throws {

@@ -1,6 +1,6 @@
 // The XPC boundary to SignalMediaDecoder.xpc (plan.md "all parsing of incoming media runs in a
-// sandboxed XPC service"): one Objective-C method carrying a binary-plist `MediaRequest` and
-// returning the binary-plist result (or an error string). The client is `MediaProcessing`, so
+// sandboxed XPC service"): one Objective-C method carrying a `MediaRequest` and returning its result,
+// both in the strict wire format (Wire.swift) (or an error string). The client is `MediaProcessing`, so
 // the app passes it wherever the in-process decoder went in tests. A request that fails, times
 // out, or loses the service (a crash) throws; the connection is then rebuilt for the next one.
 
@@ -18,6 +18,7 @@ public enum MediaRequest: Codable, Sendable {
     case thumbnail(Data, size: Int)
     case scaleForSending(Data, contentType: String, level: MediaQualityLevel)
     case stripMetadata(Data, contentType: String)
+    case convertHEIC(Data)
     case audioSummary(Data)
     case decodeAudio(Data, startFrame: Int, maxFrames: Int)
     case startVoiceNote(sampleRate: Int)
@@ -30,6 +31,44 @@ public enum MediaRequest: Codable, Sendable {
     case videoFrames(UUID, count: Int)
     case seekVideo(UUID, seconds: Double)
     case closeVideo(UUID)
+}
+
+public enum VoiceNoteLimits {
+    /// The largest request the voice-note service reads (a chunk of recorded samples).
+    public static let maxRequestBytes = 16 << 20
+}
+
+extension MediaRequest {
+    /// Recording requests: served by SignalVoiceNoteEncoder.xpc, never by the decoder.
+    public var isVoiceNote: Bool {
+        switch self {
+        case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote: return true
+        default: return false
+        }
+    }
+
+    /// The largest request the decoder service reads (attachments are at most 100 MiB upstream).
+    public static let maxBytes = 512 << 20
+    static let small = 64 << 10
+
+    /// The largest reply this request can have, from the limits its result's `validated` checks.
+    public var maxReplyBytes: Int {
+        func pixels(_ side: Int) -> Int { let s = min(max(side, 1), 16384); return s * s * 4 }
+        switch self {
+        case .stickerImage: return StickerImage.maxBytes + pixels(StickerImage.size) + Self.small
+        case .displayImage(_, let max): return pixels(min(max, 4096)) + Self.small
+        case .thumbnail: return (4 << 20) + Self.small
+        case .scaleForSending(let b, _, let level): return b.count + pixels(level.data.maxDimensions) + Self.small
+        case .stripMetadata(let b, _): return b.count + Self.small
+        case .convertHEIC: return (256 << 20) + Self.small
+        case .decodeAudio(_, _, let frames): return min(max(frames, 0), AudioLimits.maxChunkFrames) * AudioLimits.maxChannels * 4 + Self.small
+        case .finishVoiceNote: return 64 << 20
+        case .posterFrame: return pixels(8192) + Self.small
+        case .videoFrames: return Int.max   // its own frame format, checked frame by frame (decodeFrames)
+        case .imageInfo, .audioSummary, .videoInfo, .openVideo, .startVoiceNote, .appendVoiceNote, .cancelVoiceNote, .seekVideo,
+             .closeVideo: return Self.small
+        }
+    }
 }
 
 /// `openVideo`'s result over the wire.
@@ -105,34 +144,41 @@ public enum MediaXPCWire {
         return frames
     }
 
-    public static func encode<T: Encodable>(_ value: T) throws -> Data {
-        let e = PropertyListEncoder()
-        e.outputFormat = .binary
-        return try e.encode([value])        // a top-level array: plists need a container
-    }
-    public static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
-        guard let first = try PropertyListDecoder().decode([T].self, from: data).first else { throw MediaProcessingError.invalidResult }
-        return first
+    /// Everything else: the strict wire format (Wire.swift).
+    public static func encode<T: Encodable>(_ value: T) throws -> Data { try Wire.encode(value) }
+    /// `maxBytes`: the largest message the caller can legitimately get; anything larger is
+    /// refused before it is read.
+    public static func decode<T: Decodable>(_ type: T.Type, _ data: Data, maxBytes: Int) throws -> T {
+        try Wire.decode(type, data, maxBytes: maxBytes)
     }
 }
 
 /// One XPC service's connection: rebuilt after an invalidation or interruption (a crash), each
-/// request bounded by a watchdog. Shared by the media decoder and the link-preview parser.
+/// request bounded by a watchdog. Shared by the media decoder, the link-preview parser and the
+/// fetcher. With a peer requirement (XPCPeer) the connection only talks to a process signed
+/// that way: anything else is invalidated by the system before a message is exchanged.
 public final class XPCChannel: Sendable {
     let makeConnection: @Sendable () -> NSXPCConnection
     let connection = Mutex<NSXPCConnection?>(nil)
     let timeout: Duration
+    let peerRequirement: String?
+    let remoteInterface: @Sendable () -> NSXPCInterface
 
-    public init(timeout: Duration, makeConnection: @escaping @Sendable () -> NSXPCConnection) {
+    public init(timeout: Duration, peer: String? = nil,
+                remoteInterface: @escaping @Sendable () -> NSXPCInterface = { NSXPCInterface(with: MediaXPCProtocol.self) },
+                makeConnection: @escaping @Sendable () -> NSXPCConnection) {
         self.timeout = timeout
         self.makeConnection = makeConnection
+        self.peerRequirement = peer
+        self.remoteInterface = remoteInterface
     }
 
     func current() -> NSXPCConnection {
         connection.withLock { c in
             if let c { return c }
             let fresh = makeConnection()
-            fresh.remoteObjectInterface = NSXPCInterface(with: MediaXPCProtocol.self)
+            if let req = peerRequirement { fresh.setCodeSigningRequirement(req) }
+            fresh.remoteObjectInterface = remoteInterface()
             let weakSelf = WeakBox(self)
             fresh.invalidationHandler = { weakSelf.value?.connection.withLock { $0 = nil } }
             fresh.interruptionHandler = { weakSelf.value?.connection.withLock { $0 = nil } }
@@ -142,50 +188,85 @@ public final class XPCChannel: Sendable {
         }
     }
 
-    /// The reply's bytes, undecoded.
-    func send(_ payload: Data) async throws -> Data {
-        let conn = current()
-        let timeout = self.timeout
-        let reply: Data = try await withCheckedThrowingContinuation { (k: CheckedContinuation<Data, Error>) in
-            let once = OnceFlag()
-            let finish: @Sendable (Result<Data, Error>) -> Void = { r in if once.claim() { k.resume(with: r) } }
-            let watchdog = Task {
-                try? await Task.sleep(for: timeout)
-                finish(.failure(MediaProcessingError.undecodable("service timed out")))
-            }
-            let proxy = conn.remoteObjectProxyWithErrorHandler { error in
-                watchdog.cancel()
-                finish(.failure(MediaProcessingError.undecodable("service: \(error)")))
-            }
-            guard let service = proxy as? MediaXPCProtocol else {
-                watchdog.cancel()
-                return finish(.failure(MediaProcessingError.invalidResult))
-            }
+    /// The reply's bytes, undecoded. `timeout` (at most the channel's) bounds this call.
+    func send(_ payload: Data, timeout: Duration? = nil) async throws -> Data {
+        try await invoke(timeout: timeout) { proxy, finish in
+            guard let service = proxy as? MediaXPCProtocol else { return finish(.failure(MediaProcessingError.invalidResult)) }
             service.handle(payload) { data, error in
-                watchdog.cancel()
-                if let data { finish(.success(data)) } else { finish(.failure(MediaProcessingError.undecodable(error ?? "no reply"))) }
+                if let data { finish(.success(data)) } else { finish(.failure(MediaProcessingError.undecodable(String((error ?? "no reply").prefix(512))))) }
             }
         }
-        return reply
+    }
+
+    /// One call on the remote object, bounded by the timeout and failing with the connection
+    /// (XPCServiceError).
+    func invoke<T: Sendable>(timeout: Duration? = nil, _ body: @escaping (AnyObject, @escaping @Sendable (Result<T, Error>) -> Void) -> Void) async throws -> T {
+        let conn = current()
+        let timeout = min(timeout ?? self.timeout, self.timeout)
+        return try await withCheckedThrowingContinuation { (k: CheckedContinuation<T, Error>) in
+            let once = OnceFlag()
+            let watchdog = Mutex<Task<Void, Never>?>(nil)
+            let finish: @Sendable (Result<T, Error>) -> Void = { r in
+                if once.claim() {
+                    watchdog.withLock { $0?.cancel() }
+                    k.resume(with: r)
+                }
+            }
+            watchdog.withLock { w in
+                w = Task {
+                    try? await Task.sleep(for: timeout)
+                    finish(.failure(XPCServiceError.timedOut))
+                }
+            }
+            let proxy = conn.remoteObjectProxyWithErrorHandler { error in
+                finish(.failure(XPCServiceError.lost(String(String(describing: error).prefix(512)))))
+            }
+            body(proxy as AnyObject, finish)
+        }
     }
 }
 
 public final class MediaXPCClient: MediaProcessing {
     public static let serviceName = "org.signalsafe.SignalMediaDecoder"
+    public static let voiceServiceName = "org.signalsafe.SignalVoiceNoteEncoder"
     let channel: XPCChannel
+    /// Voice notes go to their own service (SignalVoiceNoteEncoder.xpc).
+    let voice: XPCChannel
 
-    /// The bundled service, or (tests) any connection to a listener.
-    public init(timeout: Duration = .seconds(30), makeConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: MediaXPCClient.serviceName) }) {
-        channel = XPCChannel(timeout: timeout, makeConnection: makeConnection)
+    /// The bundled service (only if it is signed as XPCPeer says), or (tests) any connection.
+    public init(timeout: Duration = .seconds(30), peer: String? = XPCPeer.requirement(.decoder),
+                voicePeer: String? = XPCPeer.requirement(.voice),
+                makeConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: MediaXPCClient.serviceName) },
+                makeVoiceConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: MediaXPCClient.voiceServiceName) }) {
+        channel = XPCChannel(timeout: timeout, peer: peer, makeConnection: makeConnection)
+        voice = XPCChannel(timeout: timeout, peer: voicePeer, makeConnection: makeVoiceConnection)
     }
+
+    /// Inputs that hung or crashed the service (shared by every call on this client).
+    public let quarantine = MediaQuarantine()
+    let inFlight = InFlight()
 
     func call<T: Decodable & Sendable>(_ request: MediaRequest, _ type: T.Type) async throws -> T {
-        try MediaXPCWire.decode(T.self, try await callData(request))
+        try MediaXPCWire.decode(T.self, try await callData(request), maxBytes: request.maxReplyBytes)
     }
 
-    /// The reply's bytes, undecoded.
+    /// The reply's bytes, undecoded. Refused at once for a quarantined input; the request's
+    /// budget bounds the wait (Containment.swift).
     func callData(_ request: MediaRequest) async throws -> Data {
-        try await channel.send(try MediaXPCWire.encode(request))
+        if request.isVoiceNote { return try await voice.send(try MediaXPCWire.encode(request), timeout: request.budget) }
+        let key = request.input.map(MediaQuarantine.key)
+        if let key, quarantine.isQuarantined(key) { throw MediaProcessingError.undecodable("this file stopped the media service before") }
+        let flight = key.map(inFlight.add)
+        defer { flight.map(inFlight.remove) }
+        do {
+            return try await channel.send(try MediaXPCWire.encode(request), timeout: request.budget)
+        } catch XPCServiceError.timedOut {
+            if let key { quarantine.strike(key, MediaQuarantine.strikesToQuarantine) }
+            throw XPCServiceError.timedOut
+        } catch let XPCServiceError.lost(why) {
+            for k in inFlight.all() { quarantine.strike(k) }
+            throw XPCServiceError.lost(why)
+        }
     }
 
     public func stickerImage(_ bytes: Data) async throws -> StickerImage { try await call(.stickerImage(bytes), StickerImage.self).validated() }
@@ -198,6 +279,7 @@ public final class MediaXPCClient: MediaProcessing {
         try await call(.scaleForSending(bytes, contentType: contentType, level: level), ScaledImage.self).validated(maxDimension: 4096)
     }
     public func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data { try await call(.stripMetadata(bytes, contentType: contentType), Data.self) }
+    public func convertHEIC(_ bytes: Data) async throws -> ConvertedImage { try await call(.convertHEIC(bytes), ConvertedImage.self).validated() }
     public func audioSummary(_ bytes: Data) async throws -> AudioSummary { try await call(.audioSummary(bytes), AudioSummary.self).validated() }
     public func decodeAudio(_ bytes: Data, startFrame: Int, maxFrames: Int) async throws -> AudioChunk {
         try await call(.decodeAudio(bytes, startFrame: startFrame, maxFrames: maxFrames), AudioChunk.self).validated(requestedStart: startFrame, maxFrames: maxFrames)

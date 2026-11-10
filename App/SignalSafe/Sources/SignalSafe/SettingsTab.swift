@@ -37,10 +37,17 @@ struct SettingsTab: View {
                     navTabs: NavSidebarNavTabs(collapsed: model.navTabsCollapsed, onToggleCollapse: { model.navTabsCollapsed = $0 })) { page in
             switch page {
             case .general: PreferencesGeneralPage(settings: general)
-            case .appearance: PreferencesAppearancePage(localeText: nil, themeSetting: theme, zoomFactor: zoom)
+            case .appearance: PreferencesAppearancePage(localeText: nil, themeSetting: theme, zoomFactor: zoom, onOpenChatColor: { self.page = .chatColor })
+            case .chatColor: chatColorPage
             case .chats: PreferencesChatsPage(settings: chats, onOpenChatFolders: { self.page = .chatFolders },
                                               startPlaintextExport: { session.startPlaintextExport() })
-            case .privacy: PreferencesPrivacyPage(settings: privacy, onOpenBlocked: { self.page = .blocked })
+            case .privacy: PreferencesPrivacyPage(settings: privacy, onOpenPNP: { self.page = .pnp }, onOpenBlocked: { self.page = .blocked })
+            case .pnp:
+                PreferencesPNPPage(whoCanSeeMe: Binding(get: { session.accountSettings.sharesPhoneNumber ? .everybody : .nobody },
+                                                        set: { session.setSharesPhoneNumber($0 == .everybody) }),
+                                   whoCanFindMe: Binding(get: { session.accountSettings.discoverableByPhoneNumber ? .discoverable : .notDiscoverable },
+                                                         set: { session.setDiscoverableByPhoneNumber($0 == .discoverable) }),
+                                   onBack: { self.page = .privacy }, showReadOnlyToast: { session.toast = .whoCanFindMeReadOnly })
             case .notifications: PreferencesNotificationsPage(settings: notifications, onOpenWhileMuted: { self.page = .whileMuted },
                                                               onOpenNotificationProfiles: { self.page = .notificationProfilesHome })
             case .notificationProfilesHome: notificationProfilesHome
@@ -58,6 +65,7 @@ struct SettingsTab: View {
             case .profile: profilePageView
             case .internal: PreferencesInternal(settings: $internalSettings)
             case .calls: callsPage
+            case .dataUsage: dataUsagePage
             default: Rectangle().fill(AxoColor.surfacePrimary)
             }
         }
@@ -152,6 +160,57 @@ struct SettingsTab: View {
                                                  onSelectedMicrophoneChange: { session.selectMicrophone($0) },
                                                  onSelectedSpeakerChange: { session.selectSpeaker($0) }))
             .task { session.refreshCallDevices() }
+    }
+
+    /// Settings → Appearance → Chat color: the default bubble colour for chats without their
+    /// own (upstream's ChatColorPicker with no conversation).
+    var chatColorPage: some View {
+        let colors = session.chatColors.customColors
+        var preset: String?
+        var custom: Int?
+        switch session.chatColors.defaultColor {
+        case .preset(let p)?: preset = p
+        case .custom(let id)?: custom = Int(id)
+        case nil: break
+        }
+        return PreferencesContent(title: i18n("icu:ChatColorPicker__menu-title"),
+                                  backButton: AnyView(PreferencesBackButton(label: i18n("icu:goBack"), action: { self.page = .appearance }))) {
+            ChatColorPicker(conversationId: nil,
+                            customChatColors: colors.map { SignalUI.CustomChatColor(id: Int($0.id), color: SignalSession.bubble($0)) },
+                            selectedPreset: preset, selectedCustomColorId: custom, defaultBubbleColor: session.bubbleColor(nil),
+                            onSelectPreset: { session.setDefaultChatColor(.preset($0)) },
+                            onSelectCustomColor: { session.setDefaultChatColor(.custom(Int64($0))) },
+                            onAddCustomColor: { session.customColorEditor = CustomColorEditing(forDefault: true) },
+                            onEditCustomColor: { c in session.customColorEditor = CustomColorEditing(editing: colors.first { $0.id == Int64(c.id) }, forDefault: true) },
+                            onDuplicateCustomColor: { c in
+                                session.customColorEditor = CustomColorEditing(editing: colors.first { $0.id == Int64(c.id) }, duplicate: true, forDefault: true)
+                            },
+                            onRemoveCustomColor: { c in session.removeCustomColor(Int64(c.id)) },
+                            onResetChatColor: { session.setDefaultChatColor(nil) },
+                            onResetAll: { session.resetAllChatColors() })
+        }
+        .task { session.observeChatColors() }
+    }
+
+    /// Settings → Data usage: media auto-download and the default sent media quality.
+    var dataUsagePage: some View {
+        PreferencesDataUsagePage(
+            autoDownload: Binding(get: {
+                let a = session.accountSettings.autoDownload
+                return AutoDownloadAttachment(photos: a.photos, videos: a.videos, audio: a.audio, documents: a.documents)
+            }, set: { v in
+                session.updateAccountSettings {
+                    $0.autoDownload.photos = v.photos
+                    $0.autoDownload.videos = v.videos
+                    $0.autoDownload.audio = v.audio
+                    $0.autoDownload.documents = v.documents
+                }
+            }),
+            sentMediaQuality: Binding(get: { session.accountSettings.sentMediaQuality.rawValue },
+                                      set: { v in
+                                          guard let q = v.flatMap(SentMediaQuality.init) else { return }
+                                          session.updateAccountSettings { $0.sentMediaQuality = q }
+                                      }))
     }
 
     var me: PreferencesMe {

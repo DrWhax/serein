@@ -25,14 +25,22 @@ let package = Package(
         .executable(name: "SignalMediaDecoderService", targets: ["SignalMediaDecoderService"]),
         .library(name: "LinkPreviewParser", targets: ["LinkPreviewParser"]),
         .executable(name: "SignalLinkPreviewParserService", targets: ["SignalLinkPreviewParserService"]),
+        .library(name: "WebFetch", targets: ["WebFetch"]),
+        .library(name: "LinkPreviewFetcher", targets: ["LinkPreviewFetcher"]),
+        .executable(name: "SignalLinkPreviewFetcherService", targets: ["SignalLinkPreviewFetcherService"]),
+        .library(name: "GifSearch", targets: ["GifSearch"]),
+        .executable(name: "SignalGifSearchService", targets: ["SignalGifSearchService"]),
+        .library(name: "VoiceNoteEncoder", targets: ["VoiceNoteEncoder"]),
+        .executable(name: "SignalVoiceNoteEncoderService", targets: ["SignalVoiceNoteEncoderService"]),
     ],
-    dependencies: [.package(path: "../SignalCodecs")],
+    dependencies: [.package(path: "../SignalCodecs"), .package(path: "../SignalText")],
     targets: [
         .target(name: "MediaXPCInterface", swiftSettings: strict),
         .target(
             name: "SignalMediaDecoder",
             dependencies: [
                 "MediaXPCInterface",
+                "VoiceNoteEncoder",
                 .product(name: "CodecCore", package: "SignalCodecs"),
                 .product(name: "ImagePNG", package: "SignalCodecs"),
                 .product(name: "ImageJPEG", package: "SignalCodecs"),
@@ -48,11 +56,16 @@ let package = Package(
                 .product(name: "AudioMP3", package: "SignalCodecs"),
                 .product(name: "VideoH264", package: "SignalCodecs"),
                 .product(name: "VideoHEVC", package: "SignalCodecs"),
+                .product(name: "ImageHEIF", package: "SignalCodecs"),
                 .product(name: "MetadataStrip", package: "SignalCodecs"),
             ],
             swiftSettings: strict
         ),
         .executableTarget(name: "SignalMediaDecoderService", dependencies: ["SignalMediaDecoder"], swiftSettings: strict),
+        // SignalVoiceNoteEncoder.xpc: the MP3 encoder for recorded voice notes, apart from every
+        // decoder of received media (Sandbox/SignalVoiceNoteEncoder.sb).
+        .target(name: "VoiceNoteEncoder", dependencies: ["MediaXPCInterface", .product(name: "AudioMP3", package: "SignalCodecs")], swiftSettings: strict),
+        .executableTarget(name: "SignalVoiceNoteEncoderService", dependencies: ["VoiceNoteEncoder", "MediaXPCInterface"], swiftSettings: strict),
         // SignalLinkPreviewParser.xpc: link-preview HTML only (HTMLMeta), under its own tighter
         // Seatbelt profile (Sandbox/SignalLinkPreviewParser.sb). No image decoders.
         .target(
@@ -65,8 +78,18 @@ let package = Package(
             swiftSettings: strict
         ),
         .executableTarget(name: "SignalLinkPreviewParserService", dependencies: ["LinkPreviewParser"], swiftSettings: strict),
+        // The web-facing services: HTTPS only, no parsers of media or HTML.
+        .target(name: "WebFetch", swiftSettings: strict),
+        // SignalLinkPreviewFetcher.xpc: fetches pages and images; HTML goes to the parser service.
+        .target(name: "LinkPreviewFetcher", dependencies: ["MediaXPCInterface", "WebFetch", .product(name: "SignalText", package: "SignalText")],
+                swiftSettings: strict),
+        .executableTarget(name: "SignalLinkPreviewFetcherService", dependencies: ["LinkPreviewFetcher", "MediaXPCInterface", "WebFetch"], swiftSettings: strict),
+        // SignalGifSearch.xpc: Giphy through Signal's content proxy (JSON decoded there).
+        .target(name: "GifSearch", dependencies: ["MediaXPCInterface", "WebFetch"], swiftSettings: strict),
+        .executableTarget(name: "SignalGifSearchService", dependencies: ["GifSearch", "MediaXPCInterface", "WebFetch"], swiftSettings: strict),
         .testTarget(name: "SignalMediaDecoderTests",
-                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", "LinkPreviewParser", .product(name: "EncodePNG", package: "SignalCodecs"),
+                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", "VoiceNoteEncoder", "LinkPreviewParser", "LinkPreviewFetcher", "GifSearch", "WebFetch",
+                                   .product(name: "EncodePNG", package: "SignalCodecs"),
                                    .product(name: "ImagePNG", package: "SignalCodecs"),
                                    .product(name: "CodecCore", package: "SignalCodecs")],
                     resources: [.copy("Resources")],

@@ -9,40 +9,13 @@
 // request sizes say little about which GIF was picked; every segment's Content-Length,
 // Content-Range and size are checked. Upstream's last-segment adjustment misses the case
 // where the last segment would end exactly one byte past the file (`>` for `>=`); here it
-// is `>=`. The bytes go to the media service (MP4 demux, H.264) like any received video.
+// is `>=`. The bytes go back to the app unread, for the media decoder (MP4 demux, H.264) like
+// any received video. This runs inside SignalGifSearch.xpc (network through the content proxy
+// only, no files); the app re-validates what it returns (PaginatedGifResults.validated).
 
 import Foundation
-
-/// One request through the content proxy, never following redirects.
-public protocol ProxyHTTPTransport: Sendable {
-    func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> LinkPreviewHTTPResponse
-}
-
-extension URLSessionLinkPreviewTransport: ProxyHTTPTransport {}
-
-public struct GifMedia: Sendable, Equatable {
-    public var url: URL
-    public var width: Int
-    public var height: Int
-}
-
-/// `GifType`
-public struct GifResult: Sendable, Equatable, Identifiable {
-    public var id: String
-    public var title: String
-    public var description: String
-    /// fixed_width (200 px) MP4, for the picker.
-    public var previewMedia: GifMedia
-    /// original MP4, what is sent.
-    public var attachmentMedia: GifMedia
-}
-
-/// `PaginatedGifResults`
-public struct PaginatedGifResults: Sendable, Equatable {
-    /// Offset of the next page; nil at the end.
-    public var next: Int?
-    public var gifs: [GifResult]
-}
+import MediaXPCInterface
+import WebFetch
 
 public enum GiphyError: Error, Equatable {
     case syntheticResponse
@@ -66,9 +39,9 @@ public struct GiphyClient: Sendable {
     public static let maxFileBytes = 32 << 20
     public static let cdnOrigins: Set<String> = ["media0.giphy.com", "media1.giphy.com", "media2.giphy.com", "media3.giphy.com", "media4.giphy.com"]
 
-    let transport: any ProxyHTTPTransport
+    let transport: any WebTransport
 
-    public init(transport: any ProxyHTTPTransport) { self.transport = transport }
+    public init(transport: any WebTransport) { self.transport = transport }
 
     /// `isGiphyCdnUrl`: https on one of the media hosts, default port, no credentials.
     public static func isGiphyCdnURL(_ s: String) -> Bool {
@@ -218,5 +191,59 @@ public struct GiphyClient: Sendable {
         guard resp.headers["content-range"] == "bytes \(r.start)-\(r.endInclusive)/\(length)" else { throw GiphyError.invalidResponse("Unexpected Content-Range header") }
         guard resp.body.count == r.segmentSize else { throw GiphyError.invalidResponse("Unexpected response buffer byte length") }
         return resp.body.suffix(from: resp.body.startIndex + r.sliceStart)
+    }
+}
+
+/// The service side of SignalGifSearch.xpc.
+public final class GifSearchXPCHandler: NSObject, MediaXPCProtocol, Sendable {
+    let giphy: GiphyClient
+    let gate: RequestGate
+    /// The client's timeout: a request still running (on the network or parsing a reply) after
+    /// it, plus grace, ends the process.
+    public static let budget: Duration = .seconds(60)
+
+    public init(giphy: GiphyClient, gate: RequestGate = RequestGate(maxRunning: 8, maxWaiting: 32)) {
+        self.giphy = giphy
+        self.gate = gate
+    }
+
+    public func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
+        let decoded: GifSearchRequest
+        do { decoded = try MediaXPCWire.decode(GifSearchRequest.self, request, maxBytes: GifSearchRequest.maxBytes) } catch { return reply(nil, "bad request") }
+        let giphy = giphy, gate = gate
+        Task {
+            do {
+                reply(try await gate.run(budget: Self.budget) {
+                    switch decoded {
+                    case .search(let q, let limit, let offset):
+                        return try MediaXPCWire.encode(try await giphy.search(q, limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
+                    case .trending(let limit, let offset):
+                        return try MediaXPCWire.encode(try await giphy.trending(limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
+                    case .file(let url):
+                        return try MediaXPCWire.encode(try await giphy.file(url))
+                    }
+                }, nil)
+            } catch {
+                reply(nil, String(describing: error))
+            }
+        }
+    }
+}
+
+public final class GifSearchListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
+    let handler: GifSearchXPCHandler
+    let appPeer: String?
+
+    public init(handler: GifSearchXPCHandler, appPeer: String?) {
+        self.handler = handler
+        self.appPeer = appPeer
+    }
+
+    public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        if let appPeer { connection.setCodeSigningRequirement(appPeer) }
+        connection.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
+        connection.exportedObject = handler
+        connection.resume()
+        return true
     }
 }

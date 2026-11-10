@@ -68,6 +68,8 @@ let package = Package(
                            .product(name: "SignalRingRTC", package: "SignalRingRTC"),
                            .product(name: "MediaXPCInterface", package: "SignalMediaService"),
                            .product(name: "SignalMediaDecoder", package: "SignalMediaService"),
+                           .product(name: "LinkPreviewFetcher", package: "SignalMediaService"),
+                           .product(name: "WebFetch", package: "SignalMediaService"),
                            .product(name: "LinkPreviewParser", package: "SignalMediaService"),
                            .product(name: "EncodePNG", package: "SignalCodecs"), .product(name: "CodecCore", package: "SignalCodecs")],
             resources: [.copy("Resources")],

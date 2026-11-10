@@ -57,6 +57,8 @@ public actor SignalClient {
         /// Find by phone number (CDSI) and by username.
         public let discovery: ContactDiscovery
         public let usernames: UsernameService
+        /// Our own profile (PUT /v1/profile) and the phone number privacy settings.
+        public let profileWriter: ProfileWriter
         /// Refill and rotation of the pre-keys the server hands out for us.
         public let preKeys: PreKeyMaintenance
         /// Expiring messages and pins, the weekly key-transparency self check.
@@ -175,6 +177,7 @@ public actor SignalClient {
                           groups: groups, stickers: stickers, downloads: downloads, attachmentStore: store, http: http,
                           discovery: ContactDiscovery(net: net, database: database, socket: socket),
                           usernames: UsernameService(account: account, database: database, socket: socket),
+                          profileWriter: ProfileWriter(account: account, database: database, socket: socket, profiles: profiles),
                           preKeys: PreKeyMaintenance(account: account, database: database, socket: socket), maintenance: maintenance)
         // Files nothing refers to any more, while nothing is writing new ones yet.
         if let removed = try? await maintenance.cleanOrphans(), removed > 0 { Self.diagnose("orphaned attachment files removed: \(removed)") }

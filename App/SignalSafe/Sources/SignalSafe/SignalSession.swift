@@ -109,14 +109,12 @@ import SignalUI
     var linkPreviewExcluded: Set<String> = []
     var linkPreviewTask: Task<Void, Never>?
     var linkPreviewDebounce: Task<Void, Never>?
-    /// Previews are fetched directly from the site, as upstream Desktop does: Signal's content
-    /// proxy only lets a few hosts through (Giphy and the like; others get 403). One session,
-    /// ephemeral, no cookies or cache; sites have public certificates (system trust).
-    let linkPreviewTransport = URLSessionLinkPreviewTransport(proxy: .direct)
+    /// Previews are fetched by SignalLinkPreviewFetcher.xpc (straight from the site, as upstream
+    /// Desktop does), which has the page parsed by SignalLinkPreviewParser.xpc: the app only
+    /// brokers the connection between them and gets validated fields and image bytes back.
+    let linkPreviewFetcher = LinkPreviewFetcherClient()
     /// The strings a preview carries (in our language), set by the conversation pane.
     var linkPreviewStrings: LinkPreviewStrings?
-    /// Link-preview pages are parsed by SignalLinkPreviewParser.xpc (its own tight sandbox).
-    let linkPreviewParser = LinkPreviewParserClient()
     /// Calls (Calls.swift): the service, the call on screen, an incoming ring, our audio/video,
     /// picture-in-picture, the camera and its preview.
     var calling: CallingService?
@@ -127,7 +125,17 @@ import SignalUI
     var callPip = false
     @ObservationIgnored var camera: CameraCapture?
     @ObservationIgnored var cameraSends = false
-    @ObservationIgnored var cameraOp: Task<Void, Never>?
+    /// Starts and stops the camera to match `cameraWanted`, rechecking after every wait.
+    @ObservationIgnored var cameraControl: CaptureReconciler?
+    /// Bumped by `releaseCallMedia()` (every way a call ends): call setup and screen-share
+    /// starts still waiting note it when they begin and give up if it changed.
+    @ObservationIgnored var callGeneration: UInt64 = 0
+    @ObservationIgnored var callSetupTask: Task<Void, Never>?
+    /// The current screen share's token (nil: none). Each share gets a new one; its frame and
+    /// stop callbacks carry it, so an old stream's late frame or error cannot reach a newer
+    /// share or call (a call generation alone does not tell two shares in one call apart).
+    @ObservationIgnored var screenShareToken: UInt64?
+    @ObservationIgnored var lastScreenShareToken: UInt64 = 0
     var preferredCameraId: String?
     var preferredMicrophoneId: String?
     var preferredSpeakerId: String?
@@ -276,11 +284,10 @@ import SignalUI
     private var client: SignalClient?
     var clientDatabase: SignalDatabase? { client?.database }
     var signalClient: SignalClient? { client }
-    /// The Fun picker's GIFs (Giphy through Signal's content proxy).
-    var giphy: GiphyClient? {
-        // Giphy's hosts have public certificates: system trust (Signal's roots are for Signal's servers).
-        client.map { _ in GiphyClient(transport: URLSessionLinkPreviewTransport(proxy: .signal)) }
-    }
+    /// The Fun picker's GIFs: SignalGifSearch.xpc talks to Giphy through Signal's content proxy
+    /// and decodes its JSON; the app gets validated results and MP4 bytes (for the decoder).
+    let gifSearch = GifSearchClient()
+    var giphy: (any GifSearching)? { client.map { _ in gifSearch } }
     /// The sandboxed decoder (SignalMediaDecoder.xpc); shared with SignalClient.
     let media = MediaXPCClient()
     /// Decoded attachment pixels for the timeline, by local attachment path.
@@ -845,8 +852,15 @@ import SignalUI
     }
     private(set) var staged: [StagedAttachment] = [] {
         // "If we have attachments, don't add link preview".
-        didSet { if staged.isEmpty != oldValue.isEmpty { maybeGrabLinkPreview() } }
+        didSet {
+            if staged.isEmpty != oldValue.isEmpty { maybeGrabLinkPreview() }
+            if staged.isEmpty { composerHighQuality = nil }   // REPLACE_ATTACHMENTS with none
+        }
     }
+    /// The composer's HD button for this draft (`shouldSendHighQualityAttachments`); nil
+    /// follows Settings → Data usage → Sent media quality.
+    var composerHighQuality: Bool?
+    var sendsHighQuality: Bool { composerHighQuality ?? (accountSettings.sentMediaQuality == .high) }
     /// Upstream's outgoing limit (getMaximumOutgoingAttachmentSize default, 100 MiB).
     static let maxAttachmentBytes = 100 * 1024 * 1024
 
@@ -888,10 +902,22 @@ import SignalUI
         guard selectedConversationId != nil, editingMessageId == nil else { return }
         let item = StagedAttachment(data: data, contentType: type, fileName: fileName)
         staged.append(item)
-        guard AttachmentPolicy.isImage(type) else { return }
+        let heic = AttachmentServices.isHeic(type, fileName: fileName)
+        guard AttachmentPolicy.isImage(type) || heic else { return }
         let media = media
         Task {
-            guard let shown = try? await media.displayImage(data, maxDimension: 512) else { return }
+            var shownData = data
+            // handleImageAttachment: a HEIC photo's draft is the JPEG it converts to (quality
+            // 0.75, no file name). If it cannot be converted it stays the file it is.
+            if heic {
+                guard let converted = try? await media.convertHEIC(data) else { return }
+                guard let i = staged.firstIndex(where: { $0.id == item.id }) else { return }
+                staged[i].data = converted.data
+                staged[i].contentType = "image/jpeg"
+                staged[i].fileName = ""
+                shownData = converted.data
+            }
+            guard let shown = try? await media.displayImage(shownData, maxDimension: 512) else { return }
             if let i = staged.firstIndex(where: { $0.id == item.id }) {
                 staged[i].preview = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
                 staged[i].width = shown.originalWidth
@@ -1114,6 +1140,29 @@ import SignalUI
         Task { try? await db.saveAccountSettings(s) }
     }
 
+    /// Settings → Privacy → Phone number → Who can see my number. The setting changes once
+    /// the server has the profile carrying it (ProfileWriter); a failure leaves it as it was.
+    func setSharesPhoneNumber(_ everybody: Bool) {
+        guard everybody != accountSettings.sharesPhoneNumber, let writer = session?.profileWriter else { return }
+        Task {
+            do { try await writer.setSharesNumber(everybody) } catch {
+                Self.trace("phone number sharing not changed: \(error)")
+                toast = .error
+            }
+        }
+    }
+
+    /// … → Who can find me by number.
+    func setDiscoverableByPhoneNumber(_ on: Bool) {
+        guard on != accountSettings.discoverableByPhoneNumber, let writer = session?.profileWriter else { return }
+        Task {
+            do { try await writer.setDiscoverable(on) } catch {
+                Self.trace("phone number discoverability not changed: \(error)")
+                toast = .error
+            }
+        }
+    }
+
     /// The body without leading and trailing whitespace, its ranges moved (and clipped) to match.
     /// Falls back to the plain draft when the composer has no text view (tests, previews).
     static func trimmed(_ out: (body: String, ranges: [BodyRange]), fallback: String) -> (String, [BodyRange]) {
@@ -1151,7 +1200,9 @@ import SignalUI
             return
         }
         guard !body.isEmpty || !staged.isEmpty, let session, let c = selectedConversation else { return }
-        let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName) }
+        let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName.isEmpty ? nil : $0.fileName) }
+        // `canSendInHighQuality` (an image among the drafts) and the HD choice.
+        let highQuality = sendsHighQuality && staged.contains { AttachmentPolicy.isImage($0.contentType) }
         let coreRanges = Self.coreRanges(bodyRanges)
         let preview = attachments.isEmpty ? linkPreviewForSend(body) : nil
         resetLinkPreview()
@@ -1168,17 +1219,20 @@ import SignalUI
                 if c.kind == .group {
                     guard let key = c.masterKey else { return Self.trace("send failed: group has no master key") }
                     do {
-                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key)
+                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key,
+                                                                         highQuality: highQuality)
                     } catch GroupsServiceError.notAMember {
                         // No group state yet (the post-link group fetch is still running) or a stale
                         // one: bring the group up to date now, then send once more.
                         Self.trace("send: group state missing, fetching it")
                         _ = try await session.groups.update(try GroupKeys(masterKey: key))
-                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key)
+                        _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key,
+                                                                         highQuality: highQuality)
                     }
                 } else {
                     guard let to = c.serviceId else { return Self.trace("send failed: contact has no service id") }
-                    _ = try await session.messenger.sendMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, to: to)
+                    _ = try await session.messenger.sendMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, to: to,
+                                                                    highQuality: highQuality)
                 }
                 Self.trace("send: queued")
             } catch {
