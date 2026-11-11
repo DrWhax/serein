@@ -1,0 +1,10 @@
+name = "Identity"
+version = "0.1.0"
+defaultTargets = ["Identity", "oracle"]
+
+[[lean_lib]]
+name = "Identity"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

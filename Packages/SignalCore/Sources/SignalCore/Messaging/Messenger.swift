@@ -237,6 +237,7 @@ public final class Messenger: Sendable {
         case .syncRequest: try await sendSyncRequests(job)
         case .fetchLatest: try await sendFetchLatest(job)
         case .stickerPackSync: try await sendStickerPackSync(job)
+        case .verifiedSync: try await sendToSelf(try await verifiedSyncMessage(job), timestamp: UInt64(MessageStore.now()), urgent: false, messageIds: [])
         case .modifierSend:
             do { try await sendModifier(job) } catch SendError.untrustedIdentities(let ids) {
                 throw try await stoppedByIdentity(ids, conversationId: job.conversationId, messageId: nil)
@@ -335,6 +336,14 @@ public final class Messenger: Sendable {
             try MessageStore.updateJSON(db, messageId: messageId) { json in
                 for aci in delivered {
                     if let cid = try? MessageStore.privateConversation(db, serviceId: aci) { MessageStore.setSendStatus(&json, conversationId: cid, .sent) }
+                }
+                // Members we blocked were not sent to: not left waiting (a send still waiting with
+                // no job fails at the next start).
+                if var states = json["sendStateByConversationId"] as? [String: Any] {
+                    for aci in result.blocked {
+                        if let cid = try? MessageStore.privateConversation(db, serviceId: aci) { states[cid] = nil }
+                    }
+                    json["sendStateByConversationId"] = states
                 }
                 json["unidentifiedDeliveries"] = Array(result.senderKeyRecipients)
             }

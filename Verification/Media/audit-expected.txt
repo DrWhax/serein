@@ -1,0 +1,254 @@
+structure Media.Row : Type
+number of parameters: 0
+fields:
+  Media.Row.erased : Bool
+  Media.Row.expires : Option Nat
+constructor:
+  Media.Row.mk (erased : Bool) (expires : Option Nat) : Row
+structure Media.Db : Type
+number of parameters: 0
+fields:
+  Media.Db.rows : Nat → Option Row
+  Media.Db.rel : List (Nat × Nat)
+  Media.Db.now : Nat
+constructor:
+  Media.Db.mk (rows : Nat → Option Row) (rel : List (Nat × Nat)) (now : Nat) : Db
+def Media.live : Db → Nat → Bool :=
+fun d m =>
+  match d.rows m with
+  | some r => !r.erased && Option.all (fun x => decide (x > d.now)) r.expires
+  | none => false
+def Media.permits : Db → Nat → Nat → Bool :=
+fun d m p => live d m && d.rel.contains (m, p)
+def Media.permitsAny : Db → Nat → Bool :=
+fun d p => d.rel.any fun x => x.snd == p && live d x.fst
+def Media.avail : Db → List (Nat × Nat) :=
+fun d => List.filter (fun x => live d x.fst) d.rel
+structure Media.UI : Type
+number of parameters: 0
+fields:
+  Media.UI.lightbox : Option (Nat × List Nat)
+  Media.UI.video : Option (Nat × Nat)
+  Media.UI.audio : Option (Nat × Nat)
+  Media.UI.cache : List Nat
+constructor:
+  Media.UI.mk (lightbox : Option (Nat × List Nat)) (video audio : Option (Nat × Nat)) (cache : List Nat) : UI
+def Media.apply : List (Nat × Nat) → UI → UI :=
+fun a u =>
+  {
+    lightbox :=
+      Option.filter
+        (fun x =>
+          match x with
+          | (m, ps) => (a.any fun x => x.fst == m) && ps.all fun p => a.contains (m, p))
+        u.lightbox,
+    video := Option.filter (fun x => a.contains x) u.video, audio := Option.filter (fun x => a.contains x) u.audio,
+    cache := List.filter (fun p => a.any fun x => x.snd == p) u.cache }
+def Media.stepCore : S → Ev → S :=
+fun s x =>
+  match x with
+  | Ev.openLightbox m ps =>
+    if ps.all (permits s.d m) = true then
+      { d := s.d,
+        u :=
+          have __src := s.u;
+          { lightbox := some (m, ps), video := __src.video, audio := __src.audio, cache := __src.cache },
+        decodes := s.decodes, save := s.save, out := s.out }
+    else s
+  | Ev.playVideo m p =>
+    if permits s.d m p = true then
+      { d := s.d,
+        u :=
+          have __src := s.u;
+          { lightbox := __src.lightbox, video := some (m, p), audio := __src.audio, cache := __src.cache },
+        decodes := s.decodes, save := s.save, out := s.out ++ [("video", m, p)] }
+    else s
+  | Ev.playAudio m p =>
+    if permits s.d m p = true then
+      { d := s.d,
+        u :=
+          have __src := s.u;
+          { lightbox := __src.lightbox, video := __src.video, audio := some (m, p), cache := __src.cache },
+        decodes := s.decodes, save := s.save, out := s.out ++ [("audio", m, p)] }
+    else s
+  | Ev.decode m p => { d := s.d, u := s.u, decodes := s.decodes ++ [(m, p)], save := s.save, out := s.out }
+  | Ev.decoded k =>
+    match s.decodes[k]? with
+    | some (m, p) =>
+      have s := { d := s.d, u := s.u, decodes := s.decodes.eraseIdx k, save := s.save, out := s.out };
+      if permits s.d m p = true then
+        { d := s.d,
+          u :=
+            have __src := s.u;
+            { lightbox := __src.lightbox, video := __src.video, audio := __src.audio, cache := p :: s.u.cache },
+          decodes := s.decodes, save := s.save, out := s.out }
+      else s
+    | none => s
+  | Ev.openSave m p =>
+    if permits s.d m p = true then { d := s.d, u := s.u, decodes := s.decodes, save := some (m, p), out := s.out }
+    else s
+  | Ev.confirmSave =>
+    match s.save with
+    | some (m, p) =>
+      if permits s.d m p = true then
+        { d := s.d, u := s.u, decodes := s.decodes, save := none, out := s.out ++ [("export", m, p)] }
+      else { d := s.d, u := s.u, decodes := s.decodes, save := none, out := s.out }
+    | none => s
+  | Ev.delete m =>
+    {
+      d :=
+        have __src := s.d;
+        { rows := upd s.d.rows m none, rel := __src.rel, now := __src.now },
+      u := s.u, decodes := s.decodes, save := s.save, out := s.out }
+  | Ev.erase m =>
+    {
+      d :=
+        have __src := s.d;
+        { rows := upd s.d.rows m (Option.map (fun r => { erased := true, expires := r.expires }) (s.d.rows m)),
+          rel := __src.rel, now := __src.now },
+      u := s.u, decodes := s.decodes, save := s.save, out := s.out }
+  | Ev.expireAt m t =>
+    {
+      d :=
+        have __src := s.d;
+        { rows := upd s.d.rows m (Option.map (fun r => { erased := r.erased, expires := some t }) (s.d.rows m)),
+          rel := __src.rel, now := __src.now },
+      u := s.u, decodes := s.decodes, save := s.save, out := s.out }
+  | Ev.tick =>
+    {
+      d :=
+        have __src := s.d;
+        { rows := __src.rows, rel := __src.rel, now := s.d.now + 1 },
+      u := s.u, decodes := s.decodes, save := s.save, out := s.out }
+  | Ev.ref m p =>
+    {
+      d :=
+        have __src := s.d;
+        {
+          rows :=
+            if (s.d.rows m).isSome = true then s.d.rows else upd s.d.rows m (some { erased := false, expires := none }),
+          rel := (m, p) :: s.d.rel, now := __src.now },
+      u := s.u, decodes := s.decodes, save := s.save, out := s.out }
+  | Ev.update => { d := s.d, u := apply (avail s.d) s.u, decodes := s.decodes, save := s.save, out := s.out }
+def Media.handedOutPermitted : S → Ev → S → Bool :=
+fun s _e s' =>
+  decide (s'.out.length ≥ s.out.length) &&
+    (newOut s s').all fun x =>
+      match x with
+      | (fst, m, p) => permits s.d m p
+def Media.decodePermitted : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.decoded k =>
+    match s.decodes[k]? with
+    | some (m, p) => s'.u.cache == s.u.cache || s'.u.cache == p :: s.u.cache && permits s.d m p
+    | none => s'.u.cache == s.u.cache
+  | Ev.update => s'.u.cache.all fun x => s.u.cache.contains x
+  | x => s'.u.cache == s.u.cache
+def Media.updateRevokes : S → Ev → S → Bool :=
+fun _s e s' =>
+  match e with
+  | Ev.update =>
+    Option.all
+            (fun x =>
+              match x with
+              | (m, ps) => live s'.d m && ps.all fun p => permits s'.d m p)
+            s'.u.lightbox &&
+          Option.all
+            (fun x =>
+              match x with
+              | (m, p) => permits s'.d m p)
+            s'.u.video &&
+        Option.all
+          (fun x =>
+            match x with
+            | (m, p) => permits s'.d m p)
+          s'.u.audio &&
+      s'.u.cache.all (permitsAny s'.d)
+  | x => true
+63 definitions
+Media.Db 3931117990 1336385436704099376
+Media.Db.mk 3427712000 -
+Media.Db.now 1938727245 149762440
+Media.Db.rel 35129396 2806489660
+Media.Db.rows 4033245197 2502890968
+Media.Ev 3931117990 3739690597979449429
+Media.Ev.casesOn 1126342809 4029117392
+Media.Ev.confirmSave 2068104071 -
+Media.Ev.ctorIdx 1712803811 2709546057
+Media.Ev.decode 3811792881 -
+Media.Ev.decoded 1114180112 -
+Media.Ev.delete 1114180112 -
+Media.Ev.erase 1114180112 -
+Media.Ev.expireAt 3811792881 -
+Media.Ev.openLightbox 2082713732 -
+Media.Ev.openSave 3811792881 -
+Media.Ev.playAudio 3811792881 -
+Media.Ev.playVideo 3811792881 -
+Media.Ev.rec 794697878 -
+Media.Ev.ref 3811792881 -
+Media.Ev.tick 2068104071 -
+Media.Ev.update 2068104071 -
+Media.Row 3931117990 18262352753000364926
+Media.Row.erased 1270362506 1370607212
+Media.Row.expires 2536916395 1995012794
+Media.Row.mk 804342424 -
+Media.S 3931117990 15560371007686814654
+Media.S.d 284683361 3249064366
+Media.S.decodes 2972507156 4051110538
+Media.S.mk 775531491 -
+Media.S.out 3642282177 3165450809
+Media.S.save 473323360 519623259
+Media.S.u 2796197435 2151554535
+Media.UI 3931117990 1171569210598969874
+Media.UI.audio 124567384 3827250204
+Media.UI.cache 3349342607 3201456331
+Media.UI.lightbox 2666357597 2358419057
+Media.UI.mk 900815728 -
+Media.UI.video 124567384 1102324270
+Media.apply 1396523787 4236230224
+Media.apply.match_1 497114619 2458269878
+Media.avail 35129396 3884110421
+Media.decodePermitted 1775494759 1240587762
+Media.decodePermitted._sparseCasesOn_3 2933360986 1235485053
+Media.decodePermitted.match_1 1688932127 3012553731
+Media.decodePermitted.match_3 1340279033 1688791997
+Media.handedOutPermitted 1775494759 3954901432
+Media.handedOutPermitted.match_1 966309301 3789069709
+Media.instReprEv.repr.match_1 3809621051 1655362174
+Media.live 1113639291 2710105485
+Media.live.match_1 276797149 4147062414
+Media.newOut 3574925735 3971477372
+Media.permits 2405896160 1948053889
+Media.permitsAny 1113639291 2969515744
+Media.step 3463220282 2805321762
+Media.stepCore 3463220282 4034501638
+Media.stepCore.match_1 1688932127 3012553731
+Media.upd 1185834565 2932600256
+Media.updateRevokes 1775494759 126724869
+Media.updateRevokes._sparseCasesOn_5 3813629959 2761235548
+Media.updateRevokes.match_1 497114619 2458269878
+Media.updateRevokes.match_3 1595908424 1073585262
+Media.updateRevokes.match_5 1349386877 1452300465
+@permits_other_ref : ∀ {m' m p' p : Nat} (d : Db),
+  m' ≠ m → permits { rows := d.rows, rel := (m', p') :: d.rel, now := d.now } m p = permits d m p
+@deleted_permits_nothing : ∀ {m p : Nat} (d : Db), d.rows m = none → permits d m p = false
+@erased_permits_nothing : ∀ {m : Nat} {r : Row} {p : Nat} (d : Db),
+  d.rows m = some r → r.erased = true → permits d m p = false
+@expired_permits_nothing : ∀ {m : Nat} {r : Row} {t p : Nat} (d : Db),
+  d.rows m = some r → r.expires = some t → t ≤ d.now → permits d m p = false
+@avail_mem : ∀ {d : Db} {x : Nat × Nat}, x ∈ avail d ↔ x ∈ d.rel ∧ live d x.fst = true
+out_step : ∀ (s : S) (e : Ev),
+  (step s e).out = s.out ∨ ∃ k m p, (step s e).out = s.out ++ [(k, m, p)] ∧ permits s.d m p = true
+handedOutPermitted_holds : ∀ (s : S) (e : Ev), handedOutPermitted s e (step s e) = true
+decodePermitted_holds : ∀ (s : S) (e : Ev), decodePermitted s e (step s e) = true
+updateRevokes_holds : ∀ (s : S) (e : Ev), updateRevokes s e (step s e) = true
+Media.permits_other_ref depends on axioms: [Quot.sound, propext]
+Media.deleted_permits_nothing depends on axioms: [Quot.sound, propext]
+Media.erased_permits_nothing depends on axioms: [Quot.sound, propext]
+Media.expired_permits_nothing depends on axioms: [Quot.sound, propext]
+Media.avail_mem depends on axioms: [propext]
+Media.out_step depends on axioms: [Quot.sound, propext]
+Media.handedOutPermitted_holds depends on axioms: [Quot.sound, propext]
+Media.decodePermitted_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Media.updateRevokes_holds depends on axioms: [Quot.sound, propext]

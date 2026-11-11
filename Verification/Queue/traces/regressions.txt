@@ -1,0 +1,23 @@
+# Job queue regressions: `# name: what it shows`, then the trace (user and environment events).
+# drain-while-executing: stopAndWait returns only after the handler returned and the loop ended
+start enqueue.0 stopwait ret.ok
+# drain-while-waiting: an idle loop is woken and ends
+start stopwait
+# drain-without-loop: nothing to wait for
+stopwait
+# no-restart-while-draining: start while a drain is pending changes nothing
+start enqueue.0 stopwait start ret.ok
+# restart-after-drain: start works again once the drain returned
+start enqueue.0 stopwait ret.ok start
+# cancellation-keeps-the-job: a cancelled handler's job stays for the next run
+start enqueue.0 stopwait ret.cancel start
+# retry-keeps-the-job: a retried job runs again
+start enqueue.0 ret.retry ret.ok
+# permanent-failure-finishes: a permanent failure removes the job
+start enqueue.0 ret.perm
+# two-drains: two stopAndWait calls both return, after the loop ended
+start enqueue.0 stopwait stopwait ret.ok
+# stop-then-start: stop, then start before the loop ended: it runs on
+start enqueue.0 stop start ret.ok
+# order: jobs run one at a time in insertion order
+enqueue.0 enqueue.1 start ret.ok ret.ok

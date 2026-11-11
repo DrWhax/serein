@@ -23,6 +23,8 @@ public struct GroupSendResult: Sendable, Equatable {
     public var senderKeyRecipients: [String]
     public var normalRecipients: [String]
     public var unregistered: [String]
+    /// Members left out because we blocked them.
+    public var blocked: [String] = []
 }
 
 public struct GroupSender: Sendable {
@@ -40,6 +42,11 @@ public struct GroupSender: Sendable {
         self.sender = sender
     }
 
+    /// The members a group send goes to: those we have not blocked (by service id or number).
+    static func sendableRecipients(_ db: Database, _ serviceIds: [String]) throws -> [String] {
+        try serviceIds.filter { try !MessageSender.isBlocked(db, serviceId: $0) }
+    }
+
     public func send(_ payload: OutgoingPayload, keys: GroupKeys, recipients: [String], messageIds: [String] = [], attempt: Int = 0)
         async throws -> GroupSendResult
     {
@@ -48,8 +55,13 @@ public struct GroupSender: Sendable {
         try sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds, retracting: payload.onlyRetracts)()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let ourAci = account.aci
-        let targets = Array(Set(recipients.filter { $0 != ourAci })).sorted()
-        guard !targets.isEmpty else { return GroupSendResult(senderKeyRecipients: [], normalRecipients: [], unregistered: []) }
+        let members = Array(Set(recipients.filter { $0 != ourAci })).sorted()
+        // Contacts we blocked get nothing from us, in groups too (upstream getValidRecipients,
+        // getMessageRecipients). Chosen here, when the send starts: the group's own block is
+        // checked again at submission, a member's is not (the payload is already theirs).
+        let targets = try await database.pool.read { db in try Self.sendableRecipients(db, members) }
+        let blocked = members.filter { !targets.contains($0) }
+        guard !targets.isEmpty else { return GroupSendResult(senderKeyRecipients: [], normalRecipients: [], unregistered: [], blocked: blocked) }
         let conversationId = try await database.pool.write { db in try GroupStore.conversation(db, keys: keys).conversationId }
         // Sessions for every recipient (fetchKeysForServiceIds).
         var untrusted: [String] = []
@@ -90,7 +102,7 @@ public struct GroupSender: Sendable {
         for t in normal {
             do { _ = try await sender.send(payload, to: t, messageIds: messageIds) } catch SendError.unregistered { unregistered.append(t) }
         }
-        return GroupSendResult(senderKeyRecipients: viaSenderKey, normalRecipients: normal, unregistered: unregistered)
+        return GroupSendResult(senderKeyRecipients: viaSenderKey, normalRecipients: normal, unregistered: unregistered, blocked: blocked)
     }
 
     /// The conversation's sender-key state. A key that has expired, or that was marked for

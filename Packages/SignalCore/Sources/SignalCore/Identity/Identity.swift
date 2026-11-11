@@ -91,28 +91,42 @@ extension Messenger {
         return try f.scannable.compare(againstEncoding: scanned)
     }
 
-    /// `setVerified` / `setUnverified`: the identity's state, a verified-change notice, the
-    /// Verified sync to our devices (with a NullMessage-sized padding, as upstream), storage.
+    /// `setVerified` / `setUnverified`: the reviewed identity's state, a verified-change notice,
+    /// the Verified sync to our devices (queued, carrying the reviewed key), storage. One
+    /// transaction: the review is checked against the key on record and our own account, and
+    /// nothing changes unless both are still the ones the user saw.
     public func setVerified(_ identity: ReviewedIdentity, _ verified: Bool) async throws {
-        let aci = identity.serviceId
-        let state: VerifiedStatus = verified ? .verified : .default
-        let (key, changed) = try await database.pool.write { db -> (Data?, Bool) in
-            try identity.validate(db, account: self.account)
-            guard let s = try String.fetchOne(db, sql: "SELECT json FROM identityKeys WHERE id = ?", arguments: [aci]),
-                  let key = (try MessageStore.jsonObject(s)["publicKey"] as? String).flatMap({ Data(base64Encoded: $0) }) else { return (nil, false) }
-            let old = try ProtocolStore.verifiedStatus(db, serviceId: aci)
-            guard old != state else { return (key, false) }
-            try ProtocolStore.setVerified(db, serviceId: aci, state)
-            let conversationId = try MessageStore.privateConversation(db, serviceId: aci)
-            try Identity.insertVerifiedChange(db, conversationId: conversationId, verified: verified, local: true)
-            try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
-            return (key, true)
+        let account = self.account
+        try await database.pool.write { db in
+            try identity.validate(db, account: account)
+            try Self.applyVerified(db, identity, verified)
         }
-        guard let key, changed else { return }
-        try await sendVerifiedSync(aci, key: key, verified: verified)
+        jobs.poke()
     }
 
-    func sendVerifiedSync(_ aci: String, key: Data, verified: Bool) async throws {
+    static func applyVerified(_ db: Database, _ identity: ReviewedIdentity, _ verified: Bool) throws {
+        let aci = identity.serviceId
+        let state: VerifiedStatus = verified ? .verified : .default
+        guard try ProtocolStore.verifiedStatus(db, serviceId: aci) != state else { return }
+        try ProtocolStore.setVerified(db, serviceId: aci, state)
+        let conversationId = try MessageStore.privateConversation(db, serviceId: aci)
+        try Identity.insertVerifiedChange(db, conversationId: conversationId, verified: verified, local: true)
+        try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
+        try queueVerifiedSync(db, identity, verified: verified)
+    }
+
+    /// The Verified sync for `identity`, as a job in the caller's transaction.
+    static func queueVerifiedSync(_ db: Database, _ identity: ReviewedIdentity, verified: Bool) throws {
+        try JobQueue.insert(db, queueType: ConversationJob.queueType,
+                            payload: ConversationJob.verifiedSync(serviceId: identity.serviceId, key: identity.key, verified: verified))
+    }
+
+    /// The SyncMessage a VerifiedSync job sends: exactly the job's key and state (with a
+    /// NullMessage-sized padding, as upstream). The key is not looked up again: the contact may
+    /// have a newer one by now, which the user has not reviewed.
+    func verifiedSyncMessage(_ job: ConversationJob) async throws -> Signalservice_SyncMessage {
+        guard let aci = job.requester, let key = job.identityKey.flatMap({ Data(base64Encoded: $0) }), let verified = job.verified
+        else { throw JobError.permanent("malformed job") }
         var v = Signalservice_Verified()
         v.destinationAciBinary = StorageLocal.uuidBytes(aci) ?? Data()
         v.identityKey = key
@@ -120,8 +134,7 @@ extension Messenger {
         v.nullMessage = SignalCrypto.randomBytes(140)
         var sync = Self.syncMessage()
         sync.verified = v
-        try await sendToSelf(sync, timestamp: UInt64(MessageStore.now()), urgent: false, messageIds: [])
-        jobs.poke()
+        return sync
     }
 }
 

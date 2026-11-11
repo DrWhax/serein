@@ -106,6 +106,13 @@ public actor SignalClient {
     /// closes the connection. A client that is replaced by another one on the same folder
     /// must be shut down first: two of them would write to one database.
     public func shutdown() async {
+        await stopWorkers()
+        await socket.disconnect()
+    }
+
+    /// The session's background work stops, and what it was doing finishes (the job queue's
+    /// handler, a download, a pre-key check that is mid-request).
+    func stopWorkers() async {
         let preKeys = preKeyTask
         preKeyTask = nil
         preKeys?.cancel()
@@ -114,9 +121,7 @@ public actor SignalClient {
             await session.jobs.stopAndWait()
             await session.downloads.stopAndWait()
         }
-        // A pre-key check that is mid-request finishes (and records its result) first.
         await preKeys?.value
-        await socket.disconnect()
     }
 
     /// Starts the stored account's session.
@@ -129,6 +134,12 @@ public actor SignalClient {
     }
 
     func start(_ account: Account, uploadOneTimeKeys linker: DeviceLinker?) async throws {
+        // One session's workers at a time: a running session's are drained first. Two job
+        // queues over one database would both run the same job.
+        if session != nil {
+            await stopWorkers()
+            session = nil
+        }
         let jobs = JobQueue(database: database)
         let http = HTTPClient(rootCertificatesDER: endpoints.rootCertificatesDER)
         let store = try AttachmentStore(root: directory.appendingPathComponent("attachments"))

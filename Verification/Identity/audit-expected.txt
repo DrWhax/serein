@@ -1,0 +1,512 @@
+structure Identity.S : Type
+number of parameters: 0
+fields:
+  Identity.S.aci : Nat
+  Identity.S.ourKey : Nat
+  Identity.S.rows : Nat → Option Row
+  Identity.S.held : List Snap
+  Identity.S.pending : List (List Snap)
+  Identity.S.jobs : List Sync
+  Identity.S.sent : List Sync
+  Identity.S.keyChanges : Nat → Nat
+  Identity.S.localNotices : Nat → Nat
+  Identity.S.remoteNotices : Nat → Nat
+  Identity.S.last : Res
+  Identity.S.shown : List Snap
+  Identity.S.grant : Nat → Option (Nat × Src)
+constructor:
+  Identity.S.mk (aci ourKey : Nat) (rows : Nat → Option Row) (held : List Snap) (pending : List (List Snap))
+    (jobs sent : List Sync) (keyChanges localNotices remoteNotices : Nat → Nat) (last : Res) (shown : List Snap)
+    (grant : Nat → Option (Nat × Src)) : S
+structure Identity.Row : Type
+number of parameters: 0
+fields:
+  Identity.Row.key : Nat
+  Identity.Row.firstUse : Bool
+  Identity.Row.recent : Bool
+  Identity.Row.verified : VS
+  Identity.Row.approved : Bool
+constructor:
+  Identity.Row.mk (key : Nat) (firstUse recent : Bool) (verified : VS) (approved : Bool) : Row
+structure Identity.Snap : Type
+number of parameters: 0
+fields:
+  Identity.Snap.aci : Nat
+  Identity.Snap.ourKey : Nat
+  Identity.Snap.peer : Nat
+  Identity.Snap.key : Nat
+constructor:
+  Identity.Snap.mk (aci ourKey peer key : Nat) : Snap
+def Identity.step : S → Ev → S :=
+fun s e =>
+  stepCore
+    { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+      sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+      last := Res.none, shown := s.shown, grant := s.grant }
+    e
+def Identity.stepCore : S → Ev → S :=
+fun s x =>
+  match x with
+  | Ev.view p => showSnap p s
+  | Ev.confirm is =>
+    { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held,
+      pending := s.pending ++ [List.filterMap (fun x => s.held[x]?) is], jobs := s.jobs, sent := s.sent,
+      keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last,
+      shown := s.shown, grant := s.grant }
+  | Ev.commit k => commitAt k s
+  | Ev.race k p kk => commitAt k (saveKey p kk s)
+  | Ev.verify i b =>
+    match s.held[i]? with
+    | some x => setVer x b s
+    | none => s
+  | Ev.key p k => saveKey p k s
+  | Ev.account a k =>
+    { aci := a, ourKey := k, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent,
+      keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last,
+      shown := s.shown, grant := s.grant }
+  | Ev.window p =>
+    match s.rows p with
+    | some r =>
+      { aci := s.aci, ourKey := s.ourKey,
+        rows :=
+          upd s.rows p
+            (some
+              { key := r.key, firstUse := r.firstUse, recent := false, verified := r.verified,
+                approved := r.approved }),
+        held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent, keyChanges := s.keyChanges,
+        localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last, shown := s.shown,
+        grant := s.grant }
+    | none => s
+  | Ev.storage p k v f => storage p k v f s
+  | Ev.sync j =>
+    match s.jobs[j]? with
+    | some x =>
+      { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending,
+        jobs := s.jobs.eraseIdx j, sent := s.sent ++ [x], keyChanges := s.keyChanges, localNotices := s.localNotices,
+        remoteNotices := s.remoteNotices, last := s.last, shown := s.shown, grant := s.grant }
+    | none => s
+inductive Identity.Reach : S → Prop
+number of parameters: 0
+constructors:
+Identity.Reach.init : Reach S.init
+Identity.Reach.step : ∀ {s : S} (e : Ev), Reach s → Reach (step s e)
+def Identity.saveKey : Nat → Nat → S → S :=
+fun p k s =>
+  match s.rows p with
+  | none =>
+    { aci := s.aci, ourKey := s.ourKey,
+      rows :=
+        upd s.rows p (some { key := k, firstUse := true, recent := true, verified := VS.dflt, approved := false }),
+      held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent, keyChanges := s.keyChanges,
+      localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last, shown := s.shown,
+      grant := s.grant }
+  | some r =>
+    if (r.key != k) = true then
+      have marked := r.verified == VS.verified || r.verified == VS.unverified;
+      { aci := s.aci, ourKey := s.ourKey,
+        rows :=
+          upd s.rows p
+            (some
+              { key := k, firstUse := false, recent := true,
+                verified := if marked = true then VS.unverified else VS.dflt, approved := false }),
+        held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent, keyChanges := bump s.keyChanges p,
+        localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last, shown := s.shown,
+        grant := upd s.grant p none }
+    else s
+def Identity.valid : S → Snap → Bool :=
+fun s x =>
+  x.aci == s.aci && x.ourKey == s.ourKey &&
+    match s.rows x.peer with
+    | some r => r.key == x.key
+    | none => false
+def Identity.approveOne : S → Snap → S :=
+fun s x =>
+  match s.rows x.peer with
+  | none => s
+  | some r =>
+    have s :=
+      if (r.verified == VS.unverified) = true then
+        { aci := s.aci, ourKey := s.ourKey,
+          rows :=
+            upd s.rows x.peer
+              (some
+                { key := r.key, firstUse := r.firstUse, recent := r.recent, verified := VS.dflt,
+                  approved := r.approved }),
+          held := s.held, pending := s.pending, jobs := s.jobs ++ [{ peer := x.peer, key := x.key, verified := false }],
+          sent := s.sent, keyChanges := s.keyChanges, localNotices := bump s.localNotices x.peer,
+          remoteNotices := s.remoteNotices, last := s.last, shown := s.shown, grant := s.grant }
+      else s;
+    match s.rows x.peer with
+    | some r =>
+      { aci := s.aci, ourKey := s.ourKey,
+        rows :=
+          upd s.rows x.peer
+            (some
+              { key := r.key, firstUse := r.firstUse, recent := r.recent, verified := r.verified, approved := true }),
+        held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent, keyChanges := s.keyChanges,
+        localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last, shown := s.shown,
+        grant := upd s.grant x.peer (some (x.key, Src.user)) }
+    | none => s
+def Identity.approve : List Snap → S → S :=
+fun xs s =>
+  if xs.all (valid s) = true then
+    have __src := List.foldl approveOne s xs;
+    { aci := __src.aci, ourKey := __src.ourKey, rows := __src.rows, held := __src.held, pending := __src.pending,
+      jobs := __src.jobs, sent := __src.sent, keyChanges := __src.keyChanges, localNotices := __src.localNotices,
+      remoteNotices := __src.remoteNotices, last := Res.ok, shown := __src.shown, grant := __src.grant }
+  else
+    { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+      sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+      last := Res.stale, shown := s.shown, grant := s.grant }
+def Identity.setVer : Snap → Bool → S → S :=
+fun x b s =>
+  if (!valid s x) = true then
+    { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+      sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+      last := Res.stale, shown := s.shown, grant := s.grant }
+  else
+    match s.rows x.peer with
+    | none =>
+      { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+        sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+        last := Res.ok, shown := s.shown, grant := s.grant }
+    | some r =>
+      have st := if b = true then VS.verified else VS.dflt;
+      if (r.verified == st) = true then
+        { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+          sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+          last := Res.ok, shown := s.shown, grant := s.grant }
+      else
+        have r' :=
+          if b = true then { key := r.key, firstUse := false, recent := r.recent, verified := st, approved := true }
+          else { key := r.key, firstUse := r.firstUse, recent := r.recent, verified := st, approved := r.approved };
+        { aci := s.aci, ourKey := s.ourKey, rows := upd s.rows x.peer (some r'), held := s.held, pending := s.pending,
+          jobs := s.jobs ++ [{ peer := x.peer, key := x.key, verified := b }], sent := s.sent,
+          keyChanges := s.keyChanges, localNotices := bump s.localNotices x.peer, remoteNotices := s.remoteNotices,
+          last := Res.ok, shown := s.shown,
+          grant := if b = true then upd s.grant x.peer (some (x.key, Src.user)) else s.grant }
+def Identity.storage : Nat → Nat → VS → Bool → S → S :=
+fun p k v first s =>
+  have lo := s.rows p;
+  have keysMatch :=
+    match lo with
+    | some r => r.key == k
+    | none => false;
+  if (first || lo.isNone || keysMatch) = true then
+    have oldV :=
+      match lo with
+      | some r => r.verified
+      | none => VS.dflt;
+    have s :=
+      if (lo.isSome && !keysMatch) = true then
+        { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+          sent := s.sent, keyChanges := bump s.keyChanges p, localNotices := s.localNotices,
+          remoteNotices := s.remoteNotices, last := s.last, shown := s.shown, grant := s.grant }
+      else s;
+    have s :=
+      if (!keysMatch || oldV != v) = true then
+        { aci := s.aci, ourKey := s.ourKey,
+          rows :=
+            upd s.rows p (some { key := k, firstUse := lo.isNone, recent := true, verified := v, approved := true }),
+          held := s.held, pending := s.pending, jobs := s.jobs, sent := s.sent, keyChanges := s.keyChanges,
+          localNotices := s.localNotices, remoteNotices := s.remoteNotices, last := s.last, shown := s.shown,
+          grant := upd s.grant p (some (k, Src.sync)) }
+      else s;
+    have became := v == VS.verified && (lo.isNone || oldV != VS.verified);
+    have noLonger := v != VS.verified && lo.isSome && oldV == VS.verified;
+    if (!(lo.isSome && !keysMatch) && (became || noLonger)) = true then
+      { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+        sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices,
+        remoteNotices := bump s.remoteNotices p, last := s.last, shown := s.shown, grant := s.grant }
+    else s
+  else s
+def Identity.commitOf : S → Ev → Option (S × List Snap) :=
+fun s x =>
+  match x with
+  | Ev.commit k =>
+    Option.map
+      (fun xs =>
+        ({ aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending.eraseIdx k,
+            jobs := s.jobs, sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices,
+            remoteNotices := s.remoteNotices, last := Res.none, shown := s.shown, grant := s.grant },
+          xs))
+      s.pending[k]?
+  | Ev.race k p kk =>
+    have t :=
+      saveKey p kk
+        { aci := s.aci, ourKey := s.ourKey, rows := s.rows, held := s.held, pending := s.pending, jobs := s.jobs,
+          sent := s.sent, keyChanges := s.keyChanges, localNotices := s.localNotices, remoteNotices := s.remoteNotices,
+          last := Res.none, shown := s.shown, grant := s.grant };
+    Option.map
+      (fun xs =>
+        ({ aci := t.aci, ourKey := t.ourKey, rows := t.rows, held := t.held, pending := t.pending.eraseIdx k,
+            jobs := t.jobs, sent := t.sent, keyChanges := t.keyChanges, localNotices := t.localNotices,
+            remoteNotices := t.remoteNotices, last := t.last, shown := t.shown, grant := t.grant },
+          xs))
+      t.pending[k]?
+  | x => none
+def Identity.trust : List Nat → S → List (Option Row × Option (Nat × Src) × Nat × Nat × Nat) :=
+fun ps s => List.map (fun p => (s.rows p, s.grant p, s.keyChanges p, s.localNotices p, s.remoteNotices p)) ps
+def Identity.staleNoChange : List Nat → S → Ev → S → Bool :=
+fun ps s e s' =>
+  match commitOf s e with
+  | some (t, xs) => xs.all (valid t) || trust ps s' == trust ps t && s'.jobs == t.jobs
+  | none =>
+    match e with
+    | Ev.verify i b =>
+      match s.held[i]? with
+      | some x => valid s x || trust ps s' == trust ps s && s'.jobs == s.jobs
+      | none => true
+    | x => true
+def Identity.targets : List Nat → S → Ev → S → Bool :=
+fun ps s e s' =>
+  match commitOf s e with
+  | some (t, xs) =>
+    (ps.all fun p =>
+        t.rows p == s'.rows p ||
+          match t.rows p, s'.rows p with
+          | some r, some r' => r.key == r'.key && xs.any fun x => x.peer == p && x.key == r.key
+          | x, x_1 => false) &&
+      (!xs.all (valid t) ||
+        xs.all fun x =>
+          match s'.rows x.peer with
+          | some r' => r'.key == x.key && r'.approved && r'.verified != VS.unverified
+          | none => false)
+  | none =>
+    match e with
+    | Ev.verify i b =>
+      match s.held[i]? with
+      | some x =>
+        ps.all fun p =>
+          s.rows p == s'.rows p ||
+            p == x.peer &&
+              match s.rows p, s'.rows p with
+              | some r, some r' =>
+                r.key == r'.key && r.key == x.key && (!b || r'.verified == VS.verified && r'.approved)
+              | x, x_1 => false
+      | none => true
+    | x => true
+def Identity.grantShown : List Nat → S → Ev → S → Bool :=
+fun ps _s _e s' =>
+  ps.all fun p =>
+    match s'.rows p with
+    | some r =>
+      !(r.approved || r.verified == VS.verified) ||
+        match s'.grant p with
+        | some (k, src) => k == r.key && (src != Src.user || s'.shown.any fun x => x.peer == p && x.key == k)
+        | none => false
+    | none => true
+def Identity.syncShown : S → Ev → S → Bool :=
+fun _s _e s' => (s'.jobs ++ s'.sent).all fun j => s'.shown.any fun x => x.peer == j.peer && x.key == j.key
+def Identity.syncExact : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.sync j =>
+    match s.jobs[j]? with
+    | some x => s'.sent == s.sent ++ [x]
+    | none => s'.sent == s.sent
+  | x => s'.sent == s.sent
+def Identity.keyChangeRevokes : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.key p k =>
+    match s.rows p with
+    | some r =>
+      r.key == k ||
+        (match s'.rows p with
+          | some r' => !r'.approved && r'.verified != VS.verified && s'.grant p == none
+          | none => false) &&
+          s'.held.all fun x => x.peer != p || x.key != r.key || !valid s' x
+    | none => true
+  | Ev.account a k =>
+    a == s.aci && k == s.ourKey || s'.held.all fun x => !(x.aci == s.aci && x.ourKey == s.ourKey) || !valid s' x
+  | x => true
+def Identity.storageNoSubstitute : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.storage p k v false =>
+    match s.rows p with
+    | some r => r.key == k || s'.rows p == s.rows p && s'.grant p == s.grant p
+    | none => true
+  | x => true
+structure Identity.Inv (s : S) : Prop
+number of parameters: 1
+fields:
+  Identity.Inv.grant : GrantOk s
+  Identity.Inv.held : ∀ (x : Snap), x ∈ s.held → x ∈ s.shown
+  Identity.Inv.pending : ∀ (xs : List Snap), xs ∈ s.pending → ∀ (x : Snap), x ∈ xs → x ∈ s.shown
+  Identity.Inv.sync : ∀ (j : Sync), j ∈ s.jobs ++ s.sent → ∃ x, x ∈ s.shown ∧ x.peer = j.peer ∧ x.key = j.key
+constructor:
+  Identity.Inv.mk {s : S} (grant : GrantOk s) (held : ∀ (x : Snap), x ∈ s.held → x ∈ s.shown)
+    (pending : ∀ (xs : List Snap), xs ∈ s.pending → ∀ (x : Snap), x ∈ xs → x ∈ s.shown)
+    (sync : ∀ (j : Sync), j ∈ s.jobs ++ s.sent → ∃ x, x ∈ s.shown ∧ x.peer = j.peer ∧ x.key = j.key) : Identity.Inv s
+class _root_.Inv.{u} (α : Type u) : Type u
+number of parameters: 1
+fields:
+  Inv.inv : α → α
+constructor:
+  Inv.mk.{u} {α : Type u} (inv : α → α) : _root_.Inv α
+def Identity.GrantOk : S → Prop :=
+fun s =>
+  ∀ (p : Nat) (r : Row),
+    s.rows p = some r →
+      r.approved = true ∨ r.verified = VS.verified →
+        ∃ src, s.grant p = some (r.key, src) ∧ (src = Src.user → ∃ x, x ∈ s.shown ∧ x.peer = p ∧ x.key = r.key)
+141 definitions
+Identity.Ev 3931117990 9115643371063718813
+Identity.Ev.account 2410260345 -
+Identity.Ev.casesOn 2669765295 1474514647
+Identity.Ev.commit 933905333 -
+Identity.Ev.confirm 1945418936 -
+Identity.Ev.ctorIdx 3161320227 2726064744
+Identity.Ev.key 2410260345 -
+Identity.Ev.race 1133977116 -
+Identity.Ev.rec 2308379674 -
+Identity.Ev.storage 1318409000 -
+Identity.Ev.sync 933905333 -
+Identity.Ev.verify 4075938441 -
+Identity.Ev.view 933905333 -
+Identity.Ev.window 933905333 -
+Identity.GrantOk 2855759894 1136443085
+Identity.Inv 2855759894 9989982968313839720
+Identity.Inv.mk 2822699561 -
+Identity.Reach 2855759894 11956095245937781666
+Identity.Reach.init 4017723324 -
+Identity.Reach.step 1057169151 -
+Identity.Res 3931117990 2139073804888358748
+Identity.Res.none 89687032 -
+Identity.Res.ok 89687032 -
+Identity.Res.stale 89687032 -
+Identity.Row 3931117990 14953826502650696778
+Identity.Row.approved 1122222354 3386506050
+Identity.Row.casesOn 4233942494 1959081222
+Identity.Row.firstUse 1122222354 3423407350
+Identity.Row.key 1875540131 3797330197
+Identity.Row.mk 818263752 -
+Identity.Row.rec 580241794 -
+Identity.Row.recent 1122222354 51962726
+Identity.Row.verified 551590107 3293402142
+Identity.S 3931117990 10788323537029659439
+Identity.S.aci 2589180679 3344390029
+Identity.S.grant 500212550 3635817351
+Identity.S.held 745928417 236227509
+Identity.S.init 1777126481 811304363
+Identity.S.jobs 1366673973 1797992845
+Identity.S.keyChanges 1109187714 964609671
+Identity.S.last 2576436704 2255706842
+Identity.S.localNotices 1109187714 2536667396
+Identity.S.mk 2166073941 -
+Identity.S.ourKey 2589180679 1895505848
+Identity.S.pending 3618925102 653944219
+Identity.S.remoteNotices 1109187714 41976405
+Identity.S.rows 431556549 3560681205
+Identity.S.sent 1366673973 853880143
+Identity.S.shown 745928417 43313730
+Identity.Snap 3931117990 10181239963070959379
+Identity.Snap.aci 801247965 3697035795
+Identity.Snap.key 801247965 2969455083
+Identity.Snap.mk 3796275405 -
+Identity.Snap.ourKey 801247965 1239376573
+Identity.Snap.peer 801247965 1871244287
+Identity.Src 3931117990 9027489280187549591
+Identity.Src.casesOn 281597583 4162203551
+Identity.Src.ctorIdx 1118675757 2017059198
+Identity.Src.rec 3769436862 -
+Identity.Src.sync 1503987664 -
+Identity.Src.user 1503987664 -
+Identity.Sync 3931117990 6295517573120435602
+Identity.Sync.casesOn 1886724457 3172282954
+Identity.Sync.key 2127655761 1824614321
+Identity.Sync.mk 3811522049 -
+Identity.Sync.peer 2127655761 2868179122
+Identity.Sync.rec 4268453319 -
+Identity.VS 3931117990 11146556566810347132
+Identity.VS.casesOn 2833133449 1474876821
+Identity.VS.ctorIdx 4003150505 447573559
+Identity.VS.dflt 3541521056 -
+Identity.VS.rec 3179827953 -
+Identity.VS.unverified 3541521056 -
+Identity.VS.verified 3541521056 -
+Identity.approve 3415290176 1043140763
+Identity.approveOne 2755473449 3225107980
+Identity.bump 3882896259 1571822541
+Identity.commitAt 801029779 394051029
+Identity.commitAt.match_1 1926325423 1563251863
+Identity.commitOf 326189309 445102939
+Identity.commitOf._sparseCasesOn_1 572925604 1526167910
+Identity.commitOf.match_1 1363536170 2689711834
+Identity.grantShown 4039423427 253388083
+Identity.grantShown.match_1 4180346213 704013479
+Identity.instDecidableEqRow 816552498 1949668394
+Identity.instDecidableEqRow.decEq 2674009319 3208719311
+Identity.instDecidableEqRow.decEq._proof_1 2188865890 -
+Identity.instDecidableEqRow.decEq._proof_2 2323798838 -
+Identity.instDecidableEqRow.decEq._proof_3 2204685598 -
+Identity.instDecidableEqRow.decEq._proof_4 459505924 -
+Identity.instDecidableEqRow.decEq._proof_5 635933883 -
+Identity.instDecidableEqRow.decEq._proof_6 4238200880 -
+Identity.instDecidableEqRow.decEq.match_1 3027254043 3099973133
+Identity.instDecidableEqSrc 819843124 3733729943
+Identity.instDecidableEqSrc._proof_1 2303501565 -
+Identity.instDecidableEqSrc._proof_2 2944202976 -
+Identity.instDecidableEqSync 1245755889 2515046161
+Identity.instDecidableEqSync.decEq 1101826091 2812717744
+Identity.instDecidableEqSync.decEq._proof_1 1104526540 -
+Identity.instDecidableEqSync.decEq._proof_2 3698154684 -
+Identity.instDecidableEqSync.decEq._proof_3 3062598334 -
+Identity.instDecidableEqSync.decEq._proof_4 2460919972 -
+Identity.instDecidableEqSync.decEq.match_1 1346974402 2965271009
+Identity.instDecidableEqVS 2886275344 2685486973
+Identity.instDecidableEqVS._proof_1 993126120 -
+Identity.instDecidableEqVS._proof_2 1471816026 -
+Identity.instReprEv.repr.match_1 2506410902 3326924138
+Identity.keyChangeRevokes 3111540558 1459985747
+Identity.keyChangeRevokes._sparseCasesOn_1 3623767531 1951597143
+Identity.keyChangeRevokes.match_1 1240467842 461983757
+Identity.saveKey 1852135894 2260582297
+Identity.saveKey.match_1 2976082733 4213216182
+Identity.setVer 3260165109 2412995389
+Identity.showSnap 801029779 2855841052
+Identity.staleNoChange 4039423427 2365463345
+Identity.staleNoChange._sparseCasesOn_3 872893682 778650535
+Identity.staleNoChange.match_1 1904420040 3680641827
+Identity.staleNoChange.match_3 1779308758 3880711779
+Identity.staleNoChange.match_6 3103809915 1707147155
+Identity.step 3653530832 4051166623
+Identity.stepCore 3653530832 3836763531
+Identity.stepCore.match_1 1904420040 3680641827
+Identity.stepCore.match_3 1646203994 3849487261
+Identity.storage 3203635259 3327031428
+Identity.storageNoSubstitute 3111540558 2714901640
+Identity.storageNoSubstitute._sparseCasesOn_1 2856476661 2334483051
+Identity.storageNoSubstitute._sparseCasesOn_2 3822172267 1704567389
+Identity.storageNoSubstitute.match_1 1629952518 2832659112
+Identity.syncExact 3111540558 554952890
+Identity.syncExact._sparseCasesOn_3 3650127728 1679848935
+Identity.syncExact.match_1 1646203994 3849487261
+Identity.syncExact.match_3 4010447074 2058779383
+Identity.syncShown 3111540558 1907396988
+Identity.targets 4039423427 1185213832
+Identity.targets._sparseCasesOn_1 2334663261 1385501301
+Identity.targets.match_1 2993096728 3661201513
+Identity.targets.match_4 3487359276 4044455144
+Identity.trust 1014060492 2202431815
+Identity.upd 1185834565 2932600256
+Identity.valid 2291728747 2643019009
+Identity.valid.match_1 3487359276 4044455144
+staleNoChange_holds : ∀ (ps : List Nat) (s : S) (e : Ev), staleNoChange ps s e (step s e) = true
+targets_holds : ∀ (ps : List Nat) (s : S) (e : Ev), targets ps s e (step s e) = true
+@grantShown_holds : ∀ {s : S}, Reach s → ∀ (ps : List Nat) (e : Ev), grantShown ps s e (step s e) = true
+@syncShown_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), syncShown s e (step s e) = true
+syncExact_holds : ∀ (s : S) (e : Ev), syncExact s e (step s e) = true
+keyChangeRevokes_holds : ∀ (s : S) (e : Ev), keyChangeRevokes s e (step s e) = true
+storageNoSubstitute_holds : ∀ (s : S) (e : Ev), storageNoSubstitute s e (step s e) = true
+@Inv.reach : ∀ {s : S}, Reach s → Identity.Inv s
+Identity.staleNoChange_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Identity.targets_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Identity.grantShown_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Identity.syncShown_holds depends on axioms: [Quot.sound, propext]
+Identity.syncExact_holds depends on axioms: [Quot.sound, propext]
+Identity.keyChangeRevokes_holds depends on axioms: [Quot.sound, propext]
+Identity.storageNoSubstitute_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Identity.Inv.reach depends on axioms: [Quot.sound, propext]

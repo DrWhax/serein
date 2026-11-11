@@ -1,0 +1,322 @@
+structure Queue.S : Type
+number of parameters: 0
+fields:
+  Queue.S.db : List Nat
+  Queue.S.wantsRunning : Bool
+  Queue.S.loop : Option Phase
+  Queue.S.cancelled : Bool
+  Queue.S.draining : Nat
+  Queue.S.wakes : Nat
+  Queue.S.stopWaiters : List Nat
+  Queue.S.returns : List Nat
+  Queue.S.stopNext : Nat
+  Queue.S.done : List Nat
+  Queue.S.returned : List Nat
+constructor:
+  Queue.S.mk (db : List Nat) (wantsRunning : Bool) (loop : Option Phase) (cancelled : Bool) (draining wakes : Nat)
+    (stopWaiters returns : List Nat) (stopNext : Nat) (done returned : List Nat) : S
+inductive Queue.Phase : Type
+number of parameters: 0
+constructors:
+Queue.Phase.select : Phase
+Queue.Phase.waiting : Phase
+Queue.Phase.executing : Nat → Phase
+Queue.Phase.after : Nat → Outcome → Phase
+def Queue.start : S → S :=
+fun s =>
+  if (s.draining != 0) = true then s
+  else
+    if s.loop.isSome = true then
+      { db := s.db, wantsRunning := true, loop := s.loop, cancelled := s.cancelled, draining := s.draining,
+        wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns, stopNext := s.stopNext, done := s.done,
+        returned := s.returned }
+    else
+      { db := s.db, wantsRunning := true, loop := some Phase.select, cancelled := false, draining := s.draining,
+        wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns, stopNext := s.stopNext, done := s.done,
+        returned := s.returned }
+def Queue.stop : S → S :=
+fun s =>
+  { db := s.db, wantsRunning := false, loop := s.loop, cancelled := s.cancelled || s.loop.isSome,
+    draining := s.draining, wakes := s.wakes + 1, stopWaiters := s.stopWaiters, returns := s.returns,
+    stopNext := s.stopNext, done := s.done, returned := s.returned }
+def Queue.stopAndWait : S → S :=
+fun s =>
+  have n := s.stopNext;
+  have s :=
+    stop
+      { db := s.db, wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled,
+        draining := s.draining + 1, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+        stopNext := n + 1, done := s.done, returned := s.returned };
+  if s.loop.isSome = true then
+    { db := s.db, wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled, draining := s.draining,
+      wakes := s.wakes, stopWaiters := s.stopWaiters ++ [n], returns := s.returns, stopNext := s.stopNext,
+      done := s.done, returned := s.returned }
+  else
+    { db := s.db, wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled, draining := s.draining,
+      wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns ++ [n], stopNext := s.stopNext,
+      done := s.done, returned := s.returned }
+def Queue.loopEnds : S → S :=
+fun s =>
+  have t :=
+    { db := s.db, wantsRunning := s.wantsRunning, loop := none, cancelled := false, draining := s.draining,
+      wakes := s.wakes, stopWaiters := [], returns := s.returns ++ s.stopWaiters, stopNext := s.stopNext,
+      done := s.done, returned := s.returned };
+  if s.wantsRunning = true then start t else t
+def Queue.loopStep : S → S :=
+fun s =>
+  match s.loop with
+  | some Phase.select =>
+    if s.cancelled = true then loopEnds s
+    else
+      match s.db.head? with
+      | some j =>
+        { db := s.db, wantsRunning := s.wantsRunning, loop := some (Phase.executing j), cancelled := s.cancelled,
+          draining := s.draining, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+          stopNext := s.stopNext, done := s.done, returned := s.returned }
+      | none =>
+        { db := s.db, wantsRunning := s.wantsRunning, loop := some Phase.waiting, cancelled := s.cancelled,
+          draining := s.draining, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+          stopNext := s.stopNext, done := s.done, returned := s.returned }
+  | some (Phase.after j o) =>
+    have o := if (s.cancelled && o != Outcome.ok) = true then Outcome.cancelled else o;
+    have db :=
+      match o with
+      | Outcome.ok => s.db.erase j
+      | Outcome.permanent => s.db.erase j
+      | Outcome.retry => s.db
+      | Outcome.cancelled => s.db;
+    have done :=
+      match o with
+      | Outcome.ok => s.done ++ [j]
+      | Outcome.permanent => s.done ++ [j]
+      | x => s.done;
+    { db := db, wantsRunning := s.wantsRunning, loop := some Phase.select, cancelled := s.cancelled,
+      draining := s.draining, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+      stopNext := s.stopNext, done := done, returned := s.returned }
+  | x => s
+def Queue.step : S → Ev → S :=
+fun s x =>
+  match x with
+  | Ev.runLoop =>
+    match s.loop with
+    | some Phase.select => loopStep s
+    | some (Phase.after j o) => loopStep s
+    | x => s
+  | Ev.runWake =>
+    if s.wakes = 0 then s
+    else
+      have s :=
+        { db := s.db, wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled, draining := s.draining,
+          wakes := s.wakes - 1, stopWaiters := s.stopWaiters, returns := s.returns, stopNext := s.stopNext,
+          done := s.done, returned := s.returned };
+      match s.loop with
+      | some Phase.waiting =>
+        { db := s.db, wantsRunning := s.wantsRunning, loop := some Phase.select, cancelled := s.cancelled,
+          draining := s.draining, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+          stopNext := s.stopNext, done := s.done, returned := s.returned }
+      | x => s
+  | Ev.runReturn k =>
+    match s.returns[k]? with
+    | some n =>
+      { db := s.db, wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled,
+        draining := s.draining - 1, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns.eraseIdx k,
+        stopNext := s.stopNext, done := s.done, returned := s.returned ++ [n] }
+    | none => s
+  | Ev.start => start s
+  | Ev.stop => stop s
+  | Ev.stopAndWait => stopAndWait s
+  | Ev.enqueue j =>
+    { db := s.db ++ [j], wantsRunning := s.wantsRunning, loop := s.loop, cancelled := s.cancelled,
+      draining := s.draining, wakes := s.wakes + 1, stopWaiters := s.stopWaiters, returns := s.returns,
+      stopNext := s.stopNext, done := s.done, returned := s.returned }
+  | Ev.handlerReturns o =>
+    match s.loop with
+    | some (Phase.executing j) =>
+      { db := s.db, wantsRunning := s.wantsRunning, loop := some (Phase.after j o), cancelled := s.cancelled,
+        draining := s.draining, wakes := s.wakes, stopWaiters := s.stopWaiters, returns := s.returns,
+        stopNext := s.stopNext, done := s.done, returned := s.returned }
+    | x => s
+inductive Queue.Reach : S → Prop
+number of parameters: 0
+constructors:
+Queue.Reach.init : ∀ (db : List Nat), Reach (S.init db)
+Queue.Reach.step : ∀ {s : S} (e : Ev), Reach s → Reach (step s e)
+structure Queue.Inv (s : S) : Prop
+number of parameters: 1
+fields:
+  Queue.Inv.draining : s.draining = s.stopWaiters.length + s.returns.length
+  Queue.Inv.waitersLoop : s.stopWaiters ≠ [] → s.loop ≠ none
+  Queue.Inv.returnNoLoop : s.returns ≠ [] → s.loop = none
+  Queue.Inv.drainingStopped : s.draining ≠ 0 → s.wantsRunning = false
+  Queue.Inv.drainingCancelled : s.draining ≠ 0 → s.loop ≠ none → s.cancelled = true
+  Queue.Inv.waitingWoken : s.loop = some Phase.waiting → s.cancelled = true → s.wakes ≠ 0
+constructor:
+  Queue.Inv.mk {s : S} (draining : s.draining = s.stopWaiters.length + s.returns.length)
+    (waitersLoop : s.stopWaiters ≠ [] → s.loop ≠ none) (returnNoLoop : s.returns ≠ [] → s.loop = none)
+    (drainingStopped : s.draining ≠ 0 → s.wantsRunning = false)
+    (drainingCancelled : s.draining ≠ 0 → s.loop ≠ none → s.cancelled = true)
+    (waitingWoken : s.loop = some Phase.waiting → s.cancelled = true → s.wakes ≠ 0) : Queue.Inv s
+class _root_.Inv.{u} (α : Type u) : Type u
+number of parameters: 1
+fields:
+  Inv.inv : α → α
+constructor:
+  Inv.mk.{u} {α : Type u} (inv : α → α) : _root_.Inv α
+def Queue.shutdownClean : S → Ev → S → Bool :=
+fun s _e s' => s'.returned.length == s.returned.length || s'.loop == none
+def Queue.noRestartWhileDraining : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.start => s.draining == 0 || s' == s
+  | x => true
+def Queue.oneAtATime : S → Ev → S → Bool :=
+fun s e s' =>
+  decide (s'.done.length ≤ s.done.length + 1) &&
+    (s'.done.length == s.done.length ||
+      match e, s.loop with
+      | Ev.runLoop, some (Phase.after j o) => s'.done == s.done ++ [j]
+      | x, x_1 => false)
+def Queue.measure : S → Nat :=
+fun s => 4 * weight s.loop + s.wakes + s.returns.length + s.stopWaiters.length
+@[reducible] def measure.{u} : {α : Sort u} → (α → Nat) → WellFoundedRelation α :=
+fun {α} f => invImage f Nat.lt_wfRel
+def Queue.Ev.isDrain : Ev → Bool :=
+fun x =>
+  match x with
+  | Ev.runLoop => true
+  | Ev.runWake => true
+  | Ev.runReturn k => true
+  | Ev.handlerReturns o => true
+  | x => false
+120 definitions
+Queue.Ev 3931117990 12552972854093070031
+Queue.Ev.casesOn 214408952 6259105
+Queue.Ev.ctorIdx 3471252156 3175347168
+Queue.Ev.enqueue 1606165538 -
+Queue.Ev.handlerReturns 1766160501 -
+Queue.Ev.isDrain 639293207 99408714
+Queue.Ev.isDrain._sparseCasesOn_1 3860733278 1707419038
+Queue.Ev.isDrain.match_1 2883766538 1277189351
+Queue.Ev.rec 65587508 -
+Queue.Ev.runLoop 3590499790 -
+Queue.Ev.runReturn 1606165538 -
+Queue.Ev.runWake 3590499790 -
+Queue.Ev.start 3590499790 -
+Queue.Ev.stop 3590499790 -
+Queue.Ev.stopAndWait 3590499790 -
+Queue.Inv 415135821 14112256324936233386
+Queue.Inv.mk 1534836812 -
+Queue.Outcome 3931117990 10991664775586494181
+Queue.Outcome.cancelled 712290417 -
+Queue.Outcome.casesOn 2133621447 3345137195
+Queue.Outcome.ctorIdx 3432433540 2721092086
+Queue.Outcome.ok 712290417 -
+Queue.Outcome.permanent 712290417 -
+Queue.Outcome.rec 972431869 -
+Queue.Outcome.retry 712290417 -
+Queue.Phase 3931117990 17098337040662336052
+Queue.Phase.after 1643977511 -
+Queue.Phase.casesOn 2512740843 1397905841
+Queue.Phase.ctorIdx 1463002103 953213403
+Queue.Phase.executing 2067024895 -
+Queue.Phase.rec 1933095010 -
+Queue.Phase.select 3181729543 -
+Queue.Phase.waiting 3181729543 -
+Queue.Reach 415135821 11383632260047905903
+Queue.Reach.init 3424867650 -
+Queue.Reach.step 2835446029 -
+Queue.S 3931117990 7348419591185749149
+Queue.S.cancelled 2524267041 970260269
+Queue.S.casesOn 862180425 3738711729
+Queue.S.db 1238573164 1562670359
+Queue.S.done 1238573164 2895850432
+Queue.S.draining 1025414688 122738163
+Queue.S.init 4221805129 2396278723
+Queue.S.loop 800210530 345341398
+Queue.S.mk 2114638934 -
+Queue.S.rec 4000347499 -
+Queue.S.returned 1238573164 3052720337
+Queue.S.returns 1238573164 2491194318
+Queue.S.stopNext 1025414688 3914983996
+Queue.S.stopWaiters 1238573164 3127386605
+Queue.S.wakes 1025414688 2034639512
+Queue.S.wantsRunning 2524267041 43426454
+Queue.instDecidableEqOutcome 3255642665 959354508
+Queue.instDecidableEqOutcome._proof_1 2078512485 -
+Queue.instDecidableEqOutcome._proof_2 175535714 -
+Queue.instDecidableEqPhase 1813970598 3701663608
+Queue.instDecidableEqPhase.decEq 1578902130 3923369041
+Queue.instDecidableEqPhase.decEq._proof_1 3757553027 -
+Queue.instDecidableEqPhase.decEq._proof_10 555603300 -
+Queue.instDecidableEqPhase.decEq._proof_11 3852974818 -
+Queue.instDecidableEqPhase.decEq._proof_12 4275350034 -
+Queue.instDecidableEqPhase.decEq._proof_13 2286129361 -
+Queue.instDecidableEqPhase.decEq._proof_14 3701267393 -
+Queue.instDecidableEqPhase.decEq._proof_15 3415244121 -
+Queue.instDecidableEqPhase.decEq._proof_16 783538609 -
+Queue.instDecidableEqPhase.decEq._proof_17 2919797773 -
+Queue.instDecidableEqPhase.decEq._proof_2 3151789435 -
+Queue.instDecidableEqPhase.decEq._proof_3 3503818637 -
+Queue.instDecidableEqPhase.decEq._proof_4 1008069295 -
+Queue.instDecidableEqPhase.decEq._proof_5 3444307164 -
+Queue.instDecidableEqPhase.decEq._proof_6 1500730889 -
+Queue.instDecidableEqPhase.decEq._proof_7 608003016 -
+Queue.instDecidableEqPhase.decEq._proof_8 2575273671 -
+Queue.instDecidableEqPhase.decEq._proof_9 2275180023 -
+Queue.instDecidableEqPhase.decEq.match_1 4000122491 1200502343
+Queue.instDecidableEqS 903111201 1571555553
+Queue.instDecidableEqS.decEq 1152917837 561591485
+Queue.instDecidableEqS.decEq._proof_1 3285180972 -
+Queue.instDecidableEqS.decEq._proof_10 2341472074 -
+Queue.instDecidableEqS.decEq._proof_11 4206895785 -
+Queue.instDecidableEqS.decEq._proof_12 2332148991 -
+Queue.instDecidableEqS.decEq._proof_2 948622766 -
+Queue.instDecidableEqS.decEq._proof_3 2141614726 -
+Queue.instDecidableEqS.decEq._proof_4 509118054 -
+Queue.instDecidableEqS.decEq._proof_5 3070426132 -
+Queue.instDecidableEqS.decEq._proof_6 332167295 -
+Queue.instDecidableEqS.decEq._proof_7 3357602056 -
+Queue.instDecidableEqS.decEq._proof_8 1199563535 -
+Queue.instDecidableEqS.decEq._proof_9 2973680569 -
+Queue.instDecidableEqS.decEq.match_1 3790448130 1678214817
+Queue.instReprEv.repr.match_1 4040854520 835893468
+Queue.instReprOutcome.repr.match_1 3842636430 3506587413
+Queue.loopEnds 4225362756 3609600432
+Queue.loopStep 4225362756 3116701098
+Queue.loopStep._sparseCasesOn_3 575800676 1593377987
+Queue.loopStep._sparseCasesOn_6 2334663261 1385501301
+Queue.loopStep._sparseCasesOn_7 3429994778 1606321516
+Queue.loopStep.match_1 2549865312 3610645720
+Queue.loopStep.match_3 3002463505 2163475846
+Queue.loopStep.match_6 1704000790 75798620
+Queue.noRestartWhileDraining 2399144225 77340528
+Queue.noRestartWhileDraining._sparseCasesOn_1 3925840128 1435543523
+Queue.noRestartWhileDraining.match_1 124383640 3030257465
+Queue.oneAtATime 2399144225 1919595658
+Queue.oneAtATime._sparseCasesOn_1 1796931402 22340760
+Queue.oneAtATime._sparseCasesOn_2 2334663261 1385501301
+Queue.oneAtATime._sparseCasesOn_3 3409461602 3850513780
+Queue.oneAtATime.match_1 4196435622 1537441808
+Queue.run 583985998 2329778178
+Queue.run._f 1588397976 3280628535
+Queue.run.match_1 3675801073 1988495994
+Queue.shutdownClean 2399144225 224535288
+Queue.start 4225362756 2958624241
+Queue.step 2212387062 514043003
+Queue.step._sparseCasesOn_1 1301947702 104797825
+Queue.step._sparseCasesOn_4 244227839 510196902
+Queue.step.match_1 2402845900 2315260509
+Queue.step.match_4 2631393983 297482475
+Queue.stop 4225362756 3835693786
+Queue.stopAndWait 4225362756 1507412249
+@Inv.reach : ∀ {s : S}, Reach s → Queue.Inv s
+@shutdownClean_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), shutdownClean s e (step s e) = true
+noRestartWhileDraining_holds : ∀ (s : S) (e : Ev), noRestartWhileDraining s e (step s e) = true
+oneAtATime_holds : ∀ (s : S) (e : Ev), oneAtATime s e (step s e) = true
+@drain_terminates : ∀ {s : S},
+  Reach s → ∃ es, es.all Ev.isDrain = true ∧ (run s es).stopWaiters = [] ∧ (run s es).returns = []
+Queue.Inv.reach depends on axioms: [Quot.sound, propext]
+Queue.shutdownClean_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Queue.noRestartWhileDraining_holds depends on axioms: [Quot.sound, propext]
+Queue.oneAtATime_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Queue.drain_terminates depends on axioms: [Quot.sound, propext]

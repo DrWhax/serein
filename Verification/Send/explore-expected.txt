@@ -1,0 +1,4 @@
+submit-authorized OK
+content-needs-source OK
+retraction-goes OK
+group-recipients OK

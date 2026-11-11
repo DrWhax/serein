@@ -1,0 +1,10 @@
+name = "Send"
+version = "0.1.0"
+defaultTargets = ["Send", "oracle"]
+
+[[lean_lib]]
+name = "Send"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

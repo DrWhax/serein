@@ -1,0 +1,382 @@
+structure Send.Data : Type
+number of parameters: 0
+fields:
+  Send.Data.retract : Bool
+  Send.Data.extra : Bool
+constructor:
+  Send.Data.mk (retract extra : Bool) : Data
+inductive Send.Content : Type
+number of parameters: 0
+constructors:
+Send.Content.data : Data → Content
+Send.Content.sent : Option Data → Bool → Bool → Bool → Content
+Send.Content.content : Content
+Send.Content.other : Content
+def Send.Content.carries : Content → Bool :=
+fun x =>
+  match x with
+  | Content.data d => d.extra
+  | Content.sent m update story edit => (Option.map (fun x => x.extra) m).getD false || story || edit
+  | Content.content => true
+  | Content.other => false
+def Send.Data.onlyDeletes : Data → Bool :=
+fun d => d.retract && !d.extra
+def Send.Content.onlyRetracts : Content → Bool :=
+fun x =>
+  match x with
+  | Content.data d => d.onlyDeletes
+  | Content.sent (some d) update story edit => d.onlyDeletes && !story && !edit
+  | Content.sent none update story edit => update && !story && !edit
+  | x => false
+inductive Send.Target : Type
+number of parameters: 0
+constructors:
+Send.Target.direct : Nat → Target
+Send.Target.self : Target
+Send.Target.group : Nat → Target
+structure Send.S : Type
+number of parameters: 0
+fields:
+  Send.S.blockedIds : List Nat
+  Send.S.blockedNums : List Nat
+  Send.S.blockedGroups : List Nat
+  Send.S.msgs : Nat → Msg
+  Send.S.members : Nat → List Nat
+constructor:
+  Send.S.mk (blockedIds blockedNums blockedGroups : List Nat) (msgs : Nat → Msg) (members : Nat → List Nat) : S
+def Send.S.blocked : S → Nat → Bool :=
+fun s p => s.blockedIds.contains p || s.blockedNums.contains p
+def Send.authorized : S → Target → Content → List Nat → Bool :=
+fun s t c ids =>
+  (match t with
+    | Target.direct p => !s.blocked p
+    | Target.self => true
+    | Target.group g => !s.blockedGroups.contains g) &&
+    (c.onlyRetracts || ids.all fun m => s.msgs m == Msg.live)
+def Send.recipients : S → Nat → List Nat :=
+fun s g => List.filter (fun p => !s.blocked p) (s.members g)
+def Send.stepCore : P → Ev → P :=
+fun p x =>
+  match x with
+  | Ev.queue t c ids =>
+    { s := p.s, jobs := p.jobs ++ [{ target := t, content := c, ids := ids, phase := Phase.queued }], out := p.out,
+      refused := p.refused }
+  | Ev.start j =>
+    match p.jobs[j]? with
+    | some x =>
+      if (x.phase != Phase.queued) = true then p
+      else
+        if authorized p.s x.target x.content x.ids = true then
+          have to :=
+            match x.target with
+            | Target.group g => recipients p.s g
+            | x => [];
+          { s := p.s,
+            jobs := p.jobs.set j { target := x.target, content := x.content, ids := x.ids, phase := Phase.started to },
+            out := p.out, refused := p.refused }
+        else { s := p.s, jobs := p.jobs.eraseIdx j, out := p.out, refused := p.refused + 1 }
+    | none => p
+  | Ev.submit j =>
+    match p.jobs[j]? with
+    | some { target := t, content := c, ids := ids, phase := Phase.started to } =>
+      if authorized p.s t c ids = true then
+        { s := p.s, jobs := p.jobs.eraseIdx j, out := p.out ++ [{ target := t, content := c, ids := ids, to := to }],
+          refused := p.refused }
+      else { s := p.s, jobs := p.jobs.eraseIdx j, out := p.out, refused := p.refused + 1 }
+    | x => p
+  | Ev.block q b =>
+    {
+      s :=
+        have __src := p.s;
+        { blockedIds := setIn p.s.blockedIds q b, blockedNums := __src.blockedNums,
+          blockedGroups := __src.blockedGroups, msgs := __src.msgs, members := __src.members },
+      jobs := p.jobs, out := p.out, refused := p.refused }
+  | Ev.blockNumber q b =>
+    {
+      s :=
+        have __src := p.s;
+        { blockedIds := __src.blockedIds, blockedNums := setIn p.s.blockedNums q b,
+          blockedGroups := __src.blockedGroups, msgs := __src.msgs, members := __src.members },
+      jobs := p.jobs, out := p.out, refused := p.refused }
+  | Ev.blockGroup g b =>
+    {
+      s :=
+        have __src := p.s;
+        { blockedIds := __src.blockedIds, blockedNums := __src.blockedNums,
+          blockedGroups := setIn p.s.blockedGroups g b, msgs := __src.msgs, members := __src.members },
+      jobs := p.jobs, out := p.out, refused := p.refused }
+  | Ev.erase m =>
+    {
+      s :=
+        have __src := p.s;
+        { blockedIds := __src.blockedIds, blockedNums := __src.blockedNums, blockedGroups := __src.blockedGroups,
+          msgs := upd p.s.msgs m Msg.erased, members := __src.members },
+      jobs := p.jobs, out := p.out, refused := p.refused }
+  | Ev.remove m =>
+    {
+      s :=
+        have __src := p.s;
+        { blockedIds := __src.blockedIds, blockedNums := __src.blockedNums, blockedGroups := __src.blockedGroups,
+          msgs := upd p.s.msgs m Msg.gone, members := __src.members },
+      jobs := p.jobs, out := p.out, refused := p.refused }
+def Send.submitted : P → P → Option Out :=
+fun p p' => if p'.out.length = p.out.length + 1 then p'.out.getLast? else none
+def Send.submitAuthorized : P → Ev → P → Bool :=
+fun p _e p' =>
+  (p'.out.length == p.out.length || p'.out.length == p.out.length + 1) &&
+    match submitted p p' with
+    | some o => authorized p.s o.target o.content o.ids
+    | none => true
+def Send.contentNeedsSource : P → Ev → P → Bool :=
+fun p _e p' =>
+  match submitted p p' with
+  | some o => !o.content.carries || o.ids.all fun m => p.s.msgs m == Msg.live
+  | none => true
+def Send.retractionGoes : P → Ev → P → Bool :=
+fun p e _p' =>
+  match e with
+  | Ev.submit j =>
+    match p.jobs[j]? with
+    | some { target := t, content := c, ids := ids, phase := Phase.started to } =>
+      !c.onlyRetracts ||
+          !authorized
+              (have __src := p.s;
+              { blockedIds := __src.blockedIds, blockedNums := __src.blockedNums, blockedGroups := __src.blockedGroups,
+                msgs := fun x => Msg.live, members := __src.members })
+              t c ids ||
+        (stepCore p e).out.length == p.out.length + 1
+    | x => true
+  | x => true
+def Send.groupRecipients : P → Ev → P → Bool :=
+fun p e p' =>
+  match e with
+  | Ev.start j =>
+    match p.jobs[j]? with
+    | some { target := Target.group g, content := c, ids := ids, phase := Phase.queued } =>
+      !authorized p.s (Target.group g) c ids ||
+        p'.jobs[j]? ==
+          some { target := Target.group g, content := c, ids := ids, phase := Phase.started (recipients p.s g) }
+    | x => true
+  | x => true
+168 definitions
+Send.Content 3931117990 9613469592649286579
+Send.Content.carries 1325114353 1522850214
+Send.Content.casesOn 623659442 336016141
+Send.Content.content 1722556030 -
+Send.Content.ctorIdx 459821099 102801540
+Send.Content.data 2483905733 -
+Send.Content.onlyRetracts 1325114353 179844261
+Send.Content.onlyRetracts._sparseCasesOn_1 4205489760 1771527936
+Send.Content.onlyRetracts.match_1 3574032285 1675194622
+Send.Content.other 1722556030 -
+Send.Content.rec 499598163 -
+Send.Content.sent 1741326432 -
+Send.Data 3931117990 16154268380666378442
+Send.Data.casesOn 3474410120 3988171482
+Send.Data.extra 2907706906 3509328606
+Send.Data.mk 3364751336 -
+Send.Data.onlyDeletes 2907706906 3849840172
+Send.Data.rec 1328389149 -
+Send.Data.retract 2907706906 2816984002
+Send.Ev 3931117990 13341723210223541953
+Send.Ev.block 3764199937 -
+Send.Ev.blockGroup 3764199937 -
+Send.Ev.blockNumber 3764199937 -
+Send.Ev.casesOn 53638984 2887708252
+Send.Ev.ctorIdx 297221172 1426806408
+Send.Ev.erase 54955712 -
+Send.Ev.queue 1809812848 -
+Send.Ev.rec 1436170286 -
+Send.Ev.remove 54955712 -
+Send.Ev.start 54955712 -
+Send.Ev.submit 54955712 -
+Send.Job 3931117990 17303375788723941124
+Send.Job.casesOn 1168078080 3262861206
+Send.Job.content 1147348678 24643487
+Send.Job.ids 1610937582 544528954
+Send.Job.mk 1252576633 -
+Send.Job.phase 3536047977 2292301357
+Send.Job.rec 2673521989 -
+Send.Job.target 1595544892 4075628578
+Send.Msg 3931117990 9111423830839244214
+Send.Msg.casesOn 1712389357 1159665968
+Send.Msg.ctorIdx 3223627492 2883919229
+Send.Msg.erased 444290964 -
+Send.Msg.gone 444290964 -
+Send.Msg.live 444290964 -
+Send.Msg.rec 230759488 -
+Send.Out 3931117990 11629111315066292648
+Send.Out.content 4029556930 2347419023
+Send.Out.ids 3338286370 1458771346
+Send.Out.mk 3460866844 -
+Send.Out.target 1796370721 4223766350
+Send.P 3931117990 16652841712469875951
+Send.P.jobs 418135822 1319511344
+Send.P.mk 113078499 -
+Send.P.out 679997811 765838073
+Send.P.refused 1819009977 2740145711
+Send.P.s 2947371811 3044016747
+Send.Phase 3931117990 15930336441009644058
+Send.Phase.casesOn 3414754935 1276365227
+Send.Phase.ctorIdx 835018865 2094357764
+Send.Phase.queued 164222008 -
+Send.Phase.rec 1183778422 -
+Send.Phase.started 282663227 -
+Send.S 3931117990 6674096122001475202
+Send.S.blocked 1402226951 931917066
+Send.S.blockedGroups 1568371564 1951039261
+Send.S.blockedIds 1568371564 3431782118
+Send.S.blockedNums 1568371564 1492959791
+Send.S.members 170382723 3408183269
+Send.S.mk 1821369060 -
+Send.S.msgs 3641890927 4151270359
+Send.Target 3931117990 14217059233788652635
+Send.Target.casesOn 1731170125 1691096475
+Send.Target.ctorIdx 673869678 3576627024
+Send.Target.direct 2564676928 -
+Send.Target.group 2564676928 -
+Send.Target.rec 1465581685 -
+Send.Target.self 3815530580 -
+Send.authorized 3209774170 1527459900
+Send.contentNeedsSource 1547618333 3614610693
+Send.groupRecipients 1547618333 3877290633
+Send.groupRecipients._sparseCasesOn_1 2439920066 1803088752
+Send.groupRecipients._sparseCasesOn_2 263274482 1747189820
+Send.groupRecipients._sparseCasesOn_5 4139479819 193631062
+Send.groupRecipients.match_1 460432510 1969558710
+Send.groupRecipients.match_5 303706374 4179348571
+Send.instDecidableEqContent 2852785606 3674045102
+Send.instDecidableEqContent.decEq 247248437 1389923782
+Send.instDecidableEqContent.decEq._proof_1 140123343 -
+Send.instDecidableEqContent.decEq._proof_10 3893339647 -
+Send.instDecidableEqContent.decEq._proof_11 4016689752 -
+Send.instDecidableEqContent.decEq._proof_12 2976133074 -
+Send.instDecidableEqContent.decEq._proof_13 2188629319 -
+Send.instDecidableEqContent.decEq._proof_14 543626419 -
+Send.instDecidableEqContent.decEq._proof_15 1428793669 -
+Send.instDecidableEqContent.decEq._proof_16 1885465589 -
+Send.instDecidableEqContent.decEq._proof_17 2094525642 -
+Send.instDecidableEqContent.decEq._proof_18 1920463981 -
+Send.instDecidableEqContent.decEq._proof_19 143219764 -
+Send.instDecidableEqContent.decEq._proof_2 325403389 -
+Send.instDecidableEqContent.decEq._proof_3 3386987483 -
+Send.instDecidableEqContent.decEq._proof_4 2773374473 -
+Send.instDecidableEqContent.decEq._proof_5 754248092 -
+Send.instDecidableEqContent.decEq._proof_6 2194557709 -
+Send.instDecidableEqContent.decEq._proof_7 3400072300 -
+Send.instDecidableEqContent.decEq._proof_8 3728517900 -
+Send.instDecidableEqContent.decEq._proof_9 280980305 -
+Send.instDecidableEqContent.decEq.match_1 1473575358 2529528769
+Send.instDecidableEqData 1899437402 3794087521
+Send.instDecidableEqData.decEq 3991042847 706356328
+Send.instDecidableEqData.decEq._proof_1 2904750190 -
+Send.instDecidableEqData.decEq._proof_2 3273583383 -
+Send.instDecidableEqData.decEq._proof_3 230391044 -
+Send.instDecidableEqData.decEq.match_1 1429217804 3045355147
+Send.instDecidableEqJob 1716523260 532366972
+Send.instDecidableEqJob.decEq 1386631853 3499179401
+Send.instDecidableEqJob.decEq._proof_1 3232202112 -
+Send.instDecidableEqJob.decEq._proof_2 543921589 -
+Send.instDecidableEqJob.decEq._proof_3 4279090032 -
+Send.instDecidableEqJob.decEq._proof_4 2978391107 -
+Send.instDecidableEqJob.decEq._proof_5 3461457404 -
+Send.instDecidableEqJob.decEq.match_1 4287836408 3087076126
+Send.instDecidableEqMsg 3794711478 2299798332
+Send.instDecidableEqMsg._proof_1 234877471 -
+Send.instDecidableEqMsg._proof_2 716259446 -
+Send.instDecidableEqPhase 2126932002 304639389
+Send.instDecidableEqPhase.decEq 3493444591 261158868
+Send.instDecidableEqPhase.decEq._proof_1 355518066 -
+Send.instDecidableEqPhase.decEq._proof_2 2595644432 -
+Send.instDecidableEqPhase.decEq._proof_3 2556715501 -
+Send.instDecidableEqPhase.decEq._proof_4 1550135303 -
+Send.instDecidableEqPhase.decEq.match_1 3693249163 1376575496
+Send.instDecidableEqTarget 2973401046 3931855740
+Send.instDecidableEqTarget.decEq 3295730537 3796738616
+Send.instDecidableEqTarget.decEq._proof_1 1189644504 -
+Send.instDecidableEqTarget.decEq._proof_10 2526242252 -
+Send.instDecidableEqTarget.decEq._proof_2 1590468207 -
+Send.instDecidableEqTarget.decEq._proof_3 3599281029 -
+Send.instDecidableEqTarget.decEq._proof_4 294474804 -
+Send.instDecidableEqTarget.decEq._proof_5 3640307256 -
+Send.instDecidableEqTarget.decEq._proof_6 992196383 -
+Send.instDecidableEqTarget.decEq._proof_7 4072441314 -
+Send.instDecidableEqTarget.decEq._proof_8 2199518218 -
+Send.instDecidableEqTarget.decEq._proof_9 2928214359 -
+Send.instDecidableEqTarget.decEq.match_1 3974448223 1056286097
+Send.instReprContent.repr.match_1 2150735452 1839073649
+Send.instReprEv.repr.match_1 1440336087 1023753369
+Send.instReprTarget.repr.match_1 1825975017 4098646864
+Send.recipients 170382723 379370199
+Send.retractionGoes 1547618333 2745329522
+Send.retractionGoes._sparseCasesOn_1 2334663261 1385501301
+Send.retractionGoes._sparseCasesOn_2 1104515651 3678663907
+Send.retractionGoes._sparseCasesOn_5 2737979030 3579411623
+Send.retractionGoes.match_1 2886599699 4272023748
+Send.retractionGoes.match_5 1710257638 3685481035
+Send.setIn 2200842715 1144738469
+Send.step 2963034421 2770827062
+Send.stepCore 2963034421 1895208433
+Send.stepCore._sparseCasesOn_1 2439920066 1803088752
+Send.stepCore._sparseCasesOn_6 2334663261 1385501301
+Send.stepCore._sparseCasesOn_7 1104515651 3678663907
+Send.stepCore.match_1 3669226828 1564916619
+Send.stepCore.match_4 2562771485 607116497
+Send.stepCore.match_6 2886599699 288170955
+Send.submitAuthorized 1547618333 1637714720
+Send.submitAuthorized.match_1 622640472 3567903169
+Send.submitted 3024267024 3113570607
+Send.upd 1185834565 2932600256
+onlyRetracts_carries : ∀ (c : Content), c.onlyRetracts = true → c.carries = false
+onlyRetracts_extra : ∀ (d : Data), (Content.data { retract := d.retract, extra := true }).onlyRetracts = false
+@group_ignores_contacts : ∀ {g : Nat} {c : Content} {xs : List Nat} (s : S) (ids nums : List Nat),
+  authorized
+      { blockedIds := ids, blockedNums := nums, blockedGroups := s.blockedGroups, msgs := s.msgs, members := s.members }
+      (Target.group g) c xs =
+    authorized s (Target.group g) c xs
+@direct_ignores_groups : ∀ {q : Nat} {c : Content} {xs : List Nat} (s : S) (gs : List Nat),
+  authorized
+      { blockedIds := s.blockedIds, blockedNums := s.blockedNums, blockedGroups := gs, msgs := s.msgs,
+        members := s.members }
+      (Target.direct q) c xs =
+    authorized s (Target.direct q) c xs
+@blocked_contact_refused : ∀ {q : Nat} {c : Content} {xs : List Nat} (s : S),
+  s.blocked q = true → authorized s (Target.direct q) c xs = false
+@blocked_group_refused : ∀ {g : Nat} {c : Content} {xs : List Nat} (s : S),
+  s.blockedGroups.contains g = true → authorized s (Target.group g) c xs = false
+@retraction_ignores_messages : ∀ {t : Target} {c : Content} {xs : List Nat} (s : S),
+  c.onlyRetracts = true →
+    ∀ (m : Nat → Msg),
+      authorized
+          { blockedIds := s.blockedIds, blockedNums := s.blockedNums, blockedGroups := s.blockedGroups, msgs := m,
+            members := s.members }
+          t c xs =
+        authorized s t c xs
+@content_needs_live : ∀ {t : Target} {c : Content} {xs : List Nat} (s : S),
+  authorized s t c xs = true → c.carries = true → (xs.all fun m => s.msgs m == Msg.live) = true
+@recipients_mem : ∀ {g q : Nat} (s : S), q ∈ recipients s g ↔ q ∈ s.members g ∧ s.blocked q = false
+step_out : ∀ (p : P) (e : Ev),
+  (step p e).out = p.out ∨
+    ∃ j t c ids to,
+      e = Ev.submit j ∧
+        p.jobs[j]? = some { target := t, content := c, ids := ids, phase := Phase.started to } ∧
+          authorized p.s t c ids = true ∧
+            (step p e).out = p.out ++ [{ target := t, content := c, ids := ids, to := to }]
+submitAuthorized_holds : ∀ (p : P) (e : Ev), submitAuthorized p e (step p e) = true
+contentNeedsSource_holds : ∀ (p : P) (e : Ev), contentNeedsSource p e (step p e) = true
+retractionGoes_holds : ∀ (p : P) (e : Ev), retractionGoes p e (step p e) = true
+groupRecipients_holds : ∀ (p : P) (e : Ev), groupRecipients p e (step p e) = true
+Send.onlyRetracts_carries depends on axioms: [propext]
+Send.onlyRetracts_extra depends on axioms: [propext]
+Send.group_ignores_contacts depends on axioms: [propext]
+Send.direct_ignores_groups depends on axioms: [propext]
+Send.blocked_contact_refused depends on axioms: [propext]
+Send.blocked_group_refused depends on axioms: [propext]
+Send.retraction_ignores_messages depends on axioms: [Quot.sound, propext]
+Send.content_needs_live depends on axioms: [propext]
+Send.recipients_mem depends on axioms: [propext]
+Send.step_out depends on axioms: [Quot.sound, propext]
+Send.submitAuthorized_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Send.contentNeedsSource_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Send.retractionGoes_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Send.groupRecipients_holds depends on axioms: [propext]

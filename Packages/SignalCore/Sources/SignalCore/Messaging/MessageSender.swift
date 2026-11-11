@@ -57,17 +57,32 @@ public struct OutgoingPayload: Sendable {
         self.online = online
     }
 
-    /// A delete for everyone, or our phone's recipient update after one: it follows the removal
-    /// of the messages it names and carries none of their content, so it is still sent once
-    /// they are gone (deleting a story removes it here first, then sends the deletes).
+    /// A delete for everyone, its transcript, or our phone's recipient update after one: it
+    /// follows the removal of the messages it names and carries none of their content, so it is
+    /// still sent once they are gone (deleting a story removes it here first, then sends the
+    /// deletes). Nothing else qualifies: a delete that also carries a body, attachments or any
+    /// other field does not.
     var onlyRetracts: Bool {
         switch content.content {
-        case .dataMessage(let m)?: return m.hasDelete
+        case .dataMessage(let m)?: return Self.onlyDeletes(m)
         case .syncMessage(let sync)?:
-            guard case .sent(let sent)? = sync.content else { return false }
-            return sent.hasMessage ? sent.message.hasDelete : sent.isRecipientUpdate
+            guard case .sent(let sent)? = sync.content, !sent.hasStoryMessage, !sent.hasEditMessage else { return false }
+            return sent.hasMessage ? Self.onlyDeletes(sent.message) : sent.isRecipientUpdate
         default: return false
         }
+    }
+
+    /// A DataMessage that only deletes: a delete (or an admin delete) and the fields every
+    /// message has (timestamp, profile key, group context), and nothing else.
+    static func onlyDeletes(_ m: Signalservice_DataMessage) -> Bool {
+        guard m.hasDelete || m.hasAdminDelete else { return false }
+        var bare = Signalservice_DataMessage()
+        if m.hasTimestamp { bare.timestamp = m.timestamp }
+        if m.hasProfileKey { bare.profileKey = m.profileKey }
+        if m.hasGroupV2 { bare.groupV2 = m.groupV2 }
+        if m.hasDelete { bare.delete = m.delete }
+        if m.hasAdminDelete { bare.adminDelete = m.adminDelete }
+        return bare == m
     }
 }
 
@@ -93,6 +108,13 @@ public final class MessageSender: Sendable {
 
     var store: ProtocolStore { account.aciStore() }
 
+    /// Whether we blocked this contact, by service id or by number.
+    static func isBlocked(_ db: Database, serviceId: String) throws -> Bool {
+        if try BlockedList.serviceIds.blockedAt(db, serviceId).blocked { return true }
+        let number = try String.fetchOne(db, sql: "SELECT e164 FROM conversations WHERE serviceId = ?", arguments: [serviceId])
+        return try number.map { try BlockedList.numbers.blockedAt(db, $0).blocked } ?? false
+    }
+
     /// Re-evaluated after connection setup, immediately before transport submission.
     /// Blocking a contact does not block shared group conversations; those have their own block state.
     /// `messageIds` must still exist, unerased, unless the payload only retracts them.
@@ -104,12 +126,7 @@ public final class MessageSender: Sendable {
                         throw JobError.permanent("group blocked")
                     }
                 } else if let serviceId, serviceId != account.aci {
-                    let blocked = try BlockedList.serviceIds.blockedAt(db, serviceId).blocked
-                    let number = try String.fetchOne(db, sql: "SELECT e164 FROM conversations WHERE serviceId = ?", arguments: [serviceId])
-                    let numberBlocked = try number.map { try BlockedList.numbers.blockedAt(db, $0).blocked } ?? false
-                    if blocked || numberBlocked {
-                        throw JobError.permanent("recipient blocked")
-                    }
+                    if try Self.isBlocked(db, serviceId: serviceId) { throw JobError.permanent("recipient blocked") }
                 }
                 for id in messageIds where !retracting {
                     guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [id]),

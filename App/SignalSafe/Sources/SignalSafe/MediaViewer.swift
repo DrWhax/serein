@@ -74,7 +74,7 @@ extension SignalSession {
         let a = l.attachments[index]
         guard a.isDownloaded else { return }
         if AttachmentPolicy.isImage(a.contentType) {
-            _ = largeImage(for: a)
+            _ = largeImage(for: a, of: l.messageId)
             return
         }
         guard l.players[index] == nil else { Task { await l.players[index]?.play() }; return }
@@ -169,11 +169,8 @@ extension SignalSession {
         panel.nameFieldStringValue = name
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            guard let db = clientDatabase, let path = a.path else { return }
-            try db.pool.read { db in
-                guard try MediaAvailability.permits(db, path: path, messageId: l.messageId) else { throw AttachmentStoreError.invalidPath(path) }
-                try session.attachmentStore.export(a, to: url)
-            }
+            guard let db = clientDatabase else { return }
+            try MediaAvailability.export(a, of: l.messageId, to: url, database: db, store: session.attachmentStore)
             toast = .fileSaved(fullPath: url.path, countOfFiles: 1)
         } catch {
             Self.trace("save failed: \(error)")
@@ -181,12 +178,12 @@ extension SignalSession {
         }
     }
 
-    /// The Lightbox's larger decode (cached apart from the timeline's).
-    func largeImage(for a: SignalCore.MessageAttachment) -> RGBAImage? {
+    /// The Lightbox's larger decode (cached apart from the timeline's), for the message it shows.
+    func largeImage(for a: SignalCore.MessageAttachment, of messageId: String? = nil) -> RGBAImage? {
         guard let path = a.path, a.isDownloaded else { return nil }
         let key = "large:" + path
         if let hit = images[key] { return hit }
-        return loadImage(key: key, path: path, maxDimension: Self.lightboxMaxDimension) { store in try store.plaintext(of: a) }
+        return loadImage(key: key, path: path, messageId: messageId, maxDimension: Self.lightboxMaxDimension) { store in try store.plaintext(of: a) }
     }
 
     /// A video's poster frame (the screenshot stored at download).
@@ -212,7 +209,7 @@ struct MediaLightbox: View {
                     item.duration = l.durations[i] ?? a.duration
                     return item
                 }
-                return LightboxMediaItem(kind: .image, image: session.largeImage(for: a) ?? session.image(for: a))
+                return LightboxMediaItem(kind: .image, image: session.largeImage(for: a, of: l.messageId) ?? session.image(for: a))
             }
             Lightbox(media: items, selectedIndex: l.index,
                      header: LightboxHeaderInfo(title: l.authorTitle ?? i18n("icu:you"), color: l.authorColor,

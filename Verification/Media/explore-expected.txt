@@ -1,0 +1,3 @@
+handed-out-permitted OK
+decode-permitted OK
+update-revokes OK

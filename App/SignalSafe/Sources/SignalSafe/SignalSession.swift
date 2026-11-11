@@ -290,6 +290,17 @@ import SignalUI
 
     private var client: SignalClient?
     var clientDatabase: SignalDatabase? { client?.database }
+
+    /// Quitting: the client's background work finishes (or `timeout` passes).
+    func shutdownClient(timeout: Duration) async {
+        guard let client else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await client.shutdown() }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
     var signalClient: SignalClient? { client }
     /// The Fun picker's GIFs: SignalGifSearch.xpc talks to Giphy through Signal's content proxy
     /// and decodes its JSON; the app gets validated results and MP4 bytes (for the decoder).
@@ -839,8 +850,12 @@ import SignalUI
     }
 
     /// Decodes a stored file's pixels once (plaintext from the local store → the media
-    /// service → validated RGBA), caching them under `key`.
-    func loadImage(key: String, path: String, maxDimension: Int, plaintext: @escaping @Sendable (AttachmentStore) throws -> Data?) -> RGBAImage? {
+    /// service → validated RGBA), caching them under `key`. When it finishes, the file must
+    /// still be referenced by a live message: by `messageId`'s own reference when a viewer of
+    /// that message asked for it (it may have expired or been deleted during the decode, while
+    /// another message still references the same file).
+    func loadImage(key: String, path: String, messageId: String? = nil, maxDimension: Int,
+                   plaintext: @escaping @Sendable (AttachmentStore) throws -> Data?) -> RGBAImage? {
         guard let session, !loadingImages.contains(key) else { return nil }
         let generation = mediaObservationGeneration
         loadingImages.insert(key)
@@ -849,7 +864,7 @@ import SignalUI
             defer { loadingImages.remove(key) }
             guard let bytes = try? await Task.detached(operation: { try plaintext(store) }).value ?? nil,
                   let shown = try? await media.displayImage(bytes, maxDimension: maxDimension),
-                  generation == mediaObservationGeneration, mediaIsAvailable(path: path) else { return }
+                  generation == mediaObservationGeneration, mediaIsAvailable(path: path, messageId: messageId) else { return }
             imagePaths[key] = path
             images[key] = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
         }

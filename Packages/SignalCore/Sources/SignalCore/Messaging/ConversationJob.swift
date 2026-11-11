@@ -27,6 +27,8 @@ public struct ConversationJob: Codable, Sendable {
         case stickerPackSync = "StickerPackSync"
         case modifierSend = "ModifierSend"
         case resendRequest = "ResendRequest"
+        /// SyncMessage.Verified (upstream sends it through singleProtoJobQueue).
+        case verifiedSync = "VerifiedSync"
     }
 
     /// SyncMessage.StickerPackOperation
@@ -61,6 +63,11 @@ public struct ConversationJob: Codable, Sendable {
     public var groupId: String?
     public var receivedAt: Int64?
     public var receivedAtCounter: Int64?
+    // VerifiedSync: the contact (`requester`), the identity key the user reviewed, and the state
+    // set for it. The key is the reviewed one, never looked up again when the job runs: by then
+    // the contact may have a newer key the user has not seen.
+    public var identityKey: String?
+    public var verified: Bool?
 
     public static let queueType = "conversation"
 
@@ -82,6 +89,9 @@ public struct ConversationJob: Codable, Sendable {
              contentHint: contentHint, groupId: groupId?.base64EncodedString(), receivedAt: receivedAt, receivedAtCounter: receivedAtCounter)
     }
     public static func syncRequest(_ types: [Int]) -> Self { Self(type: .syncRequest, requestTypes: types) }
+    public static func verifiedSync(serviceId: String, key: Data, verified: Bool) -> Self {
+        Self(type: .verifiedSync, requester: serviceId, identityKey: key.base64EncodedString(), verified: verified)
+    }
     /// `getFetchManifestSyncMessage` and friends: tells our other devices to refetch.
     public static func fetchLatest(_ types: [Int]) -> Self { Self(type: .fetchLatest, requestTypes: types) }
 }

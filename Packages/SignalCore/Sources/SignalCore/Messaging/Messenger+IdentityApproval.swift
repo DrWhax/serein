@@ -61,28 +61,31 @@ extension Messenger {
     }
 
     /// The user reviewed the changed safety numbers and wants to send anyway: an unverified
-    /// contact goes back to the default state (with its notice and the sync to our other
-    /// devices), and the key on record is approved. Retry the stopped sends afterwards.
+    /// contact goes back to the default state (with its notice and the Verified sync to our
+    /// other devices, queued with the reviewed key), and the key on record is approved. One
+    /// transaction: the whole review is checked first, and one stale identity (a newer key,
+    /// or another account of ours) changes nothing. Retry the stopped sends afterwards.
     public func approveIdentities(_ identities: [ReviewedIdentity]) async throws {
-        let changed = try await database.pool.write { db -> [ReviewedIdentity] in
+        let account = self.account
+        try await database.pool.write { db in
             // Validate the entire review before changing any trust state.
-            for identity in identities { try identity.validate(db, account: self.account) }
-            var changed: [ReviewedIdentity] = []
-            for identity in identities {
-                let id = identity.serviceId
-                if try ProtocolStore.verifiedStatus(db, serviceId: id) == .unverified {
-                    try ProtocolStore.setVerified(db, serviceId: id, .default)
-                    let conversationId = try MessageStore.privateConversation(db, serviceId: id)
-                    try Identity.insertVerifiedChange(db, conversationId: conversationId, verified: false, local: true)
-                    try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
-                    changed.append(identity)
-                }
-                try ProtocolStore.setApproval(db, serviceId: id, true)
-            }
-            return changed
+            for identity in identities { try identity.validate(db, account: account) }
+            try Self.applyApproval(db, identities)
         }
-        for identity in changed {
-            try await sendVerifiedSync(identity.serviceId, key: identity.key, verified: false)
+        jobs.poke()
+    }
+
+    static func applyApproval(_ db: Database, _ identities: [ReviewedIdentity]) throws {
+        for identity in identities {
+            let id = identity.serviceId
+            if try ProtocolStore.verifiedStatus(db, serviceId: id) == .unverified {
+                try ProtocolStore.setVerified(db, serviceId: id, .default)
+                let conversationId = try MessageStore.privateConversation(db, serviceId: id)
+                try Identity.insertVerifiedChange(db, conversationId: conversationId, verified: false, local: true)
+                try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
+                try queueVerifiedSync(db, identity, verified: false)
+            }
+            try ProtocolStore.setApproval(db, serviceId: id, true)
         }
     }
 

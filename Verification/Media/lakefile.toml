@@ -1,0 +1,10 @@
+name = "Media"
+version = "0.1.0"
+defaultTargets = ["Media", "oracle"]
+
+[[lean_lib]]
+name = "Media"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

@@ -1,0 +1,45 @@
+# Identity approval regressions: `# name: what it shows`, then the trace.
+# approve-current: a replaced key, reviewed and approved, is trusted
+key.0.1 key.0.2 show.0 confirm.0 commit.0
+# stale-peer-key: the key changes after the review is shown; approving changes nothing
+key.0.1 key.0.2 show.0 key.0.3 confirm.0 commit.0
+# stale-between-confirm-and-commit: the key changes after "Send anyway", before its task commits
+key.0.1 key.0.2 show.0 confirm.0 key.0.3 commit.0
+# stale-one-of-batch: one stale identity in a batch of two: neither is approved
+key.0.1 key.0.2 key.1.1 key.1.2 show.0 show.1 key.1.3 confirm.0.1 commit.0
+# account-changed: the review was shown under another account of ours
+key.0.1 key.0.2 show.0 acct.1.0 confirm.0 commit.0
+# account-key-changed: same ACI, a new identity key of ours
+key.0.1 key.0.2 show.0 acct.0.1 confirm.0 commit.0
+# account-changed-back: the original account again: the review validates
+key.0.1 key.0.2 show.0 acct.1.0 acct.0.0 confirm.0 commit.0
+# race: a key change racing the commit's transaction is either wholly before or after it
+key.0.1 key.0.2 show.0 confirm.0 race.0.0.3
+# race-other-peer: a race on another peer does not affect the batch
+key.0.1 key.0.2 key.1.1 show.0 confirm.0 race.0.1.2
+# unverified-approve: approving an unverified contact resets it, with notice and sync (reviewed key)
+key.0.1 show.0 verify.0.1 key.0.2 show.0 confirm.1 commit.0
+# verify-stale: verifying a safety number whose key changed changes nothing
+key.0.1 show.0 key.0.2 verify.0.1
+# sync-after-key-change: a queued sync runs after a newer key arrived: it sends the reviewed key
+key.0.1 show.0 verify.0.1 key.0.2 sync.0
+# unverify: back to default, with a sync of the reviewed key
+key.0.1 show.0 verify.0.1 verify.0.0 sync.1 sync.0
+# storage-other-key: a ContactRecord with another key after the first sync changes nothing
+key.0.1 store.0.2.V.0
+# storage-first-sync: on the first sync it takes the record's key and state
+key.0.1 store.0.2.V.1
+# storage-same-key: same key: the record's state is taken
+key.0.1 store.0.1.V.0 store.0.1.D.0
+# storage-new-contact: no key yet: the record's key, first use
+store.1.3.U.0 show.1 confirm.0 commit.0
+# window: the approval window passes: no approval needed any more
+key.0.1 key.0.2 win.0
+# duplicate-in-batch: the same identity twice in one batch
+key.0.1 key.0.2 show.0 show.0 confirm.0.1 commit.0
+# empty-batch: nothing reviewed, nothing changes
+confirm commit.0
+# approval-revoked-by-key-change: an approved key is replaced: the approval does not carry over
+key.0.1 key.0.2 show.0 confirm.0 commit.0 key.0.3
+# verified-revoked-by-key-change: a verified contact's key is replaced: unverified
+key.0.1 show.0 verify.0.1 key.0.2

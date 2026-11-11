@@ -43,6 +43,21 @@ public struct MediaAvailability: Sendable, Equatable {
     }
 }
 
+extension MediaAvailability {
+    /// Exports an attachment after the save panel: in one read, the message's own reference to
+    /// the file is checked again (the message may have expired, or been deleted, while the panel
+    /// was open; another message referencing the same file does not count), then the plaintext
+    /// is written.
+    public static func export(_ a: MessageAttachment, of messageId: String, to url: URL, database: SignalDatabase,
+                              store: AttachmentStore) throws {
+        guard let path = a.path else { throw AttachmentStoreError.invalidPath("") }
+        try database.pool.read { db in
+            guard try permits(db, path: path, messageId: messageId) else { throw AttachmentStoreError.invalidPath(path) }
+            try store.export(a, to: url)
+        }
+    }
+}
+
 extension SignalDatabase {
     public func mediaAvailabilityUpdates() -> AsyncThrowingStream<MediaAvailability, Error> {
         observe { try MediaAvailability.fetch($0) }
