@@ -24,15 +24,18 @@ public final class CaptureReconciler {
     let device: Device
     let wanted: @MainActor () -> Bool
     let report: @MainActor (String) -> Void
+    let tasks: MainTasks
     public private(set) var isRunning = false
     var pass: Task<Void, Never>?
     var again = false
     var restartRequested = false
 
-    public init(device: Device, wanted: @escaping @MainActor () -> Bool, report: @escaping @MainActor (String) -> Void = { _ in }) {
+    public init(device: Device, wanted: @escaping @MainActor () -> Bool, report: @escaping @MainActor (String) -> Void = { _ in },
+                tasks: MainTasks = .system) {
         self.device = device
         self.wanted = wanted
         self.report = report
+        self.tasks = tasks
     }
 
     /// What `wanted` reads may have changed.
@@ -41,7 +44,7 @@ public final class CaptureReconciler {
             again = true
             return
         }
-        pass = Task {
+        pass = tasks.spawn("camera.reconcile") { [self] in
             repeat {
                 again = false
                 await reconcile()

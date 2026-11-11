@@ -4,8 +4,12 @@
 // searching) of 8 × 40px cells with 32px emoji, 28px headers and 20px between sections, and
 // the category sub-nav, whose selection follows the scroll position.
 //
-// Not ported yet: Fuse.js fuzzy search (a short-name match stands in) and the skin-tone
-// popovers (the long-press / header "more" buttons report through `onOpenSkinTonePicker`).
+// Skin tones: an emoji that has them uses the default tone (`skinTone`); with none chosen yet,
+// picking one first asks for the default (upstream's FunEmojiSkinTonePopover; here a card over
+// the panel), then picks the emoji in that tone. The header "more" button and the context menu
+// change the default. A caller may take this over with `onOpenSkinTonePicker`.
+//
+// Not ported yet: Fuse.js fuzzy search (a short-name match stands in).
 
 import SignalI18n
 import SwiftUI
@@ -22,9 +26,16 @@ public struct FunPanelEmojis: View {
     let showCustomizePreferredReactionsButton: Bool
     let onSelectEmoji: (String) -> Void
     let onOpenCustomizePreferredReactionsModal: () -> Void
-    let onOpenSkinTonePicker: (String?) -> Void
+    let onOpenSkinTonePicker: ((String?) -> Void)?
+    let onSelectSkinTone: (EmojiSkinTone) -> Void
     @State private var searchInput: String
     @State private var selected: FunEmojisSection
+    /// The tone chosen in this panel (before the caller's `skinTone` reflects it).
+    @State private var chosenTone: EmojiSkinTone?
+    /// The skin-tone chooser on screen: for this emoji (nil: the default only).
+    @State private var choosingTone: ToneChoice?
+
+    struct ToneChoice: Equatable { var parent: String? }
     @Environment(\.i18n) var i18n
     @Environment(\.axoStaticRendering) var staticRendering
 
@@ -36,7 +47,8 @@ public struct FunPanelEmojis: View {
 
     public init(recentEmojis: [String], messageEmojis: [String] = [], skinTone: EmojiSkinTone? = nil, searchInput: String = "",
                 showCustomizePreferredReactionsButton: Bool = false, onSelectEmoji: @escaping (String) -> Void = { _ in },
-                onOpenCustomizePreferredReactionsModal: @escaping () -> Void = {}, onOpenSkinTonePicker: @escaping (String?) -> Void = { _ in }) {
+                onOpenCustomizePreferredReactionsModal: @escaping () -> Void = {}, onOpenSkinTonePicker: ((String?) -> Void)? = nil,
+                onSelectSkinTone: @escaping (EmojiSkinTone) -> Void = { _ in }) {
         self.recentEmojis = recentEmojis
         self.messageEmojis = messageEmojis
         self.skinTone = skinTone
@@ -44,6 +56,7 @@ public struct FunPanelEmojis: View {
         self.onSelectEmoji = onSelectEmoji
         self.onOpenCustomizePreferredReactionsModal = onOpenCustomizePreferredReactionsModal
         self.onOpenSkinTonePicker = onOpenSkinTonePicker
+        self.onSelectSkinTone = onSelectSkinTone
         _searchInput = State(initialValue: searchInput)
         let query = searchInput.trimmingCharacters(in: .whitespaces)
         _selected = State(initialValue: !query.isEmpty ? .searchResults : !recentEmojis.isEmpty ? .recents : .category(.smileysAndPeople))
@@ -51,8 +64,15 @@ public struct FunPanelEmojis: View {
 
     var query: String { searchInput.trimmingCharacters(in: .whitespaces) }
 
+    /// The default skin tone: the caller's, or the one chosen here; nil until one is chosen.
+    var tone: EmojiSkinTone? { skinTone ?? chosenTone }
+
+    func chooseTone(for parent: String?) {
+        if let onOpenSkinTonePicker { onOpenSkinTonePicker(parent) } else { choosingTone = ToneChoice(parent: parent) }
+    }
+
     var sections: [(id: FunEmojisSection, emojis: [String])] {
-        let data = EmojiData.shared, tone = skinTone ?? .none
+        let data = EmojiData.shared, tone = self.tone ?? .none
         if !query.isEmpty {
             let q = query.lowercased()
             let hits = Self.categoryOrder.flatMap { data.parents(in: $0) }.filter { (data.shortName($0) ?? "").contains(q) }
@@ -150,13 +170,36 @@ public struct FunPanelEmojis: View {
                 }
             }
         }
+        .overlay { if let choice = choosingTone { toneChooser(choice) } }
+    }
+
+    /// "Choose default skin tone", over the panel; outside it cancels.
+    func toneChooser(_ choice: ToneChoice) -> some View {
+        ZStack {
+            Color.black.opacity(0.15)
+                .contentShape(Rectangle())
+                .onTapGesture { choosingTone = nil }
+            VStack(spacing: 8) {
+                CSSText(i18n("icu:FunPanelEmojis__SkinTonePicker__ChooseDefaultLabel"), style: LegacyType.body1(), wrap: .nowrap,
+                        alignment: .center, color: .labelPrimary)
+                FunSkinTonesList(emoji: choice.parent ?? "✋", skinTone: tone) { picked in
+                    chosenTone = picked
+                    choosingTone = nil
+                    onSelectSkinTone(picked)
+                    if let parent = choice.parent { onSelectEmoji(EmojiData.shared.variant(parent, skinTone: picked)) }
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 12).fill(AxoColor.materialDialog))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AxoColor.borderPrimary))
+        }
     }
 
     func sectionView(_ section: (id: FunEmojisSection, emojis: [String])) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             FunGridHeader(title: title(section.id)) {
                 if section.id == .category(.smileysAndPeople) {
-                    SwiftUI.Button { onOpenSkinTonePicker(nil) } label: {
+                    SwiftUI.Button { chooseTone(for: nil) } label: {
                         SignalIcon("v3/more/more-circle-bold", size: 16, color: .labelSecondary, mask: true)
                             .frame(width: 24, height: 24)
                             .contentShape(Circle())
@@ -181,8 +224,8 @@ public struct FunPanelEmojis: View {
         let data = EmojiData.shared
         let parent = data.parent(of: emoji)
         return FunItemButton(label: data.shortName(emoji).map { ":\($0):" } ?? emoji) {
-            if data.hasSkinTones(parent) && skinTone == nil {
-                onOpenSkinTonePicker(parent)
+            if data.hasSkinTones(parent) && tone == nil {
+                chooseTone(for: parent)
             } else {
                 onSelectEmoji(emoji)
             }
@@ -191,7 +234,7 @@ public struct FunPanelEmojis: View {
         }
         .contextMenu {
             if data.hasSkinTones(parent) {
-                SwiftUI.Button(i18n("icu:FunPanelEmojis__ChangeSkinToneButtonLabel")) { onOpenSkinTonePicker(parent) }
+                SwiftUI.Button(i18n("icu:FunPanelEmojis__ChangeSkinToneButtonLabel")) { chooseTone(for: parent) }
             }
         }
     }

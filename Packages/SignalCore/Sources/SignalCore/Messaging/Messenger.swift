@@ -38,6 +38,7 @@ public final class Messenger: Sendable {
 
     /// Registers the conversation-queue handler; call `jobs.start()` afterwards.
     public func register() async {
+        await failOrphanedSends()
         await jobs.register(ConversationJob.queueType, handler: { [self] job in
             try await self.run(try job.decode(ConversationJob.self))
         }, onFailure: { [self] job, error in
@@ -49,6 +50,23 @@ public final class Messenger: Sendable {
             guard j.type == .normalMessage, let id = j.messageId else { return }
             try? await self.database.pool.write { db in try MessageStore.markFailed(db, messageId: id, error: "\(error)") }
         })
+    }
+
+    /// Before the queue starts: messages still "sending" with no job to send them fail (retryable).
+    func failOrphanedSends() async {
+        do {
+            let repaired = try await database.pool.write { db -> Int in
+                let rows = try Row.fetchAll(db, sql: "SELECT data FROM jobs WHERE queueType = ?", arguments: [ConversationJob.queueType])
+                let queued = Set(rows.compactMap { row -> String? in
+                    guard let data = (row["data"] as String?)?.data(using: .utf8) else { return nil }
+                    return (try? JSONDecoder().decode(ConversationJob.self, from: data))?.messageId
+                })
+                return try MessageStore.failOrphanedSends(db, queued: queued)
+            }
+            if repaired > 0 { SignalClient.diagnose("sends with no job left marked failed: \(repaired)") }
+        } catch {
+            SignalClient.diagnose("orphaned sends check failed: \(error)")
+        }
     }
 
     // MARK: public API
@@ -321,7 +339,13 @@ public final class Messenger: Sendable {
                 json["unidentifiedDeliveries"] = Array(result.senderKeyRecipients)
             }
         }
-        try await sendGroupTranscript(data, recipients: Array(delivered), sealed: Set(result.senderKeyRecipients), timestamp: sentAt, messageId: messageId)
+        // The members have it: a failed transcript to our other devices must not fail (and resend)
+        // the message, as for 1:1 messages.
+        do {
+            try await sendGroupTranscript(data, recipients: Array(delivered), sealed: Set(result.senderKeyRecipients), timestamp: sentAt, messageId: messageId)
+        } catch {
+            SignalClient.diagnose("group sync transcript failed: \(String(describing: error).prefix(120))")
+        }
     }
 
     /// SyncMessage.Sent for a group message: no destination, one status per recipient.

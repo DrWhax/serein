@@ -1,0 +1,10 @@
+name = "CallCapture"
+version = "0.1.0"
+defaultTargets = ["CallCapture", "oracle"]
+
+[[lean_lib]]
+name = "CallCapture"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

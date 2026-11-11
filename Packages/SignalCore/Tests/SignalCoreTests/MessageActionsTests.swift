@@ -261,6 +261,63 @@ import Testing
         }
     }
 
+    /// Puts a group message in the state of a send to two members that has not got anywhere
+    /// (`oldFailure`: plus the Failed entry under the group's own id that a send giving up
+    /// used to write).
+    func waiting(_ c: LinkedClient, _ messageId: String, oldFailure: Bool = false) async throws -> (group: String, members: [String]) {
+        try await c.database.pool.write { db in
+            let group = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [messageId]) ?? ""
+            let members = [try MessageStore.privateConversation(db, serviceId: c.aliceAci),
+                           try MessageStore.privateConversation(db, serviceId: "11111111-2222-4333-8444-555555555555")]
+            try MessageStore.updateJSON(db, messageId: messageId) { json in
+                var states: [String: [String: Any]] = [:]
+                for m in members { states[m] = ["status": "Pending"] }
+                if oldFailure { states[group] = ["status": "Failed"] }
+                json["sendStateByConversationId"] = states
+            }
+            return (group, members)
+        }
+    }
+
+    /// A group send that gives up fails for every member still waiting, so the message shows
+    /// "Send failed" (and can be retried), not "sending" for good with no job left.
+    @Test func failedGroupSendFailsItsMembers() async throws {
+        try await LinkedClient.with { c in
+            let keys = try await c.groups.create(title: "Ours", members: [])
+            let sent = try await c.messenger.sendGroupMessage("hello", masterKey: keys.masterKey)
+            try await c.jobs.waitUntilIdle()
+            let (group, members) = try await waiting(c, sent.messageId)
+            try await c.database.pool.write { db in try MessageStore.markFailed(db, messageId: sent.messageId, error: "test") }
+            let (statuses, timeline) = try await c.database.pool.read { db in
+                (try MessageStore.groupStatuses(db, messageId: sent.messageId),
+                 try ConversationQueries.messages(db, conversationId: group, limit: 10).first { $0.id == sent.messageId })
+            }
+            #expect(statuses == Dictionary(uniqueKeysWithValues: members.map { ($0, "Failed") }), "every member fails, and only the members")
+            #expect(timeline?.status == .failed)
+        }
+    }
+
+    /// Before the queue starts, a message still "sending" with no job left (as a group send that
+    /// gave up used to leave it: members Pending, a Failed entry under the group's own id) fails,
+    /// so it can be retried; a message a job will still send is left alone.
+    @Test func orphanedSendsFailAtStart() async throws {
+        try await LinkedClient.with { c in
+            let keys = try await c.groups.create(title: "Ours", members: [])
+            let stuck = try await c.messenger.sendGroupMessage("stuck", masterKey: keys.masterKey)
+            let queued = try await c.messenger.sendGroupMessage("queued", masterKey: keys.masterKey)
+            try await c.jobs.waitUntilIdle()
+            let (_, members) = try await waiting(c, stuck.messageId, oldFailure: true)
+            _ = try await waiting(c, queued.messageId, oldFailure: true)
+            let repaired = try await c.database.pool.write { db in try MessageStore.failOrphanedSends(db, queued: [queued.messageId]) }
+            #expect(repaired == 1)
+            let (stuckStates, queuedStates) = try await c.database.pool.read { db in
+                (try MessageStore.groupStatuses(db, messageId: stuck.messageId), try MessageStore.groupStatuses(db, messageId: queued.messageId))
+            }
+            #expect(stuckStates == Dictionary(uniqueKeysWithValues: members.map { ($0, "Failed") }), "the group's own entry goes; the members fail")
+            #expect(queuedStates.values.filter { $0 == "Pending" }.count == 2, "a queued message is not touched")
+        }
+    }
+
     /// A message to a group with only us has no one to wait for: it shows as sent, not
     /// "sending" forever (upstream `isMessageJustForMe`).
     @Test func messageToAGroupOfOneIsSent() async throws {

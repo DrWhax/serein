@@ -58,4 +58,25 @@ import Testing
         tv.setSelectedRange(NSRange(location: 2, length: 0))
         #expect(c.mentionQuery() == nil)
     }
+
+    /// The emoji picker types at the caret: the pill and the bold text around it stay as they were.
+    @Test func emojiGoesInAtTheCaret() {
+        let (c, tv) = make("")
+        let ranges = [BodyRange(start: 3, length: 1, kind: .mention(aci: "aci-1", conversationID: "aci-1", replacementText: "Alice")),
+                      BodyRange(start: 5, length: 4, kind: .formatting(.bold))]
+        c.load(body: "hi \u{FFFC} bold", ranges: ranges)
+        tv.setSelectedRange(NSRange(location: 3, length: 0))     // before the pill
+        #expect(c.insert("👍"))
+        let out = c.outgoing()
+        #expect(out.body == "hi 👍\u{FFFC} bold")
+        // The pill and the bold run move with the inserted text (👍 is two UTF-16 units).
+        #expect(out.ranges.contains(BodyRange(start: 5, length: 1, kind: .mention(aci: "aci-1", conversationID: "aci-1", replacementText: "Alice"))))
+        #expect(out.ranges.contains(BodyRange(start: 7, length: 4, kind: .formatting(.bold))))
+        #expect(tv.selectedRange() == NSRange(location: 5, length: 0), "the caret follows the emoji")
+    }
+
+    @Test func emojiWithoutAComposerIsNotTaken() {
+        let c = ComposerController()
+        #expect(!c.insert("👍"))
+    }
 }

@@ -190,9 +190,16 @@ struct PinMessageRequest {
         set { UserDefaults.standard.set(Array(newValue.prefix(32)), forKey: "recentEmojis") }
     }
 
-    /// Inserts an emoji into the draft (at its end) and remembers it.
+    /// The default emoji skin tone (upstream's `skinTone` item, kept on this device); nil until
+    /// the user chooses one (the emoji panel asks the first time).
+    var emojiSkinTone: EmojiSkinTone? {
+        get { UserDefaults.standard.string(forKey: "emojiSkinTone").flatMap(EmojiSkinTone.init(rawValue:)) }
+        set { UserDefaults.standard.set(newValue?.rawValue, forKey: "emojiSkinTone") }
+    }
+
+    /// Inserts an emoji into the draft at the caret (its end without a composer) and remembers it.
     func insertEmoji(_ emoji: String) {
-        draft += emoji
+        if !composer.insert(emoji) { draft += emoji }
         var recent = recentEmojis
         recent.removeAll { $0 == emoji }
         recent.insert(emoji, at: 0)

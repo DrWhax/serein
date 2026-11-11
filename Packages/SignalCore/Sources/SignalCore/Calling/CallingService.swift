@@ -10,14 +10,19 @@ import SignalProtos
 public import SignalRingRTC
 
 /// What the calling UI needs to hear about (the calling redux actions CallingClass dispatches).
+/// Direct-call events carry RingRTC's `callId`, so the app applies them only to the call it
+/// shows: a conversation can have a later call (a redial, an incoming call) while an earlier
+/// one's events are still on their way, and a rejected offer reports `ended` for a call that
+/// never was ours. `outgoingCall` also echoes the `setup` token its `startOutgoingDirectCall`
+/// was given, so a lobby takes only the call its own setup started.
 public enum CallingEvent: Sendable {
-    case outgoingCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool)
-    case incomingDirectCall(conversationId: String, isVideoCall: Bool)
-    case callStateChange(conversationId: String, state: CallState, endedReason: CallEndReason?, acceptedTime: Int64?)
-    case remoteAudioChange(conversationId: String, hasAudio: Bool)
-    case remoteVideoChange(conversationId: String, hasVideo: Bool)
-    case remoteSharingScreenChange(conversationId: String, isSharingScreen: Bool)
-    case directCallAudioLevels(conversationId: String, local: Double, remote: Double)
+    case outgoingCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool, callId: CallId, setup: UInt64)
+    case incomingDirectCall(conversationId: String, isVideoCall: Bool, callId: CallId)
+    case callStateChange(conversationId: String, state: CallState, endedReason: CallEndReason?, acceptedTime: Int64?, callId: CallId)
+    case remoteAudioChange(conversationId: String, hasAudio: Bool, callId: CallId)
+    case remoteVideoChange(conversationId: String, hasVideo: Bool, callId: CallId)
+    case remoteSharingScreenChange(conversationId: String, isSharingScreen: Bool, callId: CallId)
+    case directCallAudioLevels(conversationId: String, local: Double, remote: Double, callId: CallId)
     /// A group or call-link call changed (local/remote device states or peek info): read it
     /// from `groupCall(for:)`.
     case groupCallChanged(conversationId: String, mode: CallMode)
@@ -274,7 +279,7 @@ public final class CallingService {
         }
         if call.endedReason != nil { return false }
         attach(call, conversationId: state.conversationId)
-        emit(.incomingDirectCall(conversationId: state.conversationId, isVideoCall: call.isVideoCall))
+        emit(.incomingDirectCall(conversationId: state.conversationId, isVideoCall: call.isVideoCall, callId: call.callId))
         return true
     }
 
@@ -298,7 +303,7 @@ public final class CallingService {
                                      event: .local(.missed), eventSource: "CallingClass.handleRejectedIncomingCallRequest", eventTimestamp: timestamp)
         Task { @MainActor in
             if reason != .receivedOfferWhileActive, let id = try? await self.conversation(serviceId: remoteUserId) {
-                self.emit(.callStateChange(conversationId: id, state: .ended, endedReason: nil, acceptedTime: nil))
+                self.emit(.callStateChange(conversationId: id, state: .ended, endedReason: nil, acceptedTime: nil, callId: callId))
             }
             await self.updateCallHistory(event)
         }
@@ -389,14 +394,16 @@ public final class CallingService {
 
     // MARK: direct calls
 
-    /// `startOutgoingDirectCall`
-    public func startOutgoingDirectCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool) async throws {
+    /// `startOutgoingDirectCall`. `setup` comes back in the `outgoingCall` event. Returns the
+    /// call placed (nil: RingRTC already had a call, so none was).
+    @discardableResult
+    public func startOutgoingDirectCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool, setup: UInt64 = 0) async throws -> CallId? {
         let generation = setupGeneration
         guard let peer = try await database.pool.read({ db in
             try String.fetchOne(db, sql: "SELECT serviceId FROM conversations WHERE id = ? AND type = 'private'", arguments: [conversationId])
         }) else { throw CallingError.noRecipient }
         try await checkSetup(generation, "direct.recipient")
-        if let call = rtc.call, call.state != .ended { return }
+        if let call = rtc.call, call.state != .ended { return nil }
         let call = try rtc.startOutgoingCall(remoteUserId: peer, isVideoCall: hasLocalVideo, localDeviceId: localDeviceId)
         cameraEnabled = hasLocalVideo
         call.setOutgoingAudioMuted(!hasLocalAudio)
@@ -415,7 +422,8 @@ public final class CallingService {
             throw error
         }
         sendProfileKey(to: peer)
-        emit(.outgoingCall(conversationId: conversationId, hasLocalAudio: hasLocalAudio, hasLocalVideo: hasLocalVideo))
+        emit(.outgoingCall(conversationId: conversationId, hasLocalAudio: hasLocalAudio, hasLocalVideo: hasLocalVideo, callId: call.callId, setup: setup))
+        return call.callId
     }
 
     /// `ProfileKeyForCall`: a profile-key update DataMessage to one contact.
@@ -432,16 +440,17 @@ public final class CallingService {
         Task { _ = try? await sender.send(payload, to: serviceId) }
     }
 
-    public func acceptDirectCall(conversationId: String, asVideoCall: Bool) {
-        guard case .direct(let call)? = callsLookup[conversationId] else { return }
+    /// With a `callId`, only that call: the one that rang, not a later one from the same contact.
+    public func acceptDirectCall(conversationId: String, asVideoCall: Bool, callId: CallId? = nil) {
+        guard case .direct(let call)? = callsLookup[conversationId], callId == nil || call.callId == callId else { return }
         cameraEnabled = asVideoCall
         call.setOutgoingAudioMuted(false)
         call.setOutgoingVideoMuted(!asVideoCall)
         rtc.accept(call.callId)
     }
 
-    public func declineDirectCall(conversationId: String) {
-        guard case .direct(let call)? = callsLookup[conversationId] else { return }
+    public func declineDirectCall(conversationId: String, callId: CallId? = nil) {
+        guard case .direct(let call)? = callsLookup[conversationId], callId == nil || call.callId == callId else { return }
         rtc.decline(call.callId)
     }
 
@@ -476,23 +485,25 @@ public final class CallingService {
                 let event = self.directEvent(call, local, timestamp: MessageStore.now(), source: "call.handleStateChanged")
                 Task { @MainActor in await self.updateCallHistory(event) }
             }
-            self.emit(.callStateChange(conversationId: conversationId, state: call.state, endedReason: call.endedReason, acceptedTime: acceptedTime))
+            self.emit(.callStateChange(conversationId: conversationId, state: call.state, endedReason: call.endedReason, acceptedTime: acceptedTime,
+                                       callId: call.callId))
         }
         call.handleRemoteAudioEnabled = { [weak self, weak call] in
             guard let call else { return }
-            self?.emit(.remoteAudioChange(conversationId: conversationId, hasAudio: call.remoteAudioEnabled))
+            self?.emit(.remoteAudioChange(conversationId: conversationId, hasAudio: call.remoteAudioEnabled, callId: call.callId))
         }
         call.handleRemoteVideoEnabled = { [weak self, weak call] in
             guard let call else { return }
-            self?.emit(.remoteVideoChange(conversationId: conversationId, hasVideo: call.remoteVideoEnabled))
+            self?.emit(.remoteVideoChange(conversationId: conversationId, hasVideo: call.remoteVideoEnabled, callId: call.callId))
         }
         call.handleRemoteSharingScreen = { [weak self, weak call] in
             guard let call else { return }
-            self?.emit(.remoteSharingScreenChange(conversationId: conversationId, isSharingScreen: call.remoteSharingScreen))
+            self?.emit(.remoteSharingScreenChange(conversationId: conversationId, isSharingScreen: call.remoteSharingScreen, callId: call.callId))
         }
         call.handleAudioLevels = { [weak self, weak call] in
             guard let call else { return }
-            self?.emit(.directCallAudioLevels(conversationId: conversationId, local: Double(call.outgoingAudioLevel), remote: Double(call.remoteAudioLevel)))
+            self?.emit(.directCallAudioLevels(conversationId: conversationId, local: Double(call.outgoingAudioLevel), remote: Double(call.remoteAudioLevel),
+                                              callId: call.callId))
         }
     }
 
@@ -577,10 +588,11 @@ public final class CallingService {
         rtc.stopMicrophoneWarmup()
     }
 
-    /// Ends one call (a call the app is not showing: it must not keep our media).
-    public func endCall(conversationId: String) {
+    /// Ends one call (a call the app is not showing: it must not keep our media). With a
+    /// `callId`, only that direct call: not a later call the conversation has now.
+    public func endCall(conversationId: String, callId: CallId? = nil) {
         switch callsLookup[conversationId] {
-        case .direct(let c)?:
+        case .direct(let c)? where callId == nil || c.callId == callId:
             c.setOutgoingAudioMuted(true)
             c.setOutgoingVideoMuted(true)
             rtc.hangup(c.callId)
@@ -589,7 +601,7 @@ public final class CallingService {
             g.setOutgoingVideoMuted(true)
             g.disconnect()
             rtc.stopMicrophoneWarmup()
-        case nil: break
+        case .direct?, nil: break
         }
     }
 

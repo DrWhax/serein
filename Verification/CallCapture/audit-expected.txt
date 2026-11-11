@@ -1,0 +1,995 @@
+inductive CallCapture.Reach : S → Prop
+number of parameters: 0
+constructors:
+CallCapture.Reach.init : ∀ (cfg : Cfg), Reach (S.init cfg)
+CallCapture.Reach.step : ∀ {s : S} (e : Ev), Reach s → Reach (step s e)
+def CallCapture.step : S → Ev → S :=
+fun s e => noteEnded s (stepCore s e)
+def CallCapture.stepCore : S → Ev → S :=
+fun s e =>
+  match e with
+  | Ev.run k =>
+    match s.jobs[k]? with
+    | some l =>
+      runJob l
+        { active := s.active, ringing := s.ringing, localVideo := s.localVideo, camSends := s.camSends, gen := s.gen,
+          setupTask := s.setupTask, share := s.share, lastTok := s.lastTok, sources := s.sources, pc := s.pc,
+          running := s.running, again := s.again, caps := s.caps, capNext := s.capNext, streams := s.streams,
+          streamNext := s.streamNext, outOff := s.outOff, ops := s.ops, jobs := s.jobs.eraseIdx k, ncall := s.ncall,
+          presenting := s.presenting, camEnabled := s.camEnabled, setupGen := s.setupGen, nativeNext := s.nativeNext,
+          setupNext := s.setupNext, camDev := s.camDev, camNext := s.camNext, instNext := s.instNext, genN := s.genN,
+          nativeInst := s.nativeInst, userVideo := s.userVideo, ended := s.ended, capGen0 := s.capGen0, tok0 := s.tok0,
+          out := [] }
+    | none =>
+      { active := s.active, ringing := s.ringing, localVideo := s.localVideo, camSends := s.camSends, gen := s.gen,
+        setupTask := s.setupTask, share := s.share, lastTok := s.lastTok, sources := s.sources, pc := s.pc,
+        running := s.running, again := s.again, caps := s.caps, capNext := s.capNext, streams := s.streams,
+        streamNext := s.streamNext, outOff := s.outOff, ops := s.ops, jobs := s.jobs, ncall := s.ncall,
+        presenting := s.presenting, camEnabled := s.camEnabled, setupGen := s.setupGen, nativeNext := s.nativeNext,
+        setupNext := s.setupNext, camDev := s.camDev, camNext := s.camNext, instNext := s.instNext, genN := s.genN,
+        nativeInst := s.nativeInst, userVideo := s.userVideo, ended := s.ended, capGen0 := s.capGen0, tok0 := s.tok0,
+        out := [] }
+  | e =>
+    handle e
+      { active := s.active, ringing := s.ringing, localVideo := s.localVideo, camSends := s.camSends, gen := s.gen,
+        setupTask := s.setupTask, share := s.share, lastTok := s.lastTok, sources := s.sources, pc := s.pc,
+        running := s.running, again := s.again, caps := s.caps, capNext := s.capNext, streams := s.streams,
+        streamNext := s.streamNext, outOff := s.outOff, ops := s.ops, jobs := s.jobs, ncall := s.ncall,
+        presenting := s.presenting, camEnabled := s.camEnabled, setupGen := s.setupGen, nativeNext := s.nativeNext,
+        setupNext := s.setupNext, camDev := s.camDev, camNext := s.camNext, instNext := s.instNext, genN := s.genN,
+        nativeInst := s.nativeInst, userVideo := s.userVideo, ended := s.ended, capGen0 := s.capGen0, tok0 := s.tok0,
+        out := [] }
+def CallCapture.noteEnded : S → S → S :=
+fun s s' =>
+  { active := s'.active, ringing := s'.ringing, localVideo := s'.localVideo, camSends := s'.camSends, gen := s'.gen,
+    setupTask := s'.setupTask, share := s'.share, lastTok := s'.lastTok, sources := s'.sources, pc := s'.pc,
+    running := s'.running, again := s'.again, caps := s'.caps, capNext := s'.capNext, streams := s'.streams,
+    streamNext := s'.streamNext, outOff := s'.outOff, ops := s'.ops, jobs := s'.jobs, ncall := s'.ncall,
+    presenting := s'.presenting, camEnabled := s'.camEnabled, setupGen := s'.setupGen, nativeNext := s'.nativeNext,
+    setupNext := s'.setupNext, camDev := s'.camDev, camNext := s'.camNext, instNext := s'.instNext, genN := s'.genN,
+    nativeInst := s'.nativeInst, userVideo := s'.userVideo,
+    ended := fun a => s.ended a || instLive s a && !instLive s' a, capGen0 := s'.capGen0, tok0 := s'.tok0,
+    out := s'.out }
+def CallCapture.instLive : S → Nat → Bool :=
+fun s a =>
+  match s.active with
+  | some b => b.inst == a && b.live
+  | none => false
+def CallCapture.curShare : S → Option Nat :=
+fun s => Option.map (fun x => x.fst) s.share
+def CallCapture.shareRevoked : S → Nat → Bool :=
+fun s i => curShare s != some i || !instLive s (s.caps i).inst
+def CallCapture.streamOwner : S → Nat → Option Nat :=
+fun s j => Option.map (fun x => x.fst) (s.streams j)
+def CallCapture.streamLive : S → Nat → Bool :=
+fun s j =>
+  match s.streams j with
+  | some (fst, SPh.starting) => true
+  | some (fst, SPh.running) => true
+  | some (fst, SPh.stopping) => true
+  | x => false
+def CallCapture.jobOf : S → Ev → Option Job :=
+fun s x =>
+  match x with
+  | Ev.run k => s.jobs[k]?
+  | x => none
+def CallCapture.evMsg : S → Ev → Option (Option Nat × CEv) :=
+fun s e =>
+  match jobOf s e with
+  | some (Job.msg (Msg.ev o ev)) => some (o, ev)
+  | x => none
+def CallCapture.leavesActive : S → S → Bool :=
+fun s s' =>
+  s'.active == s.active && s'.gen == s.gen && s'.share == s.share && s'.localVideo == s.localVideo &&
+      s'.setupTask == s.setupTask &&
+    !(effects s').any fun x =>
+        match x with
+        | Eff.svcHangup excludeRinging => true
+        | Eff.svcEndCall c id =>
+          match s.ncall, s.active with
+          | some n, some a => n.conv == c && Option.all (fun x => x == n.id) id && s.nativeInst n.id == some a.inst
+          | x, x_1 => false
+        | x => false
+def CallCapture.t1 : S → Ev → S → Bool :=
+fun s e s' =>
+  match evMsg s e, s.active with
+  | some (some n, snd), some a => s.nativeInst n == some a.inst || leavesActive s s'
+  | x, x_1 => true
+def CallCapture.t1Rejected : S → Ev → S → Bool :=
+fun s e s' =>
+  match evMsg s e, s.active with
+  | some (none, snd), some val => leavesActive s s'
+  | x, x_1 => true
+def CallCapture.t1OtherConv : S → Ev → S → Bool :=
+fun s e s' =>
+  match evMsg s e, s.active with
+  | some (fst, ev), some a =>
+    have c :=
+      match ev with
+      | CEv.outgoing c video id setup => c
+      | CEv.incoming c video id => c
+      | CEv.state c st id => c
+      | CEv.ended c r id => c;
+    c == a.conv || leavesActive s s'
+  | x, x_1 => true
+def CallCapture.t2Frames : S → Ev → S → Bool :=
+fun s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.sendFrame (Src.screen i) => curShare s == some i
+    | x => true
+def CallCapture.evShare : S → Ev → Option Nat :=
+fun s x =>
+  match x with
+  | Ev.srcDone i ok => some i
+  | Ev.scFrame j => streamOwner s j
+  | Ev.scStopped j => streamOwner s j
+  | Ev.scStartDone j ok => streamOwner s j
+  | Ev.scStopDone j ok => streamOwner s j
+  | Ev.run k =>
+    match s.jobs[k]? with
+    | some (Job.capStop i) => some i
+    | some (Job.sources i tok gen c) => some i
+    | some (Job.present i pt) => some i
+    | some (Job.sourcesRet i tok gen c ok) => some i
+    | some (Job.installRet i cg j pt ok) => some i
+    | some (Job.teardownRet i cg j pt) => some i
+    | some (Job.scFrame i tok) => some i
+    | some (Job.scStopped i tok) => some i
+    | some (Job.stopRet j) => streamOwner s j
+    | x => none
+  | x => none
+def CallCapture.t2Stop : S → Ev → S → Bool :=
+fun s e s' =>
+  match evShare s e, s.share with
+  | some i, some (m, snd) =>
+    if (i == m) = true then true
+    else
+      s'.share == s.share && s'.presenting == s.presenting &&
+        (effects s').all fun x =>
+          match x with
+          | Eff.scStopReq j => streamOwner s j != some m
+          | Eff.svcSetPresenting c on => false
+          | x => true
+  | x, x_1 => true
+def CallCapture.wanted : S → Bool :=
+fun s => activeLive s && s.localVideo
+def CallCapture.t3Camera : S → Ev → S → Bool :=
+fun _s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.camStartReq k => wanted s' && s'.userVideo
+    | Eff.sendFrame (Src.camera k) => wanted s' && s'.userVideo
+    | x => true
+def CallCapture.VidOk : S → Prop :=
+fun s => s.localVideo = s.userVideo
+def CallCapture.camStartWanted : S → Ev → S → Bool :=
+fun _s _e s' =>
+  (!(effects s').any fun x =>
+        match x with
+        | Eff.camStartReq k => true
+        | x => false) ||
+    wanted s'
+def CallCapture.t3CallRequest : S → Ev → S → Bool :=
+fun s e s' =>
+  match jobOf s e with
+  | some (Job.setupStart gen c video a cancelled) =>
+    instLive s a ||
+      !(effects s').any fun x =>
+          match x with
+          | Eff.svcStart c video => true
+          | x => false
+  | x => true
+def CallCapture.t3Call : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.setupDone q ok =>
+    match findSetup q s.ops with
+    | some (fst, fst_1, fst_2, fst_3, a) => instLive s a || s'.nativeNext == s.nativeNext
+    | none => true
+  | x => true
+def CallCapture.t3ScreenSources : S → Ev → S → Bool :=
+fun _s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.scSourcesReq i => !shareRevoked s' i
+    | x => true
+def CallCapture.t3Screen : S → Ev → S → Bool :=
+fun _s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.scStartReq i j => !shareRevoked s' i
+    | x => true
+def CallCapture.t3ScreenObsolete : S → Ev → S → Bool :=
+fun _s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.scStartReq i j => curShare s' == some i
+    | x => true
+def CallCapture.noPresentOn : S → Bool :=
+fun s' =>
+  !(effects s').any fun x =>
+      match x with
+      | Eff.svcSetPresenting c true => true
+      | x => false
+def CallCapture.t4Screen : S → Ev → S → Bool :=
+fun s e s' =>
+  match jobOf s e with
+  | some (Job.installRet i cg j pt true) =>
+    !shareRevoked s i || (effects s').contains (Eff.scStopReq j) && noPresentOn s'
+  | x => true
+def CallCapture.t4ScreenObsolete : S → Ev → S → Bool :=
+fun s e s' =>
+  match jobOf s e with
+  | some (Job.installRet i cg j pt true) =>
+    curShare s == some i || (effects s').contains (Eff.scStopReq j) && noPresentOn s'
+  | x => true
+def CallCapture.t4ScreenPublish : S → Ev → S → Bool :=
+fun s _e s' =>
+  (effects s').all fun x =>
+    match x with
+    | Eff.sendFrame (Src.screen i) => !shareRevoked s i
+    | x => true
+def CallCapture.t4Camera : S → Ev → S → Bool :=
+fun s e s' =>
+  match jobOf s e, s.pc with
+  | some Job.recRet, RPc.startDone true => wanted s || (effects s').contains Eff.camStopReq
+  | x, x_1 => true
+def CallCapture.acceptedLive : S → Nat → Bool :=
+fun s a =>
+  match s.active with
+  | some b => b.inst == a && b.live && b.direct == some DState.accepted
+  | none => false
+def CallCapture.t5 : S → Ev → S → Bool :=
+fun s _e s' =>
+  match s'.active with
+  | some b => !(s.ended b.inst && acceptedLive s' b.inst)
+  | none => true
+def CallCapture.acceptAuthorized : S → Ev → S → Bool :=
+fun _s _e s' =>
+  match s'.active with
+  | some b => b.direct != some DState.accepted || b.authorized
+  | none => true
+def CallCapture.jobMentions : S → Nat → Job → Bool :=
+fun s j x =>
+  match x with
+  | Job.installRet i cg j' pt ok => j' == j
+  | Job.teardownRet i cg j' pt => j' == j
+  | Job.stopRet j' => j' == j
+  | Job.capStop i => (s.caps i).stream == some j
+  | x => false
+def CallCapture.noOrphanStream : S → Bool :=
+fun s =>
+  (List.range s.streamNext).all fun j =>
+    (!streamLive s j ||
+          match streamOwner s j with
+          | some i => !shareRevoked s i
+          | none => false) ||
+        s.ops.any (opMentions j) ||
+      s.jobs.any (jobMentions s j)
+def CallCapture.noIdleUnwantedCamera : S → Bool :=
+fun s => !(s.running && !wanted s && s.pc == RPc.idle)
+def CallCapture.cleanupCamera : S → Ev → S → Bool :=
+fun x x_1 s' => noIdleUnwantedCamera s'
+def CallCapture.cleanupStreams : S → Ev → S → Bool :=
+fun x x_1 s' => noOrphanStream s'
+def CallCapture.uiEnabled : S → Ev → Bool :=
+fun s x =>
+  match x with
+  | Ev.openLobby c video => s.active.isNone
+  | Ev.startCall =>
+    match s.active with
+    | some a => a.stage == Stage.lobby && a.live && !s.setupTask
+    | none => false
+  | Ev.accept c video => Option.map (fun x => x.fst) s.ringing == some c && s.active.isNone
+  | Ev.decline c => Option.map (fun x => x.fst) s.ringing == some c && s.active.isNone
+  | Ev.hangUp =>
+    match s.active with
+    | some a => a.stage == Stage.inCall && a.live
+    | none => false
+  | Ev.closeCall =>
+    match s.active with
+    | some a => a.stage == Stage.lobby || !a.live
+    | none => false
+  | Ev.setVideo on =>
+    match s.active with
+    | some a => a.live
+    | none => false
+  | Ev.toggleShare =>
+    match s.active with
+    | some a => a.stage == Stage.inCall && a.live
+    | none => false
+  | Ev.pickSource => s.sources
+  | Ev.cancelPick => s.sources
+  | x => true
+def CallCapture.drainedEnabled : S → Ev → Bool :=
+fun s e => uiEnabled s e && (!isUserEv e || s.jobs.isEmpty)
+def CallCapture.fifoEnabled : Ev → Bool :=
+fun x =>
+  match x with
+  | Ev.run k => k == 0
+  | x => true
+def CallCapture.isUserEv : Ev → Bool :=
+fun x =>
+  match x with
+  | Ev.openLobby c video => true
+  | Ev.startCall => true
+  | Ev.accept c video => true
+  | Ev.decline c => true
+  | Ev.hangUp => true
+  | Ev.closeCall => true
+  | Ev.setVideo on => true
+  | Ev.toggleShare => true
+  | Ev.pickSource => true
+  | Ev.cancelPick => true
+  | x => false
+def CallCapture.enabledIn : String → S → Ev → Bool :=
+fun mode s e =>
+  match mode with
+  | "ui" => uiEnabled s e
+  | "drained" => drainedEnabled s e
+  | "drained-fifo" => drainedEnabled s e && fifoEnabled e
+  | x => true
+def CallCapture.allIn : String → Trace → Bool :=
+fun mode t => allIn.go mode t.events (S.init t.cfg)
+def CallCapture.fifoTrace : Trace → Bool :=
+fun t => t.events.all fifoEnabled
+def CallCapture.schedule : Trace → Bool × Bool × Bool :=
+fun t => (allIn "ui" t, allIn "drained" t, fifoTrace t)
+def CallCapture.firstFailure : (S → Ev → S → Bool) → Trace → Option Nat :=
+fun check t => firstFailure.go check t.events (S.init t.cfg) 0
+626 definitions
+CallCapture.ACall 3931117990 12634833589613808712
+CallCapture.ACall.authorized 1986469216 933322549
+CallCapture.ACall.callId 2573624032 2467229715
+CallCapture.ACall.conv 2519235171 4162755913
+CallCapture.ACall.direct 2761305431 417560478
+CallCapture.ACall.inst 3616211350 3123098293
+CallCapture.ACall.live 1986469216 173796467
+CallCapture.ACall.mk 558297349 -
+CallCapture.ACall.stage 2780501749 2938092434
+CallCapture.CEv 3931117990 3407064099670978207
+CallCapture.CEv.casesOn 1427642536 2431727895
+CallCapture.CEv.ended 3187639509 -
+CallCapture.CEv.incoming 765167531 -
+CallCapture.CEv.outgoing 2957860447 -
+CallCapture.CEv.rec 571877120 -
+CallCapture.CEv.state 2693577607 -
+CallCapture.CamDev 3931117990 9681088889662248347
+CallCapture.CamDev.casesOn 113469593 617009162
+CallCapture.CamDev.ctorIdx 891492418 1485866316
+CallCapture.CamDev.off 3126723669 -
+CallCapture.CamDev.on 2509804644 -
+CallCapture.CamDev.rec 2656737668 -
+CallCapture.CamDev.starting 2509804644 -
+CallCapture.CamDev.stopping 2509804644 -
+CallCapture.Cap 3931117990 9503835181656167728
+CallCapture.Cap.content 2835694384 795588823
+CallCapture.Cap.gen 1177347843 3377751835
+CallCapture.Cap.inst 469686474 3734420033
+CallCapture.Cap.mk 1167306538 -
+CallCapture.Cap.stream 2652825754 966406766
+CallCapture.Cap.tok 1177347843 1938685568
+CallCapture.Cfg 3931117990 13534047134842312505
+CallCapture.Cfg.capGen0 1524709447 2514920511
+CallCapture.Cfg.gen0 1524709447 1988459931
+CallCapture.Cfg.mk 4134772604 -
+CallCapture.Cfg.setupGen0 1524709447 1069717989
+CallCapture.Cfg.tok0 1524709447 3529449744
+CallCapture.Conv 3931117990 421340980
+CallCapture.DState 3931117990 17670246024962495012
+CallCapture.DState.accepted 794606552 -
+CallCapture.DState.casesOn 3941549261 3399671736
+CallCapture.DState.ctorIdx 2317719045 2713164564
+CallCapture.DState.prering 794606552 -
+CallCapture.DState.rec 1961060868 -
+CallCapture.DState.reconnecting 794606552 -
+CallCapture.DState.ringing 794606552 -
+CallCapture.Eff 3931117990 3844171702027453197
+CallCapture.Eff.camAccessReq 3626678677 -
+CallCapture.Eff.camAccessReq.elim 2806018116 1451453461
+CallCapture.Eff.camPreview 2116647295 -
+CallCapture.Eff.camPreview.elim 4100448177 3258992484
+CallCapture.Eff.camStartReq 2116647295 -
+CallCapture.Eff.camStartReq.elim 3561006770 189519786
+CallCapture.Eff.camStopReq 3626678677 -
+CallCapture.Eff.camStopReq.elim 446740733 2682219373
+CallCapture.Eff.casesOn 2404676800 3639996288
+CallCapture.Eff.ctorElim 2825462638 120422059
+CallCapture.Eff.ctorElimType 1595919846 1191674022
+CallCapture.Eff.ctorIdx 3841321273 2392584698
+CallCapture.Eff.match_on_same_ctor._@.CallCapture.Model.1239395279._hygCtx._hyg.77 3970168032 1123670984
+CallCapture.Eff.match_on_same_ctor.het._@.CallCapture.Model.1239395279._hygCtx._hyg.77 3041406379 3098496416
+CallCapture.Eff.rec 1552140566 -
+CallCapture.Eff.scSourcesReq 2116647295 -
+CallCapture.Eff.scSourcesReq.elim 3918413211 1431169772
+CallCapture.Eff.scStartReq 4023324234 -
+CallCapture.Eff.scStartReq.elim 1366541450 804510223
+CallCapture.Eff.scStopReq 2116647295 -
+CallCapture.Eff.scStopReq.elim 3747003252 664214613
+CallCapture.Eff.sendFrame 3450722681 -
+CallCapture.Eff.sendFrame.elim 1074607994 3520241482
+CallCapture.Eff.svcAccept 2878032758 -
+CallCapture.Eff.svcAccept.elim 4212810849 371790002
+CallCapture.Eff.svcDecline 2136034179 -
+CallCapture.Eff.svcDecline.elim 574147128 250630145
+CallCapture.Eff.svcEndCall 1501362506 -
+CallCapture.Eff.svcEndCall.elim 1806967384 2093543162
+CallCapture.Eff.svcHangup 884233703 -
+CallCapture.Eff.svcHangup.elim 2993057237 3942608926
+CallCapture.Eff.svcSetPresenting 4079354408 -
+CallCapture.Eff.svcSetPresenting.elim 2602242657 791599217
+CallCapture.Eff.svcSetVideo 2878032758 -
+CallCapture.Eff.svcSetVideo.elim 4055588367 3432449855
+CallCapture.Eff.svcStart 2878032758 -
+CallCapture.Eff.svcStart.elim 1560814927 1291865523
+CallCapture.EndReason 3931117990 16143004940358866405
+CallCapture.EndReason.casesOn 1584212958 2527710675
+CallCapture.EndReason.ctorIdx 1316075461 762805758
+CallCapture.EndReason.localHangup 1359978688 -
+CallCapture.EndReason.needPermission 1359978688 -
+CallCapture.EndReason.rec 3738104306 -
+CallCapture.EndReason.remoteHangup 1359978688 -
+CallCapture.Ev 3931117990 6950330825305505415
+CallCapture.Ev.accept 1875752982 -
+CallCapture.Ev.camAccess 3374750485 -
+CallCapture.Ev.camFrame 3675223661 -
+CallCapture.Ev.camStart 3374750485 -
+CallCapture.Ev.camStopDone 339262493 -
+CallCapture.Ev.cancelPick 339262493 -
+CallCapture.Ev.casesOn 856568020 3945363127
+CallCapture.Ev.closeCall 339262493 -
+CallCapture.Ev.ctorIdx 1048582751 2155021388
+CallCapture.Ev.decline 81162436 -
+CallCapture.Ev.hangUp 339262493 -
+CallCapture.Ev.nEnd 2770467234 -
+CallCapture.Ev.nIncoming 1875752982 -
+CallCapture.Ev.nRejected 81162436 -
+CallCapture.Ev.nState 1871486338 -
+CallCapture.Ev.openLobby 1875752982 -
+CallCapture.Ev.pickSource 339262493 -
+CallCapture.Ev.rec 2908738606 -
+CallCapture.Ev.run 3675223661 -
+CallCapture.Ev.scFrame 3675223661 -
+CallCapture.Ev.scStartDone 2385675352 -
+CallCapture.Ev.scStopDone 2385675352 -
+CallCapture.Ev.scStopped 3675223661 -
+CallCapture.Ev.setVideo 3374750485 -
+CallCapture.Ev.setupDone 2385675352 -
+CallCapture.Ev.srcDone 2385675352 -
+CallCapture.Ev.startCall 339262493 -
+CallCapture.Ev.toggleShare 339262493 -
+CallCapture.Job 3931117990 15109283974539863859
+CallCapture.Job.camFrame 4257161677 -
+CallCapture.Job.cancel 2917927660 3351963883
+CallCapture.Job.cancel._sparseCasesOn_1 3609377350 3745630536
+CallCapture.Job.cancel.match_1 3497703445 1858480872
+CallCapture.Job.capStop 4257161677 -
+CallCapture.Job.casesOn 3538960655 127868802
+CallCapture.Job.ctorIdx 2842950025 1060032025
+CallCapture.Job.installRet 2521089855 -
+CallCapture.Job.isData 3315829087 2017695288
+CallCapture.Job.isData._sparseCasesOn_1 4181248601 363190609
+CallCapture.Job.isData.match_1 3053238080 3654172660
+CallCapture.Job.msg 2833823890 -
+CallCapture.Job.present 2352395056 -
+CallCapture.Job.rec 644047211 -
+CallCapture.Job.recPass 4044563141 -
+CallCapture.Job.recRet 4044563141 -
+CallCapture.Job.scFrame 2392534598 -
+CallCapture.Job.scStopped 2392534598 -
+CallCapture.Job.setupRet 2863560814 -
+CallCapture.Job.setupStart 3157206093 -
+CallCapture.Job.sources 2418883725 -
+CallCapture.Job.sourcesRet 3546811622 -
+CallCapture.Job.stopRet 4257161677 -
+CallCapture.Job.teardownRet 3255692763 -
+CallCapture.JobOk 2982857336 3508503380
+CallCapture.JobOk._sparseCasesOn_1 4181248601 363190609
+CallCapture.JobOk.match_1 3053238080 1080028714
+CallCapture.Msg 3931117990 8056192140025315173
+CallCapture.Msg.camNeeded 2083291764 -
+CallCapture.Msg.casesOn 449311410 4050271206
+CallCapture.Msg.ev 1615141087 -
+CallCapture.Msg.rec 2998734751 -
+CallCapture.NCall 3931117990 9412247926063023565
+CallCapture.NCall.acceptedHere 558176687 1342438733
+CallCapture.NCall.conv 499461278 1040732136
+CallCapture.NCall.hungUp 558176687 3562078297
+CallCapture.NCall.id 3826414876 374855294
+CallCapture.NCall.incoming 558176687 1643216462
+CallCapture.NCall.mk 4174759631 -
+CallCapture.NCall.st 2095871747 4011325305
+CallCapture.Op 3931117990 2386980079737169519
+CallCapture.Op.casesOn 303755228 2716130224
+CallCapture.Op.ctorIdx 4207140939 1994095349
+CallCapture.Op.install 1374590149 -
+CallCapture.Op.isScreen 549500281 2098419272
+CallCapture.Op.isScreen._sparseCasesOn_1 3012495034 1181082678
+CallCapture.Op.isScreen.match_1 3778686940 4183099511
+CallCapture.Op.rec 2172114690 -
+CallCapture.Op.setup 95353422 -
+CallCapture.Op.sources 2384353436 -
+CallCapture.Op.stopping 2166598044 -
+CallCapture.Op.tdStart 1374590149 -
+CallCapture.OpOk 4141565723 3150405373
+CallCapture.OpOk.match_1 1599974119 1198750421
+CallCapture.PT 3931117990 3443839646168128652
+CallCapture.PT.casesOn 3873839 3293686972
+CallCapture.PT.conv 2258502990 3034610682
+CallCapture.PT.gen 3502040235 2143200948
+CallCapture.PT.mk 331110590 -
+CallCapture.PT.rec 778104461 -
+CallCapture.PT.tok 3502040235 4279322233
+CallCapture.RPc 3931117990 11885571775092030652
+CallCapture.RPc.access 293739829 -
+CallCapture.RPc.accessDone 1526335260 -
+CallCapture.RPc.casesOn 4120390089 1250939766
+CallCapture.RPc.ctorIdx 537522672 3441730453
+CallCapture.RPc.idle 293739829 -
+CallCapture.RPc.rec 3069442892 -
+CallCapture.RPc.sched 293739829 -
+CallCapture.RPc.start 293739829 -
+CallCapture.RPc.startDone 1526335260 -
+CallCapture.RPc.stopAfterStart 293739829 -
+CallCapture.RPc.stopDone 293739829 -
+CallCapture.RPc.stopUnwanted 293739829 -
+CallCapture.Reach 2188041368 8771588486285085467
+CallCapture.Reach.init 2794331074 -
+CallCapture.Reach.step 2717290436 -
+CallCapture.S 3931117990 18294801656174170392
+CallCapture.S.active 1432045559 985997801
+CallCapture.S.again 4224648415 2315230111
+CallCapture.S.camDev 2095238740 4100989421
+CallCapture.S.camEnabled 4224648415 2652228388
+CallCapture.S.camNext 3260955561 2688541008
+CallCapture.S.camSends 4224648415 145035773
+CallCapture.S.capGen0 982900439 3875508018
+CallCapture.S.capNext 3260955561 246307359
+CallCapture.S.caps 3656284687 767889348
+CallCapture.S.ended 754667238 2153476829
+CallCapture.S.gen 982900439 3029076414
+CallCapture.S.genN 3260955561 3556523626
+CallCapture.S.init 671968830 1085088696
+CallCapture.S.instNext 3260955561 1744648114
+CallCapture.S.jobs 3208753821 3905220897
+CallCapture.S.lastTok 982900439 179432287
+CallCapture.S.localVideo 4224648415 2931677258
+CallCapture.S.mk 3330436001 -
+CallCapture.S.nativeInst 1618166322 2959223497
+CallCapture.S.nativeNext 3260955561 2187968175
+CallCapture.S.ncall 3071308757 3909813334
+CallCapture.S.ops 2052286456 193648056
+CallCapture.S.out 2082803899 875881273
+CallCapture.S.outOff 754667238 161461455
+CallCapture.S.pc 3963761743 405213800
+CallCapture.S.presenting 4224648415 842008974
+CallCapture.S.ringing 4211416632 2935957409
+CallCapture.S.running 4224648415 3085413430
+CallCapture.S.setupGen 982900439 3363441427
+CallCapture.S.setupNext 3260955561 3886119374
+CallCapture.S.setupTask 4224648415 599090603
+CallCapture.S.share 2219266087 1792770066
+CallCapture.S.sources 4224648415 1828829109
+CallCapture.S.streamNext 3260955561 1760097261
+CallCapture.S.streams 3568805744 2757409351
+CallCapture.S.tok0 982900439 2426947509
+CallCapture.S.userVideo 4224648415 3185678419
+CallCapture.SPh 3931117990 776869928572120470
+CallCapture.SPh.casesOn 1639175610 3425475169
+CallCapture.SPh.ctorIdx 874352374 3807275363
+CallCapture.SPh.failed 970433400 -
+CallCapture.SPh.hasRun 3156722018 3648756799
+CallCapture.SPh.hasRun.match_1 215703668 1485372094
+CallCapture.SPh.rec 3605779408 -
+CallCapture.SPh.running 970433400 -
+CallCapture.SPh.starting 970433400 -
+CallCapture.SPh.stopFailed 970433400 -
+CallCapture.SPh.stopped 970433400 -
+CallCapture.SPh.stopping 970433400 -
+CallCapture.ShareInv 2188041368 13371704558893523525
+CallCapture.ShareInv.mk 445581328 -
+CallCapture.Src 3931117990 17542477254084314430
+CallCapture.Src.camera 2362690685 -
+CallCapture.Src.casesOn 1929317246 1552458507
+CallCapture.Src.ctorIdx 732934151 3366994697
+CallCapture.Src.rec 3764340433 -
+CallCapture.Src.screen 2362690685 -
+CallCapture.Stage 3931117990 16069140423338833820
+CallCapture.Stage.casesOn 4230958013 161211666
+CallCapture.Stage.ctorIdx 3795283831 1250292110
+CallCapture.Stage.inCall 1660076004 -
+CallCapture.Stage.lobby 1660076004 -
+CallCapture.Stage.rec 948407144 -
+CallCapture.VidOk 2188041368 2575397239
+CallCapture.acceptCall 2520959994 2797272893
+CallCapture.acceptCall.match_1 2640857607 287254896
+CallCapture.acceptedLive 754667238 1321957021
+CallCapture.acceptedLive.match_1 2910463180 1318116899
+CallCapture.activeLive 4224648415 1007782615
+CallCapture.activeLive.match_1 2910463180 1318116899
+CallCapture.addOp 1330703620 2415399114
+CallCapture.camAccessDone 3020154308 583469983
+CallCapture.camAccessEnv 3020154308 1124242619
+CallCapture.camFrame 686397690 1396013177
+CallCapture.camFrameEnv 686397690 302519404
+CallCapture.camStartDone 3020154308 1757326759
+CallCapture.camStartEnv 3020154308 3885550631
+CallCapture.camStartEnv._sparseCasesOn_1 3986357779 3319305678
+CallCapture.camStartEnv.match_1 1934742782 1763238449
+CallCapture.camStartWanted 2178537987 3538488417
+CallCapture.camStartWanted._sparseCasesOn_1 2047634495 2001162807
+CallCapture.camStartWanted.match_1 1782726231 2246210690
+CallCapture.camStopEnv 1661770060 39971075
+CallCapture.camStopEnv._sparseCasesOn_1 2054219502 2215086219
+CallCapture.camStopEnv.match_1 1262921802 1994722675
+CallCapture.capBegin 686397690 541236691
+CallCapture.capStart 2944161333 3953110271
+CallCapture.capStartAfterTeardown 3005358055 3883483521
+CallCapture.capStop 686397690 2755675150
+CallCapture.capStop.match_1 2237241636 198070588
+CallCapture.capTeardown 2121566730 2921553212
+CallCapture.capTeardown.match_1 2549865312 3610645720
+CallCapture.clearShare 1661770060 659677260
+CallCapture.curShare 3131705992 931229826
+CallCapture.declineCall 2673858602 3013800014
+CallCapture.devStop 1661770060 3928622748
+CallCapture.devStop._sparseCasesOn_1 1544749115 1123321544
+CallCapture.devStop.match_1 2217824256 3009245885
+CallCapture.dropOp 1330703620 1487245185
+CallCapture.effects 2082803899 3859696938
+CallCapture.emit 184494471 2817855072
+CallCapture.endCallUI 1661770060 3660340471
+CallCapture.endStrayCall 737753107 2637402013
+CallCapture.enqueue 538255456 287885199
+CallCapture.evShare 559814441 3679800293
+CallCapture.evShare._sparseCasesOn_1 3324888495 1154407984
+CallCapture.evShare._sparseCasesOn_4 363945766 3987965235
+CallCapture.evShare.match_1 447446184 1783302178
+CallCapture.evShare.match_4 102891138 1124955084
+CallCapture.findInstall 870597105 4249850443
+CallCapture.findInstall._f 1770408666 35531325
+CallCapture.findInstall._sparseCasesOn_1 3563578395 2699699095
+CallCapture.findInstall.match_1 4256531557 1898995776
+CallCapture.findSetup 2842812917 3384683761
+CallCapture.findSetup._f 2425974081 325936335
+CallCapture.findSetup._sparseCasesOn_1 3012495034 1181082678
+CallCapture.findSetup.match_1 804916642 2085174774
+CallCapture.findSources 177131829 4032830918
+CallCapture.findSources._f 3397017048 3487023758
+CallCapture.findSources._sparseCasesOn_1 1326969045 4012947493
+CallCapture.findSources.match_1 3489212509 707702851
+CallCapture.findStop 3089001727 1928769322
+CallCapture.findStop._f 517371114 3328898131
+CallCapture.findStop._sparseCasesOn_1 3576593394 3833842103
+CallCapture.findStop.match_1 305300189 511792643
+CallCapture.handle 2852447108 2863703334
+CallCapture.handleEv 403581843 1631860025
+CallCapture.hangUp 1661770060 1530765637
+CallCapture.hasCall 1357957867 1678062344
+CallCapture.hasCall.match_1 3234010981 7149309
+CallCapture.instDecidableEqDState 2380054291 3186564896
+CallCapture.instDecidableEqDState._proof_1 3946065169 -
+CallCapture.instDecidableEqDState._proof_2 1850132119 -
+CallCapture.instDecidableEqEff 1445835381 422020115
+CallCapture.instDecidableEqEff.decEq 2970649092 1565601759
+CallCapture.instDecidableEqEff.decEq._proof_1 258143726 -
+CallCapture.instDecidableEqEff.decEq._proof_10 2023880804 -
+CallCapture.instDecidableEqEff.decEq._proof_11 4020471058 -
+CallCapture.instDecidableEqEff.decEq._proof_12 3070693900 -
+CallCapture.instDecidableEqEff.decEq._proof_13 4216461992 -
+CallCapture.instDecidableEqEff.decEq._proof_14 316610673 -
+CallCapture.instDecidableEqEff.decEq._proof_15 656686123 -
+CallCapture.instDecidableEqEff.decEq._proof_16 1074574171 -
+CallCapture.instDecidableEqEff.decEq._proof_17 2594125575 -
+CallCapture.instDecidableEqEff.decEq._proof_18 107231661 -
+CallCapture.instDecidableEqEff.decEq._proof_19 2394035440 -
+CallCapture.instDecidableEqEff.decEq._proof_2 3729738328 -
+CallCapture.instDecidableEqEff.decEq._proof_20 2657654479 -
+CallCapture.instDecidableEqEff.decEq._proof_21 876305292 -
+CallCapture.instDecidableEqEff.decEq._proof_22 3078474291 -
+CallCapture.instDecidableEqEff.decEq._proof_23 3355744755 -
+CallCapture.instDecidableEqEff.decEq._proof_24 2637453045 -
+CallCapture.instDecidableEqEff.decEq._proof_25 558027253 -
+CallCapture.instDecidableEqEff.decEq._proof_26 3995146824 -
+CallCapture.instDecidableEqEff.decEq._proof_27 2394236209 -
+CallCapture.instDecidableEqEff.decEq._proof_28 279718336 -
+CallCapture.instDecidableEqEff.decEq._proof_29 3997864269 -
+CallCapture.instDecidableEqEff.decEq._proof_3 1136532466 -
+CallCapture.instDecidableEqEff.decEq._proof_30 2167829850 -
+CallCapture.instDecidableEqEff.decEq._proof_31 2284757928 -
+CallCapture.instDecidableEqEff.decEq._proof_32 2478899407 -
+CallCapture.instDecidableEqEff.decEq._proof_33 3474464520 -
+CallCapture.instDecidableEqEff.decEq._proof_4 4196215479 -
+CallCapture.instDecidableEqEff.decEq._proof_5 1925045648 -
+CallCapture.instDecidableEqEff.decEq._proof_6 428743617 -
+CallCapture.instDecidableEqEff.decEq._proof_7 647603060 -
+CallCapture.instDecidableEqEff.decEq._proof_8 3459124327 -
+CallCapture.instDecidableEqEff.decEq._proof_9 2035017603 -
+CallCapture.instDecidableEqEff.decEq.match_1 2960389934 2273671864
+CallCapture.instDecidableEqEndReason 1988890613 1304732415
+CallCapture.instDecidableEqEndReason._proof_1 270266650 -
+CallCapture.instDecidableEqEndReason._proof_2 3070896075 -
+CallCapture.instDecidableEqOp 3028607173 4179506239
+CallCapture.instDecidableEqOp.decEq 1899773406 3573274567
+CallCapture.instDecidableEqOp.decEq._proof_1 2401813113 -
+CallCapture.instDecidableEqOp.decEq._proof_10 3626435276 -
+CallCapture.instDecidableEqOp.decEq._proof_11 3948549413 -
+CallCapture.instDecidableEqOp.decEq._proof_12 777676657 -
+CallCapture.instDecidableEqOp.decEq._proof_13 1066169603 -
+CallCapture.instDecidableEqOp.decEq._proof_14 1601351427 -
+CallCapture.instDecidableEqOp.decEq._proof_15 915812448 -
+CallCapture.instDecidableEqOp.decEq._proof_16 2207407660 -
+CallCapture.instDecidableEqOp.decEq._proof_17 3140470728 -
+CallCapture.instDecidableEqOp.decEq._proof_18 3818515487 -
+CallCapture.instDecidableEqOp.decEq._proof_19 421185660 -
+CallCapture.instDecidableEqOp.decEq._proof_2 3853797067 -
+CallCapture.instDecidableEqOp.decEq._proof_20 1436335529 -
+CallCapture.instDecidableEqOp.decEq._proof_21 348053631 -
+CallCapture.instDecidableEqOp.decEq._proof_22 1624716300 -
+CallCapture.instDecidableEqOp.decEq._proof_23 4115744137 -
+CallCapture.instDecidableEqOp.decEq._proof_24 2200727968 -
+CallCapture.instDecidableEqOp.decEq._proof_25 8109077 -
+CallCapture.instDecidableEqOp.decEq._proof_26 3645376647 -
+CallCapture.instDecidableEqOp.decEq._proof_27 509464977 -
+CallCapture.instDecidableEqOp.decEq._proof_28 3227238387 -
+CallCapture.instDecidableEqOp.decEq._proof_29 3057818375 -
+CallCapture.instDecidableEqOp.decEq._proof_3 983466758 -
+CallCapture.instDecidableEqOp.decEq._proof_30 3858215601 -
+CallCapture.instDecidableEqOp.decEq._proof_31 2462871686 -
+CallCapture.instDecidableEqOp.decEq._proof_32 70479378 -
+CallCapture.instDecidableEqOp.decEq._proof_33 2053294185 -
+CallCapture.instDecidableEqOp.decEq._proof_34 3748899386 -
+CallCapture.instDecidableEqOp.decEq._proof_35 3492977730 -
+CallCapture.instDecidableEqOp.decEq._proof_36 1898082423 -
+CallCapture.instDecidableEqOp.decEq._proof_37 4193009894 -
+CallCapture.instDecidableEqOp.decEq._proof_38 653290570 -
+CallCapture.instDecidableEqOp.decEq._proof_39 1617376725 -
+CallCapture.instDecidableEqOp.decEq._proof_4 3720111002 -
+CallCapture.instDecidableEqOp.decEq._proof_40 915303161 -
+CallCapture.instDecidableEqOp.decEq._proof_41 1404314394 -
+CallCapture.instDecidableEqOp.decEq._proof_42 3743140498 -
+CallCapture.instDecidableEqOp.decEq._proof_43 697817822 -
+CallCapture.instDecidableEqOp.decEq._proof_44 2595906389 -
+CallCapture.instDecidableEqOp.decEq._proof_5 1021344103 -
+CallCapture.instDecidableEqOp.decEq._proof_6 1291434273 -
+CallCapture.instDecidableEqOp.decEq._proof_7 3718372002 -
+CallCapture.instDecidableEqOp.decEq._proof_8 3044368486 -
+CallCapture.instDecidableEqOp.decEq._proof_9 20652056 -
+CallCapture.instDecidableEqOp.decEq.match_1 3822686050 2655049362
+CallCapture.instDecidableEqPT 1265014038 2674025813
+CallCapture.instDecidableEqPT.decEq 3369071946 276373638
+CallCapture.instDecidableEqPT.decEq._proof_1 278363612 -
+CallCapture.instDecidableEqPT.decEq._proof_2 1529736769 -
+CallCapture.instDecidableEqPT.decEq._proof_3 2553838106 -
+CallCapture.instDecidableEqPT.decEq._proof_4 3239666443 -
+CallCapture.instDecidableEqPT.decEq.match_1 1198185418 66956746
+CallCapture.instDecidableEqRPc 2169761892 1751249122
+CallCapture.instDecidableEqRPc.decEq 2785353961 567338475
+CallCapture.instDecidableEqRPc.decEq._proof_1 3996037820 -
+CallCapture.instDecidableEqRPc.decEq._proof_10 4062435715 -
+CallCapture.instDecidableEqRPc.decEq._proof_11 609033126 -
+CallCapture.instDecidableEqRPc.decEq._proof_12 4257165589 -
+CallCapture.instDecidableEqRPc.decEq._proof_13 599676258 -
+CallCapture.instDecidableEqRPc.decEq._proof_14 3698593894 -
+CallCapture.instDecidableEqRPc.decEq._proof_15 3270740019 -
+CallCapture.instDecidableEqRPc.decEq._proof_16 534676128 -
+CallCapture.instDecidableEqRPc.decEq._proof_17 3454262588 -
+CallCapture.instDecidableEqRPc.decEq._proof_18 2914724749 -
+CallCapture.instDecidableEqRPc.decEq._proof_19 3749055465 -
+CallCapture.instDecidableEqRPc.decEq._proof_2 3550523205 -
+CallCapture.instDecidableEqRPc.decEq._proof_20 2780711180 -
+CallCapture.instDecidableEqRPc.decEq._proof_21 3221845154 -
+CallCapture.instDecidableEqRPc.decEq._proof_22 347650231 -
+CallCapture.instDecidableEqRPc.decEq._proof_23 3405913899 -
+CallCapture.instDecidableEqRPc.decEq._proof_24 756713743 -
+CallCapture.instDecidableEqRPc.decEq._proof_25 1495963088 -
+CallCapture.instDecidableEqRPc.decEq._proof_26 616986827 -
+CallCapture.instDecidableEqRPc.decEq._proof_27 3310195691 -
+CallCapture.instDecidableEqRPc.decEq._proof_28 4268517003 -
+CallCapture.instDecidableEqRPc.decEq._proof_29 3113547723 -
+CallCapture.instDecidableEqRPc.decEq._proof_3 4241925381 -
+CallCapture.instDecidableEqRPc.decEq._proof_30 822514340 -
+CallCapture.instDecidableEqRPc.decEq._proof_31 3527737868 -
+CallCapture.instDecidableEqRPc.decEq._proof_32 1270216272 -
+CallCapture.instDecidableEqRPc.decEq._proof_33 966686363 -
+CallCapture.instDecidableEqRPc.decEq._proof_34 804398097 -
+CallCapture.instDecidableEqRPc.decEq._proof_35 2710065297 -
+CallCapture.instDecidableEqRPc.decEq._proof_36 3111463153 -
+CallCapture.instDecidableEqRPc.decEq._proof_37 582447154 -
+CallCapture.instDecidableEqRPc.decEq._proof_38 3004594054 -
+CallCapture.instDecidableEqRPc.decEq._proof_39 884093619 -
+CallCapture.instDecidableEqRPc.decEq._proof_4 2687154064 -
+CallCapture.instDecidableEqRPc.decEq._proof_40 678211432 -
+CallCapture.instDecidableEqRPc.decEq._proof_41 177731000 -
+CallCapture.instDecidableEqRPc.decEq._proof_42 2534851082 -
+CallCapture.instDecidableEqRPc.decEq._proof_43 2582074412 -
+CallCapture.instDecidableEqRPc.decEq._proof_44 3337621276 -
+CallCapture.instDecidableEqRPc.decEq._proof_45 2226669240 -
+CallCapture.instDecidableEqRPc.decEq._proof_46 1796717120 -
+CallCapture.instDecidableEqRPc.decEq._proof_47 2979706167 -
+CallCapture.instDecidableEqRPc.decEq._proof_48 2749081651 -
+CallCapture.instDecidableEqRPc.decEq._proof_49 2039361724 -
+CallCapture.instDecidableEqRPc.decEq._proof_5 1092322135 -
+CallCapture.instDecidableEqRPc.decEq._proof_50 3553226846 -
+CallCapture.instDecidableEqRPc.decEq._proof_51 1640612467 -
+CallCapture.instDecidableEqRPc.decEq._proof_52 1286137652 -
+CallCapture.instDecidableEqRPc.decEq._proof_53 421654346 -
+CallCapture.instDecidableEqRPc.decEq._proof_54 3499845767 -
+CallCapture.instDecidableEqRPc.decEq._proof_55 3841289617 -
+CallCapture.instDecidableEqRPc.decEq._proof_56 2368087080 -
+CallCapture.instDecidableEqRPc.decEq._proof_57 1510781579 -
+CallCapture.instDecidableEqRPc.decEq._proof_58 1061268278 -
+CallCapture.instDecidableEqRPc.decEq._proof_59 2786240607 -
+CallCapture.instDecidableEqRPc.decEq._proof_6 1503148632 -
+CallCapture.instDecidableEqRPc.decEq._proof_60 3489865980 -
+CallCapture.instDecidableEqRPc.decEq._proof_61 1204680984 -
+CallCapture.instDecidableEqRPc.decEq._proof_62 2116522998 -
+CallCapture.instDecidableEqRPc.decEq._proof_63 787595289 -
+CallCapture.instDecidableEqRPc.decEq._proof_64 3093952307 -
+CallCapture.instDecidableEqRPc.decEq._proof_65 4289157024 -
+CallCapture.instDecidableEqRPc.decEq._proof_66 728368499 -
+CallCapture.instDecidableEqRPc.decEq._proof_67 813583643 -
+CallCapture.instDecidableEqRPc.decEq._proof_68 2965819926 -
+CallCapture.instDecidableEqRPc.decEq._proof_69 459414231 -
+CallCapture.instDecidableEqRPc.decEq._proof_7 1849738390 -
+CallCapture.instDecidableEqRPc.decEq._proof_70 4065154541 -
+CallCapture.instDecidableEqRPc.decEq._proof_71 1841908358 -
+CallCapture.instDecidableEqRPc.decEq._proof_72 2387097190 -
+CallCapture.instDecidableEqRPc.decEq._proof_73 3895930825 -
+CallCapture.instDecidableEqRPc.decEq._proof_74 2787625193 -
+CallCapture.instDecidableEqRPc.decEq._proof_75 1865464243 -
+CallCapture.instDecidableEqRPc.decEq._proof_76 574435468 -
+CallCapture.instDecidableEqRPc.decEq._proof_8 3454585971 -
+CallCapture.instDecidableEqRPc.decEq._proof_9 1416138572 -
+CallCapture.instDecidableEqRPc.decEq.match_1 2447858851 3530662133
+CallCapture.instDecidableEqSPh 1909455872 840429125
+CallCapture.instDecidableEqSPh._proof_1 1251445006 -
+CallCapture.instDecidableEqSPh._proof_2 3298939655 -
+CallCapture.instDecidableEqSrc 3667675948 1263516942
+CallCapture.instDecidableEqSrc.decEq 1380153483 1846761146
+CallCapture.instDecidableEqSrc.decEq._proof_1 996856854 -
+CallCapture.instDecidableEqSrc.decEq._proof_2 1867485883 -
+CallCapture.instDecidableEqSrc.decEq._proof_3 60787205 -
+CallCapture.instDecidableEqSrc.decEq._proof_4 1308702301 -
+CallCapture.instDecidableEqSrc.decEq._proof_5 604518082 -
+CallCapture.instDecidableEqSrc.decEq._proof_6 2633529147 -
+CallCapture.instDecidableEqSrc.decEq.match_1 4216432703 1072017911
+CallCapture.instDecidableEqStage 3194321112 233688884
+CallCapture.instDecidableEqStage._proof_1 3472484089 -
+CallCapture.instDecidableEqStage._proof_2 3950061470 -
+CallCapture.instInhabitedCap 481565921 4194561700
+CallCapture.instLive 754667238 3437538227
+CallCapture.instReprCEv.repr.match_1 4289266793 4190242415
+CallCapture.instReprEv.repr.match_1 1840759995 308144244
+CallCapture.instReprJob.repr.match_1 776695615 208014606
+CallCapture.instReprMsg.repr.match_1 1069033249 1700781139
+CallCapture.installDone 1299960198 2161283007
+CallCapture.isCurrent 3839121290 2862748609
+CallCapture.jobOf 369049016 767558901
+CallCapture.jobOf._sparseCasesOn_1 2963424311 2723709409
+CallCapture.jobOf.match_1 3167745497 2180260404
+CallCapture.markHungUp 646365761 16645982
+CallCapture.nEnd 2614654649 2189013060
+CallCapture.nIncoming 2520959994 1142486817
+CallCapture.nRejected 2673858602 730776757
+CallCapture.nState 1238898040 827794696
+CallCapture.nState.match_1 4162991680 3591691383
+CallCapture.noPresentOn 4224648415 244946743
+CallCapture.noPresentOn._sparseCasesOn_1 103647298 805475493
+CallCapture.noPresentOn._sparseCasesOn_2 3152508567 4088141724
+CallCapture.noPresentOn.match_1 1618003800 834185768
+CallCapture.noteEnded 1399904439 296342343
+CallCapture.openLobby 2520959994 3055880705
+CallCapture.ownedBy 3350340345 2206742779
+CallCapture.owner 1618166322 1420162841
+CallCapture.pickSource 1661770060 3550435754
+CallCapture.pickSource._sparseCasesOn_1 2334663261 1385501301
+CallCapture.pickSource.match_1 3771451090 2442101499
+CallCapture.presentLeaf 2944161333 2173628666
+CallCapture.recEnd 1661770060 3480488134
+CallCapture.recEnd.match_1 2979358267 801593227
+CallCapture.recPass 1661770060 3146023191
+CallCapture.recR1 4213408803 1532154652
+CallCapture.recResume 1661770060 3954267050
+CallCapture.recResume._sparseCasesOn_1 1778284462 3287619592
+CallCapture.recResume.match_1 2427416208 178229625
+CallCapture.releaseCallMedia 646365761 1485614036
+CallCapture.runJob 2469307298 995781389
+CallCapture.runMsg 538255456 1086298162
+CallCapture.scFrame 2092249096 321589080
+CallCapture.scFrameEnv 686397690 511679293
+CallCapture.scStartEnv 2783234957 2485180947
+CallCapture.scStartEnv.match_1 3935332587 1545063394
+CallCapture.scStopEnv 2783234957 832705442
+CallCapture.scStopEnv._sparseCasesOn_1 3864405123 294174386
+CallCapture.scStopEnv.match_1 3161727594 1853101604
+CallCapture.scStopEnv.match_4 608256706 1172293007
+CallCapture.scStopped 803771141 278792580
+CallCapture.scStoppedEnv 686397690 2424130554
+CallCapture.setCameraSending 3020154308 3502796363
+CallCapture.setCap 251744699 438266629
+CallCapture.setStream 3410177268 2900727740
+CallCapture.setVideo 3020154308 713435832
+CallCapture.setupDone 4002653547 369991703
+CallCapture.setupEnv 2783234957 1642201480
+CallCapture.setupEnv.match_1 1717655490 3981103668
+CallCapture.setupLeaf 1152021175 1827141584
+CallCapture.shareTokIs 2414948694 1539106912
+CallCapture.shareTokIs.match_1 1582071688 2256139363
+CallCapture.sourcesLeaf 1361342265 932054455
+CallCapture.spawn 2469307298 1355913780
+CallCapture.srcDone 4094887413 574616953
+CallCapture.srcEnv 2783234957 3173917589
+CallCapture.srcEnv.match_1 1738443636 1562691398
+CallCapture.startCall 1661770060 2742211587
+CallCapture.step 1703664936 61536144
+CallCapture.stepCore 1703664936 1272915366
+CallCapture.stepCore._sparseCasesOn_3 2963424311 2723709409
+CallCapture.stepCore.match_1 4129515730 723347024
+CallCapture.stepCore.match_3 3167745497 4001958528
+CallCapture.stopPresenting 646365761 2005406153
+CallCapture.stopStream 686397690 2113342937
+CallCapture.stopStream.match_1 1237288694 807794729
+CallCapture.streamLive._sparseCasesOn_1 2334663261 1385501301
+CallCapture.streamOwner 1618166322 1420162841
+CallCapture.svcAccept 2946308926 1037206990
+CallCapture.svcDecline 737753107 1044381784
+CallCapture.svcEndCall 737753107 2058972750
+CallCapture.svcHangup 3020154308 3656701852
+CallCapture.svcSetPresenting 4185664703 2354051302
+CallCapture.svcSetPresenting.match_1 2015124868 1139875299
+CallCapture.svcSetVideo 2520959994 1255099643
+CallCapture.t2Frames 2178537987 2645181589
+CallCapture.t2Frames._sparseCasesOn_1 3974549379 3365901675
+CallCapture.t2Frames._sparseCasesOn_2 1537773465 3379095113
+CallCapture.t2Frames.match_1 2265232105 419260090
+CallCapture.t2Stop 2178537987 3870046235
+CallCapture.t2Stop._sparseCasesOn_1 344247380 3631179939
+CallCapture.t2Stop.match_1 1957006539 2831408257
+CallCapture.t2Stop.match_4 1182291216 324793571
+CallCapture.t3Camera 2178537987 4171785671
+CallCapture.t3Camera._sparseCasesOn_1 4288043354 1303969442
+CallCapture.t3Camera._sparseCasesOn_2 2824443083 3115992449
+CallCapture.t3Camera.match_1 783809559 194406229
+CallCapture.t4Camera 2178537987 4224404330
+CallCapture.t4Camera._sparseCasesOn_1 63523968 1710212271
+CallCapture.t4Camera._sparseCasesOn_2 3583212994 390658887
+CallCapture.t4Camera.match_1 3106108130 3658356121
+CallCapture.t4Screen._sparseCasesOn_1 1173123175 87319045
+CallCapture.t4Screen.match_1 2240158898 1626012398
+CallCapture.t4ScreenObsolete 2178537987 3609697775
+CallCapture.t5 2178537987 3593848962
+CallCapture.toggleShare 1661770060 1466543020
+CallCapture.toggleShare.match_1 38056276 1982005693
+CallCapture.upd 1185834565 2932600256
+CallCapture.updateCamera 1661770060 2544889693
+CallCapture.wanted 4224648415 3323935247
+@ShareInv.reach : ∀ {s : S}, Reach s → ShareInv s
+@t2Frames_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t2Frames s e (step s e) = true
+@t2Stop_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t2Stop s e (step s e) = true
+@t4ScreenObsolete_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t4ScreenObsolete s e (step s e) = true
+t4Camera_holds : ∀ (s : S) (e : Ev), t4Camera s e (step s e) = true
+camStartWanted_holds : ∀ (s : S) (e : Ev), camStartWanted s e (step s e) = true
+cameraFrames_gated : ∀ (s : S) (e : Ev) (k : Nat),
+  Eff.sendFrame (Src.camera k) ∈ effects (step s e) →
+    jobOf s e = some (Job.camFrame k) ∧ wanted s = true ∧ s.camSends = true ∧ s.presenting = false
+@VidOk.reach : ∀ {s : S}, Reach s → VidOk s
+@t3Camera_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), t3Camera s e (step s e) = true
+@ended_not_live : ∀ {s : S} {a : Nat}, Reach s → s.ended a = true → instLive s a = false
+@t5_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), t5 s e (step s e) = true
+t2Frames_wrap : ¬∀ (s : S) (e : Ev), Reach s → t2Frames s e (step s e) = true
+t4ScreenObsolete_wrap : ¬∀ (s : S) (e : Ev), Reach s → t4ScreenObsolete s e (step s e) = true
+CallCapture.ShareInv.reach depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t2Frames_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t2Stop_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t4ScreenObsolete_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t4Camera_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.camStartWanted_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.cameraFrames_gated depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.VidOk.reach depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t3Camera_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.ended_not_live depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t5_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t2Frames_wrap depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t4ScreenObsolete_wrap depends on axioms: [Classical.choice, Quot.sound, propext]

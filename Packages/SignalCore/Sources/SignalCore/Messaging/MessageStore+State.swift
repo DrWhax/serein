@@ -72,14 +72,19 @@ extension MessageStore {
         }
     }
 
+    /// A send that gave up: every recipient that has not got the message fails (one that has
+    /// stays Sent or better). A group message's states are its members, so all of them count,
+    /// not the group's own id; a message with no one to send to fails as a whole.
     static func markFailed(_ db: Database, messageId: String, error: String) throws {
         try updateJSON(db, messageId: messageId) { json in
             guard let conversationId = json["conversationId"] as? String else { return }
-            // Only recipients still pending fail: one that already got it stays Sent (or better).
-            let current = ((json["sendStateByConversationId"] as? [String: [String: Any]])?[conversationId]?["status"] as? String)
-                .flatMap(SendStatus.init(rawValue:))
-            guard current == nil || current == .pending || current == .failed else { return }
-            setSendStatus(&json, conversationId: conversationId, .failed, force: true)
+            let states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+            let waiting = states.isEmpty ? [conversationId] : states.compactMap { k, v -> String? in
+                let status = (v["status"] as? String).flatMap(SendStatus.init(rawValue:))
+                return status == nil || status == .pending || status == .failed ? k : nil
+            }
+            guard !waiting.isEmpty else { return }
+            for k in waiting { setSendStatus(&json, conversationId: k, .failed, force: true) }
             // An identity failure recorded by this attempt says more than the generic error.
             if (json["errors"] as? [[String: Any]])?.contains(where: { $0["name"] as? String == identityKeyErrorName }) == true { return }
             json["errors"] = [["name": "SendError", "message": error]]
@@ -98,6 +103,40 @@ extension MessageStore {
     }
 
     static let identityKeyErrorName = "OutgoingIdentityKeyError"
+
+    /// Each recipient's send status of a message, by conversation id (tests and diagnostics).
+    static func groupStatuses(_ db: Database, messageId: String) throws -> [String: String] {
+        guard let s = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [messageId]) else { return [:] }
+        let states = try jsonObject(s)["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+        return states.compactMapValues { $0["status"] as? String }
+    }
+
+    /// Outgoing messages still waiting on recipients with no job left to send them (a job that
+    /// gave up before group failures were recorded per member left them "sending" for good): the
+    /// waiting recipients fail, so the message can be retried. `queued`: messages a job will send.
+    /// Returns how many were repaired.
+    static func failOrphanedSends(_ db: Database, queued: Set<String>) throws -> Int {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT m.id, m.conversationId, c.type FROM messages m JOIN conversations c ON c.id = m.conversationId
+            WHERE m.type = 'outgoing' AND m.json LIKE '%"Pending"%'
+            """)
+        var repaired = 0
+        for row in rows {
+            let id: String = row["id"]
+            guard !queued.contains(id) else { continue }
+            let conversationId: String = row["conversationId"]
+            try updateJSON(db, messageId: id) { json in
+                // The old failure record under the group's own id: not a recipient.
+                guard (row["type"] as String?) == "group", var states = json["sendStateByConversationId"] as? [String: [String: Any]],
+                      states.count > 1, states[conversationId] != nil else { return }
+                states[conversationId] = nil
+                json["sendStateByConversationId"] = states
+            }
+            try markFailed(db, messageId: id, error: "the send was interrupted")
+            repaired += 1
+        }
+        return repaired
+    }
 
     /// The recipients a failed message is waiting on for identity approval.
     static func untrustedRecipients(_ db: Database, messageId: String) throws -> [String] {

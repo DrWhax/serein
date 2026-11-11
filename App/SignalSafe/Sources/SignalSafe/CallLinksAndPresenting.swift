@@ -123,31 +123,51 @@ enum CallLinkModal: Equatable {
 
     // MARK: presenting
 
+    /// ScreenCaptureKit as presenting uses it: the permission, the sources, starting a picked
+    /// source. The conformance tests replace it with stand-ins (the capture's own start and stop
+    /// logic still runs).
+    @MainActor struct ScreenShareBackend {
+        var isGranted: () -> Bool
+        var sources: @MainActor (ScreenShareCapture) async throws -> [PresentableSource]
+        var start: @MainActor (ScreenShareCapture, String) async throws -> Void
+
+        static let system = ScreenShareBackend(isGranted: { ScreenRecordingPermission.isGranted },
+                                               sources: { try await $0.sources() },
+                                               start: { capture, sourceId in try await capture.start(try capture.filter(for: sourceId)) })
+    }
+
     /// The call screen's "Share screen" button: stop, or ask for the source.
     func togglePresenting() {
-        guard let id = activeCall?.conversationId, let calling else { return }
+        guard let id = activeCall?.conversationId, let calling = callControl else { return }
         if calling.isPresenting {
             stopPresenting()
             return
         }
-        guard ScreenRecordingPermission.isGranted else {
+        guard screenShareBackend.isGranted() else {
             ScreenRecordingPermission.request()
             callLinkModal = .needsScreenRecordingPermission
             return
         }
+        // A share not presenting yet (its sources loading or its stream starting), or one the
+        // service stopped presenting on its own (the call ended), goes, with its capture.
+        if screenCapture != nil { clearScreenShare() }
         lastScreenShareToken &+= 1
         let token = lastScreenShareToken
+        let tasks = mainTasks
         let capture = ScreenShareCapture(onFrame: { [weak self] frame in
-            Task { @MainActor in self?.screenFrame(frame, token: token) }
+            _ = tasks.spawn("screen.frame") { self?.screenFrame(frame, token: token) }
         }, onStop: { [weak self] error in
-            Task { @MainActor in self?.screenShareStopped(token: token, error: error) }
-        })
+            _ = tasks.spawn("screen.stopped") { self?.screenShareStopped(token: token, error: error) }
+        }, tasks: tasks)
         screenCapture = capture
         screenShareToken = token
         let generation = callGeneration
-        Task {
+        let backend = screenShareBackend
+        _ = tasks.spawn("screen.sources") { [self] in
+            // The task may start after a hang-up or another press: then nothing is asked for.
+            guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
             do {
-                let sources = try await capture.sources()
+                let sources = try await backend.sources(capture)
                 guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }   // the call ended meanwhile
                 presentingSources = sources
             } catch {
@@ -164,7 +184,13 @@ enum CallLinkModal: Equatable {
             && activeCall?.conversationId == conversationId && activeCall?.isLive == true
     }
 
+    /// Drops the share; its capture is stopped (also a start still in progress), so no stream
+    /// is left running without an owner.
     func clearScreenShare() {
+        if let capture = screenCapture {
+            capture.cancelStart()   // at once: a start continuing before the stop task runs gives up
+            _ = mainTasks.spawn("screen.stop") { await capture.stop() }
+        }
         screenCapture = nil
         screenShareToken = nil
     }
@@ -180,14 +206,15 @@ enum CallLinkModal: Equatable {
     /// A source picked: its frames replace the camera's.
     func startPresenting(_ sourceId: String) {
         presentingSources = nil
-        guard let id = activeCall?.conversationId, activeCall?.isLive == true, let calling, let capture = screenCapture,
+        guard let id = activeCall?.conversationId, activeCall?.isLive == true, let calling = callControl, let capture = screenCapture,
               let token = screenShareToken else { return }
         let generation = callGeneration
-        Task {
+        let backend = screenShareBackend
+        _ = mainTasks.spawn("screen.present") { [self] in
             // The task may start after a hang-up or another pick: then nothing is captured.
             guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
             do {
-                try await capture.start(try capture.filter(for: sourceId))
+                try await backend.start(capture, sourceId)
                 // The call ended, or sharing was stopped, while the stream was starting.
                 guard isCurrentScreenShare(token, generation: generation, conversationId: id) else {
                     await capture.stop()
@@ -212,18 +239,16 @@ enum CallLinkModal: Equatable {
     /// `conversationId`: the call's, when the screen has already closed.
     func stopPresenting(conversationId: String? = nil) {
         presentingSources = nil
-        let capture = screenCapture
         clearScreenShare()
-        if let capture { Task { await capture.stop() } }
-        if calling?.isPresenting == true {
-            calling?.setPresenting(conversationId: conversationId ?? activeCall?.conversationId ?? "", false)
+        if callControl?.isPresenting == true {
+            callControl?.setPresenting(conversationId: conversationId ?? activeCall?.conversationId ?? "", false)
             activeCall?.groupRevision += 1
         }
     }
 
     func screenFrame(_ frame: CapturedFrame, token: UInt64) {
         // Frames of an older share, or queued when sharing stopped, are dropped.
-        guard screenShareToken == token, screenCapture != nil, calling?.isPresenting == true, activeCall?.isLive == true else { return }
-        calling?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12)
+        guard screenShareToken == token, screenCapture != nil, callControl?.isPresenting == true, activeCall?.isLive == true else { return }
+        callControl?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12)
     }
 }

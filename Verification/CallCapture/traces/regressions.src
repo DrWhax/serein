@@ -1,0 +1,114 @@
+# Named regression traces, replayed against both the Lean model and production Swift
+# (CallCaptureConformanceTests). Format: `# name: what it covers`, then one trace line:
+#   cfg <callGeneration> <lastScreenShareToken> <setupGeneration> <capture generation> | events…
+# Events are listed in Verification/CallCapture/README.md. `run.k` runs the k-th pending
+# main-actor job; written from traces/regressions.src, which may say `drain` (run the oldest job until none is left)
+# and `drain.n` (the same, keeping the oldest n pending) by `oracle expand`.
+
+# hangup-needs-permission: the remote hang-up that keeps the ended-call screen stops the camera, and video on from that screen does not restart it (CallTeardownTests.remoteHangupNeedingPermissionStopsTheCamera)
+cfg 0 0 0 0 | open.0.1 drain cacc.1 drain cstart.1 drain start drain setup.0.1 drain nst.R drain nend.N drain cstop drain video.1 drain
+
+# hangup-during-permission-prompt: granting the prompt after the hang-up starts nothing (CallTeardownTests.hangupWhileThePromptIsOpen)
+cfg 0 0 0 0 | open.0.1 drain hangup cacc.1 drain
+
+# grant-continues-after-hangup: the prompt is granted, the hang-up comes before the reconciler continues; it starts nothing
+cfg 0 0 0 0 | open.0.1 drain cacc.1 hangup drain
+
+# close-lobby-during-setup: setup that finishes after the lobby closed is cancelled by the service (CallTeardownTests.closingTheLobbyInvalidatesSetup)
+cfg 0 0 0 0 | open.0.1 drain cacc.1 drain cstart.1 drain start drain close setup.0.1 drain cstop drain
+
+# close-before-setup-task-starts: the lobby closes after Start but before the setup task runs; the task asks for no call (D5, fixed)
+cfg 0 0 0 0 | open.0.0 drain start close drain setup.0.1 drain
+
+# hangup-while-camera-starting: the camera is stopped as soon as its start finishes (CameraReconcilerTests.hangupWhileStarting)
+cfg 0 0 0 0 | open.0.1 drain cacc.1 drain hangup cstart.1 drain cstop drain
+
+# camera-start-continues-after-hangup: the camera has started, the hang-up comes before the reconciler continues; it is stopped
+cfg 0 0 0 0 | open.0.1 drain cacc.1 drain cstart.1 hangup drain cstop drain
+
+# old-stream-error: an old stream's late error does not stop the share that replaced it (CallTeardownTests.oldStreamErrorLeavesTheNewShare)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain toggle drain toggle drain serr.0 drain src.1.1 drain serr.0 drain pick drain sstop.0.1 drain sstart.1.1 drain serr.0 drain
+
+# late-error-of-replaced-share: an old stream's error hops while its share is current and runs once a new share presents; the new share keeps presenting (the stop callback's token)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain serr.0 toggle drain.1 sstop.0.1 drain.1 toggle drain.1 src.1.1 drain.1 pick drain.1 sstart.1.1 drain.1 run.0 drain
+
+# late-frame-of-replaced-share: an old share's frame hops while it is current and runs once a new share presents; it is dropped (the frame callback's token)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain sframe.0 toggle drain.1 sstop.0.1 drain.1 toggle drain.1 src.1.1 drain.1 pick drain.1 sstart.1.1 drain.1 run.0 sframe.1 drain
+
+# replace-share: stop sharing and share again in the same call; the stopped stream's output passes no frames
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain sframe.0 drain toggle drain sframe.0 sstop.0.1 drain toggle drain src.1.1 drain pick drain sstart.1.1 drain sframe.0 sframe.1 drain
+
+# replace-share-while-loading: a second share while the first one's sources are loading; the first one's late sources are ignored
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain toggle drain src.0.1 drain src.1.1 drain pick drain sstart.0.1 drain sframe.0 drain
+
+# hangup-while-stream-starting: the stream that finishes starting after the hang-up is stopped and never presented
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain hangup sstart.0.1 drain sstop.0.1 drain sframe.0 drain
+
+# hangup-before-present-task-starts: the pick's task starts after the hang-up; nothing is captured
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick hangup drain
+
+# hangup-before-sources-task-starts: the share button's task starts after the hang-up; it asks for no sources and shows no picker (D5, fixed)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle hangup drain src.0.1 drain
+
+# hangup-while-sources-loading: sources arriving after the hang-up show no picker
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain hangup src.0.1 drain pick drain
+
+# duplicate-pick: the same source picked twice; the first stream is stopped, one stream stays
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick pick drain sstart.0.1 drain sstart.1.1 drain sstop.0.1 drain sframe.0 sframe.1 drain
+
+# tasks-out-of-order: the second pick's task runs before the first; the first, starting last, is stopped
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick pick run.1 run.0 sstart.0.1 drain sstart.1.1 drain sstop.0.1 drain
+
+# rapid-redial: the previous call's late end leaves the new lobby for the same contact alone (D2, fixed)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain nst.R drain hangup drain open.0.0 drain nend.L drain
+
+# rapid-redial-start: starting again before the old call ended natively; RingRTC still has a call, so the setup starts none
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain hangup drain open.0.0 drain start drain setup.1.1 drain nend.L drain
+
+# late-setup: setup completes after the hang-up
+cfg 0 0 0 0 | open.0.1 drain start drain hangup setup.0.1 drain
+
+# video-off-during-setup: the user turns video off between Start and the call starting; it stays off and the service hears it (D1, fixed)
+cfg 0 0 0 0 | open.0.1 drain cacc.1 drain cstart.1 drain start drain video.0 drain cstop drain setup.0.1 drain nst.R nst.A drain cacc.1 drain cstart.1 drain cframe.1 drain
+
+# video-on-during-setup: the user turns video on during setup; it stays on and the service hears it (D1, fixed)
+cfg 0 0 0 0 | open.0.0 drain start drain video.1 drain cacc.1 drain cstart.1 drain setup.0.1 drain cframe.0 drain
+
+# incoming-accept-video: accept with video, the remote ends the call
+cfg 0 0 0 0 | nin.0.1 drain accept.0.1 drain cacc.1 drain cstart.1 drain nst.R nst.A drain cframe.0 drain nend.R drain cstop drain
+
+# incoming-during-lobby: a call from the contact whose lobby is open leaves the lobby alone, also when it ends (D2, fixed)
+cfg 0 0 0 0 | open.0.0 drain nin.0.1 drain nst.R drain nend.R drain
+
+# rejected-offer: a rejected offer from the contact leaves the lobby (D2, fixed)
+cfg 0 0 0 0 | open.0.0 drain nrej.0 drain
+
+# decline: declining a ring
+cfg 0 0 0 0 | nin.1.0 drain nst.R drain decline.1 drain nend.L drain
+
+# messages-out-of-order: the service's messages run newest first
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 nst.R nst.A run.4 run.3 run.2 run.1 run.0
+
+# duplicate-events: every completion and user action twice
+cfg 0 0 0 0 | open.0.1 open.0.1 drain cacc.1 cacc.1 drain cstart.1 cstart.1 drain start start drain setup.0.1 setup.0.1 drain hangup hangup drain cstop cstop drain
+
+# cleanup-failure: stopCapture throws; the app does not retry (the stream's physical state is unknown)
+cfg 0 0 0 0 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain hangup drain sstop.0.0 drain sframe.0 drain
+
+# counter-wrap: callGeneration, the share token, setupGeneration and the capture generation all wrap during the trace
+cfg 18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615 | open.0.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain sframe.0 drain hangup drain sstop.0.1 drain open.0.0 drain start drain setup.1.1 drain toggle drain src.1.1 drain pick drain sstart.1.1 drain sframe.1 sframe.0 drain
+
+# counter-wrap-mid-share: the token wraps between two shares of the same call
+cfg 7 18446744073709551614 3 18446744073709551614 | open.1.0 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain toggle drain sstop.0.1 drain toggle drain src.1.1 drain pick drain sstart.1.1 drain toggle drain sstop.1.1 drain toggle drain src.2.1 drain pick drain sstart.2.1 drain sframe.0 sframe.1 sframe.2 drain
+
+# stale-accepted: an accepted call ended by a rejected offer's `ended` while RingRTC still has it ringing; its later `accepted` does not mark the new lobby accepted (D2, fixed)
+cfg 0 0 0 0 | nin.0.1 drain nst.R drain accept.0.1 drain nrej.0 drain open.0.0 drain nst.A drain
+
+# accept-replaces-call: accepting a call while a lobby with a share is open tears the lobby down; its share starts nothing (D3, fixed)
+cfg 0 0 0 0 | open.0.1 drain toggle drain src.0.1 drain accept.0.1 pick drain
+
+# toggle-while-ending: the call ended in RingRTC with its messages pending; the share button stops the running capture it replaces (D4, fixed)
+cfg 0 0 0 0 | open.0.1 drain start drain setup.0.1 drain toggle drain src.0.1 drain pick drain sstart.0.1 drain nend.R toggle drain
+
+# accept-the-call-that-rang: the ring's call ends and another call from the contact arrives before the user accepts; only the call that rang would be accepted
+cfg 0 0 0 0 | nin.0.1 drain nend.R nin.0.0 accept.0.1 drain

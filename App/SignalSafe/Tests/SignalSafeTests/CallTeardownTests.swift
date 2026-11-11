@@ -26,7 +26,7 @@ import Testing
                 start: { [weak self] in self?.starts += 1; self?.running = true },
                 stop: { [weak self] in self?.running = false })
             session.cameraControl = CaptureReconciler(device: device, wanted: { [weak session] in session?.cameraWanted ?? false })
-            session.activeCall = ActiveCallState(conversationId: "c1", isGroup: false, stage: .inCall, directState: .accepted)
+            session.activeCall = ActiveCallState(conversationId: "c1", isGroup: false, stage: .inCall, directState: .accepted, callId: 7)
             session.callLocalVideo = true
         }
 
@@ -39,7 +39,8 @@ import Testing
         await rig.settle()
         #expect(rig.running)
         let before = rig.session.callGeneration
-        rig.session.handleCallingEvent(.callStateChange(conversationId: "c1", state: .ended, endedReason: .remoteHangupNeedPermission, acceptedTime: nil))
+        rig.session.handleCallingEvent(.callStateChange(conversationId: "c1", state: .ended, endedReason: .remoteHangupNeedPermission, acceptedTime: nil,
+                                                        callId: 7))
         await rig.settle()
         #expect(rig.session.activeCall?.endedNeedingPermission == true)   // the screen stays
         #expect(!rig.running && !rig.session.cameraWanted)                 // the camera does not

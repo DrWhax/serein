@@ -260,10 +260,12 @@ struct SettingsTab: View {
             s.hasSpellCheck = model.spellCheck
             s.initialSpellCheckSetting = model.spellCheckAtLaunch
             s.hasLinkPreviews = session.accountSettings.linkPreviews
+            s.emojiSkinToneDefault = session.emojiSkinTone
             s.isSyncSupported = false
             return s
         } set: { s in
             if let on = s.hasSpellCheck { model.spellCheck = on }
+            if s.emojiSkinToneDefault != session.emojiSkinTone { session.emojiSkinTone = s.emojiSkinToneDefault }
             if s.hasLinkPreviews != session.accountSettings.linkPreviews { session.updateAccountSettings { $0.linkPreviews = s.hasLinkPreviews } }
         }
     }

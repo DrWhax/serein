@@ -173,6 +173,8 @@ struct ConversationPane: View {
         a.selectedReaction = m.reactions.first { $0.fromId == session.ourAci }?.emoji
         var seen = Set<String>()
         a.messageEmojis = m.reactions.map(\.emoji).filter { seen.insert($0).inserted }
+        a.skinTone = session.emojiSkinTone
+        a.setSkinTone = { session.emojiSkinTone = $0 }
         if !m.isDeleted && !m.body.isEmpty { a.copy = { session.copyText(id) } }
         a.select = { session.toggleSelect(id, selected: true) }
         if session.canEdit(m, noteToSelf: isNoteToSelf) { a.edit = { session.startEdit(id) } }
@@ -513,7 +515,8 @@ struct ComposerFunPicker: View {
     var body: some View {
         FunPicker(tab: $tab) {
             // Stays open: pick several emoji in a row.
-            FunPanelEmojis(recentEmojis: session.recentEmojis, onSelectEmoji: { session.insertEmoji($0) })
+            FunPanelEmojis(recentEmojis: session.recentEmojis, skinTone: session.emojiSkinTone, onSelectEmoji: { session.insertEmoji($0) },
+                           onSelectSkinTone: { session.emojiSkinTone = $0 })
         } stickers: {
             FunPanelStickers(packs: session.stickerPacks.map { p in
                 FunStickerPack(id: p.id, title: p.title, cover: session.stickerImage(packId: p.id, stickerId: p.coverStickerId),

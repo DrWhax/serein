@@ -30,6 +30,9 @@ struct ActiveCallState: Equatable {
     var isCallLink = false
     /// Bumped when a group call changes (participants, join state): the screen re-reads it.
     var groupRevision = 0
+    /// The direct call this screen shows (RingRTC's call id): its events, and only its, apply.
+    /// nil in a lobby until its own setup's call starts.
+    var callId: UInt64?
     /// The call can carry our media: not merely its ended-call screen.
     var isLive: Bool { !endedNeedingPermission }
 }
@@ -69,7 +72,37 @@ struct CallDevices {
     }
 }
 
+/// What the call lifecycle asks of the calling service: CallingService in the app, a stand-in in
+/// the conformance tests (Verification/CallCapture), which drive this code against the Lean model.
+@MainActor protocol CallControl: AnyObject {
+    var isPresenting: Bool { get }
+    var activeConversationIds: Set<String> { get }
+    func directCallState(_ conversationId: String) -> CallState?
+    @discardableResult
+    func startOutgoingDirectCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool, setup: UInt64) async throws -> UInt64?
+    func joinGroupCall(conversationId: String, hasLocalAudio: Bool, hasLocalVideo: Bool, shouldRing: Bool) async throws
+    func joinCallLinkCall(roomId: String, rootKey: CallLinkRootKey, adminPasskey: Data?, hasLocalAudio: Bool, hasLocalVideo: Bool) async throws
+    func acceptDirectCall(conversationId: String, asVideoCall: Bool, callId: UInt64?)
+    func declineDirectCall(conversationId: String, callId: UInt64?)
+    func hangup(excludeRinging: Bool)
+    func endCall(conversationId: String, callId: UInt64?)
+    func setOutgoingAudio(conversationId: String, enabled: Bool)
+    func setOutgoingVideo(conversationId: String, enabled: Bool)
+    func setPresenting(conversationId: String, _ presenting: Bool)
+    func sendVideoFrame(width: Int, height: Int, format: VideoPixelFormat, buffer: [UInt8])
+}
+
+extension CallingService: CallControl {
+    func directCallState(_ conversationId: String) -> CallState? { directCall(for: conversationId)?.state }
+}
+
 @MainActor extension SignalSession {
+    /// The calling service as the call lifecycle sees it (`callControlOverride` in tests).
+    var callControl: (any CallControl)? {
+        if let callControlOverride { return callControlOverride }
+        return calling
+    }
+
     // MARK: setup
 
     /// The calling service for the linked account; its events drive the call UI.
@@ -112,19 +145,25 @@ struct CallDevices {
 
     func handleCallingEvent(_ e: CallingEvent) {
         switch e {
-        case .outgoingCall(let id, _, let video):
-            // Only the call this lobby started; one the user already left is ended instead.
-            guard activeCall?.conversationId == id, activeCall?.isLive == true else { return endStrayCall(id) }
-            activeCall = ActiveCallState(conversationId: id, isGroup: false, stage: .inCall, directState: .prering)
-            callLocalVideo = video
-        case .incomingDirectCall(let id, let isVideo):
+        case .outgoingCall(let id, _, let video, let callId, let setup):
+            // Only the call this lobby's own setup started (setup notes `callGeneration`, which
+            // every teardown bumps); one the user already left, or an older setup's, is ended.
+            guard let a = activeCall, a.conversationId == id, a.isLive, a.callId == nil, setup == callGeneration else {
+                return endStrayCall(id, callId: callId)
+            }
+            activeCall = ActiveCallState(conversationId: id, isGroup: false, stage: .inCall, directState: .prering, callId: callId)
+            // The user's video choice stands, also one changed during setup; the service hears it.
+            if callLocalVideo != video { callControl?.setOutgoingVideo(conversationId: id, enabled: callLocalVideo) }
+        case .incomingDirectCall(let id, let isVideo, let callId):
             guard activeCall == nil else { return }
-            ringingCall = (id, isVideo)
+            ringingCall = (id, isVideo, callId)
             if accountSettings.incomingCallNotification { NSApp.requestUserAttention(.criticalRequest) }
-        case .callStateChange(let id, let state, let reason, let acceptedTime):
-            if ringingCall?.conversationId == id, state == .ended || state == .accepted { if state == .ended { ringingCall = nil } }
-            guard activeCall?.conversationId == id, activeCall?.isLive == true else {
-                if state == .accepted { endStrayCall(id) }   // connected, but not on screen
+        case .callStateChange(let id, let state, let reason, let acceptedTime, let callId):
+            if ringingCall?.callId == callId, state == .ended { ringingCall = nil }
+            // Only the call on screen: not an earlier or later call with the same contact, nor a
+            // rejected offer (no call of ours).
+            guard let a = activeCall, a.callId == callId, a.isLive else {
+                if state == .accepted { endStrayCall(id, callId: callId) }   // connected, but not on screen
                 return
             }
             switch state {
@@ -143,12 +182,12 @@ struct CallDevices {
                     endCallUI()
                 }
             }
-        case .remoteAudioChange(let id, let has):
-            if activeCall?.conversationId == id { activeCall?.hasRemoteAudio = has }
-        case .remoteVideoChange(let id, let has):
-            if activeCall?.conversationId == id { activeCall?.hasRemoteVideo = has }
-        case .directCallAudioLevels(let id, let local, let remote):
-            if activeCall?.conversationId == id {
+        case .remoteAudioChange(_, let has, let callId):
+            if activeCall?.callId == callId { activeCall?.hasRemoteAudio = has }
+        case .remoteVideoChange(_, let has, let callId):
+            if activeCall?.callId == callId { activeCall?.hasRemoteVideo = has }
+        case .directCallAudioLevels(_, let local, let remote, let callId):
+            if activeCall?.callId == callId {
                 activeCall?.localAudioLevel = local
                 activeCall?.remoteAudioLevel = remote
             }
@@ -183,19 +222,21 @@ struct CallDevices {
         callSetupTask?.cancel()
         callSetupTask = nil
         stopPresenting(conversationId: conversationId)
-        calling?.hangup(excludeRinging: true)
+        callControl?.hangup(excludeRinging: true)
         cameraSends = false
         updateCamera()
         stopRingtone()
     }
 
     /// A call the screen is not showing (its setup outlived a hang-up): it must not keep our
-    /// microphone or camera, so it is ended.
-    func endStrayCall(_ conversationId: String) {
-        guard let calling, calling.activeConversationIds.contains(conversationId) else { return }
-        if calling.directCall(for: conversationId)?.state == .ringing, ringingCall?.conversationId == conversationId { return }
+    /// microphone or camera, so it is ended. `callId`: only that direct call, never a later one
+    /// the conversation has now.
+    func endStrayCall(_ conversationId: String, callId: UInt64? = nil) {
+        guard let calling = callControl, calling.activeConversationIds.contains(conversationId) else { return }
+        if calling.directCallState(conversationId) == .ringing, ringingCall?.conversationId == conversationId,
+           callId == nil || ringingCall?.callId == callId { return }
         Self.trace("calling: ending a call that is not on screen")
-        calling.endCall(conversationId: conversationId)
+        calling.endCall(conversationId: conversationId, callId: callId)
     }
 
     // MARK: actions
@@ -212,24 +253,29 @@ struct CallDevices {
 
     /// The lobby's "Start call" / "Join".
     func startCallFromLobby() {
-        guard let a = activeCall, a.isLive, callSetupTask == nil, let calling else { return }
+        guard let a = activeCall, a.isLive, callSetupTask == nil, let calling = callControl else { return }
         applyAudioDevices()
         let audio = callLocalAudio, video = callLocalVideo
         let generation = callGeneration
         let link = a.isCallLink ? callLinks.first(where: { $0.roomId == a.conversationId }) : nil
-        callSetupTask = Task { [weak self] in
+        callSetupTask = mainTasks.spawn("call.setup") { [weak self] in
+            // The task may start after a hang-up or the lobby closing: then no call is asked for.
+            guard self?.callGeneration == generation else { return }
             defer { if self?.callGeneration == generation { self?.callSetupTask = nil } }
             do {
+                var placed: UInt64?
                 if let link {
                     try await calling.joinCallLinkCall(roomId: link.roomId, rootKey: try CallLinkRootKey.fromBytes(link.rootKey), adminPasskey: link.adminKey,
                                                        hasLocalAudio: audio, hasLocalVideo: video)
                 } else if a.isGroup {
                     try await calling.joinGroupCall(conversationId: a.conversationId, hasLocalAudio: audio, hasLocalVideo: video, shouldRing: a.outgoingRing)
                 } else {
-                    try await calling.startOutgoingDirectCall(conversationId: a.conversationId, hasLocalAudio: audio, hasLocalVideo: video)
+                    placed = try await calling.startOutgoingDirectCall(conversationId: a.conversationId, hasLocalAudio: audio, hasLocalVideo: video,
+                                                                       setup: generation)
                 }
-                // Left during setup (the service's own check should already have stopped it).
-                if self?.callGeneration != generation { calling.endCall(conversationId: a.conversationId) }
+                // Left during setup (the service's own check should already have stopped it):
+                // the call this setup placed ends, not one the conversation has since.
+                if self?.callGeneration != generation, let placed { calling.endCall(conversationId: a.conversationId, callId: placed) }
             } catch {
                 guard let self, self.callGeneration == generation else { return }   // already torn down
                 Self.trace("call failed: \(error)")
@@ -239,37 +285,43 @@ struct CallDevices {
     }
 
     func acceptCall(_ conversationId: String, video: Bool) {
-        guard let calling else { return }
+        guard let calling = callControl else { return }
+        let callId = ringingCall?.conversationId == conversationId ? ringingCall?.callId : nil
+        // A call (or lobby) on screen is torn down first, as every other ending does; the
+        // ringing call is spared (`hangup(excludeRinging: true)`).
+        if activeCall != nil { endCallUI() }
         applyAudioDevices()
         ringingCall = nil
         stopRingtone()
-        activeCall = ActiveCallState(conversationId: conversationId, isGroup: false, stage: .inCall, directState: .accepted, acceptedAt: Date())
+        activeCall = ActiveCallState(conversationId: conversationId, isGroup: false, stage: .inCall, directState: .accepted, acceptedAt: Date(),
+                                     callId: callId)
         callLocalAudio = true
         callLocalVideo = video
-        calling.acceptDirectCall(conversationId: conversationId, asVideoCall: video)
+        calling.acceptDirectCall(conversationId: conversationId, asVideoCall: video, callId: callId)
         updateCamera()
     }
 
     func declineCall(_ conversationId: String) {
+        let callId = ringingCall?.conversationId == conversationId ? ringingCall?.callId : nil
         ringingCall = nil
         stopRingtone()
-        calling?.declineDirectCall(conversationId: conversationId)
+        callControl?.declineDirectCall(conversationId: conversationId, callId: callId)
     }
 
     func hangUp() {
-        calling?.hangup()
+        callControl?.hangup(excludeRinging: false)
         endCallUI()
     }
 
     func setCallAudio(_ on: Bool) {
         callLocalAudio = on
-        if let id = activeCall?.conversationId, activeCall?.stage == .inCall { calling?.setOutgoingAudio(conversationId: id, enabled: on) }
+        if let id = activeCall?.conversationId, activeCall?.stage == .inCall { callControl?.setOutgoingAudio(conversationId: id, enabled: on) }
     }
 
     func setCallVideo(_ on: Bool) {
         callLocalVideo = on
         guard let a = activeCall else { return }
-        if a.stage == .inCall { calling?.setOutgoingVideo(conversationId: a.conversationId, enabled: on) }
+        if a.stage == .inCall { callControl?.setOutgoingVideo(conversationId: a.conversationId, enabled: on) }
         updateCamera()
     }
 
@@ -294,25 +346,36 @@ struct CallDevices {
 
     func updateCamera() { cameraReconciler.update() }
 
+    /// The camera as the call lifecycle uses it: the permission prompt and the capture device.
+    /// The conformance tests stand in a fake device; the reconciler, the device closures below
+    /// and the frame callback are production's.
+    @MainActor struct CameraBackend {
+        var requestAccess: @MainActor () async -> Bool
+        var make: @MainActor (_ onFrame: @escaping @Sendable (CapturedFrame) -> Void) -> any CallCamera
+
+        static let system = CameraBackend(requestAccess: { await CameraCapture.requestAccess() }, make: { CameraCapture(onFrame: $0) })
+    }
+
     /// Starts and stops run one after another; each reads `cameraWanted` again after every
     /// wait (the permission prompt, the camera starting), so a hang-up meanwhile wins.
     var cameraReconciler: CaptureReconciler {
         if let cameraControl { return cameraControl }
+        let backend = cameraBackend, tasks = mainTasks
         let device = CaptureReconciler.Device(
-            requestAccess: { await CameraCapture.requestAccess() },
+            requestAccess: { await backend.requestAccess() },
             start: { [weak self] in
                 guard let self else { return }
-                let capture = camera ?? CameraCapture { [weak self] frame in
-                    Task { @MainActor in self?.cameraFrame(frame) }
+                let capture = camera ?? backend.make { [weak self] frame in
+                    _ = tasks.spawn("camera.frame") { self?.cameraFrame(frame) }
                 }
                 camera = capture
-                try await capture.start(deviceId: preferredCameraId)
+                try await capture.startCapture(deviceId: preferredCameraId)
             },
             stop: { [weak self] in
-                await self?.camera?.stop()
+                await self?.camera?.stopCapture()
                 self?.callLocalVideoModel.clear()
             })
-        let r = CaptureReconciler(device: device, wanted: { [weak self] in self?.cameraWanted ?? false }, report: { Self.trace($0) })
+        let r = CaptureReconciler(device: device, wanted: { [weak self] in self?.cameraWanted ?? false }, report: { Self.trace($0) }, tasks: tasks)
         cameraControl = r
         return r
     }
@@ -321,7 +384,9 @@ struct CallDevices {
         guard cameraWanted else { return }   // a frame already queued when the camera stopped
         callLocalVideoModel.present(frame)
         // While presenting, the screen's frames go out instead.
-        if cameraSends && calling?.isPresenting != true { calling?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12) }
+        if cameraSends && callControl?.isPresenting != true {
+            callControl?.sendVideoFrame(width: frame.width, height: frame.height, format: .nv12, buffer: frame.nv12)
+        }
     }
 
     /// The 1:1 call's remote video source (one per call).

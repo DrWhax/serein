@@ -157,6 +157,18 @@ public actor CameraCapture {
     }
 }
 
+/// The camera as the call lifecycle drives it (`CameraCapture`; the conformance tests use a
+/// stand-in device behind the same frame callback).
+public protocol CallCamera: AnyObject, Sendable {
+    func startCapture(deviceId: String?) async throws
+    func stopCapture() async
+}
+
+extension CameraCapture: CallCamera {
+    public func startCapture(deviceId: String?) async throws { try start(deviceId: deviceId) }
+    public func stopCapture() async { stop() }
+}
+
 extension CapturedFrame {
     /// The frame as I420 planes for the local preview (VideoRenderer); limited range.
     public var planes: VideoPlanes {

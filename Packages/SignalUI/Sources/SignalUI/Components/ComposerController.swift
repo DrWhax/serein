@@ -134,6 +134,16 @@ import SwiftUI
         onMentionQuery(nil)
     }
 
+    /// Types `text` at the caret (replacing the selection) as plain text, keeping the pills
+    /// and styles around it; false when no composer is attached or a draft is still to load.
+    @discardableResult public func insert(_ text: String) -> Bool {
+        guard let tv = textView, pendingDraft == nil else { return false }
+        tv.typingAttributes = Self.plainAttributes(tv)
+        tv.insertText(text, replacementRange: tv.selectedRange())
+        tv.typingAttributes = Self.plainAttributes(tv)
+        return true
+    }
+
     /// A deletion that touches a pill takes the whole pill.
     func expandDeletion(_ range: NSRange) -> NSRange {
         guard range.length > 0 else { return range }

@@ -1,0 +1,114 @@
+# Named regression traces, replayed against both the Lean model and production Swift
+# (CallCaptureConformanceTests). Format: `# name: what it covers`, then one trace line:
+#   cfg <callGeneration> <lastScreenShareToken> <setupGeneration> <capture generation> | events…
+# Events are listed in Verification/CallCapture/README.md. `run.k` runs the k-th pending
+# main-actor job; written from traces/regressions.src, which may say `drain` (run the oldest job until none is left)
+# and `drain.n` (the same, keeping the oldest n pending) by `oracle expand`.
+
+# hangup-needs-permission: the remote hang-up that keeps the ended-call screen stops the camera, and video on from that screen does not restart it (CallTeardownTests.remoteHangupNeedingPermissionStopsTheCamera)
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 run.0 cstart.1 run.0 start run.0 setup.0.1 run.0 run.0 nst.R run.0 nend.N run.0 run.0 run.0 run.0 cstop run.0 video.1 run.0 run.0
+
+# hangup-during-permission-prompt: granting the prompt after the hang-up starts nothing (CallTeardownTests.hangupWhileThePromptIsOpen)
+cfg 0 0 0 0 | open.0.1 run.0 hangup cacc.1 run.0 run.0 run.0
+
+# grant-continues-after-hangup: the prompt is granted, the hang-up comes before the reconciler continues; it starts nothing
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 hangup run.0 run.0 run.0 run.0
+
+# close-lobby-during-setup: setup that finishes after the lobby closed is cancelled by the service (CallTeardownTests.closingTheLobbyInvalidatesSetup)
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 run.0 cstart.1 run.0 start run.0 close setup.0.1 run.0 run.0 run.0 cstop run.0
+
+# close-before-setup-task-starts: the lobby closes after Start but before the setup task runs; the task asks for no call (D5, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 start close run.0 run.0 run.0 setup.0.1
+
+# hangup-while-camera-starting: the camera is stopped as soon as its start finishes (CameraReconcilerTests.hangupWhileStarting)
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 run.0 hangup cstart.1 run.0 run.0 run.0 cstop run.0
+
+# camera-start-continues-after-hangup: the camera has started, the hang-up comes before the reconciler continues; it is stopped
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 run.0 cstart.1 hangup run.0 run.0 run.0 cstop run.0
+
+# old-stream-error: an old stream's late error does not stop the share that replaced it (CallTeardownTests.oldStreamErrorLeavesTheNewShare)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 toggle run.0 toggle run.0 serr.0 run.0 src.1.1 run.0 serr.0 run.0 pick run.0 sstop.0.1 run.0 sstart.1.1 run.0 run.0 run.0 serr.0 run.0
+
+# late-error-of-replaced-share: an old stream's error hops while its share is current and runs once a new share presents; the new share keeps presenting (the stop callback's token)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 serr.0 toggle run.1 sstop.0.1 run.1 toggle run.1 src.1.1 run.1 pick run.1 sstart.1.1 run.1 run.1 run.1 run.0
+
+# late-frame-of-replaced-share: an old share's frame hops while it is current and runs once a new share presents; it is dropped (the frame callback's token)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 sframe.0 toggle run.1 sstop.0.1 run.1 toggle run.1 src.1.1 run.1 pick run.1 sstart.1.1 run.1 run.1 run.1 run.0 sframe.1 run.0
+
+# replace-share: stop sharing and share again in the same call; the stopped stream's output passes no frames
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 sframe.0 run.0 toggle run.0 sframe.0 sstop.0.1 run.0 toggle run.0 src.1.1 run.0 pick run.0 sstart.1.1 run.0 run.0 run.0 sframe.0 sframe.1 run.0
+
+# replace-share-while-loading: a second share while the first one's sources are loading; the first one's late sources are ignored
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 toggle run.0 run.0 src.0.1 run.0 src.1.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 sframe.0 run.0
+
+# hangup-while-stream-starting: the stream that finishes starting after the hang-up is stopped and never presented
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 hangup sstart.0.1 run.0 run.0 run.0 run.0 run.0 sstop.0.1 run.0 sframe.0
+
+# hangup-before-present-task-starts: the pick's task starts after the hang-up; nothing is captured
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick hangup run.0 run.0 run.0 run.0 run.0
+
+# hangup-before-sources-task-starts: the share button's task starts after the hang-up; it asks for no sources and shows no picker (D5, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle hangup run.0 run.0 run.0 run.0 run.0 src.0.1
+
+# hangup-while-sources-loading: sources arriving after the hang-up show no picker
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 hangup src.0.1 run.0 run.0 run.0 run.0 run.0 pick
+
+# duplicate-pick: the same source picked twice; the first stream is stopped, one stream stays
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick pick run.0 run.0 sstart.0.1 run.0 sstart.1.1 run.0 run.0 run.0 sstop.0.1 run.0 sframe.0 sframe.1 run.0
+
+# tasks-out-of-order: the second pick's task runs before the first; the first, starting last, is stopped
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick pick run.1 run.0 sstart.0.1 run.0 sstart.1.1 run.0 run.0 run.0 sstop.0.1 run.0
+
+# rapid-redial: the previous call's late end leaves the new lobby for the same contact alone (D2, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 nst.R run.0 hangup run.0 run.0 run.0 open.0.0 run.0 nend.L run.0 run.0 run.0
+
+# rapid-redial-start: starting again before the old call ended natively; RingRTC still has a call, so the setup starts none
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 hangup run.0 run.0 run.0 open.0.0 run.0 start run.0 setup.1.1 run.0 nend.L run.0 run.0 run.0
+
+# late-setup: setup completes after the hang-up
+cfg 0 0 0 0 | open.0.1 run.0 start run.0 hangup setup.0.1 run.0 run.0 run.0
+
+# video-off-during-setup: the user turns video off between Start and the call starting; it stays off and the service hears it (D1, fixed)
+cfg 0 0 0 0 | open.0.1 run.0 cacc.1 run.0 cstart.1 run.0 start run.0 video.0 run.0 cstop run.0 setup.0.1 run.0 run.0 run.0 run.0 nst.R nst.A run.0 run.0 cacc.1 cstart.1 cframe.1
+
+# video-on-during-setup: the user turns video on during setup; it stays on and the service hears it (D1, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 video.1 run.0 cacc.1 run.0 cstart.1 run.0 setup.0.1 run.0 run.0 run.0 run.0 cframe.0 run.0
+
+# incoming-accept-video: accept with video, the remote ends the call
+cfg 0 0 0 0 | nin.0.1 run.0 accept.0.1 run.0 cacc.1 run.0 cstart.1 run.0 nst.R nst.A run.0 run.0 run.0 run.0 cframe.0 run.0 nend.R run.0 run.0 run.0 run.0 cstop run.0
+
+# incoming-during-lobby: a call from the contact whose lobby is open leaves the lobby alone, also when it ends (D2, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 nin.0.1 run.0 nst.R run.0 nend.R run.0 run.0 run.0
+
+# rejected-offer: a rejected offer from the contact leaves the lobby (D2, fixed)
+cfg 0 0 0 0 | open.0.0 run.0 nrej.0 run.0
+
+# decline: declining a ring
+cfg 0 0 0 0 | nin.1.0 run.0 nst.R run.0 decline.1 nend.L run.0 run.0 run.0
+
+# messages-out-of-order: the service's messages run newest first
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 nst.R nst.A run.4 run.3 run.2 run.1 run.0
+
+# duplicate-events: every completion and user action twice
+cfg 0 0 0 0 | open.0.1 open.0.1 run.0 cacc.1 cacc.1 run.0 cstart.1 cstart.1 run.0 start start run.0 setup.0.1 setup.0.1 run.0 run.0 hangup hangup run.0 run.0 run.0 run.0 run.0 cstop cstop run.0
+
+# cleanup-failure: stopCapture throws; the app does not retry (the stream's physical state is unknown)
+cfg 0 0 0 0 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 hangup run.0 run.0 run.0 run.0 sstop.0.0 run.0 sframe.0
+
+# counter-wrap: callGeneration, the share token, setupGeneration and the capture generation all wrap during the trace
+cfg 18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615 | open.0.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 sframe.0 run.0 hangup run.0 run.0 run.0 run.0 sstop.0.1 run.0 open.0.0 run.0 start run.0 setup.1.1 run.0 toggle run.0 src.1.1 run.0 pick run.0 sstart.1.1 run.0 run.0 run.0 sframe.1 sframe.0 run.0
+
+# counter-wrap-mid-share: the token wraps between two shares of the same call
+cfg 7 18446744073709551614 3 18446744073709551614 | open.1.0 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 run.0 toggle run.0 sstop.0.1 run.0 toggle run.0 src.1.1 run.0 pick run.0 sstart.1.1 run.0 run.0 run.0 toggle run.0 sstop.1.1 run.0 toggle run.0 src.2.1 run.0 pick run.0 sstart.2.1 run.0 run.0 run.0 sframe.0 sframe.1 sframe.2 run.0
+
+# stale-accepted: an accepted call ended by a rejected offer's `ended` while RingRTC still has it ringing; its later `accepted` does not mark the new lobby accepted (D2, fixed)
+cfg 0 0 0 0 | nin.0.1 run.0 nst.R run.0 accept.0.1 run.0 nrej.0 run.0 open.0.0 nst.A run.0 run.0
+
+# accept-replaces-call: accepting a call while a lobby with a share is open tears the lobby down; its share starts nothing (D3, fixed)
+cfg 0 0 0 0 | open.0.1 run.0 toggle run.0 src.0.1 run.0 accept.0.1 pick run.0 run.0
+
+# toggle-while-ending: the call ended in RingRTC with its messages pending; the share button stops the running capture it replaces (D4, fixed)
+cfg 0 0 0 0 | open.0.1 run.0 start run.0 setup.0.1 run.0 run.0 toggle run.0 src.0.1 run.0 pick run.0 sstart.0.1 run.0 run.0 nend.R toggle run.0 run.0 run.0 run.0 run.0 run.0
+
+# accept-the-call-that-rang: the ring's call ends and another call from the contact arrives before the user accepts; only the call that rang would be accepted
+cfg 0 0 0 0 | nin.0.1 run.0 nend.R nin.0.0 accept.0.1 run.0 run.0 run.0 run.0 run.0 run.0

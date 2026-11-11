@@ -63,6 +63,13 @@ final class ScreenStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, Send
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer), let frame = CaptureFrames.pack(pixels) else { return }
+        deliver(frame)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: any Error) { stopped(error) }
+
+    /// A frame from the stream: kept for repeats, and passed on while running.
+    func deliver(_ frame: CapturedFrame) {
         let running = state.withLock { s in
             s.last = frame
             s.lastAt = .now
@@ -71,7 +78,8 @@ final class ScreenStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, Send
         if running { onFrame(frame) }
     }
 
-    func stream(_ stream: SCStream, didStopWithError error: any Error) {
+    /// The stream stopped on its own: no more frames, and the owner hears why.
+    func stopped(_ error: any Error) {
         state.withLock { $0.running = false }
         onStop(error)
     }
@@ -109,6 +117,7 @@ public final class ScreenShareCapture {
     var repeater: Task<Void, Never>?
     let onFrame: @Sendable (CapturedFrame) -> Void
     let onStop: @Sendable ((any Error)?) -> Void
+    let tasks: MainTasks
     let queue = DispatchQueue(label: "signalsafe.screen-share")
     /// The shareable content from the last `sources()`, to resolve a picked id.
     var content: SCShareableContent?
@@ -116,9 +125,11 @@ public final class ScreenShareCapture {
     /// previous stream stopping, or on its own stream starting) gives up, and stops its stream.
     var generation: UInt64 = 0
 
-    public init(onFrame: @escaping @Sendable (CapturedFrame) -> Void, onStop: @escaping @Sendable ((any Error)?) -> Void) {
+    public init(onFrame: @escaping @Sendable (CapturedFrame) -> Void, onStop: @escaping @Sendable ((any Error)?) -> Void,
+                tasks: MainTasks = .system) {
         self.onFrame = onFrame
         self.onStop = onStop
+        self.tasks = tasks
     }
 
     /// Displays and on-screen windows of other apps, with thumbnails (`getSources`).
@@ -189,14 +200,21 @@ public final class ScreenShareCapture {
     /// Starts sharing `filter` (from `filter(for:)` or the system picker). Throws
     /// CancellationError if `stop()` (or another start) came first; nothing is then captured.
     public func start(_ filter: SCContentFilter) async throws {
+        try await start { out in
+            let s = SCStream(filter: filter, configuration: Self.configuration(contentSize: filter.contentRect.size, scale: CGFloat(filter.pointPixelScale)),
+                             delegate: out)
+            try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: queue)
+            return s
+        }
+    }
+
+    /// `start(_:)` with the stream made by `makeStream` (the conformance tests pass a stand-in).
+    func start(makeStream: (ScreenStreamOutput) throws -> any ScreenStream) async throws {
         let generation = begin()
         await teardown()
         guard generation == self.generation else { throw CancellationError() }
         let out = ScreenStreamOutput(onFrame: onFrame, onStop: onStop)
-        let s = SCStream(filter: filter, configuration: Self.configuration(contentSize: filter.contentRect.size, scale: CGFloat(filter.pointPixelScale)),
-                         delegate: out)
-        try s.addStreamOutput(out, type: .screen, sampleHandlerQueue: queue)
-        try await install(s, output: out, generation)
+        try await install(try makeStream(out), output: out, generation)
     }
 
     func begin() -> UInt64 {
@@ -215,13 +233,16 @@ public final class ScreenShareCapture {
         }
         stream = s
         output = out
-        repeater = Task { [out] in
+        repeater = tasks.spawn("screen.repeat") { [out] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 out.repeatIfStale()
             }
         }
     }
+
+    /// A start still in progress gives up (now, before `stop()` gets to run).
+    public func cancelStart() { _ = begin() }
 
     /// Stops sharing, including a start still in progress.
     public func stop() async {

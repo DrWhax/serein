@@ -119,11 +119,11 @@ import SignalUI
     /// picture-in-picture, the camera and its preview.
     var calling: CallingService?
     var activeCall: ActiveCallState?
-    var ringingCall: (conversationId: String, isVideo: Bool)?
+    var ringingCall: (conversationId: String, isVideo: Bool, callId: UInt64)?
     var callLocalAudio = true
     var callLocalVideo = false
     var callPip = false
-    @ObservationIgnored var camera: CameraCapture?
+    @ObservationIgnored var camera: (any CallCamera)?
     @ObservationIgnored var cameraSends = false
     /// Starts and stops the camera to match `cameraWanted`, rechecking after every wait.
     @ObservationIgnored var cameraControl: CaptureReconciler?
@@ -136,6 +136,12 @@ import SignalUI
     /// share or call (a call generation alone does not tell two shares in one call apart).
     @ObservationIgnored var screenShareToken: UInt64?
     @ObservationIgnored var lastScreenShareToken: UInt64 = 0
+    /// Tests: the calling service and ScreenCaptureKit the call lifecycle talks to (`callControl`).
+    @ObservationIgnored var callControlOverride: (any CallControl)?
+    @ObservationIgnored var screenShareBackend = ScreenShareBackend.system
+    /// Tests: the camera device (`CameraBackend`) and where the call lifecycle's tasks start.
+    @ObservationIgnored var cameraBackend = CameraBackend.system
+    @ObservationIgnored var mainTasks = MainTasks.system
     var preferredCameraId: String?
     var preferredMicrophoneId: String?
     var preferredSpeakerId: String?
