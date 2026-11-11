@@ -6,6 +6,8 @@ A native Signal client for macOS. Built with SwiftUI, with every image and video
 
 > [!WARNING]
 > **Serein is experimental software.** Do not rely on it for strong cryptography or security yet. No one has formally verified that its crypto code is implemented safely.
+> If you need strong security, you should use the normal Signal clients. 
+> This is also LLM generated code.
 
 Serein is not affiliated with or endorsed by Signal Messenger LLC.
 
