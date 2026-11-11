@@ -5,7 +5,12 @@ public import CodecCore
 
 public enum GIFDecoder {
     public static func decode(_ bytes: [UInt8], limits: DecodeLimits = .default) throws(ParseFailure) -> DecodedImage {
-        let file = try GIFGrammar.file(ByteSlice(bytes), limits: limits)
+        try decode(try GIFGrammar.file(ByteSlice(bytes), limits: limits), limits: limits)
+    }
+
+    /// A parsed file's image (for callers that also read the file's own fields, such as its
+    /// loop count as stored).
+    public static func decode(_ file: GIFFile, limits: DecodeLimits = .default) throws(ParseFailure) -> DecodedImage {
         let anim = try composite(file, limits: limits)
         if anim.frames.count == 1 { return .still(anim.frames[0].image) }
         let bytesNeeded = anim.width * anim.height * 4

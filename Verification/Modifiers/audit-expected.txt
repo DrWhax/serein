@@ -1,0 +1,459 @@
+structure Modifiers.S : Type
+number of parameters: 0
+fields:
+  Modifiers.S.rows : List Row
+  Modifiers.S.pending : List Entry
+  Modifiers.S.next : Nat
+  Modifiers.S.now : Nat
+  Modifiers.S.resolved : List (Modifiers.Mod × Row × Bool)
+  Modifiers.S.exhausted : Bool
+constructor:
+  Modifiers.S.mk (rows : List Row) (pending : List Entry) (next now : Nat)
+    (resolved : List (Modifiers.Mod × Row × Bool)) (exhausted : Bool) : S
+structure Modifiers.Row : Type
+number of parameters: 0
+fields:
+  Modifiers.Row.gen : Nat
+  Modifiers.Row.author : Nat
+  Modifiers.Row.sentAt : Nat
+  Modifiers.Row.conv : Nat
+  Modifiers.Row.server : Nat
+  Modifiers.Row.outgoing : Bool
+  Modifiers.Row.sentTo : List Nat
+  Modifiers.Row.viewOnce : Bool
+  Modifiers.Row.voice : Bool
+  Modifiers.Row.poll : Bool
+  Modifiers.Row.terminated : Bool
+  Modifiers.Row.giftBadge : Bool
+  Modifiers.Row.pinned : Bool
+  Modifiers.Row.deleted : Bool
+  Modifiers.Row.erased : Bool
+  Modifiers.Row.rev : Nat
+  Modifiers.Row.revs : List Nat
+constructor:
+  Modifiers.Row.mk (gen author sentAt conv server : Nat) (outgoing : Bool) (sentTo : List Nat)
+    (viewOnce voice poll terminated giftBadge pinned deleted erased : Bool) (rev : Nat) (revs : List Nat) : Row
+structure Modifiers.Mod : Type
+number of parameters: 0
+fields:
+  Modifiers.Mod.kind : Kind
+  Modifiers.Mod.sender : Nat
+  Modifiers.Mod.conv : Nat
+  Modifiers.Mod.src : Src
+  Modifiers.Mod.author : Nat
+  Modifiers.Mod.target : Nat
+  Modifiers.Mod.ts : Nat
+  Modifiers.Mod.server : Nat
+constructor:
+  Modifiers.Mod.mk (kind : Kind) (sender conv : Nat) (src : Src) (author target ts server : Nat) : Modifiers.Mod
+class _root_.Mod.{u} (α : Type u) : Type u
+number of parameters: 1
+fields:
+  Mod.mod : α → α → α
+constructor:
+  Mod.mk.{u} {α : Type u} (mod : α → α → α) : _root_.Mod α
+structure Modifiers.World : Type
+number of parameters: 0
+fields:
+  Modifiers.World.us : Nat
+  Modifiers.World.groups : List Group
+  Modifiers.World.blocked : List Nat
+  Modifiers.World.blockedGroups : List Nat
+constructor:
+  Modifiers.World.mk (us : Nat) (groups : List Group) (blocked blockedGroups : List Nat) : World
+structure Modifiers.Entry : Type
+number of parameters: 0
+fields:
+  Modifiers.Entry.mod : Modifiers.Mod
+  Modifiers.Entry.stored : Nat
+constructor:
+  Modifiers.Entry.mk (mod : Modifiers.Mod) (stored : Nat) : Entry
+def Modifiers.accepts : World → Row → Modifiers.Mod → Bool :=
+fun w r m =>
+  match m.kind with
+  | Kind.delete =>
+    !r.deleted && inConv r m && r.conv != w.us && m.sender == r.author && within m.server r.server deleteWindow
+  | Kind.adminDelete =>
+    !r.deleted && inConv r m && r.conv != w.us && isAdmin w r.conv m.sender && within m.server r.server deleteWindow
+  | Kind.edit => editValid w r m && decide (r.rev < m.ts)
+  | Kind.reaction =>
+    !r.deleted && !r.viewOnce &&
+      (m.sender == w.us ||
+        r.conv == m.conv && belongs w m.sender r.conv && !blockedIn w r.conv m.sender && sentToSender r m)
+  | Kind.vote =>
+    !r.deleted && r.poll && !r.terminated && belongs w m.sender r.conv &&
+      (m.sender == w.us || inConv r m && !blockedIn w r.conv m.sender && sentToSender r m)
+  | Kind.terminate => r.poll && !r.terminated && m.sender == r.author && inConv r m
+  | Kind.pin => pinnable w r m
+  | Kind.unpin => pinnable w r m && r.pinned
+def Modifiers.editValid : World → Row → Modifiers.Mod → Bool :=
+fun w r m =>
+  editable r && m.sender == r.author && r.conv == m.conv &&
+      (within m.server r.server editWindow || m.src != Src.other) &&
+    (m.src != Src.other || !blockedIn w r.conv m.sender)
+def Modifiers.pinnable : World → Row → Modifiers.Mod → Bool :=
+fun w r m =>
+  !r.deleted && !r.giftBadge && inConv r m && !blockedIn w r.conv m.sender && belongs w m.sender r.conv &&
+    canEditAttrs w r.conv m.sender
+def Modifiers.belongs : World → Nat → Nat → Bool :=
+fun w s c =>
+  s == w.us ||
+    match w.group c with
+    | some g => g.members.contains s
+    | none => c == s
+def Modifiers.blockedIn : World → Nat → Nat → Bool :=
+fun w c s =>
+  w.blocked.contains s ||
+    match w.group c with
+    | some val => w.blockedGroups.contains c
+    | none => w.blocked.contains c
+def Modifiers.canEditAttrs : World → Nat → Nat → Bool :=
+fun w c s =>
+  match w.group c with
+  | some g => g.members.contains s && (g.admins.contains s || g.openAttrs)
+  | none => true
+def Modifiers.effect : Row → Modifiers.Mod → Row :=
+fun r m =>
+  match m.kind with
+  | Kind.delete =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := false, terminated := false,
+      giftBadge := r.giftBadge, pinned := false, deleted := true, erased := true, rev := r.rev, revs := [] }
+  | Kind.adminDelete =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := false, terminated := false,
+      giftBadge := r.giftBadge, pinned := false, deleted := true, erased := true, rev := r.rev, revs := [] }
+  | Kind.edit =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := r.poll, terminated := r.terminated,
+      giftBadge := r.giftBadge, pinned := r.pinned, deleted := r.deleted, erased := r.erased, rev := m.ts,
+      revs := m.ts :: r.revs }
+  | Kind.terminate =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := r.poll, terminated := true,
+      giftBadge := r.giftBadge, pinned := r.pinned, deleted := r.deleted, erased := r.erased, rev := r.rev,
+      revs := r.revs }
+  | Kind.pin =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := r.poll, terminated := r.terminated,
+      giftBadge := r.giftBadge, pinned := true, deleted := r.deleted, erased := r.erased, rev := r.rev, revs := r.revs }
+  | Kind.unpin =>
+    { gen := r.gen, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+      sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := r.poll, terminated := r.terminated,
+      giftBadge := r.giftBadge, pinned := false, deleted := r.deleted, erased := r.erased, rev := r.rev,
+      revs := r.revs }
+  | Kind.reaction => r
+  | Kind.vote => r
+def Modifiers.resolves : Row → Modifiers.Mod → Bool :=
+fun r m => r.author == m.author && (r.sentAt == m.target || r.revs.contains m.target)
+def Modifiers.lookup : List Row → Modifiers.Mod → Option Row :=
+fun rows m =>
+  List.find? (fun r => r.author == m.author && r.sentAt == m.target) rows <|>
+    List.find? (fun r => r.author == m.author && r.revs.contains m.target) rows
+def Modifiers.heaviestFrom : (Entry → Nat) → Option Entry → List Entry → Option Entry :=
+fun c x x_1 => List.brecOn (motive := fun x => Option Entry → Option Entry) x_1 (heaviestFrom._f c) x
+def Modifiers.heaviest : List Entry → Option Entry :=
+fun l => heaviestFrom (fun e => count l e.mod.sender) none l
+def Modifiers.evict : List Entry → List Entry :=
+fun l =>
+  match heaviest l with
+  | some b => l.erase b
+  | none => l
+def Modifiers.trim : Nat → Nat → List Entry → List Entry :=
+fun limit x x_1 => Nat.brecOn (motive := fun x => List Entry → List Entry) x (trim._f limit) x_1
+def Modifiers.kept : List Entry → Entry → Nat → Nat → List Entry :=
+fun l e limit now =>
+  have l' := List.filter (fun x => decide (now - x.stored ≤ pendingMaxAge)) l ++ [e];
+  trim limit l'.length l'
+def Modifiers.applyMod : World → Nat → S → Modifiers.Mod → Bool → S :=
+fun w x x_1 x_2 x_3 => Nat.brecOn (motive := fun x => S → Modifiers.Mod → Bool → S) x (applyMod._f w) x_1 x_2 x_3
+def Modifiers.step : World → S → Ev → S :=
+fun w s x =>
+  match x with
+  | Ev.recv r =>
+    if (s.rows.any fun x => x.author == r.author && x.sentAt == r.sentAt) = true then s
+    else
+      have r := fresh s r;
+      have k := (r.author, r.sentAt);
+      have s1 :=
+        { rows := s.rows ++ [r], pending := s.pending, next := s.next + 1, now := s.now, resolved := s.resolved,
+          exhausted := s.exhausted };
+      List.foldl (fun s e => applyMod w (s1.pending.length + 1) s e.mod false)
+        { rows := s1.rows, pending := List.filter (fun x => !targets k x) s1.pending, next := s1.next, now := s1.now,
+          resolved := s1.resolved, exhausted := s1.exhausted }
+        (sortTs (List.filter (targets k) s1.pending))
+  | Ev.mod m => applyMod w (s.pending.length + 2) s m (m.src != Src.here)
+  | Ev.forget a t =>
+    { rows := List.filter (fun x => !(x.author == a && x.sentAt == t)) s.rows, pending := s.pending, next := s.next,
+      now := s.now, resolved := s.resolved, exhausted := s.exhausted }
+  | Ev.tick n =>
+    { rows := s.rows, pending := s.pending, next := s.next, now := s.now + n, resolved := s.resolved,
+      exhausted := s.exhausted }
+def Modifiers.fresh : S → Row → Row :=
+fun s r =>
+  { gen := s.next, author := r.author, sentAt := r.sentAt, conv := r.conv, server := r.server, outgoing := r.outgoing,
+    sentTo := r.sentTo, viewOnce := r.viewOnce, voice := r.voice, poll := r.poll, terminated := false,
+    giftBadge := r.giftBadge, pinned := false, deleted := false, erased := false, rev := r.sentAt, revs := [] }
+inductive Modifiers.Reach : World → S → Prop
+number of parameters: 1
+constructors:
+Modifiers.Reach.init : ∀ {w : World}, Reach w S.init
+Modifiers.Reach.step : ∀ {w : World} {s : S} (e : Ev), Reach w s → Reach w (step w s e)
+def Modifiers.S.get : S → Nat → Option Row :=
+fun s g => List.find? (fun x => x.gen == g) s.rows
+def Modifiers.ResolvedCorrect : World → S → Prop :=
+fun w s =>
+  ∀ (x : Modifiers.Mod × Row × Bool),
+    x ∈ s.resolved → resolves x.snd.fst x.fst = true ∧ x.snd.snd = accepts w x.snd.fst x.fst
+def Modifiers.PendingUnresolvable : S → Prop :=
+fun s => ∀ (e : Entry), e ∈ s.pending → ∀ (r : Row), r ∈ s.rows → resolves r e.mod = false
+def Modifiers.NewestShown : World → S → Prop :=
+fun w s =>
+  ∀ (r : Row),
+    r ∈ s.rows →
+      (r.deleted = false →
+          ∀ (x : Modifiers.Mod × Row × Bool),
+            x ∈ s.resolved →
+              x.snd.fst.gen = r.gen → x.fst.kind = Kind.edit → editValid w x.snd.fst x.fst = true → x.fst.ts ≤ r.rev) ∧
+        (r.rev = r.sentAt ∨
+          ∃ x, x ∈ s.resolved ∧ x.snd.fst.gen = r.gen ∧ x.fst.kind = Kind.edit ∧ x.snd.snd = true ∧ x.fst.ts = r.rev)
+def Modifiers.StepOk : S → S → Prop :=
+fun s s' =>
+  ∃ new,
+    s'.resolved = new ++ s.resolved ∧
+      ∀ (g : Nat) (r : Row),
+        s.get g = some r →
+          s'.get g = none ∨
+            ∃ r',
+              s'.get g = some r' ∧
+                r'.author = r.author ∧
+                  r'.sentAt = r.sentAt ∧
+                    r'.conv = r.conv ∧
+                      r.rev ≤ r'.rev ∧
+                        (r.deleted = true → r' = r) ∧ (r' ≠ r → ∃ x, x ∈ new ∧ x.snd.fst.gen = g ∧ x.snd.snd = true)
+structure Modifiers.Inv (w : World) (s : S) : Prop
+number of parameters: 2
+fields:
+  Modifiers.Inv.genLt : ∀ (r : Row), r ∈ s.rows → r.gen < s.next
+  Modifiers.Inv.nodup : (List.map (fun x => x.gen) s.rows).Nodup
+  Modifiers.Inv.resLt : ∀ (x : Modifiers.Mod × Row × Bool), x ∈ s.resolved → x.snd.fst.gen < s.next
+  Modifiers.Inv.res : ResolvedCorrect w s
+  Modifiers.Inv.pend : PendingUnresolvable s
+  Modifiers.Inv.newest : NewestShown w s
+  Modifiers.Inv.clean : ∀ (r : Row), r ∈ s.rows → r.deleted = true → r.poll = false
+constructor:
+  Modifiers.Inv.mk {w : World} {s : S} (genLt : ∀ (r : Row), r ∈ s.rows → r.gen < s.next)
+    (nodup : (List.map (fun x => x.gen) s.rows).Nodup)
+    (resLt : ∀ (x : Modifiers.Mod × Row × Bool), x ∈ s.resolved → x.snd.fst.gen < s.next) (res : ResolvedCorrect w s)
+    (pend : PendingUnresolvable s) (newest : NewestShown w s)
+    (clean : ∀ (r : Row), r ∈ s.rows → r.deleted = true → r.poll = false) : Modifiers.Inv w s
+class _root_.Inv.{u} (α : Type u) : Type u
+number of parameters: 1
+fields:
+  Inv.inv : α → α
+constructor:
+  Inv.mk.{u} {α : Type u} (inv : α → α) : _root_.Inv α
+159 definitions
+Modifiers.Entry 3931117990 17121671976879251605
+Modifiers.Entry.casesOn 3739658232 4070743739
+Modifiers.Entry.mk 3432202711 -
+Modifiers.Entry.mod 3340925085 933049773
+Modifiers.Entry.rec 813563205 -
+Modifiers.Entry.stored 1980732184 2912641825
+Modifiers.Ev 3931117990 8393368258032066412
+Modifiers.Ev.casesOn 2766185686 3381986695
+Modifiers.Ev.forget 1099172360 -
+Modifiers.Ev.mod 2243875052 -
+Modifiers.Ev.rec 1899081550 -
+Modifiers.Ev.recv 671240117 -
+Modifiers.Ev.tick 101029592 -
+Modifiers.Group 3931117990 2411591729572770780
+Modifiers.Group.admins 3405039585 946356181
+Modifiers.Group.conv 561277526 2879055284
+Modifiers.Group.members 3405039585 3412168360
+Modifiers.Group.mk 963460082 -
+Modifiers.Group.openAttrs 2815855160 3617217766
+Modifiers.Kind 3931117990 9314585451688542221
+Modifiers.Kind.adminDelete 2251398039 -
+Modifiers.Kind.casesOn 3832492883 1561517158
+Modifiers.Kind.ctorIdx 748981858 789361405
+Modifiers.Kind.delete 2251398039 -
+Modifiers.Kind.edit 2251398039 -
+Modifiers.Kind.pin 2251398039 -
+Modifiers.Kind.reaction 2251398039 -
+Modifiers.Kind.rec 2971409034 -
+Modifiers.Kind.terminate 2251398039 -
+Modifiers.Kind.unpin 2251398039 -
+Modifiers.Kind.vote 2251398039 -
+Modifiers.Mod 3931117990 17835566030998576337
+Modifiers.Mod.author 638959300 842551581
+Modifiers.Mod.casesOn 2402288545 2530700098
+Modifiers.Mod.conv 638959300 4039270323
+Modifiers.Mod.kind 2179290857 2515631969
+Modifiers.Mod.mk 3276040777 -
+Modifiers.Mod.rec 13585870 -
+Modifiers.Mod.sender 638959300 3128899777
+Modifiers.Mod.server 638959300 589327084
+Modifiers.Mod.src 3400098392 2037391661
+Modifiers.Mod.target 638959300 979220975
+Modifiers.Mod.ts 638959300 1308658964
+Modifiers.NewestShown 2252726997 2782510803
+Modifiers.PendingUnresolvable 1671334738 3262407529
+Modifiers.Reach 2252726997 6431791972654294811
+Modifiers.Reach.init 4079042536 -
+Modifiers.Reach.step 1257570441 -
+Modifiers.ResolvedCorrect 2252726997 743804975
+Modifiers.Row 3931117990 18301469427925986671
+Modifiers.Row.author 3423926756 1123768744
+Modifiers.Row.conv 3423926756 239339358
+Modifiers.Row.deleted 294421089 2208129223
+Modifiers.Row.erased 294421089 2619305409
+Modifiers.Row.gen 3423926756 2711205993
+Modifiers.Row.giftBadge 294421089 422992178
+Modifiers.Row.mk 3339315138 -
+Modifiers.Row.outgoing 294421089 2095320937
+Modifiers.Row.pinned 294421089 3310099104
+Modifiers.Row.poll 294421089 2991964296
+Modifiers.Row.rev 3423926756 355476282
+Modifiers.Row.revs 736172981 2165914578
+Modifiers.Row.sentAt 3423926756 307725860
+Modifiers.Row.sentTo 736172981 1221636840
+Modifiers.Row.server 3423926756 2154064957
+Modifiers.Row.terminated 294421089 95845360
+Modifiers.Row.viewOnce 294421089 2463892176
+Modifiers.Row.voice 294421089 4175784177
+Modifiers.S 3931117990 9920969899315144891
+Modifiers.S.exhausted 2108823705 1715805995
+Modifiers.S.get 136918498 2580102261
+Modifiers.S.init 3698732401 2291354525
+Modifiers.S.mk 4120716990 -
+Modifiers.S.next 2878558189 1581281641
+Modifiers.S.now 2878558189 319886353
+Modifiers.S.pending 1564269104 2390107102
+Modifiers.S.resolved 3269545536 2492507368
+Modifiers.S.rows 1333394082 2878961827
+Modifiers.Src 3931117990 4690615640568009441
+Modifiers.Src.casesOn 3606643953 2070217702
+Modifiers.Src.ctorIdx 392728153 1405725964
+Modifiers.Src.here 2906361642 -
+Modifiers.Src.other 2906361642 -
+Modifiers.Src.rec 706088417 -
+Modifiers.Src.sync 2906361642 -
+Modifiers.StepOk 3229266364 2853105804
+Modifiers.World 3931117990 7489807903340651587
+Modifiers.World.blocked 1904261570 434317925
+Modifiers.World.blockedGroups 1904261570 495960402
+Modifiers.World.group 230850498 298332466
+Modifiers.World.groups 1291459984 1067784136
+Modifiers.World.mk 4104896325 -
+Modifiers.World.us 777818911 168076899
+Modifiers.accepts 2405000370 2466249212
+Modifiers.applyMod 3782581163 2707609003
+Modifiers.applyMod._f 1076226768 4029174484
+Modifiers.applyMod.match_1 906576482 50675263
+Modifiers.applyMod.match_3 889834918 574474501
+Modifiers.belongs 158955988 1000269481
+Modifiers.belongs.match_1 2499596394 3989767548
+Modifiers.blockedIn 158955988 2922383877
+Modifiers.canEditAttrs 158955988 1772344584
+Modifiers.count 823351457 545785282
+Modifiers.deleteWindow 421340980 1058794658
+Modifiers.editValid 2405000370 3032560954
+Modifiers.editWindow 421340980 1058794658
+Modifiers.editable 294421089 864589112
+Modifiers.effect 199464894 3407609201
+Modifiers.effect.match_1 2080962170 2482869979
+Modifiers.evict 420759948 125107693
+Modifiers.evict.match_1 2333361662 2654507951
+Modifiers.fresh 1672897076 3445786711
+Modifiers.heaviest 1235454121 3860352999
+Modifiers.heaviestFrom 3080692631 3203265171
+Modifiers.heaviestFrom._f 2844696886 2502340774
+Modifiers.heaviestFrom.match_1 1540596586 3987464453
+Modifiers.inConv 631704959 202371593
+Modifiers.instDecidableEqEntry 3524851353 4072650136
+Modifiers.instDecidableEqEntry.decEq 571894530 1611629150
+Modifiers.instDecidableEqEntry.decEq._proof_1 1857610375 -
+Modifiers.instDecidableEqEntry.decEq._proof_2 4072181003 -
+Modifiers.instDecidableEqEntry.decEq._proof_3 388373955 -
+Modifiers.instDecidableEqEntry.decEq.match_1 2028915856 564543188
+Modifiers.instDecidableEqKind 221148746 1627849581
+Modifiers.instDecidableEqKind._proof_1 1117155419 -
+Modifiers.instDecidableEqKind._proof_2 1887229809 -
+Modifiers.instDecidableEqMod 407793900 559089741
+Modifiers.instDecidableEqMod.decEq 4154526283 4247648965
+Modifiers.instDecidableEqMod.decEq._proof_1 1547122112 -
+Modifiers.instDecidableEqMod.decEq._proof_2 253890677 -
+Modifiers.instDecidableEqMod.decEq._proof_3 2902623684 -
+Modifiers.instDecidableEqMod.decEq._proof_4 1929119061 -
+Modifiers.instDecidableEqMod.decEq._proof_5 2808178619 -
+Modifiers.instDecidableEqMod.decEq._proof_6 988810168 -
+Modifiers.instDecidableEqMod.decEq._proof_7 3514447624 -
+Modifiers.instDecidableEqMod.decEq._proof_8 7412863 -
+Modifiers.instDecidableEqMod.decEq._proof_9 4216051098 -
+Modifiers.instDecidableEqMod.decEq.match_1 2653088022 2955885250
+Modifiers.instDecidableEqSrc 1358680191 3764155643
+Modifiers.instDecidableEqSrc._proof_1 3043722065 -
+Modifiers.instDecidableEqSrc._proof_2 1006830586 -
+Modifiers.instReprEv.repr.match_1 1358442860 3649853476
+Modifiers.instReprKind.repr.match_1 3872016836 650288242
+Modifiers.isAdmin 158955988 3447790815
+Modifiers.kept 521546906 1313298310
+Modifiers.lookup 2307109172 3988804784
+Modifiers.pendingLimit 421340980 2402371325
+Modifiers.pendingMaxAge 421340980 1058794658
+Modifiers.pinnable 2405000370 769122714
+Modifiers.resolves 631704959 705449367
+Modifiers.sentToSender 631704959 3158365618
+Modifiers.sortTs 420759948 3552614661
+Modifiers.step 3338424333 2125387016
+Modifiers.targets 3497661845 1906243739
+Modifiers.trim 4164220125 1256357081
+Modifiers.trim._f 2909838204 553892565
+Modifiers.trim.match_1 2124248448 2098892658
+Modifiers.update 484436604 2997897544
+Modifiers.within 70975716 4099000194
+accepts_conversation : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  accepts w r m = true → m.src = Src.other → m.sender ≠ w.us → r.conv = m.conv
+accepts_edit_conversation : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.edit → accepts w r m = true → r.conv = m.conv
+accepts_author : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.delete ∨ m.kind = Kind.edit ∨ m.kind = Kind.terminate → accepts w r m = true → m.sender = r.author
+accepts_admin : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.adminDelete → accepts w r m = true → isAdmin w r.conv m.sender = true
+accepts_member : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.reaction ∨ m.kind = Kind.vote ∨ m.kind = Kind.pin ∨ m.kind = Kind.unpin →
+    m.sender ≠ w.us → accepts w r m = true → belongs w m.sender r.conv = true ∧ blockedIn w r.conv m.sender = false
+accepts_sent : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.reaction ∨ m.kind = Kind.vote →
+    m.sender ≠ w.us → r.outgoing = true → accepts w r m = true → r.sentTo.contains m.sender = true
+deleted_accepts_nothing : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  r.deleted = true → r.poll = false → accepts w r m = false
+edit_newer : ∀ (w : World) (r : Row) (m : Modifiers.Mod), m.kind = Kind.edit → accepts w r m = true → r.rev < m.ts
+edit_refuses : ∀ (w : World) (r : Row) (m : Modifiers.Mod),
+  m.kind = Kind.edit → r.erased = true ∨ r.viewOnce = true ∨ r.voice = true → accepts w r m = false
+evict_heaviest : ∀ (l : List Entry),
+  l ≠ [] → ∃ b, b ∈ l ∧ evict l = l.erase b ∧ ∀ (x : Entry), x ∈ l → count l x.mod.sender ≤ count l b.mod.sender
+evict_spares_lighter : ∀ (l : List Entry) (x y : Entry),
+  x ∈ l → y ∈ l → count l x.mod.sender < count l y.mod.sender → x ∈ evict l
+kept_sub : ∀ (l : List Entry) (e : Entry) (limit now : Nat) (x : Entry), x ∈ kept l e limit now → x ∈ l ∨ x = e
+resolvedCorrect_holds : ∀ (w : World) {s : S}, Reach w s → ResolvedCorrect w s
+pendingUnresolvable_holds : ∀ (w : World) {s : S}, Reach w s → PendingUnresolvable s
+newestShown_holds : ∀ (w : World) {s : S}, Reach w s → NewestShown w s
+stepOk_holds : ∀ (w : World) {s : S}, Reach w s → ∀ (e : Ev), StepOk s (step w s e)
+Modifiers.accepts_conversation depends on axioms: [Quot.sound, propext]
+Modifiers.accepts_edit_conversation depends on axioms: [Quot.sound, propext]
+Modifiers.accepts_author depends on axioms: [Quot.sound, propext]
+Modifiers.accepts_admin depends on axioms: [Quot.sound, propext]
+Modifiers.accepts_member depends on axioms: [Quot.sound, propext]
+Modifiers.accepts_sent depends on axioms: [Quot.sound, propext]
+Modifiers.deleted_accepts_nothing depends on axioms: [propext]
+Modifiers.edit_newer depends on axioms: [propext]
+Modifiers.edit_refuses depends on axioms: [propext]
+Modifiers.evict_heaviest depends on axioms: [Quot.sound, propext]
+Modifiers.evict_spares_lighter depends on axioms: [Classical.choice, Quot.sound, propext]
+Modifiers.kept_sub depends on axioms: [Quot.sound, propext]
+Modifiers.resolvedCorrect_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Modifiers.pendingUnresolvable_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Modifiers.newestShown_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Modifiers.stepOk_holds depends on axioms: [Classical.choice, Quot.sound, propext]

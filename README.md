@@ -45,13 +45,14 @@ Serein runs as six processes. Each one runs under App Sandbox and the hardened r
 Pages are fetched directly from the site, as Signal Desktop does. Unlike Signal Desktop, the fetcher refuses a host (on any hop) that resolves to a private, loopback, link-local or other non-public address, so a link cannot point it at your router or printer. It resolves each host itself before connecting. A DNS answer that changes between that check and the connection (DNS rebinding) is not caught.
 
 **Peer checks.**
-- Every XPC connection is limited, in both directions, to the code signature of the process it expects (`NSXPCConnection.setCodeSigningRequirement`). The system drops messages from anything else before they are delivered.
-- `Tools/build-app.sh` writes each component's requirement into every bundle's `Info.plist` (`SereinXPCPeers`):
-  - With a signing identity, the requirement is the bundle identifier plus your Team ID, under an Apple certificate.
-  - Ad-hoc builds (the default) can only require the bundle identifier. Anyone can sign another program ad hoc with the same identifier, so use a signing identity for real use.
+- Every XPC session is limited, in both directions, to the code signature of the process it expects (`XPCPeerRequirement`, on each service's listener and on each session the app opens). The system ends a session with anything else before a message is delivered.
+- `Tools/build-app.sh` writes each component's signing identifier into every bundle's `Info.plist` (`SereinXPCPeers`):
+  - With a signing identity, a peer must carry that identifier and be signed by your team with an Apple-issued certificate (`SereinXPCSameTeam`).
+  - Ad-hoc builds (the default) can only require the identifier. Anyone can sign another program ad hoc with the same identifier, so use a signing identity for real use.
+- The offline services' Seatbelt profiles need no exception for these checks: no Mach lookups and no reads outside their own bundle.
 - The app checks every reply for size and type before it uses it.
 
-**Messages between processes.** Requests and replies use a strict binary format (`MediaXPCInterface/Wire.swift`), not a general one like property lists:
+**Messages between processes.** The services use the XPC framework's sessions with plain XPC dictionaries (`MediaXPCInterface/XPCTransport.swift`), not `NSXPCConnection`: no Objective-C proxies or `NSSecureCoding` decoding. A message holds at most a payload, a listener endpoint and an error string, each read only if it has the expected XPC type, and a payload larger than the receiver expects is refused before it is copied. Requests and replies inside the payload use a strict binary format (`MediaXPCInterface/Wire.swift`), not a general one like property lists:
 - The receiver's Swift type decides what is read. The sender cannot choose which objects get built.
 - Each call has a size cap that is checked before anything is read. Every length and count must fit in what is left of the message, and trailing bytes are refused.
 - The decoded values are then checked against the limits of their type (sizes, dimensions, URLs).

@@ -183,7 +183,8 @@ extension SignalSession {
         guard let path = a.path, a.isDownloaded else { return nil }
         let key = "large:" + path
         if let hit = images[key] { return hit }
-        return loadImage(key: key, path: path, messageId: messageId, maxDimension: Self.lightboxMaxDimension) { store in try store.plaintext(of: a) }
+        return loadImage(key: key, path: path, messageId: messageId, maxDimension: Self.lightboxMaxDimension,
+                         animated: Self.mayAnimate(a.contentType)) { store in try store.plaintext(of: a) }
     }
 
     /// A video's poster frame (the screenshot stored at download).

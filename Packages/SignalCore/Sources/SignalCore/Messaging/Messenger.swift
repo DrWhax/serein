@@ -17,6 +17,8 @@ public final class Messenger: Sendable {
     public let sender: MessageSender
     public let jobs: JobQueue
     public let groupSender: GroupSender
+    /// Resend requests answered so far (`SendLog.retryLimit`).
+    let retries = RetryLimiter()
     /// Attachment storage, upload and the media service (nil: text only).
     public let attachments: AttachmentServices?
     /// Sends that stopped because a recipient's identity key needs the user's approval
@@ -677,7 +679,10 @@ public final class Messenger: Sendable {
             throw JobError.permanent("malformed job")
         }
         let ratchetKey = try job.ratchetKey.flatMap { Data(base64Encoded: $0) }.map { try PublicKey($0) }
-        let logged = try await database.pool.write { db -> SentProto? in
+        let answered = retries.count(requester: requester, deviceId: device, timestamp: timestamp)
+        guard answered < SendLog.retryLimit else { return }
+        let ourAci = account.aci
+        let answer = try await database.pool.write { db -> SendLog.ResendAnswer in
             if job.wasSenderKey != true, let ratchetKey {
                 let address = try ProtocolAddress(name: requester, deviceId: device)
                 let ctx = DatabaseStoreContext(db)
@@ -686,13 +691,16 @@ public final class Messenger: Sendable {
                     try self.sender.store.storeSession(session, for: address, context: ctx)
                 }
             }
-            return try SendLog.find(db, recipient: requester, deviceId: device, timestamp: timestamp)
+            return try SendLog.answer(db, requester: requester, deviceId: device, timestamp: timestamp, answered: answered, ourAci: ourAci)
         }
-        if let logged {
+        switch answer {
+        case .resend(let logged):
             let content = try Signalservice_Content(serializedBytes: logged.proto)
             try await sender.send(OutgoingPayload(content: content, timestamp: logged.timestamp, contentHint: ContentHint(rawValue: logged.contentHint),
                                                   urgent: logged.urgent), to: requester, messageIds: logged.messageIds, logged: false)
-        } else {
+        case .nothing:
+            return
+        case .nullMessage:
             var content = Signalservice_Content()
             content.nullMessage = Signalservice_NullMessage()
             try await sender.send(OutgoingPayload(content: content, timestamp: UInt64(MessageStore.now()), contentHint: .implicit, urgent: false),

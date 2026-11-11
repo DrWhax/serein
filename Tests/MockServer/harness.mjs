@@ -375,6 +375,11 @@ const commands = {
     await account(from).sendRaw(needDesktop(), wrap({ dataMessage: message }), { timestamp });
     return { cdnKey, digest: digest.toString('base64') };
   },
+  // Arbitrary bytes on CDN 3 (forged or oversized blobs for the attachment rig).
+  async putCdnBlob({ cdnKey, data }) {
+    await server.storeAttachmentOnCdn(3, cdnKey, Buffer.from(data, 'base64'));
+    return {};
+  },
   // Groups v2 (the mock primary's group helpers).
   async createGroup({ by = 'alice', title, members = ['alice', 'phone'], link = null }) {
     const inviteLinkPassword = link ? crypto.randomBytes(16) : undefined;

@@ -3,9 +3,10 @@
 // Sandbox plus the tight Seatbelt profile in Sandbox/SignalLinkPreviewParser.sb (no files,
 // network, processes, Mach services or preferences). It parses text only: a preview's image is
 // decoded by the media decoder service, never here. Only the fetcher sends it HTML, over an
-// endpoint the parser hands the app for that (LinkPreviewParserServiceXPCProtocol).
+// endpoint the parser service hands the app for that (LinkPreviewFetcherClient).
 
 import Foundation
+import XPC
 
 /// The link-preview page parser.
 public protocol LinkPreviewParsing: Sendable {
@@ -29,15 +30,15 @@ public final class LinkPreviewParserClient: LinkPreviewParsing {
     public static let serviceName = "org.signalsafe.SignalLinkPreviewParser"
     let channel: XPCChannel
 
-    /// A connection to the parser (the fetcher's, through the endpoint it was handed), only if
+    /// A session with the parser (the fetcher's, through the endpoint it was handed), only if
     /// the parser is signed as `peer` says.
-    public init(timeout: Duration = .seconds(10), peer: String? = nil, makeConnection: @escaping @Sendable () -> NSXPCConnection) {
-        channel = XPCChannel(timeout: timeout, peer: peer, makeConnection: makeConnection)
+    public init(_ target: XPCTarget, peer: XPCPeerRequirement? = nil, timeout: Duration = .seconds(10)) {
+        channel = XPCChannel(target, peer: peer, timeout: timeout)
     }
 
     public func linkPreviewHTML(_ html: Data, httpCharset: String?) async throws -> LinkPreviewHTML? {
         let request = LinkPreviewParserRequest.html(html.prefix(LinkPreviewHTML.maxInputBytes), httpCharset: httpCharset)
-        let reply = try await channel.send(try MediaXPCWire.encode(request))
+        let reply = try await channel.send(try MediaXPCWire.encode(request), maxReply: LinkPreviewHTML.maxReplyBytes)
         // Re-checked here: the parser's answer is untrusted too.
         return try MediaXPCWire.decode(LinkPreviewHTML?.self, reply, maxBytes: LinkPreviewHTML.maxReplyBytes)?.validated()
     }

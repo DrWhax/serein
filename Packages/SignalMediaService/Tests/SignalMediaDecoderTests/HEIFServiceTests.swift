@@ -69,17 +69,13 @@ import Testing
     }
 
     @Test func convertHEICThroughXPC() async throws {
-        let listener = NSXPCListener.anonymous()
-        let delegate = MediaXPCListenerDelegate()
-        listener.delegate = delegate
-        listener.resume()
-        let endpoint = listener.endpoint
-        let client = MediaXPCClient(timeout: .seconds(20)) { NSXPCConnection(listenerEndpoint: endpoint) }
+        let listener = XPCServer.anonymous(requirement: nil, MediaXPCHandler())
+        let client = MediaXPCClient(timeout: .seconds(20), decoder: .endpoint(listener.endpoint))
         let converted = try await client.convertHEIC(try Self.image("heicgrid.heic"))
         #expect(converted.width == 700 && converted.data.prefix(2) == Data([0xFF, 0xD8]))
         await #expect(throws: (any Error).self) { try await client.displayImage(try Self.image("heicgrid.heic"), maxDimension: 64) }
         let shown = try await client.displayImage(try Self.image("avifrot.avif"), maxDimension: 64)
         #expect(shown.height == 64)
-        listener.invalidate()
+        listener.cancel()
     }
 }

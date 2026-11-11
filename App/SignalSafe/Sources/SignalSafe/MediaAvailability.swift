@@ -50,7 +50,7 @@ import SignalCore
     func applyMediaAvailability(_ state: MediaAvailability) {
         for path in audioWaveforms.keys where !state.paths.contains(path) { audioWaveforms.removeValue(forKey: path) }
         for (key, path) in imagePaths where !state.paths.contains(path) {
-            images.removeValue(forKey: key)
+            forgetImage(key)
             imagePaths[key] = nil
         }
         if let box = lightbox, !state.messageIds.contains(box.messageId) || box.attachments.contains(where: { a in

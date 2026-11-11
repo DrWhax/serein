@@ -53,22 +53,18 @@ public actor VoiceNoteSessions {
 
 
 /// The service side: only voice-note requests; anything else is refused.
-public final class VoiceNoteXPCHandler: NSObject, MediaXPCProtocol, Sendable {
+public final class VoiceNoteXPCHandler: XPCMessageHandler {
     let sessions = VoiceNoteSessions()
     let gate: RequestGate
 
     public init(gate: RequestGate = RequestGate(maxRunning: 2, maxWaiting: 16)) { self.gate = gate }
 
-    public func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        let sessions = sessions, gate = gate
-        Task {
-            do {
-                let decoded = try MediaXPCWire.decode(MediaRequest.self, request, maxBytes: VoiceNoteLimits.maxRequestBytes)
-                reply(try await gate.run(budget: decoded.budget) { try await Self.run(decoded, sessions) }, nil)
-            } catch {
-                reply(nil, String(describing: error))
-            }
-        }
+    public var maxRequestBytes: Int { VoiceNoteLimits.maxRequestBytes }
+
+    public func reply(to request: XPCMessage) async throws -> XPCMessage {
+        let decoded = try MediaXPCWire.decode(MediaRequest.self, try request.requirePayload(), maxBytes: VoiceNoteLimits.maxRequestBytes)
+        let sessions = sessions
+        return XPCMessage(payload: try await gate.run(budget: decoded.budget) { try await Self.run(decoded, sessions) })
     }
 
     static func run(_ request: MediaRequest, _ s: VoiceNoteSessions) async throws -> Data {
@@ -84,18 +80,5 @@ public final class VoiceNoteXPCHandler: NSObject, MediaXPCProtocol, Sendable {
         default:
             throw MediaProcessingError.unsupportedFormat
         }
-    }
-}
-
-public final class VoiceNoteListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
-    let handler = VoiceNoteXPCHandler()
-    let peer: String?
-    public init(peer: String? = nil) { self.peer = peer }
-    public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        if let peer { connection.setCodeSigningRequirement(peer) }
-        connection.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
-        connection.exportedObject = handler
-        connection.resume()
-        return true
     }
 }

@@ -1,0 +1,10 @@
+name = "Codecs"
+version = "0.1.0"
+defaultTargets = ["Codecs", "oracle"]
+
+[[lean_lib]]
+name = "Codecs"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

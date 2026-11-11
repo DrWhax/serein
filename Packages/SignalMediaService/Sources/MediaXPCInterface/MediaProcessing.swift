@@ -77,6 +77,51 @@ public struct DisplayImage: Codable, Equatable, Sendable {
     }
 }
 
+/// `displayAnimation`'s result: an image as the timeline's `<img>` shows it. An animation (GIF,
+/// APNG, animated WebP) has every frame, fully composited and fitted within `maxDimension`; a
+/// still image has one frame.
+public struct DisplayAnimation: Codable, Equatable, Sendable {
+    /// Most bytes an animation's frames take together. A longer animation is scaled down further.
+    public static let maxBytes = 48 << 20
+    /// Most frames. An animation with more is shown still (its first frame).
+    public static let maxFrames = 1024
+    /// Longest frame duration as encoded (APNG: 65535 s).
+    public static let maxDelay = 65_535_000
+    public var width: Int
+    public var height: Int
+    /// The frames' pixels one after another: RGBA8, straight alpha, width × height × 4 bytes each.
+    public var frames: Data
+    /// Each frame's duration in milliseconds as encoded (the player applies Chromium's clamp).
+    public var delays: [Int]
+    /// How many times the animation plays (0: forever), as Chromium counts it for the format.
+    public var plays: Int
+    /// The decoded image's size before scaling.
+    public var originalWidth: Int
+    public var originalHeight: Int
+
+    public init(width: Int, height: Int, frames: Data, delays: [Int], plays: Int, originalWidth: Int, originalHeight: Int) {
+        self.width = width
+        self.height = height
+        self.frames = frames
+        self.delays = delays
+        self.plays = plays
+        self.originalWidth = originalWidth
+        self.originalHeight = originalHeight
+    }
+
+    public var frameCount: Int { delays.count }
+
+    public func validated(maxDimension: Int) throws -> DisplayAnimation {
+        // Sizes are bounded before they are multiplied: 4096 × 4096 × 4 × 1024 fits an Int.
+        guard (1...maxDimension).contains(width), (1...maxDimension).contains(height), maxDimension <= 4096,
+              (1...16384).contains(originalWidth), (1...16384).contains(originalHeight), (1...Self.maxFrames).contains(delays.count),
+              frames.count == width * height * 4 * delays.count, delays.count == 1 || frames.count <= Self.maxBytes,
+              delays.allSatisfy({ (0...Self.maxDelay).contains($0) }), (0...Int(UInt32.max)).contains(plays)
+        else { throw MediaProcessingError.invalidResult }
+        return self
+    }
+}
+
 /// `MediaQualityLevels` (ts/util/scaleImageToLevel.preload.ts).
 public enum MediaQualityLevel: Int, Codable, Sendable, CaseIterable {
     case one = 1, two = 2, three = 3
@@ -224,6 +269,9 @@ public protocol MediaProcessing: Sendable {
     func thumbnail(_ bytes: Data, size: Int) async throws -> Thumbnail
     /// The first frame, fitted within `maxDimension` (1…4096), as RGBA for the timeline.
     func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage
+    /// Every frame of an animated image, fitted within `maxDimension` (1…4096) and within
+    /// `DisplayAnimation.maxBytes`; a still image's one frame.
+    func displayAnimation(_ bytes: Data, maxDimension: Int) async throws -> DisplayAnimation
     /// `scaleImageToLevel`. Callers skip GIFs and non-images (`canBeTranscoded`).
     func scaleForSending(_ bytes: Data, contentType: String, level: MediaQualityLevel) async throws -> ScaledImage
     /// The sending side's HEIC conversion (handleImageAttachment → heicConverterWorker). The

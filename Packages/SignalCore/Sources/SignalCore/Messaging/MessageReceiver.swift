@@ -377,6 +377,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             let conversation = edit.dataMessage.hasGroupV2 && edit.dataMessage.groupV2.hasMasterKey
                 ? try MessageStore.groupConversation(db, masterKey: edit.dataMessage.groupV2.masterKey).id
                 : try MessageStore.privateConversation(db, serviceId: d.sender)
+            // An edit for a blocked group is dropped (upstream `handleEditMessage`).
+            if try MessageModifiers.isBlocked(db, conversationId: conversation, sender: d.sender) { return events }
             let ctx = ModifierContext(sender: d.sender, timestamp: edit.dataMessage.timestamp, serverTimestamp: e.serverTimestamp, conversationId: conversation,
                                       source: .someoneElse)
             let pending = PendingModifier(kind: .edit, targetAuthor: d.sender, targetSentAt: edit.targetSentTimestamp, context: ctx,

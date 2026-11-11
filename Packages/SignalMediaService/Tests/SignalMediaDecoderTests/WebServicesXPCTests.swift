@@ -1,6 +1,6 @@
 // The web-facing services over XPC, in process (anonymous listeners): the app's fetcher client
 // gets the parser's endpoint, the fetcher fetches (a scripted web) and has the page parsed
-// through that endpoint; a code-signing requirement nobody meets is refused on either side.
+// through that endpoint; a peer requirement nobody meets is refused on either side.
 // And GIF search through its service, re-validated by the client.
 
 import CodecCore
@@ -12,29 +12,28 @@ import LinkPreviewParser
 import MediaXPCInterface
 import Testing
 import WebFetch
+import XPC
 
 @Suite struct WebServicesXPCTests {
     static let site = "https://site.signalsafe.app"
 
     final class Services {
-        let parser: LinkPreviewParserServiceDelegate
-        let parserListener = NSXPCListener.anonymous()
-        let fetcherDelegate: LinkPreviewFetcherListenerDelegate
-        let fetcherListener = NSXPCListener.anonymous()
+        let parserListener: XPCListener
+        let fetcherListener: XPCListener
 
-        init(transport: any WebTransport, fetcherPeerAtParser: String? = nil) {
-            parser = LinkPreviewParserServiceDelegate(appPeer: nil, fetcherPeer: fetcherPeerAtParser)
-            parserListener.delegate = parser
-            parserListener.resume()
-            fetcherDelegate = LinkPreviewFetcherListenerDelegate(handler: LinkPreviewFetcherXPCHandler(transport: transport, parserPeer: nil), appPeer: nil)
-            fetcherListener.delegate = fetcherDelegate
-            fetcherListener.resume()
+        init(transport: any WebTransport, fetcherPeerAtParser: XPCPeerRequirement? = nil) {
+            parserListener = XPCServer.anonymous(requirement: nil, EndpointService(requirement: fetcherPeerAtParser, LinkPreviewXPCHandler()))
+            fetcherListener = XPCServer.anonymous(requirement: nil, LinkPreviewFetcherXPCHandler(transport: transport, parserPeer: nil))
         }
 
-        func client(fetcherPeer: String? = nil) -> LinkPreviewFetcherClient {
-            let f = fetcherListener.endpoint, p = parserListener.endpoint
-            return LinkPreviewFetcherClient(timeout: .seconds(20), fetcherPeer: fetcherPeer, parserPeer: nil,
-                                            fetcherConnection: { NSXPCConnection(listenerEndpoint: f) }, parserConnection: { NSXPCConnection(listenerEndpoint: p) })
+        deinit {
+            parserListener.cancel()
+            fetcherListener.cancel()
+        }
+
+        func client(fetcherPeer: XPCPeerRequirement? = nil) -> LinkPreviewFetcherClient {
+            LinkPreviewFetcherClient(timeout: .seconds(20), fetcher: .endpoint(fetcherListener.endpoint), fetcherPeer: fetcherPeer,
+                                     parser: .endpoint(parserListener.endpoint), parserPeer: nil)
         }
     }
 
@@ -56,7 +55,7 @@ import WebFetch
     }
 
     @Test func peersThatDoNotMeetTheRequirementAreRefused() async throws {
-        let impossible = "identifier \"org.signalsafe.nobody\" and anchor apple"
+        let impossible = XPCPeer.requirement(identifier: "org.signalsafe.nobody", sameTeam: false)
         // The app's side: the fetcher is not signed as required.
         let s = Services(transport: Self.web())
         await #expect(throws: (any Error).self) { try await s.client(fetcherPeer: impossible).page(Self.site + "/") }
@@ -68,17 +67,13 @@ import WebFetch
     @Test func gifSearchThroughItsService() async throws {
         let giphy = FakeGiphy()
         giphy.json = GiphyTests.page([GiphyTests.item("a"), GiphyTests.item("b")])
-        let delegate = GifSearchListenerDelegate(handler: GifSearchXPCHandler(giphy: GiphyClient(transport: giphy)), appPeer: nil)
-        let listener = NSXPCListener.anonymous()
-        listener.delegate = delegate
-        listener.resume()
-        let endpoint = listener.endpoint
-        let client = GifSearchClient(timeout: .seconds(20), peer: nil) { NSXPCConnection(listenerEndpoint: endpoint) }
+        let listener = XPCServer.anonymous(requirement: nil, GifSearchXPCHandler(giphy: GiphyClient(transport: giphy)))
+        let client = GifSearchClient(timeout: .seconds(20), target: .endpoint(listener.endpoint), peer: nil)
         let page = try await client.trending(limit: 2, offset: nil)
         #expect(page.gifs.map(\.id) == ["a", "b"] && page.gifs[0].previewMedia.url.host == "media2.giphy.com")
         giphy.file = Data((0..<3000).map { UInt8($0 & 0xFF) })
         #expect(try await client.file(URL(string: "https://media2.giphy.com/media/x/200w.mp4")!) == giphy.file)
         await #expect(throws: (any Error).self) { try await client.file(URL(string: "https://evil.example/x.mp4")!) }
-        listener.invalidate()
+        listener.cancel()
     }
 }

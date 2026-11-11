@@ -1,0 +1,10 @@
+name = "Broker"
+version = "0.1.0"
+defaultTargets = ["Broker", "oracle"]
+
+[[lean_lib]]
+name = "Broker"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

@@ -1,0 +1,10 @@
+name = "Resend"
+version = "0.1.0"
+defaultTargets = ["Resend", "oracle"]
+
+[[lean_lib]]
+name = "Resend"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

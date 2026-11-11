@@ -1,0 +1,10 @@
+name = "Attachments"
+version = "0.1.0"
+defaultTargets = ["Attachments", "oracle"]
+
+[[lean_lib]]
+name = "Attachments"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

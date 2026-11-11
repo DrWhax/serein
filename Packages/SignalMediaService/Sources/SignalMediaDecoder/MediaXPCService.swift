@@ -4,7 +4,7 @@
 import Foundation
 import MediaXPCInterface
 
-public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
+public final class MediaXPCHandler: XPCMessageHandler {
     let decoder = MediaDecoder()
     /// Bounded concurrency and queue; a request past its budget (plus grace) ends the process
     /// (Containment.swift).
@@ -12,24 +12,21 @@ public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
 
     public init(gate: RequestGate = RequestGate()) { self.gate = gate }
 
-    public func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        let decoder = decoder, gate = gate
-        Task {
-            do {
-                let decoded = try MediaXPCWire.decode(MediaRequest.self, request, maxBytes: MediaRequest.maxBytes)
-                // Recording is SignalVoiceNoteEncoder.xpc's (VoiceNoteEncoder), never this process's.
-                guard !decoded.isVoiceNote else { throw MediaProcessingError.unsupportedFormat }
-                reply(try await gate.run(budget: decoded.budget) { try await Self.run(decoded, decoder) }, nil)
-            } catch {
-                reply(nil, String(describing: error))
-            }
-        }
+    public var maxRequestBytes: Int { MediaRequest.maxBytes }
+
+    public func reply(to request: XPCMessage) async throws -> XPCMessage {
+        let decoded = try MediaXPCWire.decode(MediaRequest.self, try request.requirePayload(), maxBytes: MediaRequest.maxBytes)
+        // Recording is SignalVoiceNoteEncoder.xpc's (VoiceNoteEncoder), never this process's.
+        guard !decoded.isVoiceNote else { throw MediaProcessingError.unsupportedFormat }
+        let decoder = decoder
+        return XPCMessage(payload: try await gate.run(budget: decoded.budget) { try await Self.run(decoded, decoder) })
     }
 
     static func run(_ request: MediaRequest, _ d: MediaDecoder) async throws -> Data {
         switch request {
         case .stickerImage(let b): return try MediaXPCWire.encode(try await d.stickerImage(b))
         case .displayImage(let b, let max): return try MediaXPCWire.encode(try await d.displayImage(b, maxDimension: max))
+        case .displayAnimation(let b, let max): return try MediaXPCWire.encode(try await d.displayAnimation(b, maxDimension: max))
         case .imageInfo(let b): return try MediaXPCWire.encode(try await d.imageInfo(b))
         case .thumbnail(let b, let size): return try MediaXPCWire.encode(try await d.thumbnail(b, size: size))
         case .scaleForSending(let b, let type, let level): return try MediaXPCWire.encode(try await d.scaleForSending(b, contentType: type, level: level))
@@ -58,23 +55,5 @@ public final class MediaXPCHandler: NSObject, MediaXPCProtocol, Sendable {
             await d.closeVideo(id)
             return try MediaXPCWire.encode(MediaEmpty())
         }
-    }
-}
-
-/// Accepts connections (only from a process signed as `peer` says, when given) and exports one
-/// handler (shared state) to each.
-public final class MediaXPCListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
-    let handler: MediaXPCHandler
-    let peer: String?
-    public init(peer: String? = nil, handler: MediaXPCHandler = MediaXPCHandler()) {
-        self.peer = peer
-        self.handler = handler
-    }
-    public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        if let peer { connection.setCodeSigningRequirement(peer) }
-        connection.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
-        connection.exportedObject = handler
-        connection.resume()
-        return true
     }
 }

@@ -1,0 +1,511 @@
+structure Broker.St : Type
+number of parameters: 0
+fields:
+  Broker.St.reqs : List Req
+  Broker.St.sess : List Sess
+  Broker.St.live : Ch → Option Nat
+  Broker.St.strikes : Nat → Nat
+  Broker.St.delivered : List (Nat × Reply)
+constructor:
+  Broker.St.mk (reqs : List Req) (sess : List Sess) (live : Ch → Option Nat) (strikes : Nat → Nat)
+    (delivered : List (Nat × Reply)) : St
+structure Broker.Req : Type
+number of parameters: 0
+fields:
+  Broker.Req.kind : Kind
+  Broker.Req.sess : Option Nat
+  Broker.Req.status : Status
+  Broker.Req.answered : Bool
+constructor:
+  Broker.Req.mk (kind : Kind) (sess : Option Nat) (status : Status) (answered : Bool) : Req
+structure Broker.Sess : Type
+number of parameters: 0
+fields:
+  Broker.Sess.ch : Ch
+  Broker.Sess.ended : Bool
+constructor:
+  Broker.Sess.mk (ch : Ch) (ended : Bool) : Sess
+inductive Broker.Kind : Type
+number of parameters: 0
+constructors:
+Broker.Kind.thumb : Nat → Nat → Kind
+Broker.Kind.openV : Nat → Kind
+Broker.Kind.start : Kind
+Broker.Kind.release : Ch → Nat → Kind
+def Broker.Kind.ch : Kind → Ch :=
+fun x =>
+  match x with
+  | Kind.thumb size input => Ch.dec
+  | Kind.openV input => Ch.dec
+  | Kind.start => Ch.voice
+  | Kind.release c u => c
+def Broker.Kind.input : Kind → Option Nat :=
+fun x =>
+  match x with
+  | Kind.thumb size i => some i
+  | Kind.openV i => some i
+  | x => none
+inductive Broker.Reply : Type
+number of parameters: 0
+constructors:
+Broker.Reply.thumb : Nat → Nat → Reply
+Broker.Reply.opened : Nat → Bool → Reply
+Broker.Reply.voiceId : Nat → Reply
+Broker.Reply.empty : Reply
+Broker.Reply.garbage : Reply
+Broker.Reply.error : Reply
+inductive Broker.Status : Type
+number of parameters: 0
+constructors:
+Broker.Status.pending : Status
+Broker.Status.ok : Val → Status
+Broker.Status.failed : Err → Status
+inductive Broker.Err : Type
+number of parameters: 0
+constructors:
+Broker.Err.timedOut : Err
+Broker.Err.lost : Err
+Broker.Err.cancelled : Err
+Broker.Err.refused : Err
+Broker.Err.helper : Err
+Broker.Err.quarantined : Err
+inductive Broker.Val : Type
+number of parameters: 0
+constructors:
+Broker.Val.thumb : Nat → Nat → Val
+Broker.Val.session : Nat → Val
+Broker.Val.empty : Val
+def Broker.accept : Kind → Reply → Status × Option Nat :=
+fun x x_1 =>
+  match x, x_1 with
+  | Kind.thumb size input, Reply.thumb w h =>
+    (if w = size ∧ h = size then Status.ok (Val.thumb w h) else Status.failed Err.refused, none)
+  | Kind.openV input, Reply.opened u true => (Status.ok (Val.session u), none)
+  | Kind.openV input, Reply.opened u false => (Status.failed Err.refused, some u)
+  | Kind.start, Reply.voiceId u => (Status.ok (Val.session u), none)
+  | Kind.release c u, Reply.empty => (Status.ok Val.empty, none)
+  | x, Reply.error => (Status.failed Err.helper, none)
+  | x, x_2 => (Status.failed Err.refused, none)
+def Broker.late : Kind → Reply → Option Nat :=
+fun x x_1 =>
+  match x, x_1 with
+  | Kind.openV input, Reply.opened u valid => some u
+  | Kind.start, Reply.voiceId u => some u
+  | x, x_2 => none
+def Broker.ended : St → Nat → Bool :=
+fun s id => (Option.map (fun x => x.ended) s.sess[id]?).getD true
+def Broker.opened : St → Ch → St :=
+fun s c =>
+  match s.live c with
+  | some val => s
+  | none =>
+    { reqs := s.reqs, sess := s.sess ++ [{ ch := c, ended := false }],
+      live := fun c' => if c' = c then some s.sess.length else s.live c', strikes := s.strikes,
+      delivered := s.delivered }
+def Broker.send : St → Kind → St :=
+fun s k =>
+  have __src := opened s k.ch;
+  {
+    reqs :=
+      (opened s k.ch).reqs ++
+        [{ kind := k, sess := (opened s k.ch).live k.ch, status := Status.pending, answered := false }],
+    sess := __src.sess, live := __src.live, strikes := __src.strikes, delivered := __src.delivered }
+def Broker.quarantined : St → Kind → Bool :=
+fun s k =>
+  match k.input with
+  | some i => decide (quarantineAt ≤ s.strikes i)
+  | none => false
+def Broker.call : St → Kind → St :=
+fun s k =>
+  match k with
+  | Kind.release c u => s
+  | x =>
+    if quarantined s k = true then
+      { reqs := s.reqs ++ [{ kind := k, sess := none, status := Status.failed Err.quarantined, answered := true }],
+        sess := s.sess, live := s.live, strikes := s.strikes, delivered := s.delivered }
+    else send s k
+def Broker.answer : Req → Reply → Status × Option Nat :=
+fun q r => if q.status = Status.pending then accept q.kind r else (q.status, late q.kind r)
+def Broker.reply : St → Nat → Reply → St :=
+fun s m r =>
+  match s.reqs[m]? with
+  | none => s
+  | some q =>
+    match q.sess with
+    | none => s
+    | some id =>
+      if q.answered = true ∨ ended s id = true then s
+      else
+        have s1 :=
+          { reqs := s.reqs.set m { kind := q.kind, sess := q.sess, status := (answer q r).fst, answered := true },
+            sess := s.sess, live := s.live, strikes := s.strikes, delivered := s.delivered ++ [(m, r)] };
+        match (answer q r).snd with
+        | some u => send s1 (Kind.release q.kind.ch u)
+        | none => s1
+def Broker.endReq : Nat → Req → Req :=
+fun id q =>
+  if q.sess = some id ∧ q.answered = false then
+    { kind := q.kind, sess := q.sess, status := if q.status = Status.pending then Status.failed Err.lost else q.status,
+      answered := true }
+  else q
+def Broker.inFlight : St → Nat → Nat → Bool :=
+fun s id i => s.reqs.any fun q => decide (q.sess = some id ∧ q.status = Status.pending ∧ q.kind.input = some i)
+def Broker.crash : St → Ch → St :=
+fun s c =>
+  match s.live c with
+  | none => s
+  | some id =>
+    { reqs := List.map (endReq id) s.reqs, sess := s.sess.set id { ch := c, ended := true },
+      live := fun c' => if c' = c then none else s.live c',
+      strikes := fun i => s.strikes i + if inFlight s id i = true then 1 else 0, delivered := s.delivered }
+def Broker.bump : (Nat → Nat) → Option Nat → Nat → Nat → Nat :=
+fun f i n j => if i = some j then f j + n else f j
+def Broker.timeout : St → Nat → St :=
+fun s m =>
+  match s.reqs[m]? with
+  | none => s
+  | some q =>
+    if q.status = Status.pending then
+      {
+        reqs :=
+          s.reqs.set m { kind := q.kind, sess := q.sess, status := Status.failed Err.timedOut, answered := q.answered },
+        sess := s.sess, live := s.live, strikes := bump s.strikes q.kind.input quarantineAt, delivered := s.delivered }
+    else s
+def Broker.cancel : St → Nat → St :=
+fun s m =>
+  match s.reqs[m]? with
+  | none => s
+  | some q =>
+    if q.status = Status.pending then
+      {
+        reqs :=
+          s.reqs.set m
+            { kind := q.kind, sess := q.sess, status := Status.failed Err.cancelled, answered := q.answered },
+        sess := s.sess, live := s.live, strikes := s.strikes, delivered := s.delivered }
+    else s
+def Broker.step : St → Ev → St :=
+fun s x =>
+  match x with
+  | Ev.call k => call s k
+  | Ev.reply m r => reply s m r
+  | Ev.crash c => crash s c
+  | Ev.unsolicited c => s
+  | Ev.timeout m => timeout s m
+  | Ev.cancel m => cancel s m
+inductive Broker.Reach : St → Prop
+number of parameters: 0
+constructors:
+Broker.Reach.init : Reach St.init
+Broker.Reach.step : ∀ {s : St} (e : Ev), Reach s → Reach (step s e)
+def Broker.chOf : St → Ev → Option Ch :=
+fun s x =>
+  match x with
+  | Ev.call k => some k.ch
+  | Ev.reply m r => Option.map (fun x => x.kind.ch) s.reqs[m]?
+  | Ev.timeout m => Option.map (fun x => x.kind.ch) s.reqs[m]?
+  | Ev.cancel m => Option.map (fun x => x.kind.ch) s.reqs[m]?
+  | Ev.crash c => some c
+  | Ev.unsolicited c => some c
+structure Broker.Url : Type
+number of parameters: 0
+fields:
+  Broker.Url.https : Bool
+  Broker.Url.host : Nat
+  Broker.Url.port : Bool
+  Broker.Url.user : Bool
+constructor:
+  Broker.Url.mk (https : Bool) (host : Nat) (port user : Bool) : Url
+def Broker.cdn : Url → Bool :=
+fun u => u.https && decide (u.host < 5) && !u.port && !u.user
+def Broker.pageAccepted : List Url → Bool :=
+fun us => us.all cdn
+def Broker.fileAsked : Url → Bool :=
+fun u => cdn u
+structure Broker.EndpointReply : Type
+number of parameters: 0
+fields:
+  Broker.EndpointReply.endpoint : Option Nat
+  Broker.EndpointReply.payload : Nat
+constructor:
+  Broker.EndpointReply.mk (endpoint : Option Nat) (payload : Nat) : EndpointReply
+def Broker.handed : EndpointReply → Option Nat :=
+fun r => if r.payload = 0 then r.endpoint else none
+def Broker.Shaped : St → Prop :=
+fun s => ∀ (q : Req), q ∈ s.reqs → ∀ (id : Nat), q.sess = some id → ∃ x, s.sess[id]? = some x ∧ x.ch = q.kind.ch
+def Broker.LiveOpen : St → Prop :=
+fun s => ∀ (c : Ch) (id : Nat), s.live c = some id → s.sess[id]? = some { ch := c, ended := false }
+def Broker.OneOpen : St → Prop :=
+fun s => ∀ (id : Nat) (x : Sess), s.sess[id]? = some x → x.ended = false → s.live x.ch = some id
+def Broker.PendingLive : St → Prop :=
+fun s =>
+  ∀ (q : Req), q ∈ s.reqs → q.status = Status.pending → q.answered = false ∧ ∃ id, q.sess = some id ∧ ended s id = false
+def Broker.LostEnded : St → Prop :=
+fun s =>
+  ∀ (q : Req),
+    q ∈ s.reqs → q.status = Status.failed Err.lost → ∃ id x, q.sess = some id ∧ s.sess[id]? = some x ∧ x.ended = true
+def Broker.Answered : St → Prop :=
+fun s => ∀ (m : Nat) (r : Reply), (m, r) ∈ s.delivered → ∃ q, s.reqs[m]? = some q ∧ q.answered = true
+def Broker.OkOwn : St → Prop :=
+fun s =>
+  ∀ (m : Nat) (q : Req) (v : Val),
+    s.reqs[m]? = some q → q.status = Status.ok v → ∃ r, (m, r) ∈ s.delivered ∧ (accept q.kind r).fst = Status.ok v
+def Broker.NoLeak : St → Prop :=
+fun s =>
+  ∀ (m : Nat) (r : Reply) (q : Req) (u : Nat),
+    (m, r) ∈ s.delivered →
+      s.reqs[m]? = some q →
+        late q.kind r = some u →
+          q.status = Status.ok (Val.session u) ∨ Kind.release q.kind.ch u ∈ List.map Req.kind s.reqs
+def Broker.ReleaseNamed : St → Prop :=
+fun s =>
+  ∀ (j : Nat) (q : Req) (c : Ch) (u : Nat),
+    s.reqs[j]? = some q →
+      q.kind = Kind.release c u →
+        ∃ m r p, (m, r) ∈ s.delivered ∧ s.reqs[m]? = some p ∧ p.kind.ch = c ∧ late p.kind r = some u
+def Broker.timedOutCount : St → Nat → Nat :=
+fun s i => List.countP (fun q => decide (q.kind.input = some i ∧ q.status = Status.failed Err.timedOut)) s.reqs
+def Broker.lostOn : St → Nat → Nat → Bool :=
+fun s i id => s.reqs.any fun q => decide (q.sess = some id ∧ q.kind.input = some i ∧ q.status = Status.failed Err.lost)
+def Broker.lostSessions : St → Nat → Nat :=
+fun s i => List.countP (lostOn s i) (List.range s.sess.length)
+def Broker.StrikesExact : St → Prop :=
+fun s => ∀ (i : Nat), s.strikes i = quarantineAt * timedOutCount s i + lostSessions s i
+def Broker.Inv : St → Prop :=
+fun s =>
+  Shaped s ∧
+    LiveOpen s ∧
+      OneOpen s ∧ PendingLive s ∧ LostEnded s ∧ Answered s ∧ OkOwn s ∧ NoLeak s ∧ ReleaseNamed s ∧ StrikesExact s
+170 definitions
+Broker.Ch 3931117990 13938925318930676171
+Broker.Ch.casesOn 3742975220 4034683470
+Broker.Ch.ctorIdx 2231140310 2792115730
+Broker.Ch.dec 3889572899 -
+Broker.Ch.rec 2902521475 -
+Broker.Ch.voice 3889572899 -
+Broker.EndpointReply 3931117990 14874417264910010937
+Broker.EndpointReply.endpoint 2299747986 524864981
+Broker.EndpointReply.mk 2459728372 -
+Broker.EndpointReply.payload 2076073823 1595911282
+Broker.Err 3931117990 4677541008120908114
+Broker.Err.cancelled 3997982846 -
+Broker.Err.casesOn 664811259 3948528181
+Broker.Err.ctorIdx 1213951916 2214831203
+Broker.Err.helper 3997982846 -
+Broker.Err.lost 3997982846 -
+Broker.Err.quarantined 3997982846 -
+Broker.Err.rec 3889488022 -
+Broker.Err.refused 3997982846 -
+Broker.Err.timedOut 3997982846 -
+Broker.Ev 3931117990 1251973705962645021
+Broker.Ev.call 623476714 -
+Broker.Ev.cancel 2953231022 -
+Broker.Ev.casesOn 2230888509 2175244880
+Broker.Ev.crash 88420796 -
+Broker.Ev.rec 2914408220 -
+Broker.Ev.reply 234166935 -
+Broker.Ev.timeout 2953231022 -
+Broker.Ev.unsolicited 88420796 -
+Broker.Kind 3931117990 11953937779122919153
+Broker.Kind.casesOn 2672432561 870567250
+Broker.Kind.ch 4288787203 3150628577
+Broker.Kind.ctorIdx 1710553134 1868545934
+Broker.Kind.input 2684897957 335436553
+Broker.Kind.input._sparseCasesOn_1 407921171 4076487160
+Broker.Kind.input.match_1 2556749971 1427446998
+Broker.Kind.openV 4001222802 -
+Broker.Kind.rec 874309283 -
+Broker.Kind.release 2635259421 -
+Broker.Kind.start 4156840708 -
+Broker.Kind.thumb 1352130433 -
+Broker.NoLeak 3714213461 3035056263
+Broker.OkOwn 3714213461 1079526839
+Broker.PendingLive 3714213461 1878429167
+Broker.Reach 3714213461 6150768879122456157
+Broker.Reach.init 3326880072 -
+Broker.Reach.step 1604692592 -
+Broker.ReleaseNamed 3714213461 3978505932
+Broker.Reply 3931117990 2675999426106566577
+Broker.Reply.casesOn 3882274873 2882442903
+Broker.Reply.ctorIdx 1708199682 4095729045
+Broker.Reply.empty 709731672 -
+Broker.Reply.error 709731672 -
+Broker.Reply.garbage 709731672 -
+Broker.Reply.opened 1711207892 -
+Broker.Reply.rec 3790477068 -
+Broker.Reply.thumb 1623087623 -
+Broker.Reply.voiceId 1437874583 -
+Broker.Req 3931117990 4281916423320967709
+Broker.Req.answered 1068631800 983370792
+Broker.Req.kind 1950348897 4216043491
+Broker.Req.mk 884237162 -
+Broker.Req.sess 2091409333 1381037188
+Broker.Req.status 60763215 585778147
+Broker.Sess 3931117990 13416781566852257596
+Broker.Sess.ended 3095328412 3914319082
+Broker.Sess.mk 3856019198 -
+Broker.St 3931117990 6829905565051481477
+Broker.St.delivered 2511169909 363395681
+Broker.St.init 3081698127 3909488445
+Broker.St.live 2354069866 1727145870
+Broker.St.mk 508615025 -
+Broker.St.reqs 3585462404 2271779477
+Broker.St.sess 3252749614 1093251433
+Broker.St.strikes 743874770 2864317687
+Broker.Status 3931117990 8534330069969641922
+Broker.Status.casesOn 221422487 864779850
+Broker.Status.failed 2376522459 -
+Broker.Status.ok 256733657 -
+Broker.Status.pending 31213747 -
+Broker.Status.rec 2478362673 -
+Broker.StrikesExact 3714213461 154561784
+Broker.Url 3931117990 13329675527029724907
+Broker.Url.host 3951388114 3748937020
+Broker.Url.https 2615109897 1979375221
+Broker.Url.mk 1726890684 -
+Broker.Url.port 2615109897 4030128328
+Broker.Url.user 2615109897 3666277058
+Broker.Val 3931117990 7693549460727916661
+Broker.Val.casesOn 295172990 1979297411
+Broker.Val.empty 4145066730 -
+Broker.Val.rec 2849420635 -
+Broker.Val.session 3762315875 -
+Broker.Val.thumb 286601849 -
+Broker.accept 988306383 2334935130
+Broker.accept._sparseCasesOn_1 1765458037 2082125822
+Broker.accept._sparseCasesOn_2 4256253336 1695818773
+Broker.accept._sparseCasesOn_3 3608311955 2174244756
+Broker.accept._sparseCasesOn_4 755737755 3955326226
+Broker.accept.match_1 3055686002 1911720795
+Broker.answer 39818156 3193032607
+Broker.bump 169084832 1600668352
+Broker.call 4130177237 1195280002
+Broker.call._sparseCasesOn_1 3491455784 1835199071
+Broker.call.match_1 3246137564 2747763031
+Broker.cancel 2096595835 171752205
+Broker.cdn 2615109897 415541907
+Broker.chOf 1755955232 1479248057
+Broker.chOf.match_1 101256604 1531413819
+Broker.crash 1619792570 1932601876
+Broker.endReq 3711555506 2008028401
+Broker.ended 81419202 3646478257
+Broker.fileAsked 2615109897 1409577999
+Broker.handed 2299747986 3004373341
+Broker.inFlight 2995919922 3389183923
+Broker.instDecidableEqCh 3279229963 702470271
+Broker.instDecidableEqCh._proof_1 3959456111 -
+Broker.instDecidableEqCh._proof_2 3403702101 -
+Broker.instDecidableEqErr 2103539000 1596871835
+Broker.instDecidableEqErr._proof_1 212009296 -
+Broker.instDecidableEqErr._proof_2 2257754966 -
+Broker.instDecidableEqStatus 3618380107 3676881725
+Broker.instDecidableEqStatus.decEq 2395145054 4242007197
+Broker.instDecidableEqStatus.decEq._proof_1 1169390460 -
+Broker.instDecidableEqStatus.decEq._proof_10 1055477275 -
+Broker.instDecidableEqStatus.decEq._proof_2 4067720423 -
+Broker.instDecidableEqStatus.decEq._proof_3 2208961505 -
+Broker.instDecidableEqStatus.decEq._proof_4 2174478976 -
+Broker.instDecidableEqStatus.decEq._proof_5 620397659 -
+Broker.instDecidableEqStatus.decEq._proof_6 1967891603 -
+Broker.instDecidableEqStatus.decEq._proof_7 2071806716 -
+Broker.instDecidableEqStatus.decEq._proof_8 3709140815 -
+Broker.instDecidableEqStatus.decEq._proof_9 2968216995 -
+Broker.instDecidableEqStatus.decEq.match_1 4105508036 3054596214
+Broker.instDecidableEqVal 3460356809 2622654305
+Broker.instDecidableEqVal.decEq 1422116684 1403319826
+Broker.instDecidableEqVal.decEq._proof_1 996591098 -
+Broker.instDecidableEqVal.decEq._proof_10 74879254 -
+Broker.instDecidableEqVal.decEq._proof_11 2409112152 -
+Broker.instDecidableEqVal.decEq._proof_2 3792496123 -
+Broker.instDecidableEqVal.decEq._proof_3 2858381685 -
+Broker.instDecidableEqVal.decEq._proof_4 3463818670 -
+Broker.instDecidableEqVal.decEq._proof_5 21948534 -
+Broker.instDecidableEqVal.decEq._proof_6 1709056149 -
+Broker.instDecidableEqVal.decEq._proof_7 1554425000 -
+Broker.instDecidableEqVal.decEq._proof_8 3522872661 -
+Broker.instDecidableEqVal.decEq._proof_9 3516086260 -
+Broker.instDecidableEqVal.decEq.match_1 1681178170 134014861
+Broker.instReprEv.repr.match_1 356294807 3786004300
+Broker.instReprKind.repr.match_1 2730540827 967830122
+Broker.late 4094302908 3634559394
+Broker.late._sparseCasesOn_1 2997221393 803594198
+Broker.late._sparseCasesOn_2 4268196332 2672650617
+Broker.late._sparseCasesOn_3 4062783829 1367913054
+Broker.late.match_1 3001400753 2439649387
+Broker.lostOn 2995919922 679213010
+Broker.lostSessions 743874770 134168240
+Broker.opened 1619792570 3957618490
+Broker.opened.match_1 2549865312 3610645720
+Broker.pageAccepted 693412348 1302750227
+Broker.quarantineAt 421340980 3825659865
+Broker.quarantined 2526026247 3184788885
+Broker.reply 3301006118 2932251977
+Broker.reply.match_1 3175174048 749409309
+Broker.reply.match_3 1761620447 174921584
+Broker.send 4130177237 818545834
+Broker.sent 4219645652 653397718
+Broker.step 327455075 3894370691
+Broker.timedOutCount 743874770 1731249385
+Broker.timeout 2096595835 2603336031
+final_stable : ∀ (s : St) (e : Ev) {m : Nat} {q : Req},
+  s.reqs[m]? = some q →
+    q.status ≠ Status.pending → ∃ q', (step s e).reqs[m]? = some q' ∧ q'.status = q.status ∧ q'.kind = q.kind
+@pendingLive_holds : ∀ {s : St}, Reach s → PendingLive s
+@okOwn_holds : ∀ {s : St}, Reach s → OkOwn s
+@thumb_own : ∀ {s : St} {m size i : Nat} {q : Req} {v : Val},
+  Reach s →
+    s.reqs[m]? = some q →
+      q.kind = Kind.thumb size i → q.status = Status.ok v → v = Val.thumb size size ∧ ∃ r, (m, r) ∈ s.delivered
+@session_own : ∀ {s : St} {m u : Nat} {q : Req},
+  Reach s →
+    s.reqs[m]? = some q → q.status = Status.ok (Val.session u) → ∃ r, (m, r) ∈ s.delivered ∧ late q.kind r = some u
+@noLeak_holds : ∀ {s : St}, Reach s → NoLeak s
+@releaseNamed_holds : ∀ {s : St}, Reach s → ReleaseNamed s
+@strikes_holds : ∀ {s : St}, Reach s → StrikesExact s
+@quarantine_cause : ∀ {s : St} {i : Nat},
+  Reach s →
+    quarantineAt ≤ s.strikes i →
+      (∃ q, q ∈ s.reqs ∧ q.kind.input = some i ∧ q.status = Status.failed Err.timedOut) ∨
+        ∃ a b, a ≠ b ∧ lostOn s i a = true ∧ lostOn s i b = true
+crash_strikes_le : ∀ (s : St) (c : Ch) (i : Nat), (crash s c).strikes i ≤ s.strikes i + 1
+@crash_ends : ∀ {s : St} {c : Ch},
+  Reach s → (crash s c).live c = none ∧ ∀ (q : Req), q ∈ (crash s c).reqs → q.kind.ch = c → q.status ≠ Status.pending
+@send_fresh : ∀ {s : St} {k : Kind},
+  Reach s →
+    s.live k.ch = none → (sent s k).sess = some s.sess.length ∧ ∀ (q : Req), q ∈ s.reqs → q.sess ≠ some s.sess.length
+@other_channel : ∀ {s : St} {e : Ev} {c : Ch},
+  Reach s →
+    chOf s e = some c →
+      (∀ (j : Nat) (q : Req), s.reqs[j]? = some q → q.kind.ch ≠ c → (step s e).reqs[j]? = some q) ∧
+        ∀ (c' : Ch), c' ≠ c → (step s e).live c' = s.live c'
+@inert : ∀ {s : St} {m : Nat} {q : Req} (r : Reply),
+  s.reqs[m]? = some q →
+    (q.answered = true ∨ q.sess = none ∨ ∃ id, q.sess = some id ∧ ended s id = true) → reply s m r = s
+unsolicited_inert : ∀ (s : St) (c : Ch), step s (Ev.unsolicited c) = s
+@quarantined_unsent : ∀ {s : St} {k : Kind} {i : Nat},
+  k.input = some i →
+    quarantineAt ≤ s.strikes i →
+      (call s k).sess = s.sess ∧
+        (call s k).reqs =
+          s.reqs ++ [{ kind := k, sess := none, status := Status.failed Err.quarantined, answered := true }]
+@fileAsked_cdn : ∀ {u : Url}, fileAsked u = true → u.https = true ∧ u.host < 5 ∧ u.port = false ∧ u.user = false
+@pageAccepted_cdn : ∀ {us : List Url}, pageAccepted us = true → ∀ (u : Url), u ∈ us → cdn u = true
+@handed_parser : ∀ {r : EndpointReply} {e : Nat}, handed r = some e → r.endpoint = some e ∧ r.payload = 0
+Broker.final_stable depends on axioms: [Quot.sound, propext]
+Broker.pendingLive_holds depends on axioms: [Quot.sound, propext]
+Broker.okOwn_holds depends on axioms: [Quot.sound, propext]
+Broker.thumb_own depends on axioms: [Quot.sound, propext]
+Broker.session_own depends on axioms: [Quot.sound, propext]
+Broker.noLeak_holds depends on axioms: [Quot.sound, propext]
+Broker.releaseNamed_holds depends on axioms: [Quot.sound, propext]
+Broker.strikes_holds depends on axioms: [Quot.sound, propext]
+Broker.quarantine_cause depends on axioms: [Classical.choice, Quot.sound, propext]
+Broker.crash_strikes_le depends on axioms: [Quot.sound, propext]
+Broker.crash_ends depends on axioms: [Quot.sound, propext]
+Broker.send_fresh depends on axioms: [Quot.sound, propext]
+Broker.other_channel depends on axioms: [Quot.sound, propext]
+Broker.inert depends on axioms: [propext]
+Broker.unsolicited_inert depends on axioms: [propext]
+Broker.quarantined_unsent depends on axioms: [propext]
+Broker.fileAsked_cdn depends on axioms: [propext]
+Broker.pageAccepted_cdn depends on axioms: [Quot.sound, propext]
+Broker.handed_parser depends on axioms: []

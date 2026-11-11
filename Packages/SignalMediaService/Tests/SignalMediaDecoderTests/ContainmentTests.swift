@@ -6,40 +6,51 @@ import Foundation
 @testable import MediaXPCInterface
 import Synchronization
 import Testing
+import XPC
 
-/// A media service in process that does what `behaviour` says with each request.
-final class FakeMediaService: NSObject, MediaXPCProtocol, NSXPCListenerDelegate, @unchecked Sendable {   // the listener is set up once, in init
-    enum Behaviour: Sendable { case hang, crash, reply(Data) }
-    let behaviour: Behaviour
-    let requests = Atomic<Int>(0)
-    let listener = NSXPCListener.anonymous()
-
-    init(_ behaviour: Behaviour) {
-        self.behaviour = behaviour
-        super.init()
-        listener.delegate = self
-        listener.resume()
+/// A media service in process that does what `behaviour` says with each request (on raw XPC,
+/// so it can hang, or end its session as a crash would).
+final class FakeMediaService: Sendable {
+    enum Behaviour: Sendable { case hang, crash, crashOnce(then: Data), reply(Data) }
+    final class Counter: Sendable {
+        let value = Atomic<Int>(0)
+        /// Requests held unanswered, as a hung service holds them (one dropped unanswered fails
+        /// the client at once).
+        let held = Mutex<[XPCServer.Received]>([])
     }
+    let requests: Counter
+    let listener: XPCListener
 
-    func client(timeout: Duration) -> MediaXPCClient {
-        let endpoint = listener.endpoint
-        return MediaXPCClient(timeout: timeout, peer: nil) { NSXPCConnection(listenerEndpoint: endpoint) }
-    }
+    struct Peer: XPCPeerHandler {
+        let behaviour: Behaviour
+        weak let session: XPCSession?
+        let requests: Counter
 
-    func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        requests.add(1, ordering: .relaxed)
-        switch behaviour {
-        case .hang: break
-        case .crash: NSXPCConnection.current()?.invalidate()
-        case .reply(let data): reply(data, nil)
+        func handleIncomingRequest(_ message: XPCDictionary) -> XPCDictionary? {
+            let n = requests.value.add(1, ordering: .relaxed).newValue
+            switch behaviour {
+            case .hang: requests.held.withLock { $0.append(XPCServer.Received(message: message)) }
+            case .crash: session?.cancel(reason: "crashed")
+            case .crashOnce(let data):
+                if n == 1 { session?.cancel(reason: "crashed") } else { message.reply(XPCMessage(payload: data).dictionary) }
+            case .reply(let data): message.reply(XPCMessage(payload: data).dictionary)
+            }
+            return nil
         }
     }
 
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
-        c.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
-        c.exportedObject = self
-        c.resume()
-        return true
+    init(_ behaviour: Behaviour) {
+        let requests = Counter()
+        self.requests = requests
+        listener = XPCListener { $0.accept { session in Peer(behaviour: behaviour, session: session, requests: requests) } }
+    }
+
+    deinit { listener.cancel() }
+
+    var requestCount: Int { requests.value.load(ordering: .relaxed) }
+
+    func client(timeout: Duration) -> MediaXPCClient {
+        MediaXPCClient(timeout: timeout, decoder: .endpoint(listener.endpoint), peer: nil)
     }
 }
 
@@ -93,21 +104,19 @@ final class FakeMediaService: NSObject, MediaXPCProtocol, NSXPCListenerDelegate,
 
     @Test func aHangQuarantinesItsInput() async throws {
         let service = FakeMediaService(.hang)
-        defer { service.listener.invalidate() }
         let client = service.client(timeout: .milliseconds(300))
         let bad = Data([1, 2, 3, 4])
         await #expect(throws: XPCServiceError.timedOut) { try await client.imageInfo(bad) }
         #expect(client.quarantine.isQuarantined(MediaQuarantine.key(bad)))
         #expect(!client.quarantine.isQuarantined(MediaQuarantine.key(Data([5]))))
         // Refused without asking the service again.
-        let before = service.requests.load(ordering: .relaxed)
+        let before = service.requestCount
         await #expect(throws: MediaProcessingError.undecodable("this file stopped the media service before")) { try await client.thumbnail(bad, size: 150) }
-        #expect(service.requests.load(ordering: .relaxed) == before)
+        #expect(service.requestCount == before)
     }
 
     @Test func twoCrashesQuarantine() async throws {
         let service = FakeMediaService(.crash)
-        defer { service.listener.invalidate() }
         let client = service.client(timeout: .seconds(10))
         let bad = Data([9, 9, 9])
         let key = MediaQuarantine.key(bad)
@@ -115,6 +124,16 @@ final class FakeMediaService: NSObject, MediaXPCProtocol, NSXPCListenerDelegate,
         #expect(!client.quarantine.isQuarantined(key))   // one strike: maybe it was another request
         await #expect(throws: XPCServiceError.self) { try await client.imageInfo(bad) }
         #expect(client.quarantine.isQuarantined(key))
+    }
+
+    /// A crash ends the session; the next request opens a new one and is served.
+    @Test func theSessionIsReopenedAfterACrash() async throws {
+        let info = ImageInfo(width: 2, height: 3, blurHash: String(repeating: "0", count: 28), isAnimated: false)
+        let service = FakeMediaService(.crashOnce(then: try Wire.encode(info)))
+        let client = service.client(timeout: .seconds(10))
+        await #expect(throws: XPCServiceError.self) { try await client.imageInfo(Data([1])) }
+        #expect(try await client.imageInfo(Data([2])) == info)
+        #expect(service.requestCount == 2)
     }
 
     @Test func quarantineIsBounded() {
@@ -135,8 +154,7 @@ final class FakeMediaService: NSObject, MediaXPCProtocol, NSXPCListenerDelegate,
         let outOfBounds = try Wire.encode(ImageInfo(width: 0, height: 99_999, blurHash: "", isAnimated: false))
         for (reply, call) in [(try Wire.encode(huge), "display"), (wrongType, "info"), (outOfBounds, "info")] {
             let service = FakeMediaService(.reply(reply))
-            defer { service.listener.invalidate() }
-            let client = service.client(timeout: .seconds(10))
+                let client = service.client(timeout: .seconds(10))
             await #expect(throws: MediaProcessingError.invalidResult) {
                 if call == "display" { _ = try await client.displayImage(png, maxDimension: 64) } else { _ = try await client.imageInfo(png) }
             }

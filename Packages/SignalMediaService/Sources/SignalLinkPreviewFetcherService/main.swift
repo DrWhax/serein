@@ -13,7 +13,4 @@ ServiceSandbox.requireConfinement("SignalLinkPreviewFetcher", network: true)
 // Straight to the site, and only to sites on the public internet (WebFetch/DestinationPolicy.swift).
 let handler = LinkPreviewFetcherXPCHandler(transport: PublicDestinationTransport(URLSessionWebTransport(proxy: .direct)),
                                            parserPeer: XPCPeer.required(.parser, by: "SignalLinkPreviewFetcher"))
-let delegate = LinkPreviewFetcherListenerDelegate(handler: handler, appPeer: XPCPeer.required(.app, by: "SignalLinkPreviewFetcher"))
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+XPCServer.serve(LinkPreviewFetcherClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalLinkPreviewFetcher"), handler)

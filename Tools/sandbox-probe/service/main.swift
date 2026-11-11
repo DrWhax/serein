@@ -1,9 +1,9 @@
 // A probe XPC service signed with the profile under test: it tries what the profile must deny
-// and reports each outcome ("allowed" or "denied") to the host.
+// and reports each outcome ("allowed" or "denied") to the host. Compiled with
+// MediaXPCInterface's sources, so it listens exactly as the real services do.
 import Foundation
 import IOKit
 import Network
-import Security
 
 func probes() -> String {
     var out: [String] = []
@@ -60,12 +60,6 @@ func probes() -> String {
         IOServiceClose(connect)
         return true
     }
-    // The services compile their peers' code-signing requirements (NSXPCConnection does it
-    // when the requirement is set): this must work under every profile.
-    check("compile a code-signing requirement") {
-        var req: SecRequirement?
-        return SecRequirementCreateWithString("identifier \"org.signalsafe.SignalSafe\"" as CFString, [], &req) == errSecSuccess && req != nil
-    }
     // Each real service runs its own check at start-up; under its profile it must pass.
     out.append("\(ServiceSandbox.isConfined() ? "allowed" : "denied"): pass the offline services' start-up check")
     out.append("\(ServiceSandbox.isConfined(network: true) ? "allowed" : "denied"): pass the web services' start-up check")
@@ -92,25 +86,16 @@ func nonisolatedReady(_ sem: DispatchSemaphore, _ report: (Bool) -> Void) {
     report(box.result)
 }
 
-final class Box { var result = false }
+final class Box: @unchecked Sendable { var result = false }   // set before the semaphore it waits on
 
-final class Probe: NSObject, ProbeProtocol {
-    func run(reply: @escaping (String) -> Void) { reply(probes()) }
+struct Probe: XPCMessageHandler {
+    var maxRequestBytes: Int { 0 }
+    func reply(to request: XPCMessage) async throws -> XPCMessage { XPCMessage(payload: Data(probes().utf8)) }
 }
 
-final class Delegate: NSObject, NSXPCListenerDelegate {
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
-        // As the real services do: every message is checked against the host's requirement
-        // (under the profile, so a profile that breaks the check shows up as missing probes).
-        c.setCodeSigningRequirement("identifier \"org.signalsafe.SignalSafe\"")
-        c.exportedInterface = NSXPCInterface(with: ProbeProtocol.self)
-        c.exportedObject = Probe()
-        c.resume()
-        return true
-    }
-}
-
-let delegate = Delegate()
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+// As the real services do: every session is checked against the host's requirement (under the
+// profile, so a profile that breaks the check shows up as missing probes). The service name
+// comes from the executable (Probe<profile>): the offline profiles let only the real
+// service's bundle be read, so this one cannot read its own Info.plist.
+let profile = URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent.dropFirst("Probe".count)
+XPCServer.serve("org.signalsafe.sandbox-probe.\(profile)", requirement: XPCPeer.requirement(identifier: "org.signalsafe.SignalSafe", sameTeam: false), Probe())

@@ -69,7 +69,12 @@ import SignalUI
     private var settingsTask: Task<Void, Never>?
     private(set) var ourAci: String?
     var selectedConversationId: String? {
-        didSet { if selectedConversationId != oldValue { observeTimeline(leaving: oldValue) } }
+        didSet {
+            if selectedConversationId != oldValue {
+                thawAnimations()
+                observeTimeline(leaving: oldValue)
+            }
+        }
     }
     var draft = "" {
         didSet {
@@ -312,6 +317,13 @@ import SignalUI
     @ObservationIgnored let images = ObservedCache<RGBAImage>()
     @ObservationIgnored private var loadingImages: Set<String> = []
     @ObservationIgnored var imagePaths: [String: String] = [:]
+    /// The animated images in `images`, oldest first, with their bytes: together at most
+    /// `animationCacheBytes`. Past that the oldest are kept as their first frame
+    /// (`frozenAnimations`) until another conversation opens, so a view whose animation was
+    /// dropped does not decode it again at once (and push out another).
+    @ObservationIgnored var animations: [(key: String, bytes: Int)] = []
+    @ObservationIgnored var frozenAnimations: Set<String> = []
+    static let animationCacheBytes = 256 << 20
     @ObservationIgnored var mediaAvailabilityTask: Task<Void, Never>?
     @ObservationIgnored var mediaExpiryTask: Task<Void, Never>?
     @ObservationIgnored var mediaObservationGeneration: UInt64 = 0
@@ -849,12 +861,58 @@ import SignalUI
         return loadImage(key: path, path: path, maxDimension: Self.displayMaxDimension) { store in try store.plaintext(of: a) }
     }
 
+    /// Types with an animated form (GIF, APNG, animated WebP); the media service sniffs the bytes.
+    static func mayAnimate(_ contentType: String) -> Bool {
+        ["image/gif", "image/png", "image/apng", "image/webp"].contains(contentType.lowercased())
+    }
+
+    /// An image the timeline shows on its own (a message's only attachment, a sticker), as
+    /// Chromium's `<img>` shows it: with every frame when it animates. Grids, quotes and the
+    /// media gallery show `image(for:)`, as upstream shows thumbnails there.
+    func animatedImage(for a: SignalCore.MessageAttachment) -> RGBAImage? {
+        guard let path = a.path, a.isDownloaded, AttachmentPolicy.isImage(a.contentType) else { return nil }
+        guard Self.mayAnimate(a.contentType) else { return image(for: a) }
+        let key = "anim:" + path
+        if let hit = images[key] { return hit }
+        return loadImage(key: key, path: path, maxDimension: Self.displayMaxDimension, animated: true) { store in try store.plaintext(of: a) }
+    }
+
+    /// Caches a decoded image; an animation counts against `animationCacheBytes`.
+    func storeImage(_ image: RGBAImage, key: String) {
+        images[key] = image
+        animations.removeAll { $0.key == key }
+        frozenAnimations.remove(key)
+        guard image.animation != nil else { return }
+        animations.append((key, image.byteCount))
+        var total = animations.reduce(0) { $0 + $1.bytes }
+        while total > Self.animationCacheBytes, animations.count > 1 {
+            let old = animations.removeFirst()
+            total -= old.bytes
+            if let shown = images[old.key] { images[old.key] = shown.still }
+            frozenAnimations.insert(old.key)
+        }
+    }
+
+    /// Drops a cached image and its animation's bookkeeping.
+    func forgetImage(_ key: String) {
+        images.removeValue(forKey: key)
+        animations.removeAll { $0.key == key }
+        frozenAnimations.remove(key)
+    }
+
+    /// Frozen animations decode again the next time they are shown.
+    func thawAnimations() {
+        for key in frozenAnimations { images.removeValue(forKey: key) }
+        frozenAnimations = []
+    }
+
     /// Decodes a stored file's pixels once (plaintext from the local store → the media
     /// service → validated RGBA), caching them under `key`. When it finishes, the file must
     /// still be referenced by a live message: by `messageId`'s own reference when a viewer of
     /// that message asked for it (it may have expired or been deleted during the decode, while
     /// another message still references the same file).
-    func loadImage(key: String, path: String, messageId: String? = nil, maxDimension: Int,
+    /// `animated`: every frame (`displayAnimation`), not just the first.
+    func loadImage(key: String, path: String, messageId: String? = nil, maxDimension: Int, animated: Bool = false,
                    plaintext: @escaping @Sendable (AttachmentStore) throws -> Data?) -> RGBAImage? {
         guard let session, !loadingImages.contains(key) else { return nil }
         let generation = mediaObservationGeneration
@@ -863,12 +921,22 @@ import SignalUI
         Task {
             defer { loadingImages.remove(key) }
             guard let bytes = try? await Task.detached(operation: { try plaintext(store) }).value ?? nil,
-                  let shown = try? await media.displayImage(bytes, maxDimension: maxDimension),
+                  let shown = await Self.decodeForDisplay(bytes, media: media, maxDimension: maxDimension, animated: animated),
                   generation == mediaObservationGeneration, mediaIsAvailable(path: path, messageId: messageId) else { return }
             imagePaths[key] = path
-            images[key] = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
+            storeImage(shown, key: key)
         }
         return nil
+    }
+
+    /// The media service's decode as a timeline image (2 pixels per point).
+    static func decodeForDisplay(_ bytes: Data, media: MediaXPCClient, maxDimension: Int, animated: Bool) async -> RGBAImage? {
+        if animated {
+            guard let a = try? await media.displayAnimation(bytes, maxDimension: maxDimension) else { return nil }
+            return RGBAImage(width: a.width, height: a.height, frames: a.frames, delays: a.delays, plays: a.plays, scale: 2)
+        }
+        guard let shown = try? await media.displayImage(bytes, maxDimension: maxDimension) else { return nil }
+        return RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
     }
 
     /// A file chosen for the next message (CompositionArea's draft attachments).

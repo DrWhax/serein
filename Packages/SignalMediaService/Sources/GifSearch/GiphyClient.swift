@@ -195,7 +195,7 @@ public struct GiphyClient: Sendable {
 }
 
 /// The service side of SignalGifSearch.xpc.
-public final class GifSearchXPCHandler: NSObject, MediaXPCProtocol, Sendable {
+public final class GifSearchXPCHandler: XPCMessageHandler {
     let giphy: GiphyClient
     let gate: RequestGate
     /// The client's timeout: a request still running (on the network or parsing a reply) after
@@ -207,43 +207,20 @@ public final class GifSearchXPCHandler: NSObject, MediaXPCProtocol, Sendable {
         self.gate = gate
     }
 
-    public func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        let decoded: GifSearchRequest
-        do { decoded = try MediaXPCWire.decode(GifSearchRequest.self, request, maxBytes: GifSearchRequest.maxBytes) } catch { return reply(nil, "bad request") }
-        let giphy = giphy, gate = gate
-        Task {
-            do {
-                reply(try await gate.run(budget: Self.budget) {
-                    switch decoded {
-                    case .search(let q, let limit, let offset):
-                        return try MediaXPCWire.encode(try await giphy.search(q, limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
-                    case .trending(let limit, let offset):
-                        return try MediaXPCWire.encode(try await giphy.trending(limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
-                    case .file(let url):
-                        return try MediaXPCWire.encode(try await giphy.file(url))
-                    }
-                }, nil)
-            } catch {
-                reply(nil, String(describing: error))
+    public var maxRequestBytes: Int { GifSearchRequest.maxBytes }
+
+    public func reply(to request: XPCMessage) async throws -> XPCMessage {
+        let decoded = try MediaXPCWire.decode(GifSearchRequest.self, try request.requirePayload(), maxBytes: GifSearchRequest.maxBytes)
+        let giphy = giphy
+        return XPCMessage(payload: try await gate.run(budget: Self.budget) {
+            switch decoded {
+            case .search(let q, let limit, let offset):
+                return try MediaXPCWire.encode(try await giphy.search(q, limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
+            case .trending(let limit, let offset):
+                return try MediaXPCWire.encode(try await giphy.trending(limit: min(max(limit, 1), PaginatedGifResults.maxPage), offset: offset))
+            case .file(let url):
+                return try MediaXPCWire.encode(try await giphy.file(url))
             }
-        }
-    }
-}
-
-public final class GifSearchListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
-    let handler: GifSearchXPCHandler
-    let appPeer: String?
-
-    public init(handler: GifSearchXPCHandler, appPeer: String?) {
-        self.handler = handler
-        self.appPeer = appPeer
-    }
-
-    public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        if let appPeer { connection.setCodeSigningRequirement(appPeer) }
-        connection.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
-        connection.exportedObject = handler
-        connection.resume()
-        return true
+        })
     }
 }

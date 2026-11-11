@@ -1,0 +1,316 @@
+structure Codecs.Cursor : Type
+number of parameters: 0
+fields:
+  Codecs.Cursor.start : Nat
+  Codecs.Cursor.pos : Nat
+  Codecs.Cursor.stop : Nat
+constructor:
+  Codecs.Cursor.mk (start pos stop : Nat) : Cursor
+inductive Codecs.Prim : Type
+number of parameters: 0
+constructors:
+Codecs.Prim.u8 : Prim
+Codecs.Prim.u16be : Prim
+Codecs.Prim.u16le : Prim
+Codecs.Prim.u24be : Prim
+Codecs.Prim.u24le : Prim
+Codecs.Prim.u32be : Prim
+Codecs.Prim.u32le : Prim
+Codecs.Prim.u64be : Prim
+Codecs.Prim.bytes : Int → Prim
+Codecs.Prim.skip : Int → Prim
+Codecs.Prim.expect : List Nat → Prim
+Codecs.Prim.rest : Prim
+inductive Codecs.Val : Type
+number of parameters: 0
+constructors:
+Codecs.Val.num : Nat → Val
+Codecs.Val.slice : Nat → Nat → Val
+Codecs.Val.unit : Val
+def Codecs.need : Cursor → Int → Bool :=
+fun c n => decide (0 ≤ n) && decide (n ≤ ↑(c.stop - c.pos))
+def Codecs.be : List Nat → Nat → Nat → Nat :=
+fun bs p k => List.foldl (fun acc i => acc * 256 + byteAt bs (p + i)) 0 (List.range k)
+def Codecs.le : List Nat → Nat → Nat → Nat :=
+fun bs p k => List.foldr (fun i acc => acc * 256 + byteAt bs (p + i)) 0 (List.range k)
+def Codecs.fixedRead : List Nat → Cursor → Nat → Bool → Except Fail (Val × Cursor) :=
+fun bs c k big =>
+  if need c ↑k = true then Except.ok (Val.num (if big = true then be bs c.pos k else le bs c.pos k), advance c k)
+  else Except.error { offset := c.pos, kind := Kind.unexpectedEnd }
+def Codecs.prim : List Nat → Cursor → Prim → Except Fail (Val × Cursor) :=
+fun bs c x =>
+  match x with
+  | Prim.u8 => fixedRead bs c 1 true
+  | Prim.u16be => fixedRead bs c 2 true
+  | Prim.u16le => fixedRead bs c 2 false
+  | Prim.u24be => fixedRead bs c 3 true
+  | Prim.u24le => fixedRead bs c 3 false
+  | Prim.u32be => fixedRead bs c 4 true
+  | Prim.u32le => fixedRead bs c 4 false
+  | Prim.u64be =>
+    match fixedRead bs c 4 true with
+    | Except.ok (Val.num hi, c1) =>
+      match fixedRead bs c1 4 true with
+      | Except.ok (Val.num lo, c2) => Except.ok (Val.num (hi * 4294967296 + lo), c2)
+      | Except.ok a => Except.error { offset := c1.pos, kind := Kind.invalid }
+      | Except.error e => Except.error e
+    | Except.ok a => Except.error { offset := c.pos, kind := Kind.invalid }
+    | Except.error e => Except.error e
+  | Prim.bytes n =>
+    if need c n = true then Except.ok (Val.slice c.pos (c.pos + n.toNat), advance c n.toNat)
+    else Except.error { offset := c.pos, kind := Kind.unexpectedEnd }
+  | Prim.skip n =>
+    if need c n = true then Except.ok (Val.unit, advance c n.toNat)
+    else Except.error { offset := c.pos, kind := Kind.unexpectedEnd }
+  | Prim.expect lit =>
+    if (!need c ↑lit.length) = true then Except.error { offset := c.pos, kind := Kind.unexpectedEnd }
+    else
+      if ((List.range lit.length).all fun i => byteAt bs (c.pos + i) == lit.getD i 0) = true then
+        Except.ok (Val.unit, advance c lit.length)
+      else Except.error { offset := c.pos, kind := Kind.mismatch }
+  | Prim.rest => Except.ok (Val.slice c.pos c.stop, { start := c.start, pos := c.stop, stop := c.stop })
+inductive Codecs.G : Type
+number of parameters: 0
+constructors:
+Codecs.G.prim : Prim → G
+Codecs.G.seq : G → G → G
+Codecs.G.region : Int → G → G
+Codecs.G.lenPrefixed : Prim → Nat → G → G
+Codecs.G.repeated : Int → Nat → G → G
+Codecs.G.toEnd : Nat → G → G
+Codecs.G.oneOf : G → G → G
+structure Codecs.R : Type
+number of parameters: 0
+fields:
+  Codecs.R.c : Cursor
+  Codecs.R.reads : List (Nat × Nat)
+  Codecs.R.items : Nat
+constructor:
+  Codecs.R.mk (c : Cursor) (reads : List (Nat × Nat)) (items : Nat) : R
+def Codecs.readRange : Cursor → Cursor → Val → List (Nat × Nat) :=
+fun c c' v =>
+  match v with
+  | Val.slice lo hi => [(c.pos, c'.pos), (lo, hi)]
+  | x => [(c.pos, c'.pos)]
+def Codecs.iterate : (Cursor → Except Fail R) → Nat → R → Except Fail R :=
+fun f x x_1 => Nat.brecOn (motive := fun x => R → Except Fail R) x (iterate._f f) x_1
+def Codecs.toEndLoop : (Cursor → Except Fail R) → Nat → Nat → Nat → R → Except Fail R :=
+fun f max x x_1 x_2 => Nat.brecOn (motive := fun x => Nat → R → Except Fail R) x (toEndLoop._f f max) x_1 x_2
+def Codecs.complete : (Cursor → Except Fail R) → Nat → Nat → Except Fail R :=
+fun f lo hi =>
+  match f { start := lo, pos := lo, stop := hi } with
+  | Except.ok r =>
+    if (r.c.pos == hi) = true then Except.ok r else Except.error { offset := r.c.pos, kind := Kind.trailing }
+  | Except.error e => Except.error e
+def Codecs.run : List Nat → G → Cursor → Except Fail R :=
+fun bs x x_1 => G.brecOn (motive := fun x => Cursor → Except Fail R) x (run._f bs) x_1
+def Codecs.budget : G → Nat :=
+fun x => G.brecOn x budget._f
+structure Codecs.Box : Type
+number of parameters: 0
+fields:
+  Codecs.Box.type : Nat
+  Codecs.Box.offset : Nat
+  Codecs.Box.lo : Nat
+  Codecs.Box.hi : Nat
+constructor:
+  Codecs.Box.mk (type offset lo hi : Nat) : Box
+def Codecs.header : List Nat → Nat → Nat → Bool → Except Fail (Nat × Nat × Nat) :=
+fun bs pos hi top =>
+  have size32 := be bs pos 4;
+  have type := be bs (pos + 4) 4;
+  have p := pos + 8;
+  have sized :=
+    if (size32 == 1) = true then
+      if hi - p < 4 then Except.error { offset := p, kind := Kind.unexpectedEnd }
+      else
+        if hi - p < 8 then Except.error { offset := p + 4, kind := Kind.unexpectedEnd }
+        else Except.ok (p + 8, be bs p 8)
+    else
+      if (size32 == 0) = true then
+        if top = true then Except.ok (p, hi - p + 8) else Except.error { offset := p, kind := Kind.invalid }
+      else Except.ok (p, size32);
+  match sized with
+  | Except.error e => Except.error e
+  | Except.ok (p, size) =>
+    if (type == uuid) = true then
+      if hi - p < 16 then Except.error { offset := p, kind := Kind.unexpectedEnd } else Except.ok (type, p + 16, size)
+    else Except.ok (type, p, size)
+def Codecs.boxes : List Nat → Nat → Bool → Nat → Nat → Nat → List Box → Nat → Except Fail (List Box × Nat) :=
+fun bs hi top maxBoxes x x_1 x_2 x_3 =>
+  Nat.brecOn (motive := fun x => Nat → List Box → Nat → Except Fail (List Box × Nat)) x (boxes._f bs hi top maxBoxes)
+    x_1 x_2 x_3
+def Codecs.children : List Nat → Nat → Nat → Bool → Nat → Nat → Except Fail (List Box × Nat) :=
+fun bs lo hi top count maxBoxes => boxes bs hi top maxBoxes (hi - lo + 1) lo [] count
+def Codecs.bitAt : List Nat → Nat → Nat :=
+fun bs i => if i < 8 * bs.length then byteAt bs (i / 8) / 2 ^ (7 - i % 8) % 2 else 0
+def Codecs.bitsVal : List Nat → Nat → Nat → Nat :=
+fun bs p n => List.foldl (fun acc i => acc * 2 + bitAt bs (p + i)) 0 (List.range n)
+structure Codecs.Bits : Type
+number of parameters: 0
+fields:
+  Codecs.Bits.pos : Nat
+  Codecs.Bits.exhausted : Bool
+constructor:
+  Codecs.Bits.mk (pos : Nat) (exhausted : Bool) : Bits
+def Codecs.readBits : List Nat → Bool → Bits → Nat → Except Fail (Nat × Bits) :=
+fun bs zeroFill r n =>
+  if (n == 0) = true then Except.ok (0, r)
+  else
+    if r.pos + n ≤ 8 * bs.length then Except.ok (bitsVal bs r.pos n, { pos := r.pos + n, exhausted := r.exhausted })
+    else
+      if zeroFill = true then Except.ok (bitsVal bs r.pos n, { pos := 8 * bs.length, exhausted := true })
+      else Except.error { offset := bs.length, kind := Kind.unexpectedEnd }
+def Codecs.Good : Cursor → Prop :=
+fun c => c.start ≤ c.pos ∧ c.pos ≤ c.stop
+def Codecs.Within : Cursor → R → Prop :=
+fun c r =>
+  r.c.start = c.start ∧
+    r.c.stop = c.stop ∧
+      c.pos ≤ r.c.pos ∧
+        r.c.pos ≤ c.stop ∧ ∀ (x : Nat × Nat), x ∈ r.reads → c.pos ≤ x.fst ∧ x.fst ≤ x.snd ∧ x.snd ≤ r.c.pos
+def Codecs.BoxesWithin : Nat → Nat → List Box → Prop :=
+fun lo hi bxs =>
+  (∀ (b : Box), b ∈ bxs → lo ≤ b.offset ∧ b.offset + 8 ≤ b.lo ∧ b.lo ≤ b.hi ∧ b.hi ≤ hi) ∧
+    List.Pairwise (fun a b => a.hi ≤ b.offset) bxs
+106 definitions
+Codecs.Bits 3931117990 8647086980491635263
+Codecs.Bits.exhausted 3340513931 1368928702
+Codecs.Bits.mk 3322682463 -
+Codecs.Bits.pos 1248354280 86060850
+Codecs.Box 3931117990 10725182376816342482
+Codecs.Box.hi 1409380210 3484668711
+Codecs.Box.lo 1409380210 529257745
+Codecs.Box.mk 2735391989 -
+Codecs.Box.offset 1409380210 1784312394
+Codecs.BoxesWithin 326629968 3640542679
+Codecs.Cursor 3931117990 2884558073420090193
+Codecs.Cursor.mk 3925355801 -
+Codecs.Cursor.pos 1922411011 1115297039
+Codecs.Cursor.start 1922411011 2711805821
+Codecs.Cursor.stop 1922411011 1269459297
+Codecs.Fail 3931117990 15904671794494290868
+Codecs.Fail.mk 1030044247 -
+Codecs.Fail.offset 2870903002 1264290805
+Codecs.G 3931117990 2394375904278885915
+Codecs.G.below 111210410 2469439990
+Codecs.G.brecOn 1714358875 3043639745
+Codecs.G.brecOn.go 2567038774 2270781917
+Codecs.G.casesOn 2314706384 1688916573
+Codecs.G.lenPrefixed 2822909605 -
+Codecs.G.oneOf 4145239277 -
+Codecs.G.prim 3043073921 -
+Codecs.G.rec 3880824665 -
+Codecs.G.region 3477408106 -
+Codecs.G.repeated 3483253667 -
+Codecs.G.seq 4145239277 -
+Codecs.G.toEnd 1499506530 -
+Codecs.Good 1054780975 1043826993
+Codecs.Kind 3931117990 1527095954980254741
+Codecs.Kind.invalid 3042110627 -
+Codecs.Kind.limit 3042110627 -
+Codecs.Kind.mismatch 3042110627 -
+Codecs.Kind.trailing 3042110627 -
+Codecs.Kind.unexpectedEnd 3042110627 -
+Codecs.Prim 3931117990 13690697450723489636
+Codecs.Prim.bytes 2660162995 -
+Codecs.Prim.casesOn 1945039923 2206293923
+Codecs.Prim.expect 155081133 -
+Codecs.Prim.rec 1295199462 -
+Codecs.Prim.rest 2522881703 -
+Codecs.Prim.skip 2660162995 -
+Codecs.Prim.u16be 2522881703 -
+Codecs.Prim.u16le 2522881703 -
+Codecs.Prim.u24be 2522881703 -
+Codecs.Prim.u24le 2522881703 -
+Codecs.Prim.u32be 2522881703 -
+Codecs.Prim.u32le 2522881703 -
+Codecs.Prim.u64be 2522881703 -
+Codecs.Prim.u8 2522881703 -
+Codecs.R 3931117990 4893630963698316819
+Codecs.R.c 216671844 4138445455
+Codecs.R.items 1276611830 3712862075
+Codecs.R.mk 3957889027 -
+Codecs.R.reads 2506316336 3353610889
+Codecs.Val 3931117990 13371557024810838520
+Codecs.Val.casesOn 78626699 2933938998
+Codecs.Val.ctorIdx 1672540452 972374723
+Codecs.Val.num 850751548 -
+Codecs.Val.rec 3015381693 -
+Codecs.Val.slice 4195687504 -
+Codecs.Val.unit 2280346341 -
+Codecs.Within 1483505430 336453909
+Codecs.advance 2165331602 1895806273
+Codecs.be 1057834157 2442148020
+Codecs.bitAt 2605746365 1306956881
+Codecs.bitsVal 1057834157 3077816909
+Codecs.boxes 1010628628 4164958521
+Codecs.boxes._f 3323643445 3500210851
+Codecs.boxes.match_1 949234025 1088647914
+Codecs.boxes.match_3 4197212665 521748614
+Codecs.budget 1196002713 2040504306
+Codecs.budget._f 2045224827 1932474264
+Codecs.byteAt 2605746365 562824001
+Codecs.children 3287924561 3390071095
+Codecs.complete 1515685719 3764845179
+Codecs.fixedRead 1939968545 697719967
+Codecs.header 4094938869 33869347
+Codecs.header.match_1 1297349088 4285213547
+Codecs.instReprG.repr.match_1 2083644806 4153930542
+Codecs.instReprPrim.repr.match_1 3802894088 763252663
+Codecs.iterate 457318559 80283324
+Codecs.iterate._f 868818237 4033088458
+Codecs.iterate.match_1 1715668200 1461612798
+Codecs.iterate.match_3 2259926232 2096134147
+Codecs.le 1057834157 886980125
+Codecs.mdat 421340980 2414244784
+Codecs.need 2395502880 3066110937
+Codecs.prim 161311186 3714888881
+Codecs.prim._sparseCasesOn_1 3027737359 3805866827
+Codecs.prim.match_1 3580478836 2740444583
+Codecs.readBits 2934941742 1202995346
+Codecs.readRange 619961002 1020811709
+Codecs.readRange._sparseCasesOn_1 772666989 1919019953
+Codecs.readRange.match_1 593521572 3114322781
+Codecs.run 758414830 847252163
+Codecs.run._f 4183522327 146364115
+Codecs.run.match_1 2931908644 90452657
+Codecs.run.match_3 772285944 2358617290
+Codecs.toEndLoop 2608057128 297282329
+Codecs.toEndLoop._f 3477909661 2509471551
+Codecs.toEndLoop.match_1 517524257 3155155647
+Codecs.uuid 421340980 492480757
+@need_spec : ∀ {c : Cursor} {n : Int}, Good c → need c n = true → 0 ≤ n ∧ c.pos + n.toNat ≤ c.stop
+@prim_within : ∀ {bs : List Nat} {c : Cursor} {p : Prim} {v : Val} {c' : Cursor},
+  Good c →
+    prim bs c p = Except.ok (v, c') →
+      c'.start = c.start ∧
+        c'.stop = c.stop ∧
+          c.pos ≤ c'.pos ∧ c'.pos ≤ c.stop ∧ ∀ (lo hi : Nat), v = Val.slice lo hi → c.pos ≤ lo ∧ lo ≤ hi ∧ hi ≤ c'.pos
+run_within : ∀ (bs : List Nat) (g : G) (c : Cursor), Good c → ∀ (r : R), run bs g c = Except.ok r → Within c r
+region_exact : ∀ (bs : List Nat) (n : Int) (g : G) (c : Cursor),
+  Good c → ∀ (r : R), run bs (G.region n g) c = Except.ok r → 0 ≤ n ∧ r.c.pos = c.pos + n.toNat
+run_budget : ∀ (bs : List Nat) (g : G) (c : Cursor) (r : R), run bs g c = Except.ok r → r.items ≤ budget g
+children_within : ∀ (bs : List Nat) (lo hi : Nat) (top : Bool) (count maxBoxes : Nat),
+  lo ≤ hi →
+    ∀ (bxs : List Box) (n : Nat), children bs lo hi top count maxBoxes = Except.ok (bxs, n) → BoxesWithin lo hi bxs
+children_budget : ∀ (bs : List Nat) (lo hi : Nat) (top : Bool) (count maxBoxes : Nat),
+  lo ≤ hi →
+    ∀ (bxs : List Box) (n : Nat),
+      children bs lo hi top count maxBoxes = Except.ok (bxs, n) → n = count + bxs.length ∧ (bxs ≠ [] → n ≤ maxBoxes)
+bitsVal_lt : ∀ (bs : List Nat) (p n : Nat), bitsVal bs p n < 2 ^ n
+readBits_spec : ∀ (bs : List Nat) (zeroFill : Bool) (r : Bits) (n v : Nat) (r' : Bits),
+  r.pos ≤ 8 * bs.length →
+    readBits bs zeroFill r n = Except.ok (v, r') →
+      v < 2 ^ n ∧
+        r'.pos ≤ 8 * bs.length ∧
+          r.pos ≤ r'.pos ∧ (r'.pos = r.pos + n ∨ zeroFill = true ∧ r'.exhausted = true ∧ r'.pos = 8 * bs.length)
+Codecs.need_spec depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.prim_within depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.run_within depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.region_exact depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.run_budget depends on axioms: [Quot.sound, propext]
+Codecs.children_within depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.children_budget depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.bitsVal_lt depends on axioms: [Quot.sound, propext]
+Codecs.readBits_spec depends on axioms: [Quot.sound, propext]

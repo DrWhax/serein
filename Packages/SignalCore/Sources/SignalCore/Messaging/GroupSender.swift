@@ -25,6 +25,44 @@ public struct GroupSendResult: Sendable, Equatable {
     public var unregistered: [String]
     /// Members left out because we blocked them.
     public var blocked: [String] = []
+    /// Recipients left out because they are no longer members (content only).
+    public var notMembers: [String] = []
+}
+
+/// Who a group send goes to, decided from the membership committed when it plans (after any
+/// upload, and again on every retry).
+struct GroupSendPlan: Equatable {
+    /// Members: they get the payload, through our sender key when possible.
+    var members: [String]
+    /// Non-members a group update reaches (those it removes, invitees, requesters): one by
+    /// one, never through our sender key.
+    var outside: [String]
+    /// Non-members content does not go to.
+    var dropped: [String]
+
+    static func make(recipients: [String], members: Set<String>, ourAci: String, update: Bool) -> GroupSendPlan {
+        let all = Array(Set(recipients.filter { $0 != ourAci })).sorted()
+        let inGroup = all.filter { members.contains($0) }, outside = all.filter { !members.contains($0) }
+        return GroupSendPlan(members: inGroup, outside: update ? outside : [], dropped: update ? [] : outside)
+    }
+}
+
+extension SenderKeyInfo {
+    /// Our sender key after a removal: if a device we gave the key to belongs to an account that
+    /// is not among this send's targets (members only), the key is replaced; the (new or
+    /// current) key then goes to every target device that does not have it.
+    static func rotation(distributed: [Device], current: Set<Device>, targets: Set<String>) -> (reset: Bool, distribute: Set<Device>) {
+        let removed = Set(distributed).subtracting(current)
+        let reset = removed.contains { !targets.contains($0.serviceId) }
+        return (reset, reset ? current : current.subtracting(Set(distributed)))
+    }
+
+    /// The devices recorded as having our key, after `devices` got it: added to what was
+    /// recorded (until the next reset), never replaced, so a device with the key always counts
+    /// for the next rotation, even when a send stops part-way or another send ran meanwhile.
+    static func recording(_ distributed: [Device], adding devices: some Sequence<Device>) -> [Device] {
+        Array(Set(distributed).union(devices)).sorted { ($0.serviceId, $0.id) < ($1.serviceId, $1.id) }
+    }
 }
 
 public struct GroupSender: Sendable {
@@ -55,13 +93,24 @@ public struct GroupSender: Sendable {
         try sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds, retracting: payload.onlyRetracts)()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let ourAci = account.aci
-        let members = Array(Set(recipients.filter { $0 != ourAci })).sorted()
-        // Contacts we blocked get nothing from us, in groups too (upstream getValidRecipients,
-        // getMessageRecipients). Chosen here, when the send starts: the group's own block is
-        // checked again at submission, a member's is not (the payload is already theirs).
-        let targets = try await database.pool.read { db in try Self.sendableRecipients(db, members) }
-        let blocked = members.filter { !targets.contains($0) }
-        guard !targets.isEmpty else { return GroupSendResult(senderKeyRecipients: [], normalRecipients: [], unregistered: [], blocked: blocked) }
+        // A membership change takes effect when it is committed here: the plan is made from the
+        // membership now (after the caller's uploads, and again on a retry), and the submission
+        // check refuses a group payload to a non-member. A group update also reaches those it
+        // removes, one by one; content does not go to non-members.
+        let update = payload.isGroupUpdateOnly
+        let (plan, targets, outsideTargets) = try await database.pool.read { db in
+            let plan = GroupSendPlan.make(recipients: recipients, members: try MessageSender.currentMembers(db, groupId: keys.groupId),
+                                          ourAci: ourAci, update: update)
+            // Contacts we blocked get nothing from us, in groups too (upstream getValidRecipients).
+            return (plan, try Self.sendableRecipients(db, plan.members), try Self.sendableRecipients(db, plan.outside))
+        }
+        let blocked = (plan.members + plan.outside).filter { !targets.contains($0) && !outsideTargets.contains($0) }
+        for t in outsideTargets {
+            do { _ = try await sender.send(payload, to: t, messageIds: messageIds) } catch SendError.unregistered {}
+        }
+        guard !targets.isEmpty else {
+            return GroupSendResult(senderKeyRecipients: [], normalRecipients: outsideTargets, unregistered: [], blocked: blocked, notMembers: plan.dropped)
+        }
         let conversationId = try await database.pool.write { db in try GroupStore.conversation(db, keys: keys).conversationId }
         // Sessions for every recipient (fetchKeysForServiceIds).
         var untrusted: [String] = []
@@ -88,6 +137,9 @@ public struct GroupSender: Sendable {
             do {
                 (viaSenderKey, unregistered) = try await sendViaSenderKey(payload, keys: keys, conversationId: conversationId,
                                                                           devices: senderKeyTargets, endorsements: endorsements, messageIds: messageIds)
+            } catch SendError.notAMember where attempt < 3 {
+                // Someone was removed while this send was under way: plan again.
+                return try await send(payload, keys: keys, recipients: recipients, messageIds: messageIds, attempt: attempt + 1)
             } catch SignalError.mismatchedDevices(let entries, _) where attempt < 3 {
                 for e in entries {
                     let id = e.account.serviceIdString.lowercased()
@@ -99,10 +151,14 @@ public struct GroupSender: Sendable {
         } else {
             normal = targets
         }
+        var dropped = plan.dropped
         for t in normal {
-            do { _ = try await sender.send(payload, to: t, messageIds: messageIds) } catch SendError.unregistered { unregistered.append(t) }
+            do { _ = try await sender.send(payload, to: t, messageIds: messageIds) } catch SendError.unregistered { unregistered.append(t) } catch SendError.notAMember {
+                dropped.append(t)
+            }
         }
-        return GroupSendResult(senderKeyRecipients: viaSenderKey, normalRecipients: normal, unregistered: unregistered, blocked: blocked)
+        return GroupSendResult(senderKeyRecipients: viaSenderKey, normalRecipients: normal + outsideTargets, unregistered: unregistered,
+                               blocked: blocked, notMembers: dropped)
     }
 
     /// The conversation's sender-key state. A key that has expired, or that was marked for
@@ -151,17 +207,16 @@ public struct GroupSender: Sendable {
             }
             return out
         }
-        let known = Set(info.memberDevices)
-        let removed = known.subtracting(current)
-        let memberSet = Set(devices.map(\.0))
-        // A device of someone no longer in the send target saw our key: start a new one.
-        if removed.contains(where: { !memberSet.contains($0.serviceId) }) {
+        // A device of someone no longer in the send's targets (members only) saw our key: start a
+        // new one; the key then goes only to target devices that lack it.
+        let rotation = SenderKeyInfo.rotation(distributed: info.memberDevices, current: current, targets: Set(devices.map(\.0)))
+        if rotation.reset {
             let previous = info
             info = try await database.pool.write { db in try self.resetSenderKey(db, conversationId: conversationId, previous: previous) }
         }
         guard let distributionId = UUID(uuidString: info.distributionId) else { throw SendError.invalidKeysResponse("distribution id") }
         let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)
-        let newDevices = current.subtracting(Set(info.memberDevices))
+        let newDevices = rotation.distribute
         if !newDevices.isEmpty {
             let skdm = try await database.pool.write { db in
                 try SenderKeyDistributionMessage(from: local, distributionId: distributionId, store: sender.store, context: DatabaseStoreContext(db))
@@ -173,9 +228,13 @@ public struct GroupSender: Sendable {
             distribution.groupId = keys.groupId
             for id in Set(newDevices.map(\.serviceId)).sorted() {
                 _ = try await sender.send(distribution, to: id)
+                // Recorded as it goes: these devices have the key from now on.
+                info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: newDevices.filter { $0.serviceId == id })
+                let saved = info
+                try await database.pool.write { db in try Self.saveInfo(db, conversationId, saved) }
             }
         }
-        info.memberDevices = Array(current).sorted { ($0.serviceId, $0.id) < ($1.serviceId, $1.id) }
+        info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: current)
         let saved = info
         try await database.pool.write { db in try Self.saveInfo(db, conversationId, saved) }
 
@@ -192,7 +251,8 @@ public struct GroupSender: Sendable {
             return try sealedSenderMultiRecipientEncrypt(usmc, for: addresses, identityStore: sender.store, sessionStore: sender.store, context: ctx)
         }
         let gone = try await socket.sendMultiRecipient(multi, timestamp: payload.timestamp, token: token, online: payload.online, urgent: payload.urgent,
-                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds, retracting: payload.onlyRetracts))
+                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds,
+                                                                                       retracting: payload.onlyRetracts, recipients: devices.map(\.0)))
             .map { $0.serviceIdString.lowercased() }
         let delivered = devices.filter { !gone.contains($0.0) }
         try await database.pool.write { db in

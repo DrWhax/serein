@@ -52,8 +52,9 @@ install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
 svcpkg="$root/Packages/SignalMediaService"
 sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
 # Who may talk to whom (MediaXPCInterface/XPCPeer.swift): every bundle gets every component's
-# code-signing requirement. With a signing identity it pins the Team ID under an Apple anchor;
-# ad-hoc signatures have no Team ID, so only the identifier can be required.
+# signing identifier. With a signing identity a peer must also share this build's Team ID under
+# an Apple-issued certificate (SereinXPCSameTeam); ad-hoc signatures have no Team ID, so only
+# the identifier can be required.
 team=""
 if [ "$sign" != "-" ]; then
   tprobe="$pkg/.build/teamid-probe"
@@ -63,19 +64,18 @@ if [ "$sign" != "-" ]; then
   rm -f "$tprobe"
   [ "$team" = "not set" ] && team=""
 fi
-req() {
-  if [ -n "$team" ]; then printf 'anchor apple generic and identifier "%s" and certificate leaf[subject.OU] = "%s"' "$1" "$team"
-  else printf 'identifier "%s"' "$1"; fi
-}
+sameteam=""
+[ -n "$team" ] && sameteam="
+  <key>SereinXPCSameTeam</key><true/>"
 peers="  <key>SereinXPCPeers</key>
   <dict>
-    <key>app</key><string>$(req org.signalsafe.SignalSafe)</string>
-    <key>decoder</key><string>$(req org.signalsafe.SignalMediaDecoder)</string>
-    <key>parser</key><string>$(req org.signalsafe.SignalLinkPreviewParser)</string>
-    <key>fetcher</key><string>$(req org.signalsafe.SignalLinkPreviewFetcher)</string>
-    <key>gifs</key><string>$(req org.signalsafe.SignalGifSearch)</string>
-    <key>voice</key><string>$(req org.signalsafe.SignalVoiceNoteEncoder)</string>
-  </dict>"
+    <key>app</key><string>org.signalsafe.SignalSafe</string>
+    <key>decoder</key><string>org.signalsafe.SignalMediaDecoder</string>
+    <key>parser</key><string>org.signalsafe.SignalLinkPreviewParser</string>
+    <key>fetcher</key><string>org.signalsafe.SignalLinkPreviewFetcher</string>
+    <key>gifs</key><string>org.signalsafe.SignalGifSearch</string>
+    <key>voice</key><string>org.signalsafe.SignalVoiceNoteEncoder</string>
+  </dict>$sameteam"
 services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder"
 service() {   # name product [extra Info.plist lines]
   name=$1 product=$2 extra=${3:-}
@@ -98,7 +98,6 @@ service() {   # name product [extra Info.plist lines]
   <key>XPCService</key>
   <dict>
     <key>ServiceType</key><string>Application</string>
-    <key>RunLoopType</key><string>NSRunLoop</string>
   </dict>
 $peers
 $extra

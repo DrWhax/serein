@@ -107,8 +107,10 @@ public enum AttachmentCipher {
         guard SignalCrypto.constantTimeEqual(SignalCrypto.hmacSHA256(key: macKey, body), Data(blob.suffix(macLength))) else { throw AttachmentError.badMAC }
         let digest = SignalCrypto.sha256(blob)
         if let incrementalMac, let chunkSize, chunkSize > 0 {
+            // A chunk size beyond what the pointer can carry is malformed, not a trap.
+            guard let chunk = UInt32(exactly: chunkSize) else { throw AttachmentError.badIncrementalMAC }
             let validator: ValidatingMacContext
-            do { validator = try ValidatingMacContext(key: macKey, chunkSize: .bytes(UInt32(chunkSize)), expectingDigest: incrementalMac) } catch {
+            do { validator = try ValidatingMacContext(key: macKey, chunkSize: .bytes(chunk), expectingDigest: incrementalMac) } catch {
                 throw AttachmentError.badIncrementalMAC
             }
             do {

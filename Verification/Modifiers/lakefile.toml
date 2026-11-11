@@ -1,0 +1,10 @@
+name = "Modifiers"
+version = "0.1.0"
+defaultTargets = ["Modifiers", "oracle"]
+
+[[lean_lib]]
+name = "Modifiers"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

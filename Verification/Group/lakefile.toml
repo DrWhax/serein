@@ -1,0 +1,10 @@
+name = "Group"
+version = "0.1.0"
+defaultTargets = ["Group", "oracle"]
+
+[[lean_lib]]
+name = "Group"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

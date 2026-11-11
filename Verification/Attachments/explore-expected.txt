@@ -1,0 +1,3 @@
+delivered-authentic OK
+published-validated OK
+fetched-bounded OK

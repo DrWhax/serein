@@ -11,7 +11,4 @@ import SignalMediaDecoder
 ServiceSandbox.requireConfinement("SignalMediaDecoder")
 
 // Only the app (signed as XPCPeer says) may connect.
-let delegate = MediaXPCListenerDelegate(peer: XPCPeer.required(.app, by: "SignalMediaDecoder"))
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+XPCServer.serve(MediaXPCClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalMediaDecoder"), MediaXPCHandler())

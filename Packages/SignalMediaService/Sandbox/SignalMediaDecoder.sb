@@ -9,21 +9,19 @@
 ; Tools/check-sandbox-profile.sh runs a probe service under these rules.
 ;
 ; Files: nothing read (not even system files), written, or ioctl'd.
-; Its own bundle (SignalMediaDecoder.xpc: the executable, Info.plist with its peers' code-signing
-; requirements, the signature) stays readable; nothing else is.
-; Security.framework's own (read-only) resources stay readable too: compiling the peers'
-; code-signing requirements needs them (Tools/check-sandbox-profile.sh probes it).
-(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalMediaDecoder\.xpc(/.*)?$")) (require-not (subpath "/System/Library/Frameworks/Security.framework"))))
+; Its own bundle (SignalMediaDecoder.xpc: the executable, Info.plist with its peers' signing
+; identifiers, the signature) stays readable; nothing else is. Checking peers needs no files:
+; the system checks each session's peer against its requirement (XPCPeer.swift).
+(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalMediaDecoder\.xpc(/.*)?$"))))
 (deny file-write* (subpath "/"))
 (deny file-ioctl (subpath "/"))
 ; No other programs, no children.
 (deny process-exec* (subpath "/"))
 (deny process-fork)
-; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any.
-; Except com.apple.CodeSigningHelper: checking each message's sender against the peer's
-; code-signing requirement (NSXPCConnection.setCodeSigningRequirement) asks it about the
-; sender's code; without it every message is refused (Tools/check-sandbox-profile.sh).
-(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.CodeSigningHelper"))))
+; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any. The
+; peer checks need none either (Tools/check-sandbox-profile.sh: served as the app, refused
+; otherwise).
+(deny mach-lookup (global-name-regex #".*"))
 (deny mach-lookup (local-name-regex #".*"))
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))

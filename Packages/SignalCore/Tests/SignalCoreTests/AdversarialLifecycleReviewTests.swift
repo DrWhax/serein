@@ -73,7 +73,15 @@ import Synchronization
                 _ = try await c.socket.authenticatedRequest("PUT", "/v1/messages/\(c.aliceAci)", json: Data("{}".utf8), authorize: authorize)
             }
             // Shared groups have independent block state; blocking a contact is not leaving a group.
-            let groupId = Data([1, 2, 3])
+            // (Alice is a member: a group payload goes only to members.)
+            let keys = try GroupKeys(masterKey: Data(repeating: 3, count: 32))
+            let groupId = keys.groupId
+            try await c.database.pool.write { db in
+                let conversationId = try GroupStore.conversation(db, keys: keys).conversationId
+                var state = GroupV2State()
+                state.membersV2 = [c.aliceAci, c.messenger.account.aci].map { GroupMember(aci: $0, role: 1, joinedAtVersion: 0) }
+                try GroupStore.save(db, conversationId: conversationId, state: state, ourAci: c.messenger.account.aci)
+            }
             let groupAuthorization = c.messenger.sender.authorization(to: c.aliceAci, groupId: groupId, messageIds: [])
             try groupAuthorization()
             try await c.database.pool.write { try ConversationState.setBlocked($0, serviceId: nil, groupId: groupId.base64EncodedString(), true) }

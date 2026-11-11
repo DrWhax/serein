@@ -379,7 +379,7 @@ struct ConversationPane: View {
         }
         p.status = m.status.map(Self.messageStatus)
         if m.direction == .outgoing { p.bubbleColor = session.bubbleColor(session.conversationColor) }
-        p.attachments = m.attachments.map { attachment($0.attachment) }
+        p.attachments = m.attachments.map { attachment($0.attachment, alone: m.attachments.count == 1) }
         if let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 != 0, AttachmentPolicy.isVideo(first.contentType) {
             p.gifPlayer = session.gifPlayer(for: first)
         }
@@ -394,8 +394,8 @@ struct ConversationPane: View {
             let file = st.attachment
             var a = SignalUI.MessageAttachment(contentType: file?.contentType ?? "image/webp", fileName: nil, size: file?.size ?? 0,
                                                width: file?.width ?? 512, height: file?.height ?? 512)
-            let image = (file?.isDownloaded == true ? file.flatMap { session.image(for: $0) } : nil)
-                ?? session.stickerImage(packId: st.packId, stickerId: st.stickerId)
+            let image = (file?.isDownloaded == true ? file.flatMap { session.animatedImage(for: $0) } : nil)
+                ?? session.animatedStickerImage(packId: st.packId, stickerId: st.stickerId)
             a.image = image
             a.isDownloaded = image != nil || file?.isDownloaded == true
             a.pending = file?.pending ?? false
@@ -463,14 +463,15 @@ struct ConversationPane: View {
     /// A stored link preview → the bubble's (its image decoded by the media service).
     func linkPreview(_ p: TimelinePreview) -> LinkPreview {
         var out = LinkPreview(url: p.url, domain: p.domain, title: p.title, description: p.description, date: p.date.map(Double.init),
-                              image: p.image.map(attachment))
+                              image: p.image.map { attachment($0) })
         out.isStickerPack = p.isStickerPack
         out.isCallLink = p.isCallLink
         return out
     }
 
     /// SignalCore's attachment row → the bubble's attachment (pixels via the media service).
-    func attachment(_ a: SignalCore.MessageAttachment) -> SignalUI.MessageAttachment {
+    /// `alone`: the message's only attachment, shown full size (animated, as upstream's `<img>`).
+    func attachment(_ a: SignalCore.MessageAttachment, alone: Bool = false) -> SignalUI.MessageAttachment {
         var out = SignalUI.MessageAttachment(contentType: a.contentType, fileName: a.fileName, size: a.size, width: a.width, height: a.height)
         out.fileName = a.fileName
         out.width = a.width
@@ -479,7 +480,7 @@ struct ConversationPane: View {
         out.pending = a.pending ?? false
         out.isGifFlag = (a.flags ?? 0) & 8 != 0
         out.hasUrl = a.isDownloaded
-        out.image = session.image(for: a)
+        out.image = alone ? session.animatedImage(for: a) : session.image(for: a)
         if AttachmentPolicy.isAudio(a.contentType) { out.audioWaveform = session.audioWaveform(for: a) }
         if AttachmentPolicy.isVideo(a.contentType) {
             out.screenshot = session.posterImage(for: a)

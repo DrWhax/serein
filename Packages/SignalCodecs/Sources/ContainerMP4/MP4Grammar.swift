@@ -88,6 +88,9 @@ enum BoxGrammar {
             guard bodyLength <= UInt64(c.remaining) else {
                 // A truncated final mdat (an interrupted download) is still demuxable up to here.
                 if topLevel, type == FourCC("mdat") {
+                    // It is a box too: it counts against the budget like any other.
+                    count += 1
+                    guard count <= limits.maxBoxes else { throw c.fail("box", .limitExceeded("more than \(limits.maxBoxes) boxes")) }
                     out.append(Box(type: type, offset: range.lowerBound + start, body: c.rest()))
                     break
                 }

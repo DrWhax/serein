@@ -8,8 +8,5 @@ import MediaXPCInterface
 
 ServiceSandbox.requireConfinement("SignalLinkPreviewParser")
 // The app may only ask for the HTML endpoint; HTML comes from the fetcher alone.
-let delegate = LinkPreviewParserServiceDelegate(appPeer: XPCPeer.required(.app, by: "SignalLinkPreviewParser"),
-                                                fetcherPeer: XPCPeer.required(.fetcher, by: "SignalLinkPreviewParser"))
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+let service = EndpointService(requirement: XPCPeer.required(.fetcher, by: "SignalLinkPreviewParser"), LinkPreviewXPCHandler())
+XPCServer.serve(LinkPreviewParserClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalLinkPreviewParser"), service)

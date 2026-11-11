@@ -13,8 +13,10 @@
 #     fetches a page (live network; SANDBOX_CHECK_SITE, default https://signal.org/) that the
 #     parser parses, the parser refuses HTML from the host, and the GIF service lists Giphy's
 #     trending GIFs through Signal's content proxy;
-#   * the same services refuse a host signed with any other identifier (their code-signing
-#     requirements, MediaXPCInterface/XPCPeer.swift).
+#   * the same services refuse a host signed with any other identifier (their peer
+#     requirements, MediaXPCInterface/XPCPeer.swift), and with a signing identity also an ad-hoc
+#     host carrying the app's identifier (no Team ID); the probe services check theirs the same
+#     way, so a profile that breaks the check leaves its probes missing.
 # The host is compiled with MediaXPCInterface's sources, so it calls them as the app does.
 # Usage: Tools/check-sandbox-profile.sh   (after Tools/build-app.sh; same SIGNALSAFE_SIGN_IDENTITY)
 set -eu
@@ -36,7 +38,7 @@ work=$(mktemp -d "$runs/run.XXXXXX")
 src="$root/Tools/sandbox-probe"
 iface="$root/Packages/SignalMediaService/Sources/MediaXPCInterface"
 sandbox="$root/Packages/SignalMediaService/Sandbox"
-swiftc -swift-version 5 -O "$src/Shared.swift" "$src/service/main.swift" "$iface/ServiceSandbox.swift" -o "$work/probe"
+swiftc -swift-version 5 -O -target arm64-apple-macos27.0 -module-name ProbeService "$iface"/*.swift "$src/service/main.swift" -o "$work/probe"
 swiftc -swift-version 6 -O -target arm64-apple-macos27.0 -module-name ProbeHost "$iface"/*.swift "$src/host/main.swift" -o "$work/host"
 
 # makehost <bundle> <signing identifier>: a host app with the probe services and copies of the
@@ -85,10 +87,18 @@ codesign --force --sign "$sign" --timestamp=none -i org.signalsafe.SignalSafe "$
 refused="$work/RefusedHost.app"
 makehost "$refused" org.signalsafe.not-the-app
 codesign --force --sign "$sign" --timestamp=none -i org.signalsafe.not-the-app "$refused" 2>/dev/null
+# With an identity the services also require its Team ID: the app's identifier alone is not enough.
+adhoc=""
+if [ "$sign" != "-" ]; then
+  adhoc="$work/AdhocHost.app"
+  makehost "$adhoc" org.signalsafe.SignalSafe
+  codesign --force --sign - --timestamp=none -i org.signalsafe.SignalSafe "$adhoc" 2>/dev/null
+fi
 
 # Launch Services learns the new bundles first (their XPC services are found through it).
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-"$lsregister" -f "$host" "$refused" 2>/dev/null || true
+# shellcheck disable=SC2086
+"$lsregister" -f "$host" "$refused" $adhoc 2>/dev/null || true
 
 codecs="$root/Packages/SignalCodecs/Tests"
 res="$root/Packages/SignalMediaService/Tests/SignalMediaDecoderTests/Resources"
@@ -104,21 +114,24 @@ out=$("$host/Contents/MacOS/ProbeHost" $probes -- \
 status=$?
 refusal=$("$refused/Contents/MacOS/RefusedHost" --refused)
 refusedStatus=$?
+adhocStatus=0
+[ -n "$adhoc" ] && { adhocRefusal=$("$adhoc/Contents/MacOS/AdhocHost" --refused); adhocStatus=$?; }
 set -e
 echo "$out"
 echo "other identifier: $refusal"
+[ -n "$adhoc" ] && echo "app identifier, no Team ID: $adhocRefusal"
 fail=0
 [ $status -eq 0 ] || { echo "check-sandbox-profile: a service call failed" >&2; fail=1; }
 [ $refusedStatus -eq 0 ] || { echo "check-sandbox-profile: a service served a host not signed as the app" >&2; fail=1; }
+[ $adhocStatus -eq 0 ] || { echo "check-sandbox-profile: a service served a host without the app's Team ID" >&2; fail=1; }
 # What each profile must allow and may allow; everything else must be denied.
 echo "$out" | python3 -I -c '
 import sys
 offline = "pass the offline services\u0027 start-up check"
 online = "pass the web services\u0027 start-up check"
-req = "compile a code-signing requirement"
-must = {"SignalMediaDecoder": {offline, req}, "SignalLinkPreviewParser": {offline, req}, "SignalVoiceNoteEncoder": {offline, req},
-        "SignalLinkPreviewFetcher": {"https to the web", online, req}, "SignalGifSearch": {"https to the web", online, req},
-        "Serein": {"https to the web", "write its container", req}}
+must = {"SignalMediaDecoder": {offline}, "SignalLinkPreviewParser": {offline}, "SignalVoiceNoteEncoder": {offline},
+        "SignalLinkPreviewFetcher": {"https to the web", online}, "SignalGifSearch": {"https to the web", online},
+        "Serein": {"https to the web", "write its container"}}
 system = {"read a system file", "read /etc/hosts"}
 mach = "look up a Mach service"
 may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalVoiceNoteEncoder": {online},

@@ -1,19 +1,16 @@
 import Foundation
 import LinkPreviewParser
-import MediaXPCInterface
+@testable import MediaXPCInterface
 import Testing
+import XPC
 
 /// SignalLinkPreviewParser.xpc's path in process: an anonymous listener with the service's
-/// delegate, and the app's client connected to it.
+/// handler, and a client connected to it.
 @Suite struct LinkPreviewParserTests {
     @Test func parsesThroughXPC() async throws {
-        let listener = NSXPCListener.anonymous()
-        let delegate = LinkPreviewXPCListenerDelegate()
-        listener.delegate = delegate
-        listener.resume()
-        defer { listener.invalidate() }
-        let endpoint = listener.endpoint
-        let client = LinkPreviewParserClient(timeout: .seconds(10)) { NSXPCConnection(listenerEndpoint: endpoint) }
+        let listener = XPCServer.anonymous(requirement: nil, LinkPreviewXPCHandler())
+        defer { listener.cancel() }
+        let client = LinkPreviewParserClient(.endpoint(listener.endpoint), timeout: .seconds(10))
         let html = Data("""
             <html><head><meta property="og:title" content="A &amp; B"><meta property="og:description" content="About it">
             <meta property="og:image" content="/i.png"><title>ignored</title></head></html>
@@ -36,25 +33,43 @@ import Testing
 
     /// A reply that breaks the limits (a compromised parser) is refused by the client.
     @Test func clientRevalidates() async throws {
-        final class Hostile: NSObject, MediaXPCProtocol, NSXPCListenerDelegate, Sendable {
-            func handle(_ request: Data, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
+        struct Hostile: XPCMessageHandler {
+            var maxRequestBytes: Int { 1 << 20 }
+            func reply(to request: XPCMessage) async throws -> XPCMessage {
                 let bad = LinkPreviewHTML(title: String(repeating: "y", count: LinkPreviewHTML.maxLength + 1), description: nil, imageHref: nil, rawDate: nil)
-                reply(try? MediaXPCWire.encode(Optional(bad)), nil)
-            }
-            func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
-                c.exportedInterface = NSXPCInterface(with: MediaXPCProtocol.self)
-                c.exportedObject = self
-                c.resume()
-                return true
+                return XPCMessage(payload: try MediaXPCWire.encode(Optional(bad)))
             }
         }
-        let listener = NSXPCListener.anonymous()
-        let hostile = Hostile()
-        listener.delegate = hostile
-        listener.resume()
-        defer { listener.invalidate() }
-        let endpoint = listener.endpoint
-        let client = LinkPreviewParserClient(timeout: .seconds(10)) { NSXPCConnection(listenerEndpoint: endpoint) }
+        let listener = XPCServer.anonymous(requirement: nil, Hostile())
+        defer { listener.cancel() }
+        let client = LinkPreviewParserClient(.endpoint(listener.endpoint), timeout: .seconds(10))
         await #expect(throws: MediaProcessingError.self) { try await client.linkPreviewHTML(Data("<title>t</title>".utf8), httpCharset: nil) }
+    }
+
+    /// The parser service only hands out the HTML listener's endpoint: HTML sent to it is
+    /// refused, while the endpoint parses.
+    @Test func theServiceTakesNoHTML() async throws {
+        let service = XPCServer.anonymous(requirement: nil, EndpointService(requirement: nil, LinkPreviewXPCHandler()))
+        defer { service.cancel() }
+        let page = Data("<title>t</title>".utf8)
+        await #expect(throws: MediaProcessingError.self) {
+            try await LinkPreviewParserClient(.endpoint(service.endpoint), timeout: .seconds(10)).linkPreviewHTML(page, httpCharset: nil)
+        }
+        let endpoint = try await LinkPreviewFetcherClient(parser: .endpoint(service.endpoint), parserPeer: nil).parserEndpoint()
+        #expect(try await LinkPreviewParserClient(.endpoint(endpoint), timeout: .seconds(10)).linkPreviewHTML(page, httpCharset: nil)?.title == "t")
+    }
+
+    /// Many requests at once on a new client share one session.
+    @Test func concurrentRequestsShareASession() async throws {
+        let listener = XPCServer.anonymous(requirement: nil, LinkPreviewXPCHandler())
+        defer { listener.cancel() }
+        let client = LinkPreviewParserClient(.endpoint(listener.endpoint), timeout: .seconds(10))
+        let titles = try await withThrowingTaskGroup(of: String?.self) { group in
+            for i in 0..<20 { group.addTask { try await client.linkPreviewHTML(Data("<title>\(i)</title>".utf8), httpCharset: nil)?.title } }
+            var out: [String] = []
+            for try await t in group { out.append(t ?? "") }
+            return out
+        }
+        #expect(Set(titles) == Set((0..<20).map(String.init)))
     }
 }

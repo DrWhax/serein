@@ -9,7 +9,4 @@ import VoiceNoteEncoder
 
 ServiceSandbox.requireConfinement("SignalVoiceNoteEncoder")
 
-let delegate = VoiceNoteListenerDelegate(peer: XPCPeer.required(.app, by: "SignalVoiceNoteEncoder"))
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+XPCServer.serve(MediaXPCClient.voiceServiceName, requirement: XPCPeer.required(.app, by: "SignalVoiceNoteEncoder"), VoiceNoteXPCHandler())

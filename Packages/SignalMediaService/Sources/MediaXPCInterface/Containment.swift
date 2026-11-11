@@ -10,8 +10,9 @@
 //   * the service runs a bounded number of requests at once and queues a bounded number
 //     more; beyond that it answers "busy" at once instead of piling up work;
 //   * the client quarantines inputs that hung or took the service down (`MediaQuarantine`):
-//     a timeout quarantines at once, a lost connection counts a strike against everything in
-//     flight (a crash cannot be pinned on one request) and two strikes quarantine.
+//     a timeout quarantines at once; a lost connection counts one strike against each input in
+//     flight on it (a crash cannot be pinned on one request: each of them fails once, and
+//     strikes its own input), and two strikes quarantine. Verification/Broker proves the count.
 
 import CryptoKit
 import Foundation
@@ -157,6 +158,20 @@ public final class MediaQuarantine: Sendable {
     struct State {
         var strikes: [SHA256Digest: Int] = [:]
         var order: [SHA256Digest] = []
+        /// The ended sessions each input was struck for (one strike per session).
+        var lostOn: [SHA256Digest: Set<UInt64>] = [:]
+
+        mutating func add(_ key: SHA256Digest, _ count: Int, capacity: Int) {
+            if strikes[key] == nil {
+                order.append(key)
+                if order.count > capacity {
+                    let oldest = order.removeFirst()
+                    strikes[oldest] = nil
+                    lostOn[oldest] = nil
+                }
+            }
+            strikes[key, default: 0] += count
+        }
     }
     let state = Mutex(State())
     public let capacity: Int
@@ -171,35 +186,24 @@ public final class MediaQuarantine: Sendable {
     }
 
     public func strike(_ key: SHA256Digest, _ count: Int = 1) {
+        state.withLock { $0.add(key, count, capacity: capacity) }
+    }
+
+    /// One strike for `key` because session `session` ended while it was in flight: only the
+    /// first time for that session.
+    func strike(_ key: SHA256Digest, lostSession session: UInt64) {
         state.withLock { s in
-            if s.strikes[key] == nil {
-                s.order.append(key)
-                if s.order.count > capacity { s.strikes[s.order.removeFirst()] = nil }
-            }
-            s.strikes[key, default: 0] += count
+            guard s.lostOn[key, default: []].insert(session).inserted else { return }
+            s.add(key, 1, capacity: capacity)
         }
     }
-}
-
-/// The client's requests in flight, so that a lost connection strikes all of them.
-final class InFlight: Sendable {
-    let keys = Mutex<[UInt64: SHA256Digest]>([:])
-    let next = Atomic<UInt64>(0)
-
-    func add(_ key: SHA256Digest) -> UInt64 {
-        let id = next.add(1, ordering: .relaxed).newValue
-        keys.withLock { $0[id] = key }
-        return id
-    }
-    func remove(_ id: UInt64) { _ = keys.withLock { $0.removeValue(forKey: id) } }
-    func all() -> [SHA256Digest] { keys.withLock { Array($0.values) } }
 }
 
 extension MediaRequest {
     /// The untrusted bytes this request hands the decoder, if any (what quarantine is keyed by).
     public var input: Data? {
         switch self {
-        case .stickerImage(let b), .displayImage(let b, _), .imageInfo(let b), .thumbnail(let b, _), .scaleForSending(let b, _, _),
+        case .stickerImage(let b), .displayImage(let b, _), .displayAnimation(let b, _), .imageInfo(let b), .thumbnail(let b, _), .scaleForSending(let b, _, _),
              .stripMetadata(let b, _), .convertHEIC(let b), .audioSummary(let b), .decodeAudio(let b, _, _), .videoInfo(let b),
              .posterFrame(let b), .openVideo(let b): return b
         case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote, .videoFrames, .seekVideo, .closeVideo: return nil
@@ -213,7 +217,7 @@ extension MediaRequest {
             return .seconds(10)
         case .displayImage, .thumbnail, .stickerImage, .stripMetadata, .posterFrame, .videoFrames, .decodeAudio:
             return .seconds(15)
-        case .scaleForSending, .convertHEIC, .audioSummary, .finishVoiceNote:
+        case .scaleForSending, .convertHEIC, .audioSummary, .finishVoiceNote, .displayAnimation:
             return .seconds(30)
         }
     }

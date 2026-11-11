@@ -75,13 +75,24 @@ enum MessageModifiers {
 
     // MARK: pending
 
-    static func keep(_ db: Database, _ p: PendingModifier) throws {
-        var list = try Items.get(db, pendingKey, as: [PendingModifier].self) ?? []
-        let now = MessageStore.now()
-        list.removeAll { now - $0.storedAt > pendingMaxAge }
+    static func keep(_ db: Database, _ p: PendingModifier, limit: Int = pendingLimit, now: Int64 = MessageStore.now()) throws {
+        let list = try Items.get(db, pendingKey, as: [PendingModifier].self) ?? []
+        try Items.set(db, pendingKey, kept(list, adding: p, limit: limit, now: now))
+    }
+
+    /// The waiting list after `p` joins it: entries older than `pendingMaxAge` go; over the
+    /// limit, the sender with the most entries waiting loses its oldest, so one sender's flood
+    /// cannot push out another's waiting delete.
+    static func kept(_ list: [PendingModifier], adding p: PendingModifier, limit: Int, now: Int64) -> [PendingModifier] {
+        var list = list.filter { now - $0.storedAt <= pendingMaxAge }
         list.append(p)
-        if list.count > pendingLimit { list.removeFirst(list.count - pendingLimit) }
-        try Items.set(db, pendingKey, list)
+        while list.count > max(limit, 0), !list.isEmpty {
+            let counts = Dictionary(list.map { ($0.context.sender, 1) }, uniquingKeysWith: +)
+            let most = counts.values.max() ?? 0
+            guard let i = list.firstIndex(where: { counts[$0.context.sender] == most }) else { break }
+            list.remove(at: i)
+        }
+        return list
     }
 
     /// Applies the modifiers that were waiting for this message (author, sent_at).
@@ -91,7 +102,9 @@ enum MessageModifiers {
         guard !matching.isEmpty else { return }
         list.removeAll { $0.targetAuthor == author && $0.targetSentAt == sentAt }
         try Items.set(db, pendingKey, list)
-        for p in matching.sorted(by: { $0.context.timestamp < $1.context.timestamp }) {
+        // In their timestamps' order; equal ones in the order they came (a stable sort).
+        let ordered = matching.enumerated().sorted { ($0.element.context.timestamp, $0.offset) < ($1.element.context.timestamp, $1.offset) }
+        for p in ordered.map(\.element) {
             _ = try apply(db, p, ourAci: ourAci, keepIfMissing: false)
         }
     }
@@ -108,7 +121,12 @@ enum MessageModifiers {
         case .reaction: ok = try applyReaction(db, t, try Signalservice_DataMessage.Reaction(serializedBytes: p.payload), p.context, ourAci: ourAci)
         case .delete: ok = try applyDelete(db, t, p.context, admin: false, ourAci: ourAci)
         case .adminDelete: ok = try applyDelete(db, t, p.context, admin: true, ourAci: ourAci)
-        case .edit: ok = try applyEdit(db, t, try Signalservice_EditMessage(serializedBytes: p.payload), p.context, ourAci: ourAci)
+        case .edit:
+            let edit = try Signalservice_EditMessage(serializedBytes: p.payload)
+            ok = try applyEdit(db, t, edit, p.context, ourAci: ourAci)
+            // Modifiers that named this revision before it arrived (upstream applies the
+            // waiting edits after an edit: `Edits.forMessage`).
+            if ok { try applyPending(db, author: p.context.sender, sentAt: edit.dataMessage.timestamp, ourAci: ourAci) }
         case .pollVote: ok = try applyPollVote(db, t, try Signalservice_DataMessage.PollVote(serializedBytes: p.payload), p.context, ourAci: ourAci)
         case .pollTerminate: ok = try applyPollTerminate(db, t, p.context, ourAci: ourAci)
         case .pin: ok = try applyPin(db, t, try Signalservice_DataMessage.PinMessage(serializedBytes: p.payload), p.context, ourAci: ourAci)
@@ -134,6 +152,12 @@ enum MessageModifiers {
         if let g: String = row["groupId"] { return try BlockedList.groups.blockedAt(db, g).blocked }
         if let s: String = row["serviceId"] { return try BlockedList.serviceIds.blockedAt(db, s).blocked }
         return false
+    }
+
+    /// Someone else's modifier is sent in its target's conversation; ours (another of our
+    /// devices, or this one) may act anywhere (`isValidSenderAciForConversation`).
+    static func inTargetConversation(_ t: Target, _ c: ModifierContext) -> Bool {
+        t.conversationId == c.conversationId || c.source != .someoneElse
     }
 
     /// For our outgoing target: the reacting contact must have been sent it (`isSent`).
@@ -190,7 +214,7 @@ enum MessageModifiers {
     }
 
     static func applyDelete(_ db: Database, _ t: Target, _ c: ModifierContext, admin: Bool, ourAci: String) throws -> Bool {
-        guard !t.deletedForEveryone, t.conversationId == c.conversationId || c.source != .someoneElse else { return false }
+        guard !t.deletedForEveryone, inTargetConversation(t, c) else { return false }
         if try String.fetchOne(db, sql: "SELECT serviceId FROM conversations WHERE id = ?", arguments: [t.conversationId]) == ourAci { return false }
         let age = abs(Int64(c.serverTimestamp) - (t.serverTimestamp ?? t.sentAt))
         if admin {
@@ -226,14 +250,34 @@ enum MessageModifiers {
 
     static let maxEditAge: Int64 = 2 * 86_400_000
 
+    /// `handleEditMessage`: an edit is made by the message's author, in its conversation (from
+    /// any device), to a message not deleted for everyone, erased, view-once, a contact share
+    /// or a voice message.
+    static func editable(_ db: Database, _ t: Target) throws -> Bool {
+        guard !t.deletedForEveryone, t.json["isErased"] as? Bool != true, t.json["isViewOnce"] as? Bool != true,
+              (t.json["contact"] as? [Any])?.isEmpty ?? true else { return false }
+        return try Int.fetchOne(db, sql: """
+            SELECT 1 FROM message_attachments WHERE messageId = ? AND attachmentType = 'attachment' AND flags IS NOT NULL AND (flags & 1) != 0 LIMIT 1
+            """, arguments: [t.id]) == nil
+    }
+
+    /// The timestamp of the revision shown: the newest edit applied, else the original.
+    static func shownRevision(_ t: Target) -> UInt64 {
+        max(UInt64(max(t.sentAt, 0)), (t.json["editMessageTimestamp"] as? NSNumber)?.uint64Value ?? 0)
+    }
+
     static func applyEdit(_ db: Database, _ t: Target, _ edit: Signalservice_EditMessage, _ c: ModifierContext, ourAci: String) throws -> Bool {
-        guard !t.deletedForEveryone, t.json["sourceServiceId"] as? String == c.sender,
+        guard try editable(db, t), t.json["sourceServiceId"] as? String == c.sender, t.conversationId == c.conversationId,
               abs(Int64(c.serverTimestamp == 0 ? c.timestamp : c.serverTimestamp) - (t.serverTimestamp ?? t.sentAt)) <= maxEditAge
                 || c.source != .someoneElse
         else { return false }
+        // Not for a blocked group (or from a blocked contact), also when it waited for its target.
+        if c.source == .someoneElse, try isBlocked(db, conversationId: t.conversationId, sender: c.sender) { return false }
         let m = edit.dataMessage
-        // Older edits arriving late are ignored.
-        if let current = (t.json["editMessageTimestamp"] as? NSNumber)?.uint64Value, current >= m.timestamp { return false }
+        // Revisions are ordered by their timestamps, the original's included: an edit no newer
+        // than the revision shown (a late or replayed one) changes nothing. (Upstream lets the
+        // last to arrive win.)
+        guard m.timestamp > shownRevision(t) else { return false }
         guard try MessageStore.applyEdit(db, author: c.sender, targetSentAt: UInt64(t.sentAt), newBody: m.body, editSentAt: m.timestamp) != nil else { return false }
         try MessageStore.updateJSON(db, messageId: t.id) { json in
             json["preview"] = nil
@@ -251,6 +295,12 @@ enum MessageModifiers {
     static func applyPollVote(_ db: Database, _ t: Target, _ v: Signalservice_DataMessage.PollVote, _ c: ModifierContext, ourAci: String) throws -> Bool {
         guard !t.deletedForEveryone, var poll = t.json["poll"] as? [String: Any], poll["terminatedAt"] == nil,
               try senderBelongs(db, sender: c.sender, conversationId: t.conversationId, ourAci: ourAci) else { return false }
+        // `isValidPollVote`: someone else votes in the poll's conversation, which is not blocked,
+        // and on our poll only if it was sent to them.
+        if c.sender != ourAci {
+            guard inTargetConversation(t, c), try !isBlocked(db, conversationId: t.conversationId, sender: c.sender) else { return false }
+            if t.type == "outgoing", !wasSent(t, to: try conversationOf(db, sender: c.sender)) { return false }
+        }
         let options = (poll["options"] as? [String])?.count ?? 0
         let indexes = Array(Set(v.optionIndexes.map(Int.init))).sorted()
         guard indexes.allSatisfy({ $0 < options }), (poll["allowMultiple"] as? Bool ?? false) || indexes.count <= 1 else { return false }
@@ -271,7 +321,8 @@ enum MessageModifiers {
     }
 
     static func applyPollTerminate(_ db: Database, _ t: Target, _ c: ModifierContext, ourAci: String) throws -> Bool {
-        guard var poll = t.json["poll"] as? [String: Any], poll["terminatedAt"] == nil, t.json["sourceServiceId"] as? String == c.sender else { return false }
+        guard var poll = t.json["poll"] as? [String: Any], poll["terminatedAt"] == nil, t.json["sourceServiceId"] as? String == c.sender,
+              inTargetConversation(t, c) else { return false }
         poll["terminatedAt"] = c.timestamp
         try MessageStore.updateJSON(db, messageId: t.id) { $0["poll"] = poll }
         return true
@@ -281,11 +332,23 @@ enum MessageModifiers {
 
     static func pinLimit(_ db: Database) throws -> Int { try RemoteConfig.int(db, "global.pinnedMessageLimit") ?? 3 }
 
-    static func applyPin(_ db: Database, _ t: Target, _ p: Signalservice_DataMessage.PinMessage, _ c: ModifierContext, ourAci: String) throws -> Bool {
-        guard !t.deletedForEveryone, t.json["giftBadge"] == nil, try !isBlocked(db, conversationId: t.conversationId, sender: c.sender),
+    /// `validatePinnedMessageTarget`, for pins and unpins: not blocked, the sender belongs to the
+    /// conversation (someone else's pin is sent in it) and may edit a group's attributes, and
+    /// the message is not deleted or a gift badge.
+    static func pinnable(_ db: Database, _ t: Target, _ c: ModifierContext, ourAci: String) throws -> Bool {
+        guard !t.deletedForEveryone, t.json["giftBadge"] == nil, inTargetConversation(t, c),
+              try !isBlocked(db, conversationId: t.conversationId, sender: c.sender),
               try senderBelongs(db, sender: c.sender, conversationId: t.conversationId, ourAci: ourAci) else { return false }
-        if let g = try GroupStore.load(db, conversationId: t.conversationId), let state = g.state,
-           state.accessControl.attributes == GroupAccess.administrator, !state.isAdmin(c.sender) { return false }
+        // `canSenderEditGroupAttributes`: a member, an administrator unless attributes are open to members.
+        if let g = try GroupStore.load(db, conversationId: t.conversationId) {
+            guard let state = g.state, state.isMember(c.sender),
+                  state.isAdmin(c.sender) || state.accessControl.attributes == GroupAccess.member else { return false }
+        }
+        return true
+    }
+
+    static func applyPin(_ db: Database, _ t: Target, _ p: Signalservice_DataMessage.PinMessage, _ c: ModifierContext, ourAci: String) throws -> Bool {
+        guard try pinnable(db, t, c, ourAci: ourAci) else { return false }
         let pinnedAt = MessageStore.now()
         let expiresAt: Int64? = p.pinDurationForever || p.pinDurationSeconds == 0 ? nil : pinnedAt + Int64(p.pinDurationSeconds) * 1000
         let existed = try Int.fetchOne(db, sql: "SELECT 1 FROM pinnedMessages WHERE conversationId = ? AND messageId = ?", arguments: [t.conversationId, t.id]) != nil
@@ -308,7 +371,7 @@ enum MessageModifiers {
     }
 
     static func applyUnpin(_ db: Database, _ t: Target, _ c: ModifierContext, ourAci: String) throws -> Bool {
-        guard try senderBelongs(db, sender: c.sender, conversationId: t.conversationId, ourAci: ourAci) else { return false }
+        guard try pinnable(db, t, c, ourAci: ourAci) else { return false }
         try db.execute(sql: "DELETE FROM pinnedMessages WHERE conversationId = ? AND messageId = ?", arguments: [t.conversationId, t.id])
         return db.changesCount > 0
     }

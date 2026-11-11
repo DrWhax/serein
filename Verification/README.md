@@ -13,6 +13,12 @@ proved, what is only tested, and what is assumed.
 | [Send](Send/README.md) | Send authorization: blocking (direct and group), removed messages, the retraction exemption, the submission boundary | `Tools/verify-send.sh` |
 | [Media](Media/README.md) | Media revocation: message–attachment authorization, viewers closing, re-checks after decoding and the save panel | `Tools/verify-media.sh` |
 | [Queue](Queue/README.md) | The job queue: one worker, shutdown's postcondition, termination if handlers finish | `Tools/verify-queue.sh` |
+| [Group](Group/README.md) | Group authorization and sender-key rotation: when a membership change takes effect, who gets content and our key, rotation after removals | `Tools/verify-group.sh` |
+| [Modifiers](Modifiers/README.md) | Edits, deletes and replay: the right author, message and conversation, newest revision shown, no resurrection, modifiers before their target, a fair waiting list | `Tools/verify-modifiers.sh` |
+| [Resend](Resend/README.md) | Retry and resend: the send log as a boundary, only what that device was delivered goes back, a day, story lists, the retry limit | `Tools/verify-resend.sh` |
+| [Attachments](Attachments/README.md) | Attachment authentication: only the named upload's verified plaintext reaches decoding or export, nothing partially validated is published, bounded transfers | `Tools/verify-attachments.sh` |
+| [Codecs](Codecs/README.md) | Codec components: byte cursor reads stay in their region, regions consumed exactly, allocation within static budgets, box boundaries and the box budget, the bit reader | `Tools/verify-codecs.sh` |
+| [Broker](Broker/README.md) | The app and its sandboxed helpers: a reply completes only its own outstanding request, once; cancellation, crashes, late and duplicate replies; no helper session left behind; quarantine strikes; what one helper's answer may ask of another | `Tools/verify-broker.sh` |
 
 Every script: rejects escape hatches (`sorry`, `axiom`, …); builds (the kernel checks every proof);
 diffs an audit of the property definitions, every definition the theorems depend on (hashed), the

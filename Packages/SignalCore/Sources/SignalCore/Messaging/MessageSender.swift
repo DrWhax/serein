@@ -29,6 +29,9 @@ public enum SendError: Error, Equatable {
     case keysOutOfDate
     case deviceMismatchUnresolved(String)
     case invalidKeysResponse(String)
+    /// A group payload addressed to someone who is no longer a member: refused at submission
+    /// (the membership changed after the send chose its recipients).
+    case notAMember(String)
 }
 
 public typealias ContentHint = UnidentifiedSenderMessageContent.ContentHint
@@ -72,6 +75,17 @@ public struct OutgoingPayload: Sendable {
         }
     }
 
+    /// A group update (`sendGroupUpdate`): the group context (with its change) and the fields
+    /// every message has, nothing else. It also reaches accounts the change removes.
+    var isGroupUpdateOnly: Bool {
+        guard case .dataMessage(let m)? = content.content, m.hasGroupV2 else { return false }
+        var bare = Signalservice_DataMessage()
+        if m.hasTimestamp { bare.timestamp = m.timestamp }
+        if m.hasProfileKey { bare.profileKey = m.profileKey }
+        bare.groupV2 = m.groupV2
+        return bare == m
+    }
+
     /// A DataMessage that only deletes: a delete (or an admin delete) and the fields every
     /// message has (timestamp, profile key, group context), and nothing else.
     static func onlyDeletes(_ m: Signalservice_DataMessage) -> Bool {
@@ -108,6 +122,11 @@ public final class MessageSender: Sendable {
 
     var store: ProtocolStore { account.aciStore() }
 
+    /// The group's members as committed here (the local group state).
+    static func currentMembers(_ db: Database, groupId: Data) throws -> Set<String> {
+        Set(try GroupStore.find(db, groupId: groupId)?.state?.membersV2.map(\.aci) ?? [])
+    }
+
     /// Whether we blocked this contact, by service id or by number.
     static func isBlocked(_ db: Database, serviceId: String) throws -> Bool {
         if try BlockedList.serviceIds.blockedAt(db, serviceId).blocked { return true }
@@ -117,13 +136,22 @@ public final class MessageSender: Sendable {
 
     /// Re-evaluated after connection setup, immediately before transport submission.
     /// Blocking a contact does not block shared group conversations; those have their own block state.
-    /// `messageIds` must still exist, unerased, unless the payload only retracts them.
-    func authorization(to serviceId: String?, groupId: Data, messageIds: [String], retracting: Bool = false) -> @Sendable () throws -> Void {
+    /// `messageIds` must still exist, unerased, unless the payload only retracts them. A group
+    /// payload goes only to current members (`serviceId`, or every one of `recipients` for a
+    /// multi-recipient send), unless it is a group update, which also reaches those it removes.
+    func authorization(to serviceId: String?, groupId: Data, messageIds: [String], retracting: Bool = false, groupUpdate: Bool = false,
+                       recipients: [String] = []) -> @Sendable () throws -> Void {
         { [database, account] in
             try database.pool.read { db in
                 if !groupId.isEmpty {
                     if try BlockedList.groups.blockedAt(db, groupId.base64EncodedString()).blocked {
                         throw JobError.permanent("group blocked")
+                    }
+                    if !groupUpdate {
+                        let members = try Self.currentMembers(db, groupId: groupId)
+                        for r in recipients + [serviceId].compactMap({ $0 }) where r != account.aci && !members.contains(r) {
+                            throw SendError.notAMember(r)
+                        }
                     }
                 } else if let serviceId, serviceId != account.aci {
                     if try Self.isBlocked(db, serviceId: serviceId) { throw JobError.permanent("recipient blocked") }
@@ -145,7 +173,8 @@ public final class MessageSender: Sendable {
     @discardableResult
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
                      logged: Bool = true) async throws -> SendResult {
-        let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts)
+        let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
+                                      groupUpdate: payload.isGroupUpdateOnly)
         try authorize()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let isSelf = serviceId == account.aci

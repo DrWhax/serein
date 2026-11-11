@@ -1,0 +1,280 @@
+structure Resend.S : Type
+number of parameters: 0
+fields:
+  Resend.S.payloads : List Payload
+  Resend.S.rows : List Row
+  Resend.S.next : Nat
+  Resend.S.now : Nat
+  Resend.S.stories : List (Nat × Nat)
+  Resend.S.lists : List SList
+  Resend.S.counts : List ((Nat × Nat × Nat) × Nat)
+  Resend.S.delivered : List (Nat × Nat × Nat × Nat)
+  Resend.S.out : List Out
+constructor:
+  Resend.S.mk (payloads : List Payload) (rows : List Row) (next now : Nat) (stories : List (Nat × Nat))
+    (lists : List SList) (counts : List ((Nat × Nat × Nat) × Nat)) (delivered : List (Nat × Nat × Nat × Nat))
+    (out : List Out) : S
+structure Resend.Payload : Type
+number of parameters: 0
+fields:
+  Resend.Payload.id : Nat
+  Resend.Payload.ts : Nat
+  Resend.Payload.content : Nat
+constructor:
+  Resend.Payload.mk (id ts content : Nat) : Payload
+structure Resend.Row : Type
+number of parameters: 0
+fields:
+  Resend.Row.id : Nat
+  Resend.Row.recipient : Nat
+  Resend.Row.device : Nat
+constructor:
+  Resend.Row.mk (id recipient device : Nat) : Row
+structure Resend.SList : Type
+number of parameters: 0
+fields:
+  Resend.SList.id : Nat
+  Resend.SList.block : Bool
+  Resend.SList.deleted : Bool
+  Resend.SList.members : List Nat
+constructor:
+  Resend.SList.mk (id : Nat) (block deleted : Bool) (members : List Nat) : SList
+structure Resend.Out : Type
+number of parameters: 0
+fields:
+  Resend.Out.requester : Nat
+  Resend.Out.device : Nat
+  Resend.Out.ts : Nat
+  Resend.Out.dest : Nat
+  Resend.Out.carried : Option (Nat × Nat)
+constructor:
+  Resend.Out.mk (requester device ts dest : Nat) (carried : Option (Nat × Nat)) : Out
+inductive Resend.Answer : Type
+number of parameters: 0
+constructors:
+Resend.Answer.resend : Payload → Answer
+Resend.Answer.null : Answer
+Resend.Answer.nothing : Answer
+def Resend.prune : S → Nat → S :=
+fun s now =>
+  have payloads := List.filter (fun x => decide (now ≤ x.ts + maxAge)) s.payloads;
+  { payloads := payloads, rows := List.filter (fun r => payloads.any fun x => x.id == r.id) s.rows, next := s.next,
+    now := s.now, stories := s.stories, lists := s.lists, counts := s.counts, delivered := s.delivered, out := s.out }
+def Resend.payloadFor : S → Nat → Nat → S × Nat :=
+fun s ts content =>
+  match List.find? (fun p => p.ts == ts && p.content == content) s.payloads with
+  | some p => (s, p.id)
+  | none =>
+    ({ payloads := s.payloads ++ [{ id := s.next, ts := ts, content := content }], rows := s.rows, next := s.next + 1,
+        now := s.now, stories := s.stories, lists := s.lists, counts := s.counts, delivered := s.delivered,
+        out := s.out },
+      s.next)
+def Resend.addRow : Nat → Nat → List Row → Nat → List Row :=
+fun id recipient rows d =>
+  if rows.contains { id := id, recipient := recipient, device := d } = true then rows
+  else rows ++ [{ id := id, recipient := recipient, device := d }]
+def Resend.record : S → Nat → Nat → Nat → List Nat → S :=
+fun s ts content recipient devices =>
+  have s1 := (payloadFor s ts content).fst;
+  have id := (payloadFor s ts content).snd;
+  prune
+    { payloads := s1.payloads, rows := List.foldl (addRow id recipient) s1.rows devices, next := s1.next, now := s1.now,
+      stories := s1.stories, lists := s1.lists, counts := s1.counts,
+      delivered := s1.delivered ++ List.map (fun x => (ts, content, recipient, x)) devices, out := s1.out }
+    s1.now
+def Resend.receipt : S → Nat → Nat → Nat → S :=
+fun s recipient device ts =>
+  have atTs := List.filter (fun x => x.ts == ts) s.payloads;
+  have rows :=
+    List.filter (fun r => !(r.recipient == recipient && r.device == device && atTs.any fun x => x.id == r.id)) s.rows;
+  { payloads := List.filter (fun p => !(p.ts == ts && !rows.any fun x => x.id == p.id)) s.payloads, rows := rows,
+    next := s.next, now := s.now, stories := s.stories, lists := s.lists, counts := s.counts, delivered := s.delivered,
+    out := s.out }
+def Resend.find : S → Nat → Nat → Nat → Option Payload :=
+fun s requester device ts =>
+  List.find?
+    (fun p =>
+      p.ts == ts && decide (s.now ≤ p.ts + maxAge) &&
+        s.rows.contains { id := p.id, recipient := requester, device := device })
+    s.payloads
+def Resend.listed : S → Nat → Nat → Bool :=
+fun s requester ts =>
+  s.stories.any fun x =>
+    match x with
+    | (t, l) => t == ts && s.lists.any fun L => L.id == l && !L.block && !L.deleted && L.members.contains requester
+def Resend.answer : World → S → Nat → Nat → Nat → Nat → Answer :=
+fun w s requester device ts answered =>
+  if retryLimit ≤ answered then Answer.nothing
+  else
+    match find s requester device ts with
+    | none => Answer.null
+    | some p =>
+      if (w.story.contains p.content && !listed s requester ts) = true then Answer.nothing else Answer.resend p
+def Resend.countOf : S → Nat × Nat × Nat → Nat :=
+fun s k => (Option.map (fun x => x.snd) (List.find? (fun x => x.fst == k) s.counts)).getD 0
+def Resend.bump : List ((Nat × Nat × Nat) × Nat) → Nat × Nat × Nat → Nat → List ((Nat × Nat × Nat) × Nat) :=
+fun counts k n => (k, n + 1) :: List.filter (fun x => x.fst != k) counts
+def Resend.step : World → S → Ev → S :=
+fun w s x =>
+  match x with
+  | Ev.send ts c r ds => record s ts c r ds
+  | Ev.receipt r d ts => receipt s r d ts
+  | Ev.tick n =>
+    { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now + n, stories := s.stories, lists := s.lists,
+      counts := s.counts, delivered := s.delivered, out := s.out }
+  | Ev.story ts l =>
+    { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now, stories := s.stories ++ [(ts, l)],
+      lists := s.lists, counts := s.counts, delivered := s.delivered, out := s.out }
+  | Ev.setList l =>
+    { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now, stories := s.stories,
+      lists := l :: List.filter (fun x => x.id != l.id) s.lists, counts := s.counts, delivered := s.delivered,
+      out := s.out }
+  | Ev.retry a d ts =>
+    have k := (a, d, ts);
+    have n := countOf s k;
+    have s :=
+      { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now, stories := s.stories, lists := s.lists,
+        counts := bump s.counts k n, delivered := s.delivered, out := s.out };
+    match answer w s a d ts n with
+    | Answer.resend p =>
+      { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now, stories := s.stories, lists := s.lists,
+        counts := s.counts, delivered := s.delivered,
+        out := s.out ++ [{ requester := a, device := d, ts := ts, dest := a, carried := some (p.ts, p.content) }] }
+    | Answer.null =>
+      { payloads := s.payloads, rows := s.rows, next := s.next, now := s.now, stories := s.stories, lists := s.lists,
+        counts := s.counts, delivered := s.delivered,
+        out := s.out ++ [{ requester := a, device := d, ts := ts, dest := a, carried := none }] }
+    | Answer.nothing => s
+inductive Resend.Reach : World → S → Prop
+number of parameters: 1
+constructors:
+Resend.Reach.init : ∀ {w : World}, Reach w S.init
+Resend.Reach.step : ∀ {w : World} {s : S} (e : Ev), Reach w s → Reach w (step w s e)
+def Resend.Logged : S → Prop :=
+fun s =>
+  ∀ (r : Row), r ∈ s.rows → ∃ p, p ∈ s.payloads ∧ p.id = r.id ∧ (p.ts, p.content, r.recipient, r.device) ∈ s.delivered
+def Resend.ResentDelivered : S → Prop :=
+fun s =>
+  ∀ (o : Out),
+    o ∈ s.out →
+      o.dest = o.requester ∧
+        ∀ (c : Nat × Nat), o.carried = some c → c.fst = o.ts ∧ (c.fst, c.snd, o.requester, o.device) ∈ s.delivered
+def Resend.outCount : S → Nat × Nat × Nat → Nat :=
+fun s k => (List.filter (fun o => o.requester == k.fst && o.device == k.snd.fst && o.ts == k.snd.snd) s.out).length
+def Resend.Bounded : S → Prop :=
+fun s => ∀ (k : Nat × Nat × Nat), outCount s k ≤ retryLimit
+structure Resend.Inv (s : S) : Prop
+number of parameters: 1
+fields:
+  Resend.Inv.nodup : (List.map (fun x => x.id) s.payloads).Nodup
+  Resend.Inv.lt : ∀ (p : Payload), p ∈ s.payloads → p.id < s.next
+  Resend.Inv.logged : Logged s
+  Resend.Inv.out : ResentDelivered s
+  Resend.Inv.bound : ∀ (k : Nat × Nat × Nat), outCount s k ≤ countOf s k ∧ outCount s k ≤ retryLimit
+constructor:
+  Resend.Inv.mk {s : S} (nodup : (List.map (fun x => x.id) s.payloads).Nodup)
+    (lt : ∀ (p : Payload), p ∈ s.payloads → p.id < s.next) (logged : Logged s) (out : ResentDelivered s)
+    (bound : ∀ (k : Nat × Nat × Nat), outCount s k ≤ countOf s k ∧ outCount s k ≤ retryLimit) : Resend.Inv s
+87 definitions
+Resend.Answer 3931117990 10619969996564580816
+Resend.Answer.casesOn 1831206709 1644554832
+Resend.Answer.nothing 3550570294 -
+Resend.Answer.null 3550570294 -
+Resend.Answer.rec 3826404333 -
+Resend.Answer.resend 3392002228 -
+Resend.Bounded 2913898593 1515319970
+Resend.Ev 3931117990 20444264828142581
+Resend.Ev.casesOn 2553890984 2506541241
+Resend.Ev.rec 3927588254 -
+Resend.Ev.receipt 1233490832 -
+Resend.Ev.retry 1233490832 -
+Resend.Ev.send 2947964701 -
+Resend.Ev.setList 2199579991 -
+Resend.Ev.story 385808251 -
+Resend.Ev.tick 2831551752 -
+Resend.Logged 2913898593 4215077759
+Resend.Out 3931117990 7718688421834116928
+Resend.Out.carried 536322772 3203763864
+Resend.Out.dest 3051390504 4069977178
+Resend.Out.device 3051390504 2720711470
+Resend.Out.mk 1637245601 -
+Resend.Out.requester 3051390504 1940441466
+Resend.Out.ts 3051390504 1998614230
+Resend.Payload 3931117990 14506503571072769520
+Resend.Payload.content 2502436155 3916737753
+Resend.Payload.id 2502436155 1184449407
+Resend.Payload.mk 3772434598 -
+Resend.Payload.ts 2502436155 550518708
+Resend.Reach 2541399225 565763658394961119
+Resend.Reach.init 2517449131 -
+Resend.Reach.step 2676065354 -
+Resend.ResentDelivered 2913898593 3385637013
+Resend.Row 3931117990 12748946995443922531
+Resend.Row.casesOn 439345351 771934961
+Resend.Row.device 303409396 90245981
+Resend.Row.id 303409396 702246528
+Resend.Row.mk 1096040245 -
+Resend.Row.rec 1045892199 -
+Resend.Row.recipient 303409396 426372248
+Resend.S 3931117990 14025571272273102887
+Resend.S.counts 1120695495 3288444481
+Resend.S.delivered 1456432447 3216193749
+Resend.S.init 2847624708 2116595857
+Resend.S.lists 1674803722 2624784709
+Resend.S.mk 3206199921 -
+Resend.S.next 2999542325 3487499399
+Resend.S.now 2999542325 3859600614
+Resend.S.out 2047965686 3157583216
+Resend.S.payloads 1408877771 3753864920
+Resend.S.rows 1947860542 3373895783
+Resend.S.stories 2210566632 2562343653
+Resend.SList 3931117990 12918893971460201473
+Resend.SList.block 4143687844 1067689324
+Resend.SList.deleted 4143687844 2797179586
+Resend.SList.id 2075527112 637661539
+Resend.SList.members 2129992154 1866927267
+Resend.SList.mk 3266499067 -
+Resend.World 3931117990 5525022603005431885
+Resend.World.mk 78965337 -
+Resend.World.story 86333398 93117928
+Resend.addRow 3842819748 1997894376
+Resend.answer 552961396 1912276794
+Resend.answer.match_1 1824201783 1029121130
+Resend.bump 2498628756 3864589142
+Resend.countOf 1766736832 2142302184
+Resend.find 3597046170 2676734470
+Resend.instDecidableEqRow 16909026 3061172749
+Resend.instDecidableEqRow.decEq 3678679925 3495530442
+Resend.instDecidableEqRow.decEq._proof_1 2822592203 -
+Resend.instDecidableEqRow.decEq._proof_2 2259094688 -
+Resend.instDecidableEqRow.decEq._proof_3 1834436141 -
+Resend.instDecidableEqRow.decEq._proof_4 3809278685 -
+Resend.instDecidableEqRow.decEq.match_1 30388606 1348138070
+Resend.instReprAnswer.repr.match_1 3643157649 1655096084
+Resend.instReprEv.repr.match_1 2220895101 284108583
+Resend.listed 2013559545 4027372015
+Resend.listed.match_1 1595908424 1073585262
+Resend.maxAge 421340980 39555484
+Resend.outCount 1766736832 3431546647
+Resend.payloadFor 3223092406 1241671198
+Resend.payloadFor.match_1 878294310 3556000405
+Resend.prune 3686518627 3228616268
+Resend.receipt 2506533215 2091400489
+Resend.record 3194077142 632313158
+Resend.retryLimit 421340980 4112022521
+Resend.step 257080594 4272715755
+answer_logged : ∀ (w : World) (s : S) (a d t n : Nat) (p : Payload),
+  answer w s a d t n = Answer.resend p →
+    p ∈ s.payloads ∧ p.ts = t ∧ s.now ≤ p.ts + maxAge ∧ { id := p.id, recipient := a, device := d } ∈ s.rows
+answer_story : ∀ (w : World) (s : S) (a d t n : Nat) (p : Payload),
+  answer w s a d t n = Answer.resend p → w.story.contains p.content = true → listed s a t = true
+answer_limit : ∀ (w : World) (s : S) (a d t n : Nat), retryLimit ≤ n → answer w s a d t n = Answer.nothing
+logged_holds : ∀ (w : World) {s : S}, Reach w s → Logged s
+resentDelivered_holds : ∀ (w : World) {s : S}, Reach w s → ResentDelivered s
+bounded_holds : ∀ (w : World) {s : S}, Reach w s → Bounded s
+Resend.answer_logged depends on axioms: [Quot.sound, propext]
+Resend.answer_story depends on axioms: [Quot.sound, propext]
+Resend.answer_limit depends on axioms: [propext]
+Resend.logged_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Resend.resentDelivered_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Resend.bounded_holds depends on axioms: [Classical.choice, Quot.sound, propext]

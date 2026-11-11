@@ -1,0 +1,238 @@
+structure Group.S : Type
+number of parameters: 0
+fields:
+  Group.S.members : List Nat
+  Group.S.devices : Nat → List Nat
+  Group.S.epoch : Nat
+  Group.S.stale : Bool
+  Group.S.distributed : List (Nat × Nat)
+  Group.S.jobs : List Job
+  Group.S.holders : List (Nat × Nat × Nat)
+  Group.S.out : List (Nat × String)
+constructor:
+  Group.S.mk (members : List Nat) (devices : Nat → List Nat) (epoch : Nat) (stale : Bool)
+    (distributed : List (Nat × Nat)) (jobs : List Job) (holders : List (Nat × Nat × Nat)) (out : List (Nat × String)) :
+    S
+structure Group.Job : Type
+number of parameters: 0
+fields:
+  Group.Job.rs : List Nat
+  Group.Job.update : Bool
+  Group.Job.plan : Option (List Nat × List Nat × List Nat)
+constructor:
+  Group.Job.mk (rs : List Nat) (update : Bool) (plan : Option (List Nat × List Nat × List Nat)) : Job
+def Group.rotation : List (Nat × Nat) → List (Nat × Nat) → List Nat → Bool × List (Nat × Nat) :=
+fun distributed current targets =>
+  have reset := distributed.any fun d => !current.contains d && !targets.contains d.fst;
+  (reset, if reset = true then current else List.filter (fun d => !distributed.contains d) current)
+def Group.planOf : List Nat → List Nat → Bool → List Nat × List Nat :=
+fun members rs update =>
+  have rs := rs.eraseDups;
+  (List.filter members.contains rs, if update = true then List.filter (fun x => !members.contains x) rs else [])
+def Group.planJob : S → Nat → Job → S :=
+fun s k j =>
+  have p := planOf s.members j.rs j.update;
+  have targets := List.filter (fun a => !(s.devices a).isEmpty) p.fst;
+  have current := devs s targets;
+  have r := rotation s.distributed current targets;
+  have reset := r.fst || s.stale;
+  have give := if reset = true then current else r.snd;
+  have base :=
+    if reset = true then
+      { members := s.members, devices := s.devices, epoch := s.epoch + 1, stale := false, distributed := [],
+        jobs := s.jobs, holders := s.holders, out := s.out }
+    else s;
+  { members := base.members, devices := base.devices, epoch := base.epoch, stale := base.stale,
+    distributed := base.distributed,
+    jobs :=
+      base.jobs.set k
+        { rs := j.rs, update := j.update, plan := some (targets, p.snd, (List.map (fun x => x.fst) give).eraseDups) },
+    holders := base.holders, out := base.out }
+def Group.stepCore : S → Ev → S :=
+fun s x =>
+  match x with
+  | Ev.add a =>
+    { members := setIn s.members a true, devices := s.devices, epoch := s.epoch, stale := s.stale,
+      distributed := s.distributed, jobs := s.jobs, holders := s.holders, out := s.out }
+  | Ev.remove a =>
+    { members := setIn s.members a false, devices := s.devices, epoch := s.epoch, stale := s.stale,
+      distributed := s.distributed, jobs := s.jobs, holders := s.holders, out := s.out }
+  | Ev.refresh a ds =>
+    { members := s.members, devices := upd s.devices a ds, epoch := s.epoch, stale := s.stale,
+      distributed := s.distributed, jobs := s.jobs, holders := s.holders, out := s.out }
+  | Ev.expire =>
+    { members := s.members, devices := s.devices, epoch := s.epoch, stale := true, distributed := s.distributed,
+      jobs := s.jobs, holders := s.holders, out := s.out }
+  | Ev.queue rs u =>
+    { members := s.members, devices := s.devices, epoch := s.epoch, stale := s.stale, distributed := s.distributed,
+      jobs := s.jobs ++ [{ rs := rs, update := u, plan := none }], holders := s.holders, out := s.out }
+  | Ev.plan k =>
+    match s.jobs[k]? with
+    | some j => planJob s k j
+    | none => s
+  | Ev.distribute k =>
+    match s.jobs[k]? with
+    | some j =>
+      match j.plan with
+      | some (targets, outside, a :: rest) =>
+        if s.members.contains a = true then
+          have ds := List.map (fun x => (a, x)) (s.devices a);
+          { members := s.members, devices := s.devices, epoch := s.epoch, stale := s.stale,
+            distributed := s.distributed ++ List.filter (fun x => !s.distributed.contains x) ds,
+            jobs := s.jobs.set k { rs := j.rs, update := j.update, plan := some (targets, outside, rest) },
+            holders := s.holders ++ List.map (fun d => (d.fst, d.snd, s.epoch)) ds, out := s.out ++ [(a, "key")] }
+        else unplan s k j
+      | x => s
+    | none => s
+  | Ev.submit k =>
+    match s.jobs[k]? with
+    | some j =>
+      match j.plan with
+      | some (targets, outside, []) =>
+        have s :=
+          { members := s.members, devices := s.devices, epoch := s.epoch, stale := s.stale,
+            distributed := s.distributed ++ List.filter (fun x => !s.distributed.contains x) (devs s targets),
+            jobs := s.jobs, holders := s.holders, out := s.out };
+        if targets.all s.members.contains = true then
+          { members := s.members, devices := s.devices, epoch := s.epoch, stale := s.stale,
+            distributed := s.distributed, jobs := s.jobs.eraseIdx k, holders := s.holders,
+            out :=
+              s.out ++ List.map (fun x => (x, if j.update = true then "update" else "content")) targets ++
+                List.map (fun x => (x, "update")) outside }
+        else unplan s k j
+      | x => s
+    | none => s
+inductive Group.Reach : S → Prop
+number of parameters: 0
+constructors:
+Group.Reach.init : ∀ (m : List Nat) (d : Nat → List Nat), Reach (S.init m d)
+Group.Reach.step : ∀ {s : S} (e : Ev), Reach s → Reach (step s e)
+def Group.keysToMembers : S → Ev → S → Bool :=
+fun s _e s' =>
+  (newOut s s').all fun x =>
+    match x with
+    | (a, k) => k != "key" || s.members.contains a
+def Group.contentToMembers : S → Ev → S → Bool :=
+fun s _e s' =>
+  (newOut s s').all fun x =>
+    match x with
+    | (a, k) => k != "content" || s.members.contains a
+def Group.holdersRecorded : S → Ev → S → Bool :=
+fun _s _e s' =>
+  s'.holders.all fun x =>
+    match x with
+    | (a, d, g) => g != s'.epoch || s'.distributed.contains (a, d)
+def Group.rotated : S → Ev → S → Bool :=
+fun s e s' =>
+  match e with
+  | Ev.plan k =>
+    match s.jobs[k]?, s'.jobs[k]? with
+    | some val, some { rs := rs, update := update, plan := some (targets, fst, snd) } =>
+      s'.distributed.all fun d => targets.contains d.fst && s.members.contains d.fst
+    | x, x_1 => true
+  | x => true
+structure Group.Inv (s : S) : Prop
+number of parameters: 1
+fields:
+  Group.Inv.recorded : ∀ (h : Nat × Nat × Nat), h ∈ s.holders → h.snd.snd = s.epoch → (h.fst, h.snd.fst) ∈ s.distributed
+  Group.Inv.past : ∀ (h : Nat × Nat × Nat), h ∈ s.holders → h.snd.snd ≤ s.epoch
+constructor:
+  Group.Inv.mk {s : S}
+    (recorded : ∀ (h : Nat × Nat × Nat), h ∈ s.holders → h.snd.snd = s.epoch → (h.fst, h.snd.fst) ∈ s.distributed)
+    (past : ∀ (h : Nat × Nat × Nat), h ∈ s.holders → h.snd.snd ≤ s.epoch) : Group.Inv s
+class _root_.Inv.{u} (α : Type u) : Type u
+number of parameters: 1
+fields:
+  Inv.inv : α → α
+constructor:
+  Inv.mk.{u} {α : Type u} (inv : α → α) : _root_.Inv α
+def Group.boundary : List Nat → List Nat → Bool → Bool :=
+fun members addressed update => update || addressed.all members.contains
+def Group.isUpdate : Bool → Bool → Bool :=
+fun group extra => group && !extra
+62 definitions
+Group.Ev 3931117990 844139235152468257
+Group.Ev.add 460475880 -
+Group.Ev.casesOn 785189226 816537730
+Group.Ev.ctorIdx 1298067714 3356388611
+Group.Ev.distribute 460475880 -
+Group.Ev.expire 1663730491 -
+Group.Ev.plan 460475880 -
+Group.Ev.queue 2835318509 -
+Group.Ev.rec 1776890089 -
+Group.Ev.refresh 1804345864 -
+Group.Ev.remove 460475880 -
+Group.Ev.submit 460475880 -
+Group.Inv 2603139977 14904285059836296335
+Group.Inv.mk 1305709158 -
+Group.Job 3931117990 4179980298607144458
+Group.Job.casesOn 786285291 3854918641
+Group.Job.mk 2508447913 -
+Group.Job.plan 3493026982 3867223183
+Group.Job.rec 486346184 -
+Group.Job.rs 2668804159 401532733
+Group.Job.update 1392328620 1188173353
+Group.Reach 2603139977 15226952216223515187
+Group.Reach.init 156198555 -
+Group.Reach.step 71352117 -
+Group.S 3931117990 7079118015451450744
+Group.S.devices 1121386547 3411565701
+Group.S.distributed 4173324055 2072036876
+Group.S.epoch 1950203064 1492206129
+Group.S.holders 4251560441 1771454133
+Group.S.init 2281356153 3691072536
+Group.S.jobs 500176806 2078513438
+Group.S.members 1858434322 2463856320
+Group.S.mk 281526906 -
+Group.S.out 2358257986 3350884061
+Group.S.stale 133286921 3612818067
+Group.contentToMembers 2470771265 529749797
+Group.devs 1691275543 2427396653
+Group.holdersRecorded 2470771265 821767122
+Group.holdersRecorded.match_1 655790242 2516598357
+Group.instReprEv.repr.match_1 1570418659 1282501035
+Group.keysToMembers 2470771265 3470288187
+Group.keysToMembers.match_1 4157819704 2037948263
+Group.newOut 11294047 2915772522
+Group.planJob 938694924 3569532772
+Group.planOf 1760101 188772927
+Group.rotated 2470771265 2548239623
+Group.rotated._sparseCasesOn_1 2334663261 1385501301
+Group.rotated._sparseCasesOn_4 2487339678 2180416446
+Group.rotated.match_1 4073219622 945755163
+Group.rotated.match_4 406252996 2881338840
+Group.rotation 1771310957 2543435270
+Group.setIn 2200842715 1144738469
+Group.step 3190537929 1140194874
+Group.stepCore 3190537929 758757564
+Group.stepCore._sparseCasesOn_3 2334663261 1385501301
+Group.stepCore._sparseCasesOn_4 232071730 1208867370
+Group.stepCore._sparseCasesOn_7 2511927106 3287480023
+Group.stepCore.match_1 2414480119 828572588
+Group.stepCore.match_3 1322782609 1352551930
+Group.stepCore.match_7 2109019058 1093214057
+Group.unplan 938694924 3122287214
+Group.upd 1185834565 2932600256
+out_step : ∀ (s : S) (e : Ev),
+  (step s e).out = s.out ∨
+    (∃ a, s.members.contains a = true ∧ (step s e).out = s.out ++ [(a, "key")]) ∨
+      ∃ targets outside u,
+        targets.all s.members.contains = true ∧
+          (step s e).out =
+            s.out ++ List.map (fun x => (x, if u = true then "update" else "content")) targets ++
+              List.map (fun x => (x, "update")) outside
+keysToMembers_holds : ∀ (s : S) (e : Ev), keysToMembers s e (step s e) = true
+contentToMembers_holds : ∀ (s : S) (e : Ev), contentToMembers s e (step s e) = true
+@Inv.reach : ∀ {s : S}, Reach s → Group.Inv s
+@holdersRecorded_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), holdersRecorded s e (step s e) = true
+rotation_targets : ∀ (dist current : List (Nat × Nat)) (targets : List Nat),
+  (∀ (d : Nat × Nat), d ∈ current → targets.contains d.fst = true) →
+    (rotation dist current targets).fst = false → ∀ (d : Nat × Nat), d ∈ dist → targets.contains d.fst = true
+rotated_holds : ∀ (s : S) (e : Ev), rotated s e (step s e) = true
+Group.out_step depends on axioms: [Quot.sound, propext]
+Group.keysToMembers_holds depends on axioms: [Quot.sound, propext]
+Group.contentToMembers_holds depends on axioms: [Quot.sound, propext]
+Group.Inv.reach depends on axioms: [Quot.sound, propext]
+Group.holdersRecorded_holds depends on axioms: [Quot.sound, propext]
+Group.rotation_targets depends on axioms: [Quot.sound, propext]
+Group.rotated_holds depends on axioms: [Quot.sound, propext]

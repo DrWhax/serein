@@ -58,6 +58,13 @@ final class PinnedTrustDelegate: NSObject, URLSessionTaskDelegate, Sendable {
         return trusted ? (.useCredential, URLCredential(trust: trust)) : (.cancelAuthenticationChallenge, nil)
     }
 
+    /// The same for a task's challenge (streamed responses, `URLSession.bytes`, ask the task).
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge) async
+        -> (URLSession.AuthChallengeDisposition, URLCredential?)
+    {
+        await urlSession(session, didReceive: challenge)
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? {
         request.url?.scheme?.lowercased() == "https" ? request : nil
@@ -82,6 +89,33 @@ public struct HTTPClient: Sendable {
         "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
     }
 
+    /// The response, read no further than `maxResponseBytes`: a larger declared length is refused
+    /// before the body is read, and the transfer stops at the limit whatever the server declares.
+    func bounded(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        if response.expectedContentLength > Int64(maxResponseBytes) {
+            bytes.task.cancel()
+            throw HTTPError.tooLarge(Int(clamping: response.expectedContentLength))
+        }
+        do {
+            return (try await Self.collect(bytes, limit: maxResponseBytes, expected: response.expectedContentLength), response)
+        } catch {
+            bytes.task.cancel()
+            throw error
+        }
+    }
+
+    /// At most `limit` bytes of `bytes`; one more is `HTTPError.tooLarge`.
+    static func collect<S: AsyncSequence>(_ bytes: S, limit: Int, expected: Int64 = -1) async throws -> Data where S.Element == UInt8 {
+        var data = Data()
+        data.reserveCapacity(expected > 0 ? Int(min(expected, Int64(limit))) : min(limit, 1 << 16))
+        for try await b in bytes {
+            guard data.count < limit else { throw HTTPError.tooLarge(data.count + 1) }
+            data.append(b)
+        }
+        return data
+    }
+
     /// `send`, also returning the response headers (lower-cased names).
     public func sendWithHeaders(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                                 accept: Set<Int> = []) async throws -> (status: Int, body: Data, headers: [String: String]) {
@@ -90,9 +124,8 @@ public struct HTTPClient: Sendable {
         request.httpMethod = method
         request.httpBody = body
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await bounded(request)
         guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }
-        guard data.count <= maxResponseBytes else { throw HTTPError.tooLarge(data.count) }
         guard (200..<300).contains(http.statusCode) || accept.contains(http.statusCode) else {
             throw HTTPError.status(http.statusCode, body: data)
         }
@@ -109,9 +142,8 @@ public struct HTTPClient: Sendable {
         request.httpMethod = method
         request.httpBody = body
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await bounded(request)
         guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }
-        guard data.count <= maxResponseBytes else { throw HTTPError.tooLarge(data.count) }
         guard (200..<300).contains(http.statusCode) || accept.contains(http.statusCode) else {
             throw HTTPError.status(http.statusCode, body: data)
         }

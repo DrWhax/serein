@@ -1,7 +1,8 @@
 // Pixel images without ImageIO or pointer APIs: an RGBA8 buffer is handed to a Metal shader
 // (`ShaderLibrary` data argument) that resamples it into the view's frame. Bundled images are
 // PNGs (photos as shipped, complex SVGs rasterised at 2× by Tools/gen-images.mjs) decoded by
-// SignalCodecs' Swift PNG decoder.
+// SignalCodecs' Swift PNG decoder. An animated image (a GIF, APNG or animated WebP the media
+// service decoded) carries all its frames and plays them as Chromium's `<img>` does.
 
 import CodecCore
 import Foundation
@@ -16,6 +17,8 @@ public struct RGBAImage: Sendable, Hashable {
     public let pixels: Data
     /// Pixels per point of the source (2 for @2x assets); sets the natural size.
     public let scale: CGFloat
+    /// Every frame, when the image animates (`pixels` is the first).
+    public let animation: RGBAAnimation?
 
     public init(width: Int, height: Int, pixels: Data, scale: CGFloat = 1) {
         precondition(pixels.count == width * height * 4, "RGBA8 buffer size")
@@ -23,13 +26,114 @@ public struct RGBAImage: Sendable, Hashable {
         self.height = height
         self.pixels = pixels
         self.scale = scale
+        self.animation = nil
     }
+
+    /// `frames`: each frame's pixels one after another; `delays` in milliseconds as encoded;
+    /// `plays`: 0 forever. One frame is a still image.
+    public init(width: Int, height: Int, frames: Data, delays: [Int], plays: Int, scale: CGFloat = 1) {
+        let n = width * height * 4
+        precondition(!delays.isEmpty && frames.count == n * delays.count, "RGBA8 frames size")
+        let split = (0..<delays.count).map { i in frames.subdata(in: frames.startIndex + i * n ..< frames.startIndex + (i + 1) * n) }
+        self.width = width
+        self.height = height
+        self.pixels = split[0]
+        self.scale = scale
+        self.animation = delays.count > 1 ? RGBAAnimation(frames: split, delays: delays, plays: plays) : nil
+    }
+
+    /// The first frame only.
+    public var still: RGBAImage { animation == nil ? self : RGBAImage(width: width, height: height, pixels: pixels, scale: scale) }
+
+    /// Bytes the pixels take (every frame).
+    public var byteCount: Int { animation.map { $0.frames.count * pixels.count } ?? pixels.count }
 
     public init(_ buffer: PixelBuffer, scale: CGFloat = 1) {
         self.init(width: buffer.width, height: buffer.height, pixels: Data(buffer.rgba), scale: scale)
     }
 
     public var size: CGSize { CGSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale) }
+}
+
+/// An animation's frames and timing. Compared by identity (the frames are not compared).
+public final class RGBAAnimation: Sendable, Hashable {
+    public let frames: [Data]
+    /// Each frame's duration in milliseconds, after Chromium's clamp (`DeferredImageDecoder::
+    /// FrameDurationAtIndex`): 10 ms or less is shown for 100 ms.
+    public let durations: [Int]
+    /// Times the animation plays; 0 (or more than an Int can count in milliseconds) is forever.
+    public let plays: Int
+    let starts: [Int]
+    let total: Int
+    /// When the last play ends, in milliseconds (nil: never).
+    let end: Int?
+
+    init(frames: [Data], delays: [Int], plays: Int) {
+        precondition(frames.count == delays.count && frames.count > 1)
+        self.frames = frames
+        durations = delays.map { $0 <= 10 ? 100 : $0 }
+        var starts: [Int] = [], t = 0
+        for d in durations {
+            starts.append(t)
+            t += d
+        }
+        self.starts = starts
+        total = t
+        self.plays = max(plays, 0)
+        let (product, overflow) = total.multipliedReportingOverflow(by: self.plays)
+        end = self.plays == 0 || overflow ? nil : product
+    }
+
+    public static func == (a: RGBAAnimation, b: RGBAAnimation) -> Bool { a === b }
+    public func hash(into h: inout Hasher) { h.combine(ObjectIdentifier(self)) }
+
+    /// The frame shown `ms` milliseconds after the animation started; after the last play, the
+    /// last frame stays.
+    public func frame(atMilliseconds ms: Int) -> Int {
+        if let end, ms >= end { return frames.count - 1 }
+        let t = max(ms, 0) % total
+        var lo = 0, hi = starts.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if starts[mid] <= t { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
+    }
+
+    /// When the frame shown at `ms` gives way to the next (nil: it stays).
+    public func nextChange(afterMilliseconds ms: Int) -> Int? {
+        let ms = max(ms, 0)
+        if let end, ms >= end { return nil }
+        let i = frame(atMilliseconds: ms)
+        let next = ms / total * total + starts[i] + durations[i]
+        if let end, next >= end { return nil }
+        return next
+    }
+
+    /// The frame for a date, `start` being when the animation began.
+    func frame(at date: Date, start: Date) -> Int {
+        frame(atMilliseconds: Int((date.timeIntervalSince(start) * 1000).rounded()))
+    }
+}
+
+/// The dates an animation's frames change on.
+struct AnimationSchedule: TimelineSchedule {
+    let start: Date
+    let animation: RGBAAnimation
+
+    func entries(from: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        var first = true
+        var ms = max(0, Int((from.timeIntervalSince(start) * 1000).rounded(.down)))
+        return AnyIterator {
+            if first {
+                first = false
+                return from
+            }
+            guard let next = animation.nextChange(afterMilliseconds: ms) else { return nil }
+            ms = next
+            return start.addingTimeInterval(Double(next) / 1000)
+        }
+    }
 }
 
 /// CSS `object-fit`.
@@ -55,6 +159,15 @@ public struct PixelImage: View {
     }
 
     public var body: some View {
+        if let animation = image.animation {
+            AnimatedPixelImage(image: image, animation: animation, fit: fit, snapsOutward: snapsOutward, snapsContentRect: snapsContentRect)
+                .id(ObjectIdentifier(animation))
+        } else {
+            still
+        }
+    }
+
+    var still: some View {
         GeometryReader { geo in
             let natural = Self.rect(for: image.size, in: geo.size, fit: fit)
             let fitted = snapsContentRect ? Self.snapped(natural, origin: geo.frame(in: .global).origin, fit: fit) : natural
@@ -90,6 +203,24 @@ public struct PixelImage: View {
         let k = fit == .contain ? min(sx, sy) : max(sx, sy)
         let size = CGSize(width: natural.width * k, height: natural.height * k)
         return CGRect(x: (box.width - size.width) / 2, y: (box.height - size.height) / 2, width: size.width, height: size.height)
+    }
+}
+
+/// Plays an animation from when it first appears.
+struct AnimatedPixelImage: View {
+    let image: RGBAImage
+    let animation: RGBAAnimation
+    let fit: ObjectFit
+    let snapsOutward: Bool
+    let snapsContentRect: Bool
+    @State private var start = Date()
+
+    var body: some View {
+        TimelineView(AnimationSchedule(start: start, animation: animation)) { context in
+            let i = animation.frame(at: context.date, start: start)
+            PixelImage(RGBAImage(width: image.width, height: image.height, pixels: animation.frames[i], scale: image.scale),
+                       fit: fit, snapsOutward: snapsOutward, snapsContentRect: snapsContentRect)
+        }
     }
 }
 

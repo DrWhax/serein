@@ -127,12 +127,70 @@ public struct MediaDecoder: MediaProcessing {
 
     public func displayImage(_ bytes: Data, maxDimension: Int) async throws -> DisplayImage {
         guard (1...4096).contains(maxDimension) else { throw MediaProcessingError.undecodable("bad maxDimension") }
-        let (image, _) = try Self.decode(bytes)
+        return try Self.display(try Self.decode(bytes).0, maxDimension: maxDimension)
+    }
+
+    static func display(_ image: PixelBuffer, maxDimension: Int) throws -> DisplayImage {
         guard image.width > 0, image.height > 0 else { throw MediaProcessingError.undecodable("empty image") }
         let fit = Self.fitSize(width: image.width, height: image.height, max: maxDimension)
         let scaled = fit.width == image.width && fit.height == image.height ? image : Scaler.resample(image, width: fit.width, height: fit.height)
         return DisplayImage(width: scaled.width, height: scaled.height, rgba: Data(scaled.rgba), originalWidth: image.width,
                             originalHeight: image.height)
+    }
+
+    /// The image as Chromium's `<img>` plays it: every composited frame, each scaled like
+    /// `displayImage` (and further down if the frames would exceed `DisplayAnimation.maxBytes`),
+    /// with the durations as encoded and the play count as Chromium reads the format's own:
+    /// - GIF: NETSCAPE2.0 count `n` repeats `n` times after the first play (0: forever); none plays once.
+    /// - APNG `num_plays` and WebP `loop_count` are total plays (0: forever).
+    public func displayAnimation(_ bytes: Data, maxDimension: Int) async throws -> DisplayAnimation {
+        guard (1...4096).contains(maxDimension) else { throw MediaProcessingError.undecodable("bad maxDimension") }
+        let b = Array(bytes)
+        let decoded: DecodedImage
+        var plays = 1
+        do {
+            switch Self.sniff(b) {
+            case .gif:
+                let file = try GIFGrammar.file(ByteSlice(b))
+                decoded = try GIFDecoder.decode(file)
+                plays = file.loopCount.map { $0 == 0 ? 0 : $0 + 1 } ?? 1
+            case .png: decoded = try PNGDecoder.decode(b)
+            case .webp: decoded = try WebPDecoder.decode(b)
+            default:
+                // No animated form: as displayImage.
+                let still = try await displayImage(bytes, maxDimension: maxDimension)
+                return DisplayAnimation(width: still.width, height: still.height, frames: still.rgba, delays: [0], plays: 1,
+                                        originalWidth: still.originalWidth, originalHeight: still.originalHeight)
+            }
+        } catch let e as MediaProcessingError {
+            throw e
+        } catch {
+            throw MediaProcessingError.undecodable("animation: \(error)")
+        }
+        guard case .animated(let animation, _) = decoded, (2...DisplayAnimation.maxFrames).contains(animation.frames.count) else {
+            let still = try Self.display(decoded.stillImage, maxDimension: maxDimension)
+            return DisplayAnimation(width: still.width, height: still.height, frames: still.rgba, delays: [0], plays: 1,
+                                    originalWidth: still.originalWidth, originalHeight: still.originalHeight)
+        }
+        if Self.sniff(b) != .gif { plays = animation.loopCount }
+        let n = animation.frames.count
+        var side = maxDimension
+        var fit = Self.fitSize(width: animation.width, height: animation.height, max: side)
+        while fit.width * fit.height * 4 * n > DisplayAnimation.maxBytes && side > 1 {
+            // Shrink by the square root of the excess, then step down past rounding.
+            let excess = Double(fit.width * fit.height * 4 * n) / Double(DisplayAnimation.maxBytes)
+            side = Swift.max(1, Swift.min(side - 1, Int(Double(Swift.max(fit.width, fit.height)) / excess.squareRoot())))
+            fit = Self.fitSize(width: animation.width, height: animation.height, max: side)
+        }
+        guard fit.width * fit.height * 4 * n <= DisplayAnimation.maxBytes else { throw MediaProcessingError.undecodable("animation too large") }
+        var frames = Data(capacity: fit.width * fit.height * 4 * n)
+        for f in animation.frames {
+            let scaled = fit.width == f.image.width && fit.height == f.image.height ? f.image : Scaler.resample(f.image, width: fit.width, height: fit.height)
+            frames.append(contentsOf: scaled.rgba)
+        }
+        return DisplayAnimation(width: fit.width, height: fit.height, frames: frames,
+                                delays: animation.frames.map { Swift.min(Swift.max($0.delayMilliseconds, 0), DisplayAnimation.maxDelay) },
+                                plays: Swift.min(Swift.max(plays, 0), Int(UInt32.max)), originalWidth: animation.width, originalHeight: animation.height)
     }
 
     public func scaleForSending(_ bytes: Data, contentType: String, level: MediaQualityLevel) async throws -> ScaledImage {

@@ -1,7 +1,7 @@
 // The web-facing services: what the app may ask them and what comes back. The app never
 // fetches or parses anything from the web itself:
 //   * SignalLinkPreviewFetcher.xpc fetches a link's page (or image) from the site, hands the
-//     HTML to SignalLinkPreviewParser.xpc over a connection the app brokers (an endpoint the
+//     HTML to SignalLinkPreviewParser.xpc over a session the app brokers (an endpoint the
 //     parser only lets the fetcher use), and returns the parsed fields plus image bytes it
 //     never reads; the app sends those bytes to SignalMediaDecoder.xpc.
 //   * SignalGifSearch.xpc talks to Giphy through Signal's content proxy, decodes its JSON, and
@@ -9,6 +9,7 @@
 // Every result is untrusted and re-validated here before the app uses it.
 
 import Foundation
+import XPC
 
 // MARK: Link previews
 
@@ -86,63 +87,42 @@ public enum LinkPreviewFetchRequest: Codable, Sendable {
     public static let maxBytes = 64 << 10
 }
 
-/// The fetcher service: one call per fetch, with the endpoint of the parser it may use.
-@objc public protocol LinkPreviewFetcherXPCProtocol {
-    func fetch(_ request: Data, parser: NSXPCListenerEndpoint, withReply reply: @escaping @Sendable (Data?, String?) -> Void)
-}
-
-/// The parser service's face towards the app: an endpoint for the fetcher (the parser
-/// accepts HTML only from the fetcher, never from the app).
-@objc public protocol LinkPreviewParserServiceXPCProtocol {
-    func parserEndpoint(withReply reply: @escaping @Sendable (NSXPCListenerEndpoint?) -> Void)
-}
-
 public final class LinkPreviewFetcherClient: LinkPreviewFetching {
     public static let serviceName = "org.signalsafe.SignalLinkPreviewFetcher"
     let fetcher: XPCChannel
     let parser: XPCChannel
 
-    /// The bundled fetcher and parser, or (tests) connections to listeners.
+    /// The bundled fetcher and parser, or (tests) listeners.
     public init(timeout: Duration = .seconds(60),
-                fetcherPeer: String? = XPCPeer.requirement(.fetcher), parserPeer: String? = XPCPeer.requirement(.parser),
-                fetcherConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: LinkPreviewFetcherClient.serviceName) },
-                parserConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: LinkPreviewParserClient.serviceName) }) {
-        fetcher = XPCChannel(timeout: timeout, peer: fetcherPeer, remoteInterface: { NSXPCInterface(with: LinkPreviewFetcherXPCProtocol.self) },
-                             makeConnection: fetcherConnection)
-        parser = XPCChannel(timeout: .seconds(10), peer: parserPeer, remoteInterface: { NSXPCInterface(with: LinkPreviewParserServiceXPCProtocol.self) },
-                            makeConnection: parserConnection)
+                fetcher: XPCTarget = .service(LinkPreviewFetcherClient.serviceName), fetcherPeer: XPCPeerRequirement? = XPCPeer.requirement(.fetcher),
+                parser: XPCTarget = .service(LinkPreviewParserClient.serviceName), parserPeer: XPCPeerRequirement? = XPCPeer.requirement(.parser)) {
+        self.fetcher = XPCChannel(fetcher, peer: fetcherPeer, timeout: timeout)
+        self.parser = XPCChannel(parser, peer: parserPeer, timeout: .seconds(10))
     }
 
-    func endpoint() async throws -> XPCEndpointBox {
-        try await parser.invoke { proxy, finish in
-            guard let p = proxy as? LinkPreviewParserServiceXPCProtocol else { return finish(.failure(MediaProcessingError.invalidResult)) }
-            p.parserEndpoint { e in finish(e.map { .success(XPCEndpointBox(endpoint: $0)) } ?? .failure(MediaProcessingError.invalidResult)) }
+    /// The parser's HTML endpoint: the parser service's whole answer to an empty message (it
+    /// takes HTML from the fetcher alone, so the app never sends it any).
+    func parserEndpoint() async throws -> XPCEndpoint {
+        try await parser.request(XPCMessage(), maxReply: 0) { reply in
+            guard let endpoint = reply.endpoint else { throw MediaProcessingError.undecodable(reply.error ?? "no parser endpoint") }
+            return endpoint
         }
     }
 
-    func call(_ request: LinkPreviewFetchRequest) async throws -> Data {
-        let box = try await endpoint()
-        let payload = try MediaXPCWire.encode(request)
-        return try await fetcher.invoke { proxy, finish in
-            guard let f = proxy as? LinkPreviewFetcherXPCProtocol else { return finish(.failure(MediaProcessingError.invalidResult)) }
-            f.fetch(payload, parser: box.endpoint) { data, error in
-                if let data { finish(.success(data)) } else { finish(.failure(MediaProcessingError.undecodable(String((error ?? "no reply").prefix(512))))) }
-            }
-        }
+    /// One fetch, with the endpoint of the parser the fetcher may use.
+    func call(_ request: LinkPreviewFetchRequest, maxReply: Int) async throws -> Data {
+        let endpoint = try await parserEndpoint()
+        return try await fetcher.request(XPCMessage(payload: try MediaXPCWire.encode(request), endpoint: endpoint), maxReply: maxReply) { try $0.result() }
     }
 
     public func page(_ href: String) async throws -> FetchedLinkPreview? {
-        try MediaXPCWire.decode(FetchedLinkPreview?.self, try await call(.page(href)), maxBytes: FetchedLinkPreview.maxReplyBytes)?.validated()
+        try MediaXPCWire.decode(FetchedLinkPreview?.self, try await call(.page(href), maxReply: FetchedLinkPreview.maxReplyBytes),
+                                maxBytes: FetchedLinkPreview.maxReplyBytes)?.validated()
     }
 
     public func image(_ href: String) async throws -> FetchedImage? {
-        try MediaXPCWire.decode(FetchedImage?.self, try await call(.image(href)), maxBytes: FetchedImage.maxReplyBytes)?.validated()
+        try MediaXPCWire.decode(FetchedImage?.self, try await call(.image(href), maxReply: FetchedImage.maxReplyBytes), maxBytes: FetchedImage.maxReplyBytes)?.validated()
     }
-}
-
-/// An endpoint handed from one connection's reply to another call (endpoints are immutable).
-struct XPCEndpointBox: @unchecked Sendable {
-    let endpoint: NSXPCListenerEndpoint
 }
 
 // MARK: GIF search (Giphy)
@@ -235,26 +215,29 @@ public final class GifSearchClient: GifSearching {
     public static let maxFileBytes = 32 << 20
     let channel: XPCChannel
 
-    public init(timeout: Duration = .seconds(60), peer: String? = XPCPeer.requirement(.gifs),
-                makeConnection: @escaping @Sendable () -> NSXPCConnection = { NSXPCConnection(serviceName: GifSearchClient.serviceName) }) {
-        channel = XPCChannel(timeout: timeout, peer: peer, makeConnection: makeConnection)
+    public init(timeout: Duration = .seconds(60), target: XPCTarget = .service(GifSearchClient.serviceName),
+                peer: XPCPeerRequirement? = XPCPeer.requirement(.gifs)) {
+        channel = XPCChannel(target, peer: peer, timeout: timeout)
     }
 
     public func search(_ query: String, limit: Int, offset: Int?) async throws -> PaginatedGifResults {
-        try MediaXPCWire.decode(PaginatedGifResults.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.search(query, limit: limit, offset: offset))),
+        try MediaXPCWire.decode(PaginatedGifResults.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.search(query, limit: limit, offset: offset)),
+                                                                                  maxReply: PaginatedGifResults.maxReplyBytes),
                                 maxBytes: PaginatedGifResults.maxReplyBytes)
             .validated()
     }
 
     public func trending(limit: Int, offset: Int?) async throws -> PaginatedGifResults {
-        try MediaXPCWire.decode(PaginatedGifResults.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.trending(limit: limit, offset: offset))),
+        try MediaXPCWire.decode(PaginatedGifResults.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.trending(limit: limit, offset: offset)),
+                                                                                  maxReply: PaginatedGifResults.maxReplyBytes),
                                 maxBytes: PaginatedGifResults.maxReplyBytes)
             .validated()
     }
 
     public func file(_ url: URL) async throws -> Data {
         guard PaginatedGifResults.isGiphyCdnURL(url) else { throw MediaProcessingError.unsupportedFormat }
-        let data = try MediaXPCWire.decode(Data.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.file(url))), maxBytes: Self.maxFileBytes + 64)
+        let data = try MediaXPCWire.decode(Data.self, try await channel.send(try MediaXPCWire.encode(GifSearchRequest.file(url)), maxReply: Self.maxFileBytes + 64),
+                                           maxBytes: Self.maxFileBytes + 64)
         guard !data.isEmpty, data.count <= Self.maxFileBytes else { throw MediaProcessingError.invalidResult }
         return data
     }

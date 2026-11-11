@@ -232,6 +232,23 @@ struct PinMessageRequest {
         return nil
     }
 
+    /// A sticker in the timeline from the installed pack's copy, with every frame when it
+    /// animates (the picker and the manager show `stickerImage`'s first frame).
+    func animatedStickerImage(packId: String, stickerId: Int) -> RGBAImage? {
+        let key = "sticker:\(packId)/\(stickerId)"
+        if let hit = images[key] { return hit }
+        guard let session = signalSession, !stickerLoading.contains(key) else { return nil }
+        stickerLoading.insert(key)
+        let media = media
+        Task {
+            defer { stickerLoading.remove(key) }
+            guard let bytes = try? await session.stickers.stickerData(packId: packId, stickerId: stickerId),
+                  let shown = await Self.decodeForDisplay(bytes, media: media, maxDimension: 256, animated: true) else { return }
+            storeImage(shown, key: key)
+        }
+        return nil
+    }
+
     /// `sendStickerMessage` to the open conversation.
     func sendSticker(packId: String, stickerId: Int) {
         guard let session = signalSession, let c = selectedConversation else { return }

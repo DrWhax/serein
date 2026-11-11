@@ -12,21 +12,12 @@
 
 import Foundation
 
-@objc protocol ProbeHostProtocol {
-    @objc(runWithReply:) func run(reply: @escaping @Sendable (String) -> Void)
-}
-
+/// One probe service's report (its HTTPS probe alone may take 20 s).
 func probe(_ name: String) async -> String {
-    let c = NSXPCConnection(serviceName: name)
-    c.remoteObjectInterface = NSXPCInterface(with: ProbeHostProtocol.self)
-    c.resume()
-    defer { c.invalidate() }
-    return await withCheckedContinuation { (k: CheckedContinuation<String, Never>) in
-        let once = OnceFlag()
-        let proxy = c.remoteObjectProxyWithErrorHandler { e in if once.claim() { k.resume(returning: "xpc error: \(e)") } }
-        guard let p = proxy as? ProbeHostProtocol else { return k.resume(returning: "xpc error: no proxy") }
-        p.run { s in if once.claim() { k.resume(returning: s) } }
-    }
+    do {
+        let report = try await XPCChannel(.service(name), peer: nil, timeout: .seconds(120)).request(XPCMessage(), maxReply: 1 << 20) { try $0.result() }
+        return String(decoding: report, as: UTF8.self)
+    } catch { return "xpc error: \(error)" }
 }
 
 var failed = false
@@ -109,7 +100,7 @@ await check("voice note") {
 }
 // Recording is the voice-note service's alone: the decoder, asked directly, refuses.
 await check("decoder refuses voice notes") {
-    let direct = MediaXPCClient(timeout: .seconds(10), makeVoiceConnection: { NSXPCConnection(serviceName: MediaXPCClient.serviceName) })
+    let direct = MediaXPCClient(timeout: .seconds(10), voice: .service(MediaXPCClient.serviceName))
     return (try? await direct.startVoiceNote(sampleRate: 48_000)) == nil ? "refused" : "SERVED"
 }
 
@@ -121,9 +112,9 @@ await check("link preview fetch") {
     guard let p = try await previews.page(site), !p.title.isEmpty else { throw MediaProcessingError.invalidResult }
     return "\(p.title.prefix(40)), image \(p.imageHref != nil)"
 }
-// The parser takes no HTML from the app: its service interface only hands out the endpoint.
+// The parser takes no HTML from the app: its service only hands out the endpoint.
 await check("parser refuses html from the app") {
-    let direct = LinkPreviewParserClient(timeout: .seconds(10)) { NSXPCConnection(serviceName: LinkPreviewParserClient.serviceName) }
+    let direct = LinkPreviewParserClient(.service(LinkPreviewParserClient.serviceName), timeout: .seconds(10))
     if (try? await direct.linkPreviewHTML(Data("<title>x</title>".utf8), httpCharset: nil)) != nil { throw MediaProcessingError.invalidResult }
     return "refused"
 }

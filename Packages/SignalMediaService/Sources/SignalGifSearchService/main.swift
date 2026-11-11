@@ -11,7 +11,4 @@ import WebFetch
 
 ServiceSandbox.requireConfinement("SignalGifSearch", network: true)
 let handler = GifSearchXPCHandler(giphy: GiphyClient(transport: URLSessionWebTransport(proxy: .signal)))
-let delegate = GifSearchListenerDelegate(handler: handler, appPeer: XPCPeer.required(.app, by: "SignalGifSearch"))
-let listener = NSXPCListener.service()
-listener.delegate = delegate
-listener.resume()
+XPCServer.serve(GifSearchClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalGifSearch"), handler)

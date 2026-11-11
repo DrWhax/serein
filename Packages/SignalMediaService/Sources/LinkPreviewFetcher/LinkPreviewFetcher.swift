@@ -9,6 +9,7 @@ import Foundation
 import MediaXPCInterface
 import SignalText
 import WebFetch
+import XPC
 
 public struct LinkPreviewPageFetcher: LinkPreviewFetching {
     static let userAgent = "WhatsApp/2"
@@ -160,57 +161,31 @@ public enum LinkPreviewFetchError: Error, Equatable {
 
 /// The service side of SignalLinkPreviewFetcher.xpc: each fetch with the parser endpoint the
 /// app passed along (the parser must be signed as `parserPeer` says).
-public final class LinkPreviewFetcherXPCHandler: NSObject, LinkPreviewFetcherXPCProtocol, Sendable {
+public final class LinkPreviewFetcherXPCHandler: XPCMessageHandler {
     let transport: any WebTransport
-    let parserPeer: String?
+    let parserPeer: XPCPeerRequirement?
     let gate: RequestGate
     /// The client's timeout: a fetch still running after it, plus grace, ends the process.
     public static let budget: Duration = .seconds(60)
 
-    public init(transport: any WebTransport, parserPeer: String?, gate: RequestGate = RequestGate(maxRunning: 8, maxWaiting: 32)) {
+    public init(transport: any WebTransport, parserPeer: XPCPeerRequirement?, gate: RequestGate = RequestGate(maxRunning: 8, maxWaiting: 32)) {
         self.transport = transport
         self.parserPeer = parserPeer
         self.gate = gate
     }
 
-    public func fetch(_ request: Data, parser endpoint: NSXPCListenerEndpoint, withReply reply: @escaping @Sendable (Data?, String?) -> Void) {
-        let decoded: LinkPreviewFetchRequest
-        do { decoded = try MediaXPCWire.decode(LinkPreviewFetchRequest.self, request, maxBytes: LinkPreviewFetchRequest.maxBytes) } catch { return reply(nil, "bad request") }
-        let box = EndpointBox(endpoint: endpoint)
-        let parser = LinkPreviewParserClient(peer: parserPeer) { NSXPCConnection(listenerEndpoint: box.endpoint) }
+    public var maxRequestBytes: Int { LinkPreviewFetchRequest.maxBytes }
+
+    public func reply(to request: XPCMessage) async throws -> XPCMessage {
+        let decoded = try MediaXPCWire.decode(LinkPreviewFetchRequest.self, try request.requirePayload(), maxBytes: LinkPreviewFetchRequest.maxBytes)
+        guard let endpoint = request.endpoint else { throw MediaProcessingError.invalidResult }
+        let parser = LinkPreviewParserClient(.endpoint(endpoint), peer: parserPeer)
         let fetcher = LinkPreviewPageFetcher(transport: transport, parser: parser)
-        let gate = gate
-        Task {
-            do {
-                reply(try await gate.run(budget: Self.budget) {
-                    switch decoded {
-                    case .page(let href): return try MediaXPCWire.encode(try await fetcher.page(href))
-                    case .image(let href): return try MediaXPCWire.encode(try await fetcher.image(href))
-                    }
-                }, nil)
-            } catch {
-                reply(nil, String(describing: error))
+        return XPCMessage(payload: try await gate.run(budget: Self.budget) {
+            switch decoded {
+            case .page(let href): return try MediaXPCWire.encode(try await fetcher.page(href))
+            case .image(let href): return try MediaXPCWire.encode(try await fetcher.image(href))
             }
-        }
-    }
-}
-
-struct EndpointBox: @unchecked Sendable { let endpoint: NSXPCListenerEndpoint }
-
-public final class LinkPreviewFetcherListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
-    let handler: LinkPreviewFetcherXPCHandler
-    let appPeer: String?
-
-    public init(handler: LinkPreviewFetcherXPCHandler, appPeer: String?) {
-        self.handler = handler
-        self.appPeer = appPeer
-    }
-
-    public func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        if let appPeer { connection.setCodeSigningRequirement(appPeer) }
-        connection.exportedInterface = NSXPCInterface(with: LinkPreviewFetcherXPCProtocol.self)
-        connection.exportedObject = handler
-        connection.resume()
-        return true
+        })
     }
 }

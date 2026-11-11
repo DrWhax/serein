@@ -2,7 +2,7 @@
 // Sandbox/Serein.sb, put in its entitlements by Tools/build-app.sh) are in force. A rule that
 // does not compile is dropped silently, so this is tested, not assumed: the process must be in
 // a sandbox container, must not be able to start a program, and must not see the user's real
-// home. It must also carry the code-signing requirements of the XPC services it talks to
+// home. It must also carry the signing identifiers of the XPC services it talks to
 // (`SereinXPCPeers`, MediaXPCInterface/XPCPeer.swift): without them its clients would connect
 // to the services unchecked. Applies to the bundled app only (`swift run` and tests are not
 // sandboxed).
@@ -28,7 +28,7 @@ public enum AppSandbox {
         return true
     }
 
-    /// The services' requirements the app's XPC clients restrict their connections to.
+    /// The services' identifiers the app's XPC clients restrict their sessions to.
     static let servicePeers = ["decoder", "parser", "fetcher", "gifs", "voice"]
     public static func hasServicePeers(_ bundle: Bundle = .main) -> Bool {
         guard let peers = bundle.object(forInfoDictionaryKey: "SereinXPCPeers") as? [String: String] else { return false }

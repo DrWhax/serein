@@ -79,16 +79,12 @@ import EncodePNG
 
 import Foundation
 
-/// The whole XPC path in process: an anonymous listener with the service's delegate, and the
+/// The whole XPC path in process: an anonymous listener with the service's handler, and the
 /// app's client connected to it.
 @Suite struct MediaXPCTests {
     @Test func requestsRoundTripThroughXPC() async throws {
-        let listener = NSXPCListener.anonymous()
-        let delegate = MediaXPCListenerDelegate()
-        listener.delegate = delegate
-        listener.resume()
-        let endpoint = listener.endpoint
-        let client = MediaXPCClient(timeout: .seconds(10)) { NSXPCConnection(listenerEndpoint: endpoint) }
+        let listener = XPCServer.anonymous(requirement: nil, MediaXPCHandler())
+        let client = MediaXPCClient(timeout: .seconds(10), decoder: .endpoint(listener.endpoint))
         var rgba = [UInt8](repeating: 0, count: 40 * 20 * 4)
         for i in stride(from: 0, to: rgba.count, by: 4) { rgba[i + 1] = 255; rgba[i + 3] = 255 }
         let png = Data(PNGEncoder.encode(PixelBuffer(width: 40, height: 20, rgba: rgba)))
@@ -100,6 +96,6 @@ import Foundation
         let sticker = try await client.stickerImage(png)
         #expect(sticker.contentType == "image/webp")
         await #expect(throws: MediaProcessingError.self) { try await client.imageInfo(Data([1, 2, 3])) }
-        listener.invalidate()
+        listener.cancel()
     }
 }

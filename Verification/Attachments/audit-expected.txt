@@ -1,0 +1,362 @@
+structure Attachments.Blob : Type
+number of parameters: 0
+fields:
+  Attachments.Blob.keyOK : Bool
+  Attachments.Blob.len : Nat
+  Attachments.Blob.macOK : Bool
+  Attachments.Blob.inc : Inc
+  Attachments.Blob.integrity : Integrity
+  Attachments.Blob.size : Nat
+  Attachments.Blob.plain : Option Nat
+constructor:
+  Attachments.Blob.mk (keyOK : Bool) (len : Nat) (macOK : Bool) (inc : Inc) (integrity : Integrity) (size : Nat)
+    (plain : Option Nat) : Blob
+inductive Attachments.Integrity : Type
+number of parameters: 0
+constructors:
+Attachments.Integrity.digest : Bool → Bool → Integrity
+Attachments.Integrity.hash : Bool → Integrity
+Attachments.Integrity.macOnly : Integrity
+inductive Attachments.Inc : Type
+number of parameters: 0
+constructors:
+Attachments.Inc.none : Inc
+Attachments.Inc.ok : Inc
+Attachments.Inc.bad : Inc
+Attachments.Inc.huge : Inc
+inductive Attachments.Err : Type
+number of parameters: 0
+constructors:
+Attachments.Err.badKey : Err
+Attachments.Err.tooShort : Err
+Attachments.Err.badMAC : Err
+Attachments.Err.badIncrementalMAC : Err
+Attachments.Err.badPadding : Err
+Attachments.Err.missingDigest : Err
+Attachments.Err.badDigest : Err
+Attachments.Err.badPlaintextHash : Err
+def Attachments.shapeOK : Nat → Bool :=
+fun len => decide (ivLength + 16 + macLength ≤ len) && (len - ivLength - macLength) % 16 == 0
+def Attachments.decrypt : Blob → Except Err Nat :=
+fun b =>
+  if (!b.keyOK) = true then Except.error Err.badKey
+  else
+    if (!shapeOK b.len) = true then Except.error Err.tooShort
+    else
+      if (!b.macOK) = true then Except.error Err.badMAC
+      else
+        if (b.inc == Inc.bad || b.inc == Inc.huge) = true then Except.error Err.badIncrementalMAC
+        else
+          match b.plain with
+          | none => Except.error Err.badPadding
+          | some p =>
+            have n := min b.size p;
+            match b.integrity with
+            | Integrity.digest empty good =>
+              if empty = true then Except.error Err.missingDigest
+              else if (!good) = true then Except.error Err.badDigest else Except.ok n
+            | Integrity.hash good => if (!good) = true then Except.error Err.badPlaintextHash else Except.ok n
+            | Integrity.macOnly => Except.ok n
+def Attachments.ciphertextSize : Nat → Nat :=
+fun pad => ivLength + (1 + pad / 16) * 16 + macLength
+def Attachments.margin : Nat :=
+65536
+structure Attachments.Att : Type
+number of parameters: 0
+fields:
+  Attachments.Att.id : Nat
+  Attachments.Att.upload : Nat
+  Attachments.Att.size : Nat
+  Attachments.Att.plainLen : Nat
+  Attachments.Att.pad : Nat
+  Attachments.Att.bucket : Nat
+  Attachments.Att.hasDigest : Bool
+  Attachments.Att.hasHash : Bool
+  Attachments.Att.st : St
+  Attachments.Att.path : Option Nat
+constructor:
+  Attachments.Att.mk (id upload size plainLen pad bucket : Nat) (hasDigest hasHash : Bool) (st : St)
+    (path : Option Nat) : Att
+structure Attachments.File : Type
+number of parameters: 0
+fields:
+  Attachments.File.path : Nat
+  Attachments.File.content : Option Nat
+  Attachments.File.intact : Bool
+  Attachments.File.len : Nat
+constructor:
+  Attachments.File.mk (path : Nat) (content : Option Nat) (intact : Bool) (len : Nat) : File
+structure Attachments.Resp : Type
+number of parameters: 0
+fields:
+  Attachments.Resp.len : Nat
+  Attachments.Resp.genuine : Option Nat
+constructor:
+  Attachments.Resp.mk (len : Nat) (genuine : Option Nat) : Resp
+structure Attachments.S : Type
+number of parameters: 0
+fields:
+  Attachments.S.atts : List Att
+  Attachments.S.files : List File
+  Attachments.S.nextPath : Nat
+  Attachments.S.maxSize : Nat
+  Attachments.S.delivered : List (Nat × Option Nat × Nat)
+  Attachments.S.fetched : List (Nat × Nat)
+constructor:
+  Attachments.S.mk (atts : List Att) (files : List File) (nextPath maxSize : Nat)
+    (delivered : List (Nat × Option Nat × Nat)) (fetched : List (Nat × Nat)) : S
+def Attachments.describe : Att → Resp → Blob :=
+fun a r =>
+  have own := r.genuine == some a.upload;
+  { keyOK := true, len := r.len, macOK := own, inc := Inc.none,
+    integrity :=
+      if a.hasDigest = true then Integrity.digest false own
+      else if a.hasHash = true then Integrity.hash (own && a.size == a.plainLen) else Integrity.digest true false,
+    size := a.size, plain := some a.pad }
+def Attachments.setAtt : List Att → Nat → (Att → Att) → List Att :=
+fun atts id f => List.map (fun x => if (x.id == id) = true then f x else x) atts
+def Attachments.download : S → Nat → Resp → S :=
+fun s id r =>
+  match List.find? (fun x => x.id == id) s.atts with
+  | none => s
+  | some a =>
+    if (a.st != St.pending) = true then s
+    else
+      if s.maxSize < a.size then
+        {
+          atts :=
+            setAtt s.atts id fun x =>
+              { id := x.id, upload := x.upload, size := x.size, plainLen := x.plainLen, pad := x.pad,
+                bucket := x.bucket, hasDigest := x.hasDigest, hasHash := x.hasHash, st := St.tooBig, path := x.path },
+          files := s.files, nextPath := s.nextPath, maxSize := s.maxSize, delivered := s.delivered,
+          fetched := s.fetched }
+      else
+        have cap := ciphertextSize a.bucket + margin;
+        have held := min r.len (cap + 1);
+        have s :=
+          { atts := s.atts, files := s.files, nextPath := s.nextPath, maxSize := s.maxSize, delivered := s.delivered,
+            fetched := s.fetched ++ [(id, held)] };
+        if cap < r.len then s
+        else
+          match decrypt (describe a r) with
+          | Except.ok n =>
+            have p := s.nextPath;
+            {
+              atts :=
+                setAtt s.atts id fun x =>
+                  { id := x.id, upload := x.upload, size := x.size, plainLen := x.plainLen, pad := x.pad,
+                    bucket := x.bucket, hasDigest := x.hasDigest, hasHash := x.hasHash, st := St.published,
+                    path := some p },
+              files := s.files ++ [{ path := p, content := r.genuine, intact := true, len := n }], nextPath := p + 1,
+              maxSize := s.maxSize, delivered := s.delivered, fetched := s.fetched }
+          | Except.error a =>
+            {
+              atts :=
+                setAtt s.atts id fun x =>
+                  { id := x.id, upload := x.upload, size := x.size, plainLen := x.plainLen, pad := x.pad,
+                    bucket := x.bucket, hasDigest := x.hasDigest, hasHash := x.hasHash, st := St.error,
+                    path := x.path },
+              files := s.files, nextPath := s.nextPath, maxSize := s.maxSize, delivered := s.delivered,
+              fetched := s.fetched }
+def Attachments.consume : S → Nat → S :=
+fun s id =>
+  match List.find? (fun x => x.id == id) s.atts with
+  |
+  some
+      { id := id_1, upload := upload, size := size, plainLen := plainLen, pad := pad, bucket := bucket,
+        hasDigest := hasDigest, hasHash := hasHash, st := St.published, path := some p } =>
+    match List.find? (fun x => x.path == p) s.files with
+    | some f =>
+      if f.intact = true then
+        { atts := s.atts, files := s.files, nextPath := s.nextPath, maxSize := s.maxSize,
+          delivered := s.delivered ++ [(id, f.content, f.len)], fetched := s.fetched }
+      else s
+    | none => s
+  | x => s
+def Attachments.step : S → Ev → S :=
+fun s x =>
+  match x with
+  | Ev.arrive a =>
+    if (s.atts.any fun x => x.id == a.id) = true then s
+    else
+      {
+        atts :=
+          s.atts ++
+            [{ id := a.id, upload := a.upload, size := a.size, plainLen := a.plainLen, pad := a.pad, bucket := a.bucket,
+                hasDigest := a.hasDigest, hasHash := a.hasHash, st := St.pending, path := none }],
+        files := s.files, nextPath := s.nextPath, maxSize := s.maxSize, delivered := s.delivered, fetched := s.fetched }
+  | Ev.download id r => download s id r
+  | Ev.consume id => consume s id
+  | Ev.tamper p =>
+    { atts := s.atts,
+      files :=
+        List.map
+          (fun f =>
+            if (f.path == p) = true then { path := f.path, content := f.content, intact := false, len := f.len } else f)
+          s.files,
+      nextPath := s.nextPath, maxSize := s.maxSize, delivered := s.delivered, fetched := s.fetched }
+inductive Attachments.Reach : Nat → S → Prop
+number of parameters: 1
+constructors:
+Attachments.Reach.init : ∀ {maxSize : Nat}, Reach maxSize (S.init maxSize)
+Attachments.Reach.step : ∀ {maxSize : Nat} {s : S} (e : Ev), Reach maxSize s → Reach maxSize (step s e)
+def Attachments.Delivered : S → Prop :=
+fun s =>
+  ∀ (x : Nat × Option Nat × Nat),
+    x ∈ s.delivered → ∃ a, a ∈ s.atts ∧ a.id = x.fst ∧ x.snd.fst = some a.upload ∧ x.snd.snd ≤ a.size
+def Attachments.Published : S → Prop :=
+fun s =>
+  ∀ (a : Att),
+    a ∈ s.atts →
+      (a.path.isSome = true ↔ a.st = St.published) ∧
+        ∀ (p : Nat), a.path = some p → ∃ f, f ∈ s.files ∧ f.path = p ∧ f.content = some a.upload ∧ f.len ≤ a.size
+def Attachments.Fetched : S → Prop :=
+fun s =>
+  ∀ (x : Nat × Nat),
+    x ∈ s.fetched → ∃ a, a ∈ s.atts ∧ a.id = x.fst ∧ x.snd ≤ ciphertextSize a.bucket + margin + 1 ∧ a.size ≤ s.maxSize
+structure Attachments.Inv (s : S) : Prop
+number of parameters: 1
+fields:
+  Attachments.Inv.ids : (List.map (fun x => x.id) s.atts).Nodup
+  Attachments.Inv.paths : (List.map (fun x => x.path) s.files).Nodup
+  Attachments.Inv.lt : ∀ (f : File), f ∈ s.files → f.path < s.nextPath
+  Attachments.Inv.pub : Published s
+  Attachments.Inv.delivered : Delivered s
+  Attachments.Inv.fetched : Fetched s
+constructor:
+  Attachments.Inv.mk {s : S} (ids : (List.map (fun x => x.id) s.atts).Nodup)
+    (paths : (List.map (fun x => x.path) s.files).Nodup) (lt : ∀ (f : File), f ∈ s.files → f.path < s.nextPath)
+    (pub : Published s) (delivered : Delivered s) (fetched : Fetched s) : Attachments.Inv s
+112 definitions
+Attachments.Att 3931117990 3453760593446479962
+Attachments.Att.bucket 127012305 3485389603
+Attachments.Att.casesOn 3933573342 3325539478
+Attachments.Att.hasDigest 2071683349 4197630229
+Attachments.Att.hasHash 2071683349 2848824786
+Attachments.Att.id 127012305 2276819948
+Attachments.Att.mk 1062135338 -
+Attachments.Att.pad 127012305 2387626998
+Attachments.Att.path 4221691560 2249538530
+Attachments.Att.plainLen 127012305 2049080684
+Attachments.Att.rec 1918472323 -
+Attachments.Att.size 127012305 1325582996
+Attachments.Att.st 3799794980 2274625709
+Attachments.Att.upload 127012305 1137067119
+Attachments.Blob 3931117990 17692434793276001302
+Attachments.Blob.inc 4120011220 3908647724
+Attachments.Blob.integrity 1682880737 3690853460
+Attachments.Blob.keyOK 3212633605 3586140140
+Attachments.Blob.len 3650839472 3238626229
+Attachments.Blob.macOK 3212633605 3927952886
+Attachments.Blob.mk 2852799624 -
+Attachments.Blob.plain 932931739 611033373
+Attachments.Blob.size 3650839472 4212134140
+Attachments.Delivered 162228479 1276074665
+Attachments.Err 3931117990 9522747109268661200
+Attachments.Err.badDigest 42622931 -
+Attachments.Err.badIncrementalMAC 42622931 -
+Attachments.Err.badKey 42622931 -
+Attachments.Err.badMAC 42622931 -
+Attachments.Err.badPadding 42622931 -
+Attachments.Err.badPlaintextHash 42622931 -
+Attachments.Err.missingDigest 42622931 -
+Attachments.Err.tooShort 42622931 -
+Attachments.Ev 3931117990 6328709624942061356
+Attachments.Ev.arrive 1093558880 -
+Attachments.Ev.casesOn 1817542740 499577493
+Attachments.Ev.consume 10412521 -
+Attachments.Ev.download 4150829733 -
+Attachments.Ev.rec 2447751732 -
+Attachments.Ev.tamper 10412521 -
+Attachments.Fetched 162228479 3577645797
+Attachments.File 3931117990 11530533508989733890
+Attachments.File.content 3834110905 1267896219
+Attachments.File.intact 1059101271 2180881482
+Attachments.File.len 1621808870 3362667740
+Attachments.File.mk 4231727120 -
+Attachments.File.path 1621808870 810836406
+Attachments.Inc 3931117990 6130956690515723645
+Attachments.Inc.bad 2998093368 -
+Attachments.Inc.casesOn 1732910190 1969901869
+Attachments.Inc.ctorIdx 2405228135 110987725
+Attachments.Inc.huge 2998093368 -
+Attachments.Inc.none 2998093368 -
+Attachments.Inc.ok 2998093368 -
+Attachments.Inc.rec 555870326 -
+Attachments.Integrity 3931117990 8501218421306306830
+Attachments.Integrity.casesOn 3842921949 627516077
+Attachments.Integrity.digest 3775673850 -
+Attachments.Integrity.hash 2461782683 -
+Attachments.Integrity.macOnly 3596760082 -
+Attachments.Integrity.rec 2936657135 -
+Attachments.Published 162228479 3281586080
+Attachments.Reach 2411830122 17709572662944162327
+Attachments.Reach.init 1670830199 -
+Attachments.Reach.step 2940402503 -
+Attachments.Resp 3931117990 3056991069481050647
+Attachments.Resp.genuine 1854168939 593283422
+Attachments.Resp.len 1273704290 3954927377
+Attachments.Resp.mk 3304033810 -
+Attachments.S 3931117990 785601951399236072
+Attachments.S.atts 755099628 143258817
+Attachments.S.delivered 3821443682 4289284323
+Attachments.S.fetched 2261082927 3509397004
+Attachments.S.files 2492657430 3630524505
+Attachments.S.init 3192221533 523260018
+Attachments.S.maxSize 3028995512 3082264774
+Attachments.S.mk 3808952940 -
+Attachments.S.nextPath 3028995512 1423833970
+Attachments.St 3931117990 7011559894018524634
+Attachments.St.casesOn 2437295606 3307011974
+Attachments.St.ctorIdx 3980518305 2619693682
+Attachments.St.error 1874887870 -
+Attachments.St.pending 1874887870 -
+Attachments.St.published 1874887870 -
+Attachments.St.rec 173943441 -
+Attachments.St.tooBig 1874887870 -
+Attachments.ciphertextSize 2546708756 2730346760
+Attachments.consume 4178279166 706448158
+Attachments.consume._sparseCasesOn_3 2334663261 1385501301
+Attachments.consume._sparseCasesOn_4 2629400797 894656072
+Attachments.consume.match_1 2504578904 3252101394
+Attachments.consume.match_3 2144111816 3008893348
+Attachments.decrypt 550382489 2496523130
+Attachments.decrypt.match_1 3175174048 749409309
+Attachments.describe 2805533440 3879304847
+Attachments.download 4145181135 53740176
+Attachments.download.match_1 3107668889 4044371852
+Attachments.download.match_3 2426117197 2784825750
+Attachments.instDecidableEqInc 1774960162 1165619913
+Attachments.instDecidableEqInc._proof_1 2397804809 -
+Attachments.instDecidableEqInc._proof_2 3033438326 -
+Attachments.instDecidableEqSt 2792365822 2804139354
+Attachments.instDecidableEqSt._proof_1 1052350683 -
+Attachments.instDecidableEqSt._proof_2 428190795 -
+Attachments.instReprEv.repr.match_1 2492728429 3503923891
+Attachments.instReprIntegrity.repr.match_1 3830490366 786962230
+Attachments.ivLength 421340980 149142631
+Attachments.macLength 421340980 2310724160
+Attachments.margin 421340980 500815827
+Attachments.setAtt 3023213232 1814742517
+Attachments.shapeOK 722437228 3604797632
+Attachments.step 4175597833 1316468181
+decrypt_ok : ∀ (b : Blob) (n : Nat),
+  decrypt b = Except.ok n →
+    b.keyOK = true ∧
+      shapeOK b.len = true ∧
+        b.macOK = true ∧
+          (b.inc = Inc.none ∨ b.inc = Inc.ok) ∧
+            (b.integrity = Integrity.macOnly ∨
+                b.integrity = Integrity.hash true ∨ b.integrity = Integrity.digest false true) ∧
+              n ≤ b.size ∧ ∃ p, b.plain = some p ∧ n ≤ p
+describe_ok : ∀ (a : Att) (r : Resp) (n : Nat),
+  decrypt (describe a r) = Except.ok n →
+    r.genuine = some a.upload ∧ (a.hasDigest = true ∨ a.hasHash = true) ∧ n ≤ a.size
+@delivered_holds : ∀ {m : Nat} {s : S}, Reach m s → Delivered s
+@published_holds : ∀ {m : Nat} {s : S}, Reach m s → Published s
+@fetched_holds : ∀ {m : Nat} {s : S}, Reach m s → Fetched s
+Attachments.decrypt_ok depends on axioms: [propext]
+Attachments.describe_ok depends on axioms: [Quot.sound, propext]
+Attachments.delivered_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Attachments.published_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Attachments.fetched_holds depends on axioms: [Classical.choice, Quot.sound, propext]
