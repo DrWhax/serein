@@ -35,6 +35,8 @@ open CallCapture
 #print wanted
 #print t3Camera
 #print VidOk
+#print TdOk
+#print TdInv
 #print camStartWanted
 #print t3CallRequest
 #print t3Call
@@ -101,11 +103,13 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure ShareInv.reach t2Frames_holds t2Stop_holds t4ScreenObsolete_holds t4Camera_holds camStartWanted_holds cameraFrames_gated VidOk.reach t3Camera_holds ended_not_live t5_holds t2Frames_wrap t4ScreenObsolete_wrap
+#audit_closure ShareInv.reach TdInv.reach t2Frames_holds t2Stop_holds t3ScreenObsolete_holds t4ScreenObsolete_holds t4Camera_holds camStartWanted_holds cameraFrames_gated VidOk.reach t3Camera_holds ended_not_live t5_holds t2Frames_wrap t4ScreenObsolete_wrap
 
 #check @ShareInv.reach
+#check @TdInv.reach
 #check @t2Frames_holds
 #check @t2Stop_holds
+#check @t3ScreenObsolete_holds
 #check @t4ScreenObsolete_holds
 #check @t4Camera_holds
 #check @camStartWanted_holds
@@ -126,4 +130,4 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms ShareInv.reach t2Frames_holds t2Stop_holds t4ScreenObsolete_holds t4Camera_holds camStartWanted_holds cameraFrames_gated VidOk.reach t3Camera_holds ended_not_live t5_holds t2Frames_wrap t4ScreenObsolete_wrap
+#audit_axioms ShareInv.reach TdInv.reach t2Frames_holds t2Stop_holds t3ScreenObsolete_holds t4ScreenObsolete_holds t4Camera_holds camStartWanted_holds cameraFrames_gated VidOk.reach t3Camera_holds ended_not_live t5_holds t2Frames_wrap t4ScreenObsolete_wrap

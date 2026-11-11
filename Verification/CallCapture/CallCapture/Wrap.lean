@@ -35,7 +35,7 @@ theorem S7_capNext : S7.capNext = 1 := by decide
 theorem S7_lastTok : S7.lastTok = 1 := by decide
 theorem S7_share : S7.share = some (0, 1) := by decide
 theorem S7_jobs : S7.jobs = [.present 0 pt0] := by decide
-theorem S7_cap0 : S7.caps 0 = ⟨1, 0, none, true, 0⟩ := by decide
+theorem S7_cap0 : S7.caps 0 = ⟨1, 0, none, true, 0, 0⟩ := by decide
 theorem S7_ncall : S7.ncall = some ⟨0, 0, .prering, false, false, false⟩ := by decide
 theorem S7_ops : S7.ops = [] := by decide
 theorem S7_streamNext : S7.streamNext = 0 := by decide

@@ -47,9 +47,9 @@ def S.scr (s : S) : Scr :=
     t.lastTok, t.tok0, t.ops.filter Op.isScreen, t.jobs.filter Job.isData⟩ : Scr) = t.scr := rfl
 
 /-- A generation bump keeps a capture's token and stream. -/
-@[simp] theorem tok_upd_gen {f : Nat → Cap} : (upd f i { f i with gen := g } x).tok = (f x).tok := by
+@[simp] theorem tok_upd_gen {f : Nat → Cap} : (upd f i { f i with gen := g, bumps := n } x).tok = (f x).tok := by
   simp only [upd]; split <;> simp_all
-@[simp] theorem stream_upd_gen {f : Nat → Cap} : (upd f i { f i with gen := g } x).stream = (f x).stream := by
+@[simp] theorem stream_upd_gen {f : Nat → Cap} : (upd f i { f i with gen := g, bumps := n } x).stream = (f x).stream := by
   simp only [upd]; split <;> simp_all
 
 @[simp] theorem scr_capBegin : (capBegin i s).scr = s.scr := by simp [capBegin, setCap]

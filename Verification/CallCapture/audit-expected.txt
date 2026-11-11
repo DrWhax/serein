@@ -163,6 +163,17 @@ fun _s _e s' =>
     | x => true
 def CallCapture.VidOk : S → Prop :=
 fun s => s.localVideo = s.userVideo
+def CallCapture.TdOk : S → Nat × UInt64 → Prop :=
+fun s p =>
+  p.fst < s.capNext ∧
+    ∃ b,
+      b ≤ (s.caps p.fst).bumps ∧
+        p.snd = s.capGen0 + UInt64.ofNat b ∧ (b = (s.caps p.fst).bumps → curShare s = some p.fst ∨ 2 ^ 64 < s.capNext)
+def CallCapture.TdInv : S → Prop :=
+fun s =>
+  (∀ (x : Nat), x < s.capNext → (s.caps x).gen = s.capGen0 + UInt64.ofNat (s.caps x).bumps) ∧
+    (∀ (p : Nat × UInt64), p ∈ List.filterMap Op.td s.ops → TdOk s p) ∧
+      ∀ (p : Nat × UInt64), p ∈ List.filterMap Job.td s.jobs → TdOk s p
 def CallCapture.camStartWanted : S → Ev → S → Bool :=
 fun _s _e s' =>
   (!(effects s').any fun x =>
@@ -338,7 +349,7 @@ def CallCapture.schedule : Trace → Bool × Bool × Bool :=
 fun t => (allIn "ui" t, allIn "drained" t, fifoTrace t)
 def CallCapture.firstFailure : (S → Ev → S → Bool) → Trace → Option Nat :=
 fun check t => firstFailure.go check t.events (S.init t.cfg) 0
-626 definitions
+636 definitions
 CallCapture.ACall 3931117990 12634833589613808712
 CallCapture.ACall.authorized 1986469216 933322549
 CallCapture.ACall.callId 2573624032 2467229715
@@ -364,10 +375,11 @@ CallCapture.CamDev.rec 2656737668 -
 CallCapture.CamDev.starting 2509804644 -
 CallCapture.CamDev.stopping 2509804644 -
 CallCapture.Cap 3931117990 9503835181656167728
+CallCapture.Cap.bumps 469686474 2797139205
 CallCapture.Cap.content 2835694384 795588823
 CallCapture.Cap.gen 1177347843 3377751835
 CallCapture.Cap.inst 469686474 3734420033
-CallCapture.Cap.mk 1167306538 -
+CallCapture.Cap.mk 535353886 -
 CallCapture.Cap.stream 2652825754 966406766
 CallCapture.Cap.tok 1177347843 1938685568
 CallCapture.Cfg 3931117990 13534047134842312505
@@ -483,6 +495,8 @@ CallCapture.Job.setupStart 3157206093 -
 CallCapture.Job.sources 2418883725 -
 CallCapture.Job.sourcesRet 3546811622 -
 CallCapture.Job.stopRet 4257161677 -
+CallCapture.Job.td 1640697659 983662113
+CallCapture.Job.td.match_1 696031593 1066628526
 CallCapture.Job.teardownRet 3255692763 -
 CallCapture.JobOk 2982857336 3508503380
 CallCapture.JobOk._sparseCasesOn_1 4181248601 363190609
@@ -511,6 +525,8 @@ CallCapture.Op.rec 2172114690 -
 CallCapture.Op.setup 95353422 -
 CallCapture.Op.sources 2384353436 -
 CallCapture.Op.stopping 2166598044 -
+CallCapture.Op.td 4185202905 1967672901
+CallCapture.Op.td.match_1 2404717708 2846497323
 CallCapture.Op.tdStart 1374590149 -
 CallCapture.OpOk 4141565723 3150405373
 CallCapture.OpOk.match_1 1599974119 1198750421
@@ -601,6 +617,8 @@ CallCapture.Stage.ctorIdx 3795283831 1250292110
 CallCapture.Stage.inCall 1660076004 -
 CallCapture.Stage.lobby 1660076004 -
 CallCapture.Stage.rec 948407144 -
+CallCapture.TdInv 2188041368 775746372
+CallCapture.TdOk 2080430539 3351743191
 CallCapture.VidOk 2188041368 2575397239
 CallCapture.acceptCall 2520959994 2797272893
 CallCapture.acceptCall.match_1 2640857607 287254896
@@ -623,12 +641,12 @@ CallCapture.camStartWanted.match_1 1782726231 2246210690
 CallCapture.camStopEnv 1661770060 39971075
 CallCapture.camStopEnv._sparseCasesOn_1 2054219502 2215086219
 CallCapture.camStopEnv.match_1 1262921802 1994722675
-CallCapture.capBegin 686397690 541236691
+CallCapture.capBegin 686397690 2813807363
 CallCapture.capStart 2944161333 3953110271
 CallCapture.capStartAfterTeardown 3005358055 3883483521
 CallCapture.capStop 686397690 2755675150
 CallCapture.capStop.match_1 2237241636 198070588
-CallCapture.capTeardown 2121566730 2921553212
+CallCapture.capTeardown 2121566730 392393837
 CallCapture.capTeardown.match_1 2549865312 3610645720
 CallCapture.clearShare 1661770060 659677260
 CallCapture.curShare 3131705992 931229826
@@ -858,13 +876,13 @@ CallCapture.instDecidableEqSrc.decEq.match_1 4216432703 1072017911
 CallCapture.instDecidableEqStage 3194321112 233688884
 CallCapture.instDecidableEqStage._proof_1 3472484089 -
 CallCapture.instDecidableEqStage._proof_2 3950061470 -
-CallCapture.instInhabitedCap 481565921 4194561700
+CallCapture.instInhabitedCap 481565921 662640777
 CallCapture.instLive 754667238 3437538227
 CallCapture.instReprCEv.repr.match_1 4289266793 4190242415
 CallCapture.instReprEv.repr.match_1 1840759995 308144244
 CallCapture.instReprJob.repr.match_1 776695615 208014606
 CallCapture.instReprMsg.repr.match_1 1069033249 1700781139
-CallCapture.installDone 1299960198 2161283007
+CallCapture.installDone 1299960198 3810555608
 CallCapture.isCurrent 3839121290 2862748609
 CallCapture.jobOf 369049016 767558901
 CallCapture.jobOf._sparseCasesOn_1 2963424311 2723709409
@@ -919,7 +937,7 @@ CallCapture.shareTokIs 2414948694 1539106912
 CallCapture.shareTokIs.match_1 1582071688 2256139363
 CallCapture.sourcesLeaf 1361342265 932054455
 CallCapture.spawn 2469307298 1355913780
-CallCapture.srcDone 4094887413 574616953
+CallCapture.srcDone 4094887413 4103037374
 CallCapture.srcEnv 2783234957 3173917589
 CallCapture.srcEnv.match_1 1738443636 1562691398
 CallCapture.startCall 1661770060 2742211587
@@ -952,6 +970,9 @@ CallCapture.t3Camera 2178537987 4171785671
 CallCapture.t3Camera._sparseCasesOn_1 4288043354 1303969442
 CallCapture.t3Camera._sparseCasesOn_2 2824443083 3115992449
 CallCapture.t3Camera.match_1 783809559 194406229
+CallCapture.t3Screen._sparseCasesOn_1 3548612796 866837316
+CallCapture.t3Screen.match_1 1107424427 1819365717
+CallCapture.t3ScreenObsolete 2178537987 467620588
 CallCapture.t4Camera 2178537987 4224404330
 CallCapture.t4Camera._sparseCasesOn_1 63523968 1710212271
 CallCapture.t4Camera._sparseCasesOn_2 3583212994 390658887
@@ -960,14 +981,18 @@ CallCapture.t4Screen._sparseCasesOn_1 1173123175 87319045
 CallCapture.t4Screen.match_1 2240158898 1626012398
 CallCapture.t4ScreenObsolete 2178537987 3609697775
 CallCapture.t5 2178537987 3593848962
-CallCapture.toggleShare 1661770060 1466543020
+CallCapture.toggleShare 1661770060 1135163622
 CallCapture.toggleShare.match_1 38056276 1982005693
 CallCapture.upd 1185834565 2932600256
 CallCapture.updateCamera 1661770060 2544889693
 CallCapture.wanted 4224648415 3323935247
 @ShareInv.reach : ∀ {s : S}, Reach s → ShareInv s
+@TdInv.reach : ∀ {s : S}, Reach s → TdInv s
 @t2Frames_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t2Frames s e (step s e) = true
 @t2Stop_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t2Stop s e (step s e) = true
+@t3ScreenObsolete_holds : ∀ {s : S},
+  Reach s →
+    s.capNext ≤ 2 ^ 64 → (∀ (i : Nat), (s.caps i).bumps < 2 ^ 64) → ∀ (e : Ev), t3ScreenObsolete s e (step s e) = true
 @t4ScreenObsolete_holds : ∀ {s : S}, Reach s → s.capNext ≤ 2 ^ 64 → ∀ (e : Ev), t4ScreenObsolete s e (step s e) = true
 t4Camera_holds : ∀ (s : S) (e : Ev), t4Camera s e (step s e) = true
 camStartWanted_holds : ∀ (s : S) (e : Ev), camStartWanted s e (step s e) = true
@@ -981,8 +1006,10 @@ cameraFrames_gated : ∀ (s : S) (e : Ev) (k : Nat),
 t2Frames_wrap : ¬∀ (s : S) (e : Ev), Reach s → t2Frames s e (step s e) = true
 t4ScreenObsolete_wrap : ¬∀ (s : S) (e : Ev), Reach s → t4ScreenObsolete s e (step s e) = true
 CallCapture.ShareInv.reach depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.TdInv.reach depends on axioms: [Classical.choice, Quot.sound, propext]
 CallCapture.t2Frames_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 CallCapture.t2Stop_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+CallCapture.t3ScreenObsolete_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 CallCapture.t4ScreenObsolete_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 CallCapture.t4Camera_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 CallCapture.camStartWanted_holds depends on axioms: [Classical.choice, Quot.sound, propext]

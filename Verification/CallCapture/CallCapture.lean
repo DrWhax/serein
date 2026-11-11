@@ -8,5 +8,6 @@ import CallCapture.ShareInv
 import CallCapture.Proofs
 import CallCapture.Instances
 import CallCapture.Video
+import CallCapture.Obsolete
 import CallCapture.Counterexamples
 import CallCapture.Wrap

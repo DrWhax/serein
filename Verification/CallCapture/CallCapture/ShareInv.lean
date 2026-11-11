@@ -390,10 +390,10 @@ theorem JobOk.grow (hcn : s.capNext ≤ s'.capNext) (htok : ∀ x, x < s.capNext
 theorem ShareInv.addShare (hi : ShareInv s) (inst : Nat) (conv : Conv) :
     ShareInv (CallCapture.spawn (Job.sources s.capNext (s.lastTok + 1) s.gen conv)
       { s with lastTok := s.lastTok + 1, capNext := s.capNext + 1, share := some (s.capNext, s.lastTok + 1),
-               caps := upd s.caps s.capNext { tok := s.lastTok + 1, gen := s.capGen0, stream := none, content := false, inst := inst } }) := by
+               caps := upd s.caps s.capNext { tok := s.lastTok + 1, gen := s.capGen0, stream := none, content := false, inst := inst, bumps := 0 } }) := by
   have hlast : s.lastTok + 1 = s.tok0 + UInt64.ofNat (s.capNext + 1) := by
     rw [hi.last, UInt64.ofNat_add, UInt64.add_assoc, UInt64.ofNat_one]
-  generalize hc : ({ tok := s.lastTok + 1, gen := s.capGen0, stream := none, content := false, inst := inst } : Cap) = c
+  generalize hc : ({ tok := s.lastTok + 1, gen := s.capGen0, stream := none, content := false, inst := inst, bumps := 0 } : Cap) = c
   have hct : c.tok = s.lastTok + 1 := by rw [← hc]
   have hcs : c.stream = none := by rw [← hc]
   let s1 : S := { s with lastTok := s.lastTok + 1, capNext := s.capNext + 1, share := some (s.capNext, s.lastTok + 1),

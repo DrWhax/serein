@@ -122,9 +122,11 @@ structure Cap where
   stream : Option Nat
   content : Bool
   inst : Nat
+  /-- Ghost: how often `gen` has been bumped (it wraps; this does not). -/
+  bumps : Nat
   deriving DecidableEq, Repr
 
-instance : Inhabited Cap := ⟨⟨0, 0, none, false, 0⟩⟩
+instance : Inhabited Cap := ⟨⟨0, 0, none, false, 0, 0⟩⟩
 
 /-- A ScreenCaptureKit stream, physically. -/
 inductive SPh where
@@ -473,7 +475,8 @@ def setCameraSending (b : Bool) (s : S) : S := updateCamera { s with camSends :=
 
 -- ## ScreenShareCapture
 
-def capBegin (i : Nat) (s : S) : S := setCap i { s.caps i with gen := (s.caps i).gen + 1 } s
+def capBegin (i : Nat) (s : S) : S :=
+  setCap i { s.caps i with gen := (s.caps i).gen + 1, bumps := (s.caps i).bumps + 1 } s
 
 /-- `output.stop()` (its output passes no more frames), then `stopCapture()` is requested. -/
 def stopStream (j : Nat) (s : S) : S :=
@@ -533,7 +536,7 @@ def toggleShare (s : S) : S :=
       let tok := s.lastTok + 1
       let i := s.capNext
       let s := { s with lastTok := tok, capNext := i + 1, share := some (i, tok),
-                        caps := upd s.caps i { tok := tok, gen := s.capGen0, stream := none, content := false, inst := a.inst } }
+                        caps := upd s.caps i { tok := tok, gen := s.capGen0, stream := none, content := false, inst := a.inst, bumps := 0 } }
       spawn (.sources i tok s.gen a.conv) s
 
 /-- `togglePresenting`'s task starts: unless its share is no longer current, it asks for the sources. -/

@@ -27,7 +27,7 @@ The script runs these checks:
 1. It rejects `sorry`, `admit`, `native_decide`, `axiom` and similar escape hatches.
 2. `lake build`: the kernel checks every proof.
 3. The audit (`Audit.lean`), diffed against `audit-expected.txt`: the property definitions,
-   readably; **every definition the theorem statements depend on, transitively** (626 of them:
+   readably; **every definition the theorem statements depend on, transitively** (636 of them:
    the whole model, through definition bodies, not proofs), each with a hash of its type and
    value; and every theorem statement. A changed or weakened statement or definition fails, even
    when it still builds. It accepts only `propext`, `Classical.choice` and `Quot.sound` as axioms.
@@ -110,6 +110,8 @@ depends only on `propext`, `Classical.choice` and `Quot.sound`.
 | `ShareInv.reach` | The share invariant holds. Tokens are `tok0 + (index + 1)` (wrapping). The current share is a created capture under its own token. Every screen-share await, and every pending job that carries a share (its tasks, the continuations of its awaits, its frame and stop callbacks), names a created capture by that capture's token, and a stream it owns. | ShareInv.lean |
 | `t2Frames_holds` | **T2 (frames)**: a frame of share `i` is submitted only if `i` is the current share. *Requires at most 2^64 shares made (`capNext ≤ 2^64`).* | Proofs.lean |
 | `t2Stop_holds` | **T2 (stopping)**: a step that belongs to an obsolete share (a device event of its streams or sources, or any job carrying it) leaves the current share and `isPresenting` unchanged, never calls `setPresenting`, and stops only streams the current capture does not own. *Same bound.* | Proofs.lean |
+| `TdInv.reach` | Every created capture's generation is its count of bumps (`Cap.bumps`, ghost), and every pending start-after-teardown carries a generation that was current while its share was: if the capture has not been bumped since, that share is still the current one (or more than 2^64 shares exist). No bound needed. | Obsolete.lean |
+| `t3ScreenObsolete_holds` | **T3 (obsolete share)**: a screen stream is started only for the current share. *Same 2^64-shares bound, and fewer than 2^64 generation bumps of each capture* (each stop and each restart of a share bumps it; the generation wraps). | Obsolete.lean |
 | `t4ScreenObsolete_holds` | **T4 (obsolete share)**: a stream start whose continuation runs after its share was stopped or replaced stops the stream in that same job, and does not turn presenting on. *Same bound.* | Proofs.lean |
 | `t4Camera_holds` | **T4 (camera)**: a camera start whose continuation runs once the camera is unwanted stops it in that same job. | Proofs.lean |
 | `camStartWanted_holds` | The camera start is requested only while the app wants the camera (a live call or lobby with `callLocalVideo` on). This is **application** authorization; `t3Camera_holds` adds the user's choice. | Proofs.lean |
@@ -126,7 +128,8 @@ The proof is organised in layers:
   `Instances.lean` does the same for the active call and the instance counter.
 - `ShareInv.lean` proves the share invariant for the screen-share functions and jobs one by one;
   `Instances.lean` proves that the call functions only end instances or make new ones;
-  `Video.lean` that only the user's choice changes the video setting.
+  `Video.lean` that only the user's choice changes the video setting; `Obsolete.lean` that every
+  revocation bumps the capture generation a pending start-after-teardown checks.
 
 ## 4. What is false: the 2^64 bound (proved)
 
@@ -232,9 +235,9 @@ Traces:
 Tested only, not proved:
 
 - That production behaves as the model (the conformance above).
-- T1 (all three variants), T3 for calls (request and placement), screens, screen sources and
-  obsolete shares, T4 for screens (revoked call, publishing), acceptance requires authorization,
-  and both cleanup properties. After the fixes the explorer finds no violation of any of them,
+- T1 (all three variants), T3 for calls (request and placement), screens and screen sources,
+  T4 for screens (revoked call, publishing), acceptance requires authorization, and both
+  cleanup properties. After the fixes the explorer finds no violation of any of them,
   in 160,000 traces across the four schedules, and the conformance tests agree, but **there is
   no proof**. Only §3 is proved.
 - An "OK" in `explore-expected.txt` means only that no violation was found. The explorer misses
@@ -291,9 +294,11 @@ properties:
 **Numeric semantics.** `callGeneration`, `lastScreenShareToken`, `setupGeneration` and each
 capture's `generation` are `UInt64` with wrapping `+`, as in Swift. Indices that exist only for
 the proofs (call instances, native-call owners, share, stream and camera-session numbers, the
-ended-instance record) are ghost state and never influence a transition. The share theorems need
-at most 2^64 shares made in the session, and §4 proves the bound is necessary. They don't depend
-on generation counters.
+ended-instance record, each capture's count of generation bumps) are ghost state and never
+influence a transition. The share theorems need at most 2^64 shares made in the session, and §4
+proves the bound is necessary. T3 for obsolete shares also needs fewer than 2^64 generation bumps
+of each capture, because the start after a teardown checks only that wrapping generation; that
+bound is not shown to be necessary. The other share theorems don't depend on generation counters.
 
 **Production seams added for the adapter.** With no override set, behaviour is unchanged:
 
@@ -321,7 +326,7 @@ read as a reference only. No TS→Lean translation is involved.
 | `CallCapture/Model.lean` | The model: state, jobs, events, effects, `step`, `Reach`. |
 | `CallCapture/Props.lean` | The properties, as decidable checks on one step. |
 | `CallCapture/UI.lean` | What the UI offers; the drained and FIFO schedules. |
-| `CallCapture/Effects.lean`, `Frames.lean`, `ShareInv.lean`, `Proofs.lean`, `Instances.lean`, `Video.lean` | The proofs. |
+| `CallCapture/Effects.lean`, `Frames.lean`, `ShareInv.lean`, `Proofs.lean`, `Instances.lean`, `Video.lean`, `Obsolete.lean` | The proofs. |
 | `CallCapture/Counterexamples.lean`, `Wrap.lean` | Refutation machinery and the cleanup properties; the 2^64 refutation. |
 | `CallCapture/Trace.lean`, `Main.lean` | Trace format, observations, the `oracle` executable. |
 | `Audit.lean`, `audit-expected.txt`, `explore-expected.txt` | What the script compares. |
@@ -362,7 +367,7 @@ A trace line is `cfg <callGeneration> <lastScreenShareToken> <setupGeneration> <
 
 Results at the time of writing:
 
-- Lean: 13 audited theorems (11 results and the 2 wrap-around refutations), all checked by the
+- Lean: 15 audited theorems (13 results and the 2 wrap-around refutations), all checked by the
   kernel, using only the standard axioms.
 - Explorer: all 80 verdicts hold (20 properties, four schedules); none is falsified.
 - Swift: 8,000 random traces plus 36 regression traces agree with the model at every step.
