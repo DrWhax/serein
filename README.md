@@ -4,6 +4,8 @@
 
 A native Signal client for macOS. Built with SwiftUI, with every image and video format decoded in Swift inside a sandbox, and a focus on security.
 
+The bits currently that's left memory unsafe is upstream's RingRTC.
+
 > [!WARNING]
 > **Serein is experimental software.** Do not rely on it for strong cryptography or security yet. No one has formally verified that its crypto code is implemented safely.
 > If you need strong security, you should use the normal Signal clients. 
