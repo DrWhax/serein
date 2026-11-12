@@ -1,0 +1,10 @@
+name = "CallBoundary"
+version = "0.1.0"
+defaultTargets = ["CallBoundary", "oracle"]
+
+[[lean_lib]]
+name = "CallBoundary"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

@@ -231,6 +231,40 @@ public final class XPCChannel: Sendable {
         }
     }
 
+    /// Ends the open session, if any; the next request opens a new one. (A service that exits
+    /// when its session ends, as the calling service does, drops everything it held.)
+    public func reset() {
+        let dropped = state.withLock { st -> XPCSession? in
+            defer { st.live = nil }
+            return st.live?.session
+        }
+        dropped?.cancel(reason: "reset by the app")
+    }
+
+    /// One request from a thread that may block (never this channel's own handlers): `payload`
+    /// sent, the reply's payload (at most `maxReply` bytes) returned. A reply later than
+    /// `timeout` ends the session, as the service is stuck: nothing waits on it again, and the
+    /// next request opens a new one. (For callers whose API is synchronous: ringrtc's commands.)
+    public func sendSync(_ payload: Data, timeout: Duration, maxReply: Int) throws -> Data {
+        let live: Live
+        do { live = try current() } catch { throw XPCServiceError.lost(String(String(describing: error).prefix(512))) }
+        let reply = SyncReply()
+        let weakSelf = WeakBox(self)
+        live.session.send(message: XPCMessage(payload: payload).dictionary) { r in
+            switch r {
+            case .success(let d): reply.finish(Result { try XPCMessage(d, maxPayload: maxReply).result() })
+            case .failure(let e):
+                weakSelf.value?.drop(live.id)
+                reply.finish(.failure(XPCServiceError.lost(String(String(describing: e).prefix(512)))))
+            }
+        }
+        guard let result = reply.wait(timeout) else {
+            drop(live.id)
+            throw XPCServiceError.timedOut
+        }
+        return try result.get()
+    }
+
     /// A payload sent, the reply's payload (at most `maxReply` bytes) returned undecoded.
     func send(_ payload: Data, timeout: Duration? = nil, maxReply: Int, late: (@Sendable (Data) -> Void)? = nil,
               lost: (@Sendable (UInt64) -> Void)? = nil) async throws -> Data {
@@ -285,6 +319,28 @@ final class Outcome<T: Sendable>: Sendable {
     }
 }
 
+/// A blocking request's reply: the first result wins; the waiter gives up after its timeout.
+final class SyncReply: Sendable {
+    let result = Mutex<Result<Data, Error>?>(nil)
+    let done = DispatchSemaphore(value: 0)
+
+    func finish(_ r: Result<Data, Error>) {
+        let first = result.withLock { s -> Bool in
+            guard s == nil else { return false }
+            s = r
+            return true
+        }
+        if first { done.signal() }
+    }
+
+    func wait(_ timeout: Duration) -> Result<Data, Error>? {
+        let (seconds, attoseconds) = timeout.components
+        let nanos = max(0, seconds) * 1_000_000_000 + attoseconds / 1_000_000_000
+        guard done.wait(timeout: .now() + .nanoseconds(Int(clamping: nanos))) == .success else { return nil }
+        return result.withLock { $0 }
+    }
+}
+
 // MARK: - Service
 
 /// A service's answer to each request on its sessions.
@@ -293,6 +349,12 @@ public protocol XPCMessageHandler: Sendable {
     var maxRequestBytes: Int { get }
     /// The reply to one request. A thrown error goes back as the reply's reason.
     func reply(to request: XPCMessage) async throws -> XPCMessage
+    /// A session ended (its peer went away, or cancelled it).
+    func sessionEnded()
+}
+
+extension XPCMessageHandler {
+    public func sessionEnded() {}
 }
 
 extension XPCMessage {
@@ -365,6 +427,8 @@ public enum XPCServer {
             }
             return nil
         }
+
+        func handleCancellation(error: XPCRichError) { handler.sessionEnded() }
     }
 
     /// A received message, replied to once by the task handling it (it is only read; the reply

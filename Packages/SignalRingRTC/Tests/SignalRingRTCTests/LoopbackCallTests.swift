@@ -1,19 +1,45 @@
+import CallService
+import CallXPC
 import Foundation
+import MediaXPCInterface
+import RingRTCNative
 import Testing
+import XPC
 @testable import SignalRingRTC
 
-/// Two endpoints in one process call each other: signaling is handed across directly.
+/// Where a side's endpoint runs: in this process, or behind XPC as in the app (a listener in
+/// this process running the calling service's handler, so every command, event and frame
+/// crosses the wire format and the transport).
+enum EndpointPlace: String, CaseIterable, Sendable {
+    case inProcess, overXPC
+}
+
+/// Two endpoints call each other: signaling is handed across directly.
 @MainActor
 @Suite(.serialized) struct LoopbackCallTests {
     @MainActor final class Side {
         let rtc: RingRTC
         let name: String
+        let listener: XPCListener?
+        let handler: CallXPCHandler?
         var states: [CallState] = []
         var incoming: Call?
-        init(_ name: String) throws {
+        init(_ name: String, _ place: EndpointPlace = .inProcess) throws {
             self.name = name
-            rtc = try RingRTC()
+            switch place {
+            case .inProcess:
+                listener = nil
+                handler = nil
+                rtc = try RingRTC(endpoint: NativeEndpoint.factory)
+            case .overXPC:
+                let h = CallXPCHandler()
+                let l = XPCServer.anonymous(requirement: nil, h)
+                listener = l
+                handler = h
+                rtc = try RingRTC(endpoint: RemoteCallEndpoint.factory(.endpoint(l.endpoint), peer: nil))
+            }
         }
+        isolated deinit { listener?.cancel() }
     }
 
     static func wait(_ seconds: Double = 20, until done: () -> Bool) async {
@@ -21,8 +47,8 @@ import Testing
         while !done() && Date() < end { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
-    @Test func oneToOneCall() async throws {
-        let a = try Side("alice"), b = try Side("bob")
+    @Test(arguments: EndpointPlace.allCases) func oneToOneCall(_ place: EndpointPlace) async throws {
+        let a = try Side("alice", place), b = try Side("bob", place)
         let key = Data(repeating: 5, count: 33)
         for (me, other, myId) in [(a, b, DeviceId(1)), (b, a, DeviceId(2))] {
             me.rtc.handleOutgoingSignaling = { [weak other] _, message in
@@ -52,8 +78,8 @@ import Testing
     }
 
     /// A video call: NV12 frames sent by one side arrive at the other as RGBA.
-    @Test func videoFramesFlow() async throws {
-        let a = try Side("alice"), b = try Side("bob")
+    @Test(arguments: EndpointPlace.allCases) func videoFramesFlow(_ place: EndpointPlace) async throws {
+        let a = try Side("alice", place), b = try Side("bob", place)
         let key = Data(repeating: 5, count: 33)
         for (me, other, myId) in [(a, b, DeviceId(1)), (b, a, DeviceId(2))] {
             me.rtc.handleOutgoingSignaling = { [weak other] _, message in
@@ -101,7 +127,7 @@ import Testing
     /// SFU requests go through the app's HTTP (`handleSendHttpRequest`), and the answer
     /// settles the request.
     @Test func callLinkPeekUsesAppHTTP() async throws {
-        let rtc = try RingRTC()
+        let rtc = try RingRTC(endpoint: NativeEndpoint.factory)
         var seen: [(String, HttpMethod, [String: String])] = []
         rtc.handleSendHttpRequest = { id, url, method, headers, _ in
             seen.append((url, method, headers))

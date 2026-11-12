@@ -1,0 +1,604 @@
+structure CallBoundary.St : Type
+number of parameters: 0
+fields:
+  CallBoundary.St.ep : Option Nat
+  CallBoundary.St.eps : Nat
+  CallBoundary.St.epGen : List Nat
+  CallBoundary.St.gen : Nat
+  CallBoundary.St.reported : Nat
+  CallBoundary.St.gone : List Nat
+  CallBoundary.St.config : Bool
+  CallBoundary.St.configOn : List Nat
+  CallBoundary.St.selfKnown : Bool
+  CallBoundary.St.call : Option CallR
+  CallBoundary.St.offers : List (Nat × Nat)
+  CallBoundary.St.groups : List GroupR
+  CallBoundary.St.held : List GroupR
+  CallBoundary.St.senders : List Nat
+  CallBoundary.St.cancelled : List Nat
+  CallBoundary.St.out : List Out
+  CallBoundary.St.cmds : List Cmd
+constructor:
+  CallBoundary.St.mk (ep : Option Nat) (eps : Nat) (epGen : List Nat) (gen reported : Nat) (gone : List Nat)
+    (config : Bool) (configOn : List Nat) (selfKnown : Bool) (call : Option CallR) (offers : List (Nat × Nat))
+    (groups held : List GroupR) (senders cancelled : List Nat) (out : List Out) (cmds : List Cmd) : St
+structure CallBoundary.Cmd : Type
+number of parameters: 0
+fields:
+  CallBoundary.Cmd.ep : Nat
+  CallBoundary.Cmd.origin : Origin
+  CallBoundary.Cmd.gen : Nat
+constructor:
+  CallBoundary.Cmd.mk (ep : Nat) (origin : Origin) (gen : Nat) : Cmd
+structure CallBoundary.CallR : Type
+number of parameters: 0
+fields:
+  CallBoundary.CallR.peer : Nat
+  CallBoundary.CallR.id : Nat
+  CallBoundary.CallR.gen : Nat
+  CallBoundary.CallR.ended : Bool
+constructor:
+  CallBoundary.CallR.mk (peer id gen : Nat) (ended : Bool) : CallR
+structure CallBoundary.GroupR : Type
+number of parameters: 0
+fields:
+  CallBoundary.GroupR.client : Nat
+  CallBoundary.GroupR.group : Nat
+  CallBoundary.GroupR.link : Bool
+  CallBoundary.GroupR.gen : Nat
+  CallBoundary.GroupR.members : List Nat
+  CallBoundary.GroupR.participants : List Nat
+constructor:
+  CallBoundary.GroupR.mk (client group : Nat) (link : Bool) (gen : Nat) (members participants : List Nat) : GroupR
+inductive CallBoundary.Out : Type
+number of parameters: 0
+constructors:
+CallBoundary.Out.signal : Nat → Nat → Out
+CallBoundary.Out.incoming : Nat → Nat → Out
+CallBoundary.Out.message : Nat → Out
+CallBoundary.Out.groupMessage : Nat → List Nat → Out
+CallBoundary.Out.ring : Nat → Nat → Out
+CallBoundary.Out.groupEnded : Nat → Out
+inductive CallBoundary.Ev : Type
+number of parameters: 0
+constructors:
+CallBoundary.Ev.setSelf : Ev
+CallBoundary.Ev.start : Nat → Nat → Ev
+CallBoundary.Ev.offer : Nat → Nat → Ev
+CallBoundary.Ev.callMsg : Nat → Ev
+CallBoundary.Ev.group : Nat → Nat → Bool → Ev
+CallBoundary.Ev.members : Nat → List Nat → Ev
+CallBoundary.Ev.callCmd : Ev
+CallBoundary.Ev.groupCmd : Nat → Ev
+CallBoundary.Ev.cancelRing : Nat → Ev
+CallBoundary.Ev.expireSender : Nat → Ev
+CallBoundary.Ev.expireRing : Nat → Ev
+CallBoundary.Ev.incoming : Nat → Nat → Ev
+CallBoundary.Ev.signal : Nat → Nat → Ev
+CallBoundary.Ev.message : Nat → Ev
+CallBoundary.Ev.groupMessage : Nat → List Nat → Ev
+CallBoundary.Ev.ring : Nat → Nat → Ev
+CallBoundary.Ev.callEnded : Nat → Ev
+CallBoundary.Ev.devices : Nat → List Nat → Ev
+CallBoundary.Ev.groupEnded : Nat → Ev
+CallBoundary.Ev.crash : Ev
+CallBoundary.Ev.wait : Ev
+inductive CallBoundary.Origin : Type
+number of parameters: 0
+constructors:
+CallBoundary.Origin.rtc : Origin
+CallBoundary.Origin.call : Origin
+CallBoundary.Origin.group : Origin
+def CallBoundary.St.init : St :=
+{ ep := some 0, eps := 1, epGen := [0], gen := 0, reported := 0, gone := [], config := false, configOn := [],
+  selfKnown := false, call := none, offers := [], groups := [], held := [], senders := [], cancelled := [], out := [],
+  cmds := [] }
+def CallBoundary.selfId : Nat :=
+0
+def CallBoundary.send : St → Origin → Option Nat → St × Bool :=
+fun s o g =>
+  match g with
+  | some g' => if g' = s.gen then send.sendLive s o else (s, false)
+  | none => send.sendLive s o
+def CallBoundary.send.sendLive : St → Origin → St × Bool :=
+fun s o =>
+  match s.ep with
+  | some e =>
+    if e ∈ s.gone then
+      ({ ep := none, eps := s.eps, epGen := s.epGen, gen := s.gen + 1, reported := s.reported, gone := s.gone,
+          config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+          groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+          cmds := s.cmds },
+        false)
+    else
+      ({ ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+          config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+          groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+          cmds := s.cmds ++ [{ ep := e, origin := o, gen := s.gen }] },
+        true)
+  | none =>
+    have e := s.eps;
+    have replay := if s.config = true then [{ ep := e, origin := Origin.rtc, gen := s.gen }] else [];
+    ({ ep := some e, eps := e + 1, epGen := s.epGen ++ [s.gen], gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := if s.config = true then s.configOn ++ [e] else s.configOn,
+        selfKnown := s.selfKnown, call := s.call, offers := s.offers, groups := s.groups, held := s.held,
+        senders := s.senders, cancelled := s.cancelled, out := s.out,
+        cmds := s.cmds ++ replay ++ [{ ep := e, origin := o, gen := s.gen }] },
+      true)
+def CallBoundary.run : St → Origin → Option Nat → St :=
+fun s o g => (send s o g).fst
+def CallBoundary.lookup : List (Nat × Nat) → Nat → Option Nat :=
+fun offers callId => Option.map (fun x => x.snd) (List.find? (fun x => decide (x.fst = callId)) offers)
+def CallBoundary.findGroup : St → Nat → Option GroupR :=
+fun s client => List.find? (fun x => decide (x.client = client)) s.groups
+def CallBoundary.findHeld : St → Nat → Option GroupR :=
+fun s client => List.find? (fun x => decide (x.client = client)) s.held
+def CallBoundary.insertGroup : GroupR → List GroupR → List GroupR :=
+fun g x => List.brecOn x (insertGroup._f g)
+def CallBoundary.updGroup : Nat → (GroupR → GroupR) → List GroupR → List GroupR :=
+fun client f gs => List.map (fun g => if g.client = client then f g else g) gs
+def CallBoundary.live : St → Bool :=
+fun s =>
+  match s.ep with
+  | some e => !s.gone.contains e
+  | none => false
+def CallBoundary.maySignal : St → Nat → Nat → Bool :=
+fun s peer callId =>
+  (match s.call with
+    | some c => c.peer == peer && c.id == callId
+    | none => false) ||
+    lookup s.offers callId == some peer
+def CallBoundary.mayMessage : St → Nat → Bool :=
+fun s to =>
+  s.selfKnown && to == selfId ||
+    s.groups.any fun g => !g.link && g.members.contains to || g.link && g.participants.contains to
+def CallBoundary.mayGroupMessage : St → Nat → List Nat → Bool :=
+fun s gid to => ((s.groups.any fun g => !g.link && g.group == gid) || s.cancelled.contains gid) && to.all (mayMessage s)
+def CallBoundary.report : St → St :=
+fun s =>
+  have old := List.filter (fun x => decide (x.gen < s.gen)) s.groups;
+  { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.gen, gone := s.gone, config := s.config,
+    configOn := s.configOn, selfKnown := s.selfKnown,
+    call :=
+      Option.map (fun c => if c.gen < s.gen then { peer := c.peer, id := c.id, gen := c.gen, ended := true } else c)
+        s.call,
+    offers :=
+      match s.call with
+      | some c =>
+        if (decide (c.gen < s.gen) && !c.ended) = true then List.filter (fun x => decide (x.fst ≠ c.id)) s.offers
+        else s.offers
+      | none => s.offers,
+    groups := List.filter (fun x => decide (x.gen ≥ s.gen)) s.groups, held := s.held, senders := s.senders,
+    cancelled := s.cancelled, out := s.out ++ List.map (fun x => Out.groupEnded x.client) old, cmds := s.cmds }
+def CallBoundary.step : St → Ev → St :=
+fun s x =>
+  match x with
+  | Ev.setSelf =>
+    have s1 :=
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := true, configOn := s.configOn, selfKnown := true, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+        cmds := s.cmds };
+    match send s1 Origin.rtc none with
+    | (s2, true) =>
+      match s2.ep with
+      | some e =>
+        if e ∈ s2.configOn then s2
+        else
+          { ep := s2.ep, eps := s2.eps, epGen := s2.epGen, gen := s2.gen, reported := s2.reported, gone := s2.gone,
+            config := s2.config, configOn := s2.configOn ++ [e], selfKnown := s2.selfKnown, call := s2.call,
+            offers := s2.offers, groups := s2.groups, held := s2.held, senders := s2.senders, cancelled := s2.cancelled,
+            out := s2.out, cmds := s2.cmds }
+      | none => s2
+    | (s2, false) => s2
+  | Ev.start peer callId =>
+    match send s Origin.rtc none with
+    | (s1, true) =>
+      { ep := s1.ep, eps := s1.eps, epGen := s1.epGen, gen := s1.gen, reported := s1.reported, gone := s1.gone,
+        config := s1.config, configOn := s1.configOn, selfKnown := s1.selfKnown,
+        call := some { peer := peer, id := callId, gen := s1.gen, ended := false }, offers := s1.offers,
+        groups := s1.groups, held := s1.held, senders := s1.senders, cancelled := s1.cancelled, out := s1.out,
+        cmds := s1.cmds }
+    | (s1, false) => s1
+  | Ev.offer peer callId =>
+    run
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call,
+        offers := (callId, peer) :: List.filter (fun x => decide (x.fst ≠ callId)) s.offers, groups := s.groups,
+        held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out, cmds := s.cmds }
+      Origin.rtc none
+  | Ev.callMsg u =>
+    run
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := u :: s.senders.erase u, cancelled := s.cancelled, out := s.out,
+        cmds := s.cmds }
+      Origin.rtc none
+  | Ev.group gid client link =>
+    match send s Origin.rtc none with
+    | (s1, true) =>
+      if client = 0 then s1
+      else
+        { ep := s1.ep, eps := s1.eps, epGen := s1.epGen, gen := s1.gen, reported := s1.reported, gone := s1.gone,
+          config := s1.config, configOn := s1.configOn, selfKnown := s1.selfKnown, call := s1.call, offers := s1.offers,
+          groups :=
+            insertGroup
+              { client := client, group := gid, link := link, gen := s1.gen, members := [], participants := [] }
+              s1.groups,
+          held :=
+            insertGroup
+              { client := client, group := gid, link := link, gen := s1.gen, members := [], participants := [] }
+              s1.held,
+          senders := s1.senders, cancelled := s1.cancelled, out := s1.out, cmds := s1.cmds }
+    | (s1, false) => s1
+  | Ev.members client ms =>
+    match findGroup s client with
+    | some g =>
+      run
+        { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+          config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+          groups :=
+            updGroup client
+              (fun g =>
+                { client := g.client, group := g.group, link := g.link, gen := g.gen, members := ms,
+                  participants := g.participants })
+              s.groups,
+          held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out, cmds := s.cmds }
+        Origin.group (some g.gen)
+    | none => s
+  | Ev.callCmd =>
+    match s.call with
+    | some c => run s Origin.call (some c.gen)
+    | none => s
+  | Ev.groupCmd client =>
+    match findHeld s client with
+    | some g => run s Origin.group (some g.gen)
+    | none => s
+  | Ev.cancelRing gid =>
+    run
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := gid :: s.cancelled.erase gid,
+        out := s.out, cmds := s.cmds }
+      Origin.rtc none
+  | Ev.expireSender u =>
+    { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+      config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+      groups := s.groups, held := s.held, senders := s.senders.erase u, cancelled := s.cancelled, out := s.out,
+      cmds := s.cmds }
+  | Ev.expireRing gid =>
+    { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+      config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+      groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled.erase gid, out := s.out,
+      cmds := s.cmds }
+  | Ev.incoming peer callId =>
+    if (live s && lookup s.offers callId == some peer) = true then
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown,
+        call := some { peer := peer, id := callId, gen := s.gen, ended := false }, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+        out := s.out ++ [Out.incoming peer callId], cmds := s.cmds }
+    else s
+  | Ev.signal peer callId =>
+    if (!live s) = true then s
+    else
+      if maySignal s peer callId = true then
+        run
+          { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+            config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+            groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+            out := s.out ++ [Out.signal peer callId], cmds := s.cmds }
+          Origin.rtc none
+      else run s Origin.rtc none
+  | Ev.message to =>
+    if (live s && mayMessage s to) = true then
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+        out := s.out ++ [Out.message to], cmds := s.cmds }
+    else s
+  | Ev.groupMessage gid to =>
+    if (live s && mayGroupMessage s gid to) = true then
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+        out := s.out ++ [Out.groupMessage gid to], cmds := s.cmds }
+    else s
+  | Ev.ring u gid =>
+    if (live s && s.senders.contains u) = true then
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+        out := s.out ++ [Out.ring u gid], cmds := s.cmds }
+    else s
+  | Ev.callEnded callId =>
+    if (!live s) = true then s
+    else
+      have s1 :=
+        { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+          config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call,
+          offers := List.filter (fun x => decide (x.fst ≠ callId)) s.offers, groups := s.groups, held := s.held,
+          senders := s.senders, cancelled := s.cancelled, out := s.out, cmds := s.cmds };
+      match s1.call with
+      | some c =>
+        if (decide (c.id = callId) && !c.ended) = true then
+          have s2 :=
+            { ep := s1.ep, eps := s1.eps, epGen := s1.epGen, gen := s1.gen, reported := s1.reported, gone := s1.gone,
+              config := s1.config, configOn := s1.configOn, selfKnown := s1.selfKnown,
+              call := some { peer := c.peer, id := c.id, gen := c.gen, ended := true }, offers := s1.offers,
+              groups := s1.groups, held := s1.held, senders := s1.senders, cancelled := s1.cancelled, out := s1.out,
+              cmds := s1.cmds };
+          run (run (run s2 Origin.call (some c.gen)) Origin.call (some c.gen)) Origin.call (some c.gen)
+        else s1
+      | none => s1
+  | Ev.devices client us =>
+    if live s = true then
+      { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+        config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+        groups :=
+          updGroup client
+            (fun g =>
+              { client := g.client, group := g.group, link := g.link, gen := g.gen, members := g.members,
+                participants := us })
+            s.groups,
+        held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out, cmds := s.cmds }
+    else s
+  | Ev.groupEnded client =>
+    if (!live s) = true then s
+    else
+      match findGroup s client with
+      | some g =>
+        have s1 :=
+          run
+            { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+              config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+              groups := List.filter (fun x => decide (x.client ≠ client)) s.groups, held := s.held,
+              senders := s.senders, cancelled := s.cancelled, out := s.out, cmds := s.cmds }
+            Origin.group (some g.gen);
+        { ep := s1.ep, eps := s1.eps, epGen := s1.epGen, gen := s1.gen, reported := s1.reported, gone := s1.gone,
+          config := s1.config, configOn := s1.configOn, selfKnown := s1.selfKnown, call := s1.call, offers := s1.offers,
+          groups := s1.groups, held := s1.held, senders := s1.senders, cancelled := s1.cancelled,
+          out := s1.out ++ [Out.groupEnded client], cmds := s1.cmds }
+      | none => s
+  | Ev.crash =>
+    match s.ep with
+    | some e =>
+      if e ∈ s.gone then s
+      else
+        { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone ++ [e],
+          config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+          groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+          cmds := s.cmds }
+    | none => s
+  | Ev.wait =>
+    if s.reported < s.gen then report s
+    else
+      match s.ep with
+      | some e =>
+        if e ∈ s.gone then
+          { ep := none, eps := s.eps, epGen := s.epGen, gen := s.gen + 1, reported := s.reported, gone := s.gone,
+            config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+            groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+            cmds := s.cmds }
+        else s
+      | none => s
+def CallBoundary.St.ran : St → Nat → Origin → St :=
+fun s e o =>
+  { ep := s.ep, eps := s.eps, epGen := s.epGen, gen := s.gen, reported := s.reported, gone := s.gone,
+    config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call, offers := s.offers,
+    groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled, out := s.out,
+    cmds := s.cmds ++ [{ ep := e, origin := o, gen := s.gen }] }
+def CallBoundary.St.fresh : St → Origin → St :=
+fun s o =>
+  { ep := some s.eps, eps := s.eps + 1, epGen := s.epGen ++ [s.gen], gen := s.gen, reported := s.reported,
+    gone := s.gone, config := s.config, configOn := if s.config = true then s.configOn ++ [s.eps] else s.configOn,
+    selfKnown := s.selfKnown, call := s.call, offers := s.offers, groups := s.groups, held := s.held,
+    senders := s.senders, cancelled := s.cancelled, out := s.out,
+    cmds :=
+      (s.cmds ++ if s.config = true then [{ ep := s.eps, origin := Origin.rtc, gen := s.gen }] else []) ++
+        [{ ep := s.eps, origin := o, gen := s.gen }] }
+def CallBoundary.Allowed : St → Out → Prop :=
+fun s x =>
+  match x with
+  | Out.signal p c => (∃ k, s.call = some k ∧ k.peer = p ∧ k.id = c) ∨ lookup s.offers c = some p
+  | Out.incoming p c => lookup s.offers c = some p
+  | Out.message u =>
+    s.selfKnown = true ∧ u = selfId ∨
+      ∃ g, g ∈ s.groups ∧ (g.link = false ∧ u ∈ g.members ∨ g.link = true ∧ u ∈ g.participants)
+  | Out.groupMessage gid us =>
+    ((∃ g, g ∈ s.groups ∧ g.link = false ∧ g.group = gid) ∨ gid ∈ s.cancelled) ∧
+      ∀ (u : Nat),
+        u ∈ us →
+          s.selfKnown = true ∧ u = selfId ∨
+            ∃ g, g ∈ s.groups ∧ (g.link = false ∧ u ∈ g.members ∨ g.link = true ∧ u ∈ g.participants)
+  | Out.ring u group => u ∈ s.senders
+  | Out.groupEnded c => ∃ g, g ∈ s.groups ∧ g.client = c
+structure CallBoundary.Inv (s : St) : Prop
+number of parameters: 1
+fields:
+  CallBoundary.Inv.epGenLen : s.epGen.length = s.eps
+  CallBoundary.Inv.epLive : ∀ (e : Nat), s.ep = some e → s.epGen[e]? = some s.gen
+  CallBoundary.Inv.reportedLe : s.reported ≤ s.gen
+  CallBoundary.Inv.cmdsGen : ∀ (c : Cmd), c ∈ s.cmds → s.epGen[c.ep]? = some c.gen
+  CallBoundary.Inv.callGen : ∀ (k : CallR), s.call = some k → k.gen ≤ s.gen ∧ (k.ended = false → s.reported ≤ k.gen)
+  CallBoundary.Inv.groupGen : ∀ (g : GroupR), g ∈ s.groups → g.gen ≤ s.gen ∧ s.reported ≤ g.gen
+  CallBoundary.Inv.configured : s.config = true → ∀ (e : Nat), s.ep = some e → e ∈ s.configOn
+constructor:
+  CallBoundary.Inv.mk {s : St} (epGenLen : s.epGen.length = s.eps)
+    (epLive : ∀ (e : Nat), s.ep = some e → s.epGen[e]? = some s.gen) (reportedLe : s.reported ≤ s.gen)
+    (cmdsGen : ∀ (c : Cmd), c ∈ s.cmds → s.epGen[c.ep]? = some c.gen)
+    (callGen : ∀ (k : CallR), s.call = some k → k.gen ≤ s.gen ∧ (k.ended = false → s.reported ≤ k.gen))
+    (groupGen : ∀ (g : GroupR), g ∈ s.groups → g.gen ≤ s.gen ∧ s.reported ≤ g.gen)
+    (configured : s.config = true → ∀ (e : Nat), s.ep = some e → e ∈ s.configOn) : CallBoundary.Inv s
+structure CallBoundary.Core (s : St) : Prop
+number of parameters: 1
+fields:
+  CallBoundary.Core.epGenLen : s.epGen.length = s.eps
+  CallBoundary.Core.epLive : ∀ (e : Nat), s.ep = some e → s.epGen[e]? = some s.gen
+  CallBoundary.Core.cmdsGen : ∀ (c : Cmd), c ∈ s.cmds → s.epGen[c.ep]? = some c.gen
+constructor:
+  CallBoundary.Core.mk {s : St} (epGenLen : s.epGen.length = s.eps)
+    (epLive : ∀ (e : Nat), s.ep = some e → s.epGen[e]? = some s.gen)
+    (cmdsGen : ∀ (c : Cmd), c ∈ s.cmds → s.epGen[c.ep]? = some c.gen) : Core s
+structure CallBoundary.Gens (s : St) : Prop
+number of parameters: 1
+fields:
+  CallBoundary.Gens.reportedLe : s.reported ≤ s.gen
+  CallBoundary.Gens.callGen : ∀ (k : CallR), s.call = some k → k.gen ≤ s.gen ∧ (k.ended = false → s.reported ≤ k.gen)
+  CallBoundary.Gens.groupGen : ∀ (g : GroupR), g ∈ s.groups → g.gen ≤ s.gen ∧ s.reported ≤ g.gen
+constructor:
+  CallBoundary.Gens.mk {s : St} (reportedLe : s.reported ≤ s.gen)
+    (callGen : ∀ (k : CallR), s.call = some k → k.gen ≤ s.gen ∧ (k.ended = false → s.reported ≤ k.gen))
+    (groupGen : ∀ (g : GroupR), g ∈ s.groups → g.gen ≤ s.gen ∧ s.reported ≤ g.gen) : Gens s
+def CallBoundary.Configured : St → Prop :=
+fun s => s.config = true → ∀ (e : Nat), s.ep = some e → e ∈ s.configOn
+106 definitions
+CallBoundary.Allowed 4189464499 95358166
+CallBoundary.Allowed.match_1 3193702256 1568298929
+CallBoundary.CallR 3931117990 8286702648441320596
+CallBoundary.CallR.ended 3776131171 454100132
+CallBoundary.CallR.gen 958522482 2154269383
+CallBoundary.CallR.id 958522482 1397447096
+CallBoundary.CallR.mk 2002691716 -
+CallBoundary.CallR.peer 958522482 756834233
+CallBoundary.Cmd 3931117990 8276700869943101464
+CallBoundary.Cmd.ep 1603286866 1126214754
+CallBoundary.Cmd.gen 1603286866 1870588730
+CallBoundary.Cmd.mk 1855999254 -
+CallBoundary.Ev 3931117990 16306337580124613369
+CallBoundary.Ev.callCmd 3662405152 -
+CallBoundary.Ev.callEnded 234975404 -
+CallBoundary.Ev.callMsg 234975404 -
+CallBoundary.Ev.cancelRing 234975404 -
+CallBoundary.Ev.casesOn 3675011408 2184155532
+CallBoundary.Ev.crash 3662405152 -
+CallBoundary.Ev.devices 659198794 -
+CallBoundary.Ev.expireRing 234975404 -
+CallBoundary.Ev.expireSender 234975404 -
+CallBoundary.Ev.group 3492763207 -
+CallBoundary.Ev.groupCmd 234975404 -
+CallBoundary.Ev.groupEnded 234975404 -
+CallBoundary.Ev.groupMessage 659198794 -
+CallBoundary.Ev.incoming 1764674560 -
+CallBoundary.Ev.members 659198794 -
+CallBoundary.Ev.message 234975404 -
+CallBoundary.Ev.offer 1764674560 -
+CallBoundary.Ev.rec 3862356149 -
+CallBoundary.Ev.ring 1764674560 -
+CallBoundary.Ev.setSelf 3662405152 -
+CallBoundary.Ev.signal 1764674560 -
+CallBoundary.Ev.start 1764674560 -
+CallBoundary.Ev.wait 3662405152 -
+CallBoundary.Gens 2166328814 17229820761107873620
+CallBoundary.Gens.mk 1272120589 -
+CallBoundary.GroupR 3931117990 11862891424544062352
+CallBoundary.GroupR.client 2034293020 3481011584
+CallBoundary.GroupR.gen 2034293020 3625605402
+CallBoundary.GroupR.group 2034293020 3014940648
+CallBoundary.GroupR.link 4133326590 2157775524
+CallBoundary.GroupR.members 1312134856 1825883903
+CallBoundary.GroupR.mk 2370696773 -
+CallBoundary.GroupR.participants 1312134856 192691274
+CallBoundary.Inv 2166328814 9633923895900416151
+CallBoundary.Inv.mk 2365912689 -
+CallBoundary.Origin 3931117990 9275429351419827255
+CallBoundary.Origin.call 4129441408 -
+CallBoundary.Origin.group 4129441408 -
+CallBoundary.Origin.rtc 4129441408 -
+CallBoundary.Out 3931117990 17260013410089319742
+CallBoundary.Out.casesOn 3846550067 3922535883
+CallBoundary.Out.groupEnded 284681180 -
+CallBoundary.Out.groupMessage 3329027707 -
+CallBoundary.Out.incoming 2671288975 -
+CallBoundary.Out.message 284681180 -
+CallBoundary.Out.rec 433576605 -
+CallBoundary.Out.ring 2671288975 -
+CallBoundary.Out.signal 2671288975 -
+CallBoundary.St 3931117990 12738912871559747666
+CallBoundary.St.call 2700112000 2944351892
+CallBoundary.St.cancelled 2406327723 4097708990
+CallBoundary.St.cmds 738624492 640881893
+CallBoundary.St.config 3416436338 3684795263
+CallBoundary.St.configOn 2406327723 1881100756
+CallBoundary.St.ep 3312257386 2405206287
+CallBoundary.St.epGen 2406327723 1210445161
+CallBoundary.St.eps 121312154 475231135
+CallBoundary.St.fresh 1664026878 3413867026
+CallBoundary.St.gen 121312154 4171801514
+CallBoundary.St.gone 2406327723 3649223755
+CallBoundary.St.groups 3516807836 1001638951
+CallBoundary.St.held 3516807836 4288600579
+CallBoundary.St.init 853497581 1707364190
+CallBoundary.St.mk 2933018844 -
+CallBoundary.St.offers 1048832301 668655115
+CallBoundary.St.out 421204837 1545213404
+CallBoundary.St.ran 3335456535 2379233668
+CallBoundary.St.reported 121312154 336028658
+CallBoundary.St.selfKnown 3416436338 3712611503
+CallBoundary.St.senders 2406327723 3664204174
+CallBoundary.findGroup 1004508069 2026016713
+CallBoundary.findHeld 1004508069 4119660937
+CallBoundary.insertGroup 363683170 3580853488
+CallBoundary.insertGroup._f 2706500103 109135769
+CallBoundary.insertGroup.match_1 3576909735 3569379715
+CallBoundary.instReprEv.repr.match_1 1338985402 3048889923
+CallBoundary.live 3416436338 2651223730
+CallBoundary.lookup 592199115 681498360
+CallBoundary.mayGroupMessage 3778740933 2390048232
+CallBoundary.mayMessage 4070478457 2626930280
+CallBoundary.maySignal 2784290251 2788532168
+CallBoundary.maySignal.match_1 2906218645 249058558
+CallBoundary.report 62522291 1383584964
+CallBoundary.run 1980932417 1291521045
+CallBoundary.run' 1388686267 3975720405
+CallBoundary.selfId 421340980 2357206286
+CallBoundary.send 1119101311 459691473
+CallBoundary.send.sendLive 3648358560 4054244264
+CallBoundary.send.sendLive.match_1 2549865312 3610645720
+CallBoundary.step 1323141432 391480770
+CallBoundary.step.match_1 2925423331 3472226347
+CallBoundary.step.match_3 1989172578 3675625459
+CallBoundary.updGroup 900381087 4220625584
+send_cases : ∀ (s : St) (o : Origin) (g : Option Nat),
+  send s o g = (s, false) ∨
+    (∃ e,
+        s.ep = some e ∧
+          e ∈ s.gone ∧
+            send s o g =
+              ({ ep := none, eps := s.eps, epGen := s.epGen, gen := s.gen + 1, reported := s.reported, gone := s.gone,
+                  config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call,
+                  offers := s.offers, groups := s.groups, held := s.held, senders := s.senders,
+                  cancelled := s.cancelled, out := s.out, cmds := s.cmds },
+                false)) ∨
+      (∃ e, s.ep = some e ∧ ¬e ∈ s.gone ∧ send s o g = (s.ran e o, true)) ∨ s.ep = none ∧ send s o g = (s.fresh o, true)
+send_none_cases : ∀ (s : St) (o : Origin),
+  (∃ e,
+      s.ep = some e ∧
+        e ∈ s.gone ∧
+          send s o none =
+            ({ ep := none, eps := s.eps, epGen := s.epGen, gen := s.gen + 1, reported := s.reported, gone := s.gone,
+                config := s.config, configOn := s.configOn, selfKnown := s.selfKnown, call := s.call,
+                offers := s.offers, groups := s.groups, held := s.held, senders := s.senders, cancelled := s.cancelled,
+                out := s.out, cmds := s.cmds },
+              false)) ∨
+    (∃ e, s.ep = some e ∧ ¬e ∈ s.gone ∧ send s o none = (s.ran e o, true)) ∨
+      s.ep = none ∧ send s o none = (s.fresh o, true)
+stale_refused : ∀ (s : St) (o : Origin) (g : Nat), g ≠ s.gen → send s o (some g) = (s, false)
+inv_init : CallBoundary.Inv St.init
+@inv_step : ∀ {s : St} (e : Ev), CallBoundary.Inv s → CallBoundary.Inv (step s e)
+inv_reach : ∀ (es : List Ev), CallBoundary.Inv (run' St.init es)
+@gens_report : ∀ {s : St}, Gens s → Gens (report s)
+step_out : ∀ (s : St) (e : Ev), ∃ n, (step s e).out = s.out ++ n ∧ ∀ (o : Out), o ∈ n → Allowed s o
+message_from_service : have s := run' St.init [Ev.group 9 5 true, Ev.devices 5 [7]];
+Ev.message 7 ∈ [Ev.message 7] ∧
+  (step s (Ev.message 7)).out = s.out ++ [Out.message 7] ∧
+    s.selfKnown = false ∧ ∀ (g : GroupR), g ∈ s.groups → g.link = true
+CallBoundary.send_cases depends on axioms: [Quot.sound, propext]
+CallBoundary.send_none_cases depends on axioms: [Quot.sound, propext]
+CallBoundary.stale_refused depends on axioms: [Quot.sound, propext]
+CallBoundary.inv_init depends on axioms: [Quot.sound, propext]
+CallBoundary.inv_step depends on axioms: [Quot.sound, propext]
+CallBoundary.inv_reach depends on axioms: [Quot.sound, propext]
+CallBoundary.gens_report depends on axioms: [Quot.sound, propext]
+CallBoundary.step_out depends on axioms: [Quot.sound, propext]
+CallBoundary.message_from_service depends on axioms: [Quot.sound, propext]

@@ -24,6 +24,8 @@ public enum XPCPeer: String, Sendable, CaseIterable {
     case gifs
     /// SignalVoiceNoteEncoder.xpc.
     case voice
+    /// SignalCalling.xpc.
+    case calling
 
     public static let infoKey = "SereinXPCPeers"
     public static let sameTeamKey = "SereinXPCSameTeam"

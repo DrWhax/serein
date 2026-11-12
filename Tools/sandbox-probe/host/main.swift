@@ -98,6 +98,22 @@ await check("voice note") {
     let note = try await media.finishVoiceNote(session)
     return "\(note.data.count) bytes mp3"
 }
+// Recording from the microphone, in the voice-note service under its profile (the microphone
+// is this terminal's: without it the service is refused permission, which is noted, not failed).
+await check("voice note from the microphone") {
+    let session: UUID
+    do { session = try await media.recordVoiceNote() } catch MediaProcessingError.undecodable(let why) where why.contains("no microphone permission") {
+        return "not run: this terminal does not have the microphone"
+    }
+    var levels = 0
+    for _ in 0..<12 {
+        try await Task.sleep(for: .milliseconds(100))
+        levels += try await media.voiceNoteProgress(session).levels.count
+    }
+    let note = try await media.finishVoiceNote(session)
+    guard levels > 0, note.duration > 0.5 else { throw MediaProcessingError.invalidResult }
+    return "\(note.duration) s, \(levels) levels, \(note.data.count) bytes mp3"
+}
 // Recording is the voice-note service's alone: the decoder, asked directly, refuses.
 await check("decoder refuses voice notes") {
     let direct = MediaXPCClient(timeout: .seconds(10), voice: .service(MediaXPCClient.serviceName))

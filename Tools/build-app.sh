@@ -31,12 +31,11 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/Serein.icns"
 rm -rf "$iconset"
 for b in "$products"/*.bundle; do cp -R "$b" "$app/Contents/Resources/"; done
-# Dynamic libraries: SQLCipher.framework (GRDB) and ringrtc's dylib, loaded from
-# Contents/Frameworks; the build-tree rpath SwiftPM adds is removed.
+# Dynamic libraries: SQLCipher.framework (GRDB), loaded from Contents/Frameworks. ringrtc's
+# dylib is not the app's: it goes into SignalCalling.xpc (below), the only process that runs it.
 mkdir -p "$app/Contents/Frameworks"
 cp -R "$products/SQLCipher.framework" "$app/Contents/Frameworks/"
 ringrtc="$root/Packages/SignalRingRTC/rust/target/aarch64-apple-darwin/release"
-cp "$ringrtc/libsignal_ringrtc.dylib" "$app/Contents/Frameworks/"
 bin="$app/Contents/MacOS/Serein"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$bin"
 install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
@@ -48,7 +47,8 @@ install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
 #   SignalLinkPreviewParser.xpc  link-preview HTML (no network, no files)
 #   SignalLinkPreviewFetcher.xpc fetches link previews from the web (outgoing network only)
 #   SignalGifSearch.xpc          Giphy through Signal's content proxy (outgoing network only)
-#   SignalVoiceNoteEncoder.xpc   encodes recorded voice notes to MP3 (no network, no files)
+#   SignalVoiceNoteEncoder.xpc   records voice notes (microphone) and encodes them to MP3 (no network, no files)
+#   SignalCalling.xpc            ringrtc/WebRTC: the calls' media and audio (outgoing network, microphone, no files)
 svcpkg="$root/Packages/SignalMediaService"
 sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
 # Who may talk to whom (MediaXPCInterface/XPCPeer.swift): every bundle gets every component's
@@ -75,14 +75,15 @@ peers="  <key>SereinXPCPeers</key>
     <key>fetcher</key><string>org.signalsafe.SignalLinkPreviewFetcher</string>
     <key>gifs</key><string>org.signalsafe.SignalGifSearch</string>
     <key>voice</key><string>org.signalsafe.SignalVoiceNoteEncoder</string>
+    <key>calling</key><string>org.signalsafe.SignalCalling</string>
   </dict>$sameteam"
-services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder"
-service() {   # name product [extra Info.plist lines]
-  name=$1 product=$2 extra=${3:-}
-  (cd "$svcpkg" && swift build -c release --product "$product")
+services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling"
+service() {   # name product [extra Info.plist lines] [package directory]
+  name=$1 product=$2 extra=${3:-} spkg=${4:-$svcpkg}
+  (cd "$spkg" && swift build -c release --product "$product")
   dir="$app/Contents/XPCServices/$name.xpc"
   mkdir -p "$dir/Contents/MacOS"
-  cp "$svcpkg/.build/out/Products/Release/$product" "$dir/Contents/MacOS/$name"
+  cp "$spkg/.build/out/Products/Release/$product" "$dir/Contents/MacOS/$name"
   cat > "$dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -125,6 +126,13 @@ service SignalGifSearch SignalGifSearchService '  <key>NSAppTransportSecurity</k
       </dict>
     </dict>
   </dict>'
+# ringrtc's dylib inside the calling service, found through its own Frameworks folder.
+service SignalCalling SignalCallingService "" "$root/Packages/SignalRingRTC"
+callxpc="$app/Contents/XPCServices/SignalCalling.xpc"
+mkdir -p "$callxpc/Contents/Frameworks"
+cp "$ringrtc/libsignal_ringrtc.dylib" "$callxpc/Contents/Frameworks/"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$callxpc/Contents/MacOS/SignalCalling"
+install_name_tool -delete_rpath "$ringrtc" "$callxpc/Contents/MacOS/SignalCalling" 2>/dev/null || true
 xpc="$app/Contents/XPCServices/SignalMediaDecoder.xpc"
 lpxpc="$app/Contents/XPCServices/SignalLinkPreviewParser.xpc"
 # Everything runs under the hardened runtime. Ad-hoc signatures (the default) carry no Team ID,
@@ -133,7 +141,9 @@ lpxpc="$app/Contents/XPCServices/SignalLinkPreviewParser.xpc"
 # injection, no unsigned executable memory, no debugger attach). With
 # SIGNALSAFE_SIGN_IDENTITY set to an "Apple Development: …" (free Personal Team from Xcode →
 # Settings → Accounts) or "Developer ID Application: …" identity, all code shares one Team ID
-# and the exception is left out (`security find-identity -v -p codesigning` lists them). The XPC service never needs it (it loads no libraries of ours).
+# and the exception is left out (`security find-identity -v -p codesigning` lists them). Of the
+# XPC services only SignalCalling.xpc loads a library of ours (ringrtc), so only it gets the
+# exception too.
 hardened="--options runtime"
 adhoc_ent=""
 timestamp="--timestamp=none"
@@ -145,8 +155,10 @@ elif security find-identity -v -p codesigning | grep -F -- "$sign" | grep -q '"D
   timestamp="--timestamp"
 fi
 hardened="$hardened $timestamp"
-codesign --force --sign "$sign" $hardened "$app/Contents/Frameworks/libsignal_ringrtc.dylib"
 codesign --force --sign "$sign" $hardened "$app/Contents/Frameworks/SQLCipher.framework"
+codesign --force --sign "$sign" $hardened "$callxpc/Contents/Frameworks/libsignal_ringrtc.dylib"
+"$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/SignalCalling.sb" "$adhoc_ent" > "$pkg/.build/SignalCalling.entitlements"
+plutil -lint -s "$pkg/.build/SignalCalling.entitlements"
 for name in $services; do
   codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$pkg/.build/$name.entitlements" "$app/Contents/XPCServices/$name.xpc"
 done
@@ -156,7 +168,7 @@ web='8WebFetch|18LinkPreviewFetcher|9GifSearch'
 links() {   # binary pattern message
   if nm "$1" | grep -E "\\\$s($2)" >/dev/null; then echo "error: $3" >&2; exit 1; fi
 }
-links "$xpc/Contents/MacOS/SignalMediaDecoder" "8HTMLMeta|17LinkPreviewParser|$web" "HTML parser or web client linked into the media decoder"
+links "$xpc/Contents/MacOS/SignalMediaDecoder" "8HTMLMeta|17LinkPreviewParser|$web|16VoiceNoteService" "HTML parser, web client or recorder linked into the media decoder"
 links "$lpxpc/Contents/MacOS/SignalLinkPreviewParser" "$decoders|$web" "media decoders or web client linked into the link-preview parser"
 links "$app/Contents/XPCServices/SignalLinkPreviewFetcher.xpc/Contents/MacOS/SignalLinkPreviewFetcher" "$decoders|8HTMLMeta|9GifSearch" \
   "decoders, HTML parser or GIF search linked into the link-preview fetcher"
@@ -166,8 +178,21 @@ links "$app/Contents/XPCServices/SignalGifSearch.xpc/Contents/MacOS/SignalGifSea
 links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/SignalVoiceNoteEncoder" \
   "8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
   "decoders, HTML parser or web client linked into the voice-note encoder"
-# The app neither decodes nor fetches or parses web content: every untrusted parse is in a
-# service. (ImagePNG is the one exception: SignalUI's BundledImage decodes our own Resources/Images.)
+# The calling service runs ringrtc and nothing else that reads data: no decoders, no web
+# client, no recorder, no SignalCore (keys, database) or libsignal.
+links "$callxpc/Contents/MacOS/SignalCalling" "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient" \
+  "decoders, HTML parser, web client, recorder or SignalCore linked into the calling service"
+# Nothing but the calling service links ringrtc.
+for name in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder; do
+  links "$app/Contents/XPCServices/$name.xpc/Contents/MacOS/$name" "13RingRTCNative|11CallService" "ringrtc linked into $name"
+done
+# The app neither decodes nor fetches or parses web content, nor runs ringrtc or the recorder:
+# every untrusted parse is in a service. (ImagePNG is the one exception: SignalUI's
+# BundledImage decodes our own Resources/Images.)
+links "$bin" "13RingRTCNative|11CallService|16VoiceNoteService" "ringrtc or the recorder linked into the app binary"
+if otool -L "$bin" | grep -q ringrtc || [ -e "$app/Contents/Frameworks/libsignal_ringrtc.dylib" ]; then
+  echo "error: the app loads ringrtc" >&2; exit 1
+fi
 links "$app/Contents/MacOS/Serein" "9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
   "decoder or web-client symbols linked into the app binary"
 # Notification and call sounds (generated WAVs; UNNotificationSound looks in Library/Sounds).
@@ -286,7 +311,8 @@ cat > "$app/Contents/Resources/container-migration.plist" <<'PLIST'
 </plist>
 PLIST
 plutil -lint -s "$app/Contents/Resources/container-migration.plist"
-# The app: App Sandbox, network client, camera, microphone, user-selected files, its crash
+# The app: App Sandbox, network client, camera, the microphone entitlement (only so macOS asks on
+# the services' behalf; Serein.sb denies the app the device), user-selected files, its crash
 # reports read-only, and the Seatbelt rules of Sandbox/Serein.sb; it refuses to start without them.
 appent="$pkg/.build/SignalSafe.entitlements"
 "$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/Serein.sb" "$adhoc_ent" > "$appent"

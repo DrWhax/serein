@@ -9,6 +9,6 @@ import GifSearch
 import MediaXPCInterface
 import WebFetch
 
-ServiceSandbox.requireConfinement("SignalGifSearch", network: true)
+ServiceSandbox.requireConfinement("SignalGifSearch", systemFiles: true)
 let handler = GifSearchXPCHandler(giphy: GiphyClient(transport: URLSessionWebTransport(proxy: .signal)))
 XPCServer.serve(GifSearchClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalGifSearch"), handler)

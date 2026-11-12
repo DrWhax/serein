@@ -3,6 +3,14 @@
 // Signal Desktop's CallingClass implements, and settles request/response pairs (peek, call
 // links, audio devices) as async results. Everything runs on the main actor, as upstream
 // runs on Node's event loop.
+//
+// The endpoint lives in the calling service (Endpoint.swift), a process that reads what remote
+// peers send, so what it asks of the app is checked here before it reaches a handler (stricter
+// than upstream, where ringrtc shares the app's process): call signalling only to the peer of a
+// call it has or an offer we passed it, call messages only to ourselves, the members of a
+// group call it runs (or a call link's participants), group messages only to a group with a
+// call, a new incoming call only for an offer we passed it, a group ring only from someone whose
+// call message we passed it. Verification/CallBoundary models and proves these.
 
 import Foundation
 
@@ -17,7 +25,8 @@ public final class RingRTC {
         "WebRTC-IncreaseIceCandidatePriorityHostSrflx": "Enabled",
     ]
 
-    var endpoint: NativeEndpoint
+    var endpoint: any RingRTCEndpoint
+    let makeEndpoint: RingRTCEndpointFactory
     var pump = EventPump()
     public internal(set) var call: Call?
     var groupCallByClientId: [GroupCallClientId: GroupCall] = [:]
@@ -25,8 +34,16 @@ public final class RingRTC {
     var callLinkRequests = Requests<HttpResult<CallLinkState>>()
     var emptyRequests = Requests<HttpResult<Bool>>()
     var audioDeviceRequests = Requests<AudioDevice?>()
-    struct CallInfo { var isVideoCall: Bool; var receivedAtCounter: Int; var receivedAtDate: Int64 }
+    struct CallInfo { var isVideoCall: Bool; var receivedAtCounter: Int; var receivedAtDate: Int64; var peer: UserId }
     var callInfoByCallId: [CallId: CallInfo] = [:]
+    /// Groups we cancelled a ring for, and when: the cancel goes out to the group after its
+    /// call client may be gone.
+    var cancelledRings: [GroupId: Date] = [:]
+    /// Senders of the call messages passed to ringrtc, and when (group rings come from them).
+    var callMessageSenders: [Data: Date] = [:]
+    /// Our own uuid (`setSelfUuid`): ringrtc tells our other devices about rings and keys.
+    public internal(set) var selfUuid: Data?
+    static let recentWindow: TimeInterval = 120
 
     // Handlers (Service.ts `handle*`).
     public var handleOutgoingSignaling: ((UserId, CallingMessage) async -> Bool)?
@@ -47,38 +64,72 @@ public final class RingRTC {
     public var handleGroupCallRingUpdate: ((_ groupId: GroupId, _ ringId: Int64, _ sender: GroupCallUserId, _ update: RingUpdate) -> Void)?
     public var handleRtcStatsReport: ((String) -> Void)?
 
-    public init(fieldTrials: [String: String] = [:]) throws {
-        endpoint = try Self.makeEndpoint(fieldTrials)
+    /// `endpoint`: where the endpoint runs (the calling service in the app; RingRTCNative's
+    /// `NativeEndpoint.factory` in process).
+    public init(fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) throws {
+        makeEndpoint = endpoint
+        self.endpoint = try endpoint(Self.fieldTrialString(fieldTrials))
         startPump()
     }
 
-    isolated deinit { pump.stop() }
+    isolated deinit {
+        pump.stop()
+        endpoint.close()
+    }
 
-    static func makeEndpoint(_ extra: [String: String]) throws -> NativeEndpoint {
+    static func fieldTrialString(_ extra: [String: String]) -> String {
         let trials = defaultFieldTrials.merging(extra) { $1 }
-        let string = trials.sorted { $0.key < $1.key }.map { "\($0.key)/\($0.value)" }.joined(separator: "/") + "/"
-        guard let e = NativeEndpoint(fieldTrials: string) else { throw RingRTCError.noEndpoint }
-        return e
+        return trials.sorted { $0.key < $1.key }.map { "\($0.key)/\($0.value)" }.joined(separator: "/") + "/"
     }
 
     func startPump() {
         let p = EventPump()
         pump = p
-        p.start(endpoint) { [weak self] batch in
-            MainActor.assumeIsolated { self?.process(batch) }
+        p.start(endpoint) { [weak self] found in
+            MainActor.assumeIsolated {
+                switch found {
+                case .events(let batch): self?.process(batch)
+                case .lost(let generation): self?.endpointLost(generation)
+                }
+            }
         }
     }
 
     /// `setConfig`: a new endpoint with these field trials.
     public func setConfig(fieldTrials: [String: String]) throws {
         pump.stop()
-        endpoint = try Self.makeEndpoint(fieldTrials)
+        endpoint.close()
+        endpoint = try makeEndpoint(Self.fieldTrialString(fieldTrials))
         startPump()
+    }
+
+    /// The endpoint's process ended: the calls made on it (generations up to `generation`) end
+    /// as failed, and the requests waiting on its answers fail. Nothing more is sent for them:
+    /// their commands are refused (`Call.generation`).
+    func endpointLost(_ generation: UInt64) {
+        logError("the calling service ended; its calls end")
+        if let call, call.generation <= generation, call.state != .ended {
+            callInfoByCallId[call.callId] = nil
+            call.endedReason = .internalFailure
+            call.state = .ended
+        }
+        for id in groupCallByClientId.keys.sorted() {
+            guard let g = groupCallByClientId[id], g.generation <= generation else { continue }
+            groupCallByClientId[id] = nil
+            g.observer?.onEnded(g, reason: .internalFailure, summary: CallSummary(.null))
+        }
+        peekRequests.failAll(.failure(errorStatusCode: -1))
+        callLinkRequests.failAll(.failure(errorStatusCode: -1))
+        emptyRequests.failAll(.failure(errorStatusCode: -1))
+        audioDeviceRequests.failAll(RingRTCError.lost)
     }
 
     func run(_ name: String, _ fields: [String: JSONValue] = [:]) throws -> JSONValue { try endpoint.command(name, fields) }
 
-    public func setSelfUuid(_ uuid: Data) throws { _ = try run("setSelfUuid", ["uuid": .bytes(uuid)]) }
+    public func setSelfUuid(_ uuid: Data) throws {
+        selfUuid = uuid
+        _ = try run("setSelfUuid", ["uuid": .bytes(uuid)])
+    }
 
     /// `addAsset` (the Opus DRED weights: group "opus-dred").
     public func addAsset(_ assetGroup: String, content: Data) throws { _ = try run("addAsset", ["assetGroup": .string(assetGroup), "content": .bytes(content)]) }
@@ -88,12 +139,14 @@ public final class RingRTC {
 
     public func startOutgoingCall(remoteUserId: UserId, isVideoCall: Bool, localDeviceId: DeviceId) throws -> Call {
         let id = try run("createOutgoingCall", ["peerId": .string(remoteUserId), "videoEnabled": .bool(isVideoCall), "localDeviceId": .int(Int64(localDeviceId))])
-        let call = Call(endpoint: endpoint, remoteUserId: remoteUserId, callId: id.uint64 ?? 0, isIncoming: false, isVideoCall: isVideoCall, state: .prering)
+        let call = Call(endpoint: endpoint, remoteUserId: remoteUserId, callId: id.uint64 ?? 0, isIncoming: false, isVideoCall: isVideoCall, state: .prering,
+                        generation: endpoint.generation)
         self.call = call
         return call
     }
 
     public func cancelGroupRing(groupId: GroupId, ringId: Int64, reason: RingCancelReason?) {
+        cancelledRings[groupId] = Date()
         _ = try? run("cancelGroupRing", ["groupId": .bytes(groupId), "ringId": .string(String(ringId)), "reason": reason.map { .int(Int64($0.rawValue)) } ?? .null])
     }
 
@@ -153,7 +206,8 @@ public final class RingRTC {
         let peer: [String: JSONValue] = ["peerId": .string(o.remoteUserId), "senderDeviceId": .int(Int64(o.remoteDeviceId))]
         if let offer = message.offer, offer.callId != 0 {
             guard !offer.opaque.isEmpty else { logError("handleCallingMessage(): opaque not received for offer, remote should update"); return }
-            callInfoByCallId[offer.callId] = CallInfo(isVideoCall: offer.type == .videoCall, receivedAtCounter: o.receivedAtCounter, receivedAtDate: o.receivedAtDate)
+            callInfoByCallId[offer.callId] = CallInfo(isVideoCall: offer.type == .videoCall, receivedAtCounter: o.receivedAtCounter, receivedAtDate: o.receivedAtDate,
+                                                      peer: o.remoteUserId)
             _ = try? run("receivedOffer", peer.merging([
                 "receiverDeviceId": .int(Int64(o.localDeviceId)), "ageSec": .int(Int64(o.ageSec)), "callId": .id(offer.callId),
                 "offerType": .int(Int64(offer.type.rawValue)), "opaque": .bytes(offer.opaque),
@@ -186,6 +240,7 @@ public final class RingRTC {
         if let opaque = message.opaque {
             guard let uuid = o.remoteUuid else { logError("handleCallingMessage(): opaque message received without UUID!"); return }
             guard let data = opaque.data else { logError("handleCallingMessage(): opaque message received without data!"); return }
+            noteRecent(&callMessageSenders, uuid)
             _ = try? run("receivedCallMessage", [
                 "remoteUserId": .bytes(uuid), "remoteDeviceId": .int(Int64(o.remoteDeviceId)), "localDeviceId": .int(Int64(o.localDeviceId)),
                 "data": .bytes(data), "messageAgeSec": .int(Int64(o.ageSec)),
@@ -212,7 +267,7 @@ public final class RingRTC {
             "audioLevelsIntervalMillis": .int(Int64(audioLevelsIntervalMillis ?? 0)), "dredDuration": .int(Int64(dredDuration ?? 0)),
             "svcConfig": svcConfig?.json ?? .null,
         ]))?.int, id != 0 else { return nil }
-        let g = GroupCall(kind: .signalGroup, endpoint: endpoint, observer: observer, clientId: GroupCallClientId(id))
+        let g = GroupCall(kind: .signalGroup, endpoint: endpoint, observer: observer, clientId: GroupCallClientId(id), groupId: groupId)
         groupCallByClientId[g.clientId] = g
         return g
     }
@@ -332,6 +387,46 @@ public final class RingRTC {
         do { _ = try run("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)]) } catch { logWarn("Failed to stop microphone warmup: \(error)") }
     }
 
+    // MARK: what the endpoint may ask for
+
+    func noteRecent(_ map: inout [Data: Date], _ key: Data) {
+        let now = Date()
+        map = map.filter { now.timeIntervalSince($0.value) < Self.recentWindow }
+        if map.count < 256 { map[key] = now }
+    }
+
+    func isRecent(_ map: [Data: Date], _ key: Data) -> Bool {
+        map[key].map { Date().timeIntervalSince($0) < Self.recentWindow } ?? false
+    }
+
+    /// 1:1 signalling: to the peer of the current call, or of an offer we passed in.
+    func maySignal(_ remoteUserId: UserId, callId: CallId) -> Bool {
+        if let call, call.remoteUserId == remoteUserId, call.callId == callId { return true }
+        return callInfoByCallId[callId]?.peer == remoteUserId
+    }
+
+    /// A call message (group call media keys, ring answers): to ourselves (our other devices),
+    /// a member of a Signal group call ringrtc runs (the members are the app's own list,
+    /// `setGroupMembers`; ringrtc can name no one else in such a call), or a participant of a
+    /// call-link call ringrtc runs. A call link has no list of the app's own: its participants
+    /// are the service's word (Verification/CallBoundary proves this limit).
+    func mayMessage(_ recipient: Data) -> Bool {
+        if let selfUuid, recipient == selfUuid { return true }
+        return groupCallByClientId.values.contains { g in
+            switch g.kind {
+            case .signalGroup: g.members.contains { $0.userId == recipient }
+            case .callLink:
+                (g.remoteDeviceStates ?? []).contains { $0.userId == recipient } || (g.peekInfo?.devices ?? []).contains { $0.userId == recipient }
+            }
+        }
+    }
+
+    /// A group message (rings, their cancellation): to a group with a call client, or one we
+    /// just cancelled a ring for.
+    func mayMessageGroup(_ groupId: GroupId) -> Bool {
+        groupCallByClientId.values.contains { $0.groupId == groupId } || isRecent(cancelledRings, groupId)
+    }
+
     // MARK: logging
 
     func log(_ level: CallLogLevel, _ message: String) { handleLogMessage?(level, "RingRTC.swift", 0, message) }
@@ -375,6 +470,16 @@ struct Requests<T: Sendable> {
         p.continuation.yield(.success(value))
         p.continuation.finish()
         return true
+    }
+
+    /// Every pending request settles with `value` (the endpoint that would answer is gone).
+    mutating func failAll(_ value: T) {
+        for id in Array(pending.keys) { resolve(id, value) }
+    }
+
+    /// Every pending request fails with `error`.
+    mutating func failAll(_ error: any Error) {
+        for id in Array(pending.keys) { fail(id, error) }
     }
 
     @discardableResult

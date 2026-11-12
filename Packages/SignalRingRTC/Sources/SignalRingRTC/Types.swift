@@ -11,11 +11,6 @@ public typealias GroupCallUserId = Data
 /// Raw (0…32767) and normalised (0…1) audio levels.
 public typealias NormalizedAudioLevel = Double
 
-/// `callIdFromEra`
-public func callIdFromEra(_ era: String) -> CallId {
-    (try? NativeEndpoint.command(0, "callIdFromEra", ["era": .string(era)]).uint64) ?? 0
-}
-
 /// `callIdFromRingId`: the ring id's bits as an unsigned call id.
 public func callIdFromRingId(_ ringId: Int64) -> CallId { CallId(bitPattern: ringId) }
 
@@ -78,55 +73,6 @@ public struct NetworkRoute: Sendable, Equatable {
 public struct ReceivedAudioLevel: Sendable, Equatable {
     public var demuxId: UInt32
     public var level: Double
-}
-
-/// `CallLinkRootKey`
-public struct CallLinkRootKey: Sendable, Hashable {
-    public let bytes: Data
-    init(unchecked bytes: Data) { self.bytes = bytes }
-
-    public static func parse(_ string: String) throws -> CallLinkRootKey {
-        guard let b = try NativeEndpoint.command(0, "callLinkRootKeyParse", ["string": .string(string)]).data else { throw RingRTCError.invalidResponse }
-        return CallLinkRootKey(unchecked: b)
-    }
-
-    public static func fromBytes(_ bytes: Data) throws -> CallLinkRootKey {
-        _ = try NativeEndpoint.command(0, "callLinkRootKeyValidate", ["bytes": .bytes(bytes)])
-        return CallLinkRootKey(unchecked: bytes)
-    }
-
-    public static func generate() throws -> CallLinkRootKey {
-        guard let b = try NativeEndpoint.command(0, "callLinkRootKeyGenerate").data else { throw RingRTCError.invalidResponse }
-        return CallLinkRootKey(unchecked: b)
-    }
-
-    public static func generateAdminPassKey() throws -> Data {
-        guard let b = try NativeEndpoint.command(0, "callLinkRootKeyGenerateAdminPasskey").data else { throw RingRTCError.invalidResponse }
-        return b
-    }
-
-    /// `toFormattedString`: the consonant base-16 form used in call link URLs (`bcdf-ghkm-…`).
-    public func formatted() throws -> String {
-        guard let s = try NativeEndpoint.command(0, "callLinkRootKeyToFormattedString", ["bytes": .bytes(bytes)]).string else {
-            throw RingRTCError.invalidResponse
-        }
-        return s
-    }
-
-    public func deriveRoomId() throws -> Data {
-        guard let b = try NativeEndpoint.command(0, "callLinkRootKeyDeriveRoomId", ["bytes": .bytes(bytes)]).data else { throw RingRTCError.invalidResponse }
-        return b
-    }
-
-    public func toUnredactedString() throws -> String {
-        guard let s = try NativeEndpoint.command(0, "callLinkRootKeyToFormattedString", ["bytes": .bytes(bytes)]).string else { throw RingRTCError.invalidResponse }
-        return s
-    }
-
-    /// `toString`: redacted, for logs.
-    public var redacted: String {
-        (try? NativeEndpoint.command(0, "callLinkRootKeyToRedactedString", ["bytes": .bytes(bytes)]).string) ?? "[REDACTED]"
-    }
 }
 
 public enum CallLinkRestrictions: Int, Sendable {

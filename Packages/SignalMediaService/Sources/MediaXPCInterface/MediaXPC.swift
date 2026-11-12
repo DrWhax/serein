@@ -24,6 +24,10 @@ public enum MediaRequest: Codable, Sendable {
     case appendVoiceNote(UUID, samples: [Float])
     case finishVoiceNote(UUID)
     case cancelVoiceNote(UUID)
+    /// Records from the microphone into a new voice note, in the voice-note service (the app
+    /// never opens the microphone): asks for permission first if it was never given.
+    case recordVoiceNote
+    case voiceNoteProgress(UUID)
     case videoInfo(Data)
     case posterFrame(Data)
     case openVideo(Data)
@@ -41,7 +45,7 @@ extension MediaRequest {
     /// Recording requests: served by SignalVoiceNoteEncoder.xpc, never by the decoder.
     public var isVoiceNote: Bool {
         switch self {
-        case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote: return true
+        case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote, .recordVoiceNote, .voiceNoteProgress: return true
         default: return false
         }
     }
@@ -65,7 +69,8 @@ extension MediaRequest {
         case .finishVoiceNote: return 64 << 20
         case .posterFrame: return pixels(8192) + Self.small
         case .videoFrames: return Int.max   // its own frame format, checked frame by frame (decodeFrames)
-        case .imageInfo, .audioSummary, .videoInfo, .openVideo, .startVoiceNote, .appendVoiceNote, .cancelVoiceNote, .seekVideo,
+        case .voiceNoteProgress: return VoiceNoteProgress.maxLevels * 4 + Self.small
+        case .imageInfo, .audioSummary, .videoInfo, .openVideo, .startVoiceNote, .appendVoiceNote, .cancelVoiceNote, .recordVoiceNote, .seekVideo,
              .closeVideo: return Self.small
         }
     }
@@ -165,7 +170,8 @@ public final class MediaXPCClient: MediaProcessing {
                 decoder: XPCTarget = .service(MediaXPCClient.serviceName), peer: XPCPeerRequirement? = XPCPeer.requirement(.decoder),
                 voice: XPCTarget = .service(MediaXPCClient.voiceServiceName), voicePeer: XPCPeerRequirement? = XPCPeer.requirement(.voice)) {
         channel = XPCChannel(decoder, peer: peer, timeout: timeout)
-        self.voice = XPCChannel(voice, peer: voicePeer, timeout: timeout)
+        // Long enough for the microphone permission prompt (`recordVoiceNote`'s budget).
+        self.voice = XPCChannel(voice, peer: voicePeer, timeout: max(timeout, MediaRequest.recordVoiceNote.budget))
     }
 
     /// Tests: given channels.
@@ -238,6 +244,16 @@ public final class MediaXPCClient: MediaProcessing {
     public func appendVoiceNote(_ session: UUID, samples: [Float]) async throws { _ = try await call(.appendVoiceNote(session, samples: samples), MediaEmpty.self) }
     public func finishVoiceNote(_ session: UUID) async throws -> VoiceNote { try await call(.finishVoiceNote(session), VoiceNote.self).validated() }
     public func cancelVoiceNote(_ session: UUID) async { _ = try? await call(.cancelVoiceNote(session), MediaEmpty.self) }
+    /// Starts recording a voice note from the microphone (in the voice-note service). A recording
+    /// that starts after its caller stopped waiting (cancelled, or timed out at the permission
+    /// prompt) is cancelled at once (Verification/Broker, B4), so the microphone is not left on;
+    /// the service also stops one nobody polls (VoiceNoteRecorder.unwatched).
+    public func recordVoiceNote() async throws -> UUID {
+        try await call(.recordVoiceNote, UUID.self) { [weak self] id in self?.release(.cancelVoiceNote(id)) }
+    }
+    public func voiceNoteProgress(_ session: UUID) async throws -> VoiceNoteProgress {
+        try await call(.voiceNoteProgress(session), VoiceNoteProgress.self).validated()
+    }
     public func videoInfo(_ bytes: Data) async throws -> VideoInfo { try await call(.videoInfo(bytes), VideoInfo.self).validated() }
     public func posterFrame(_ bytes: Data) async throws -> VideoPoster { try await call(.posterFrame(bytes), VideoPoster.self).validated() }
     public func openVideo(_ bytes: Data) async throws -> (session: UUID, info: VideoInfo) {

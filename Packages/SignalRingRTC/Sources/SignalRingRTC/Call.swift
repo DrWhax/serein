@@ -5,7 +5,10 @@ import Foundation
 
 @MainActor
 public final class Call {
-    let endpoint: NativeEndpoint
+    let endpoint: any RingRTCEndpoint
+    /// The endpoint generation the call was made on: once that endpoint is lost, nothing the
+    /// call sends reaches its replacement.
+    let generation: UInt64
     public let remoteUserId: UserId
     public internal(set) var callId: CallId
     public let isIncoming: Bool
@@ -31,8 +34,10 @@ public final class Call {
     public var handleAudioLevels: (() -> Void)?
     public var handleLowBandwidthForVideo: ((Bool) -> Void)?
 
-    init(endpoint: NativeEndpoint, remoteUserId: UserId, callId: CallId, isIncoming: Bool, isVideoCall: Bool, state: CallState) {
+    init(endpoint: any RingRTCEndpoint, remoteUserId: UserId, callId: CallId, isIncoming: Bool, isVideoCall: Bool, state: CallState,
+         generation: UInt64? = nil) {
         self.endpoint = endpoint
+        self.generation = generation ?? endpoint.generation
         self.remoteUserId = remoteUserId
         self.callId = callId
         self.isIncoming = isIncoming
@@ -49,19 +54,19 @@ public final class Call {
             _state = newValue
             if newValue == .accepted {
                 if !mediaSessionStarted {
-                    _ = try? endpoint.command("setOutgoingAudioEnabled", ["enabled": .bool(outgoingAudioEnabled)])
+                    run("setOutgoingAudioEnabled", ["enabled": .bool(outgoingAudioEnabled)])
                     if outgoingVideoIsScreenShare {
-                        _ = try? endpoint.command("setOutgoingVideoIsScreenShare", ["isScreenshare": .bool(true)])
-                        _ = try? endpoint.command("setOutgoingVideoEnabled", ["enabled": .bool(true)])
+                        run("setOutgoingVideoIsScreenShare", ["isScreenshare": .bool(true)])
+                        run("setOutgoingVideoEnabled", ["enabled": .bool(true)])
                     } else if outgoingVideoEnabled {
-                        _ = try? endpoint.command("setOutgoingVideoEnabled", ["enabled": .bool(true)])
+                        run("setOutgoingVideoEnabled", ["enabled": .bool(true)])
                     }
                     mediaSessionStarted = true
                 }
             } else if newValue == .ended {
-                _ = try? endpoint.command("setOutgoingAudioEnabled", ["enabled": .bool(false)])
-                _ = try? endpoint.command("setOutgoingVideoEnabled", ["enabled": .bool(false)])
-                _ = try? endpoint.command("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)])
+                run("setOutgoingAudioEnabled", ["enabled": .bool(false)])
+                run("setOutgoingVideoEnabled", ["enabled": .bool(false)])
+                run("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)])
                 outgoingAudioEnabled = false
                 outgoingVideoEnabled = false
                 outgoingVideoIsScreenShare = false
@@ -73,16 +78,18 @@ public final class Call {
 
     public func setCallEnded() { _state = .ended }
 
-    public func accept() { _ = try? endpoint.command("accept", ["callId": .id(callId)]) }
+    func run(_ name: String, _ fields: [String: JSONValue] = [:]) { _ = try? endpoint.command(name, fields, generation: generation) }
+
+    public func accept() { run("accept", ["callId": .id(callId)]) }
     public func decline() { hangup() }
-    public func ignore() { _ = try? endpoint.command("ignore", ["callId": .id(callId)]) }
-    public func hangup() { _ = try? endpoint.command("hangup") }
+    public func ignore() { run("ignore", ["callId": .id(callId)]) }
+    public func hangup() { run("hangup") }
 
     public func setOutgoingAudioMuted(_ muted: Bool) {
         let enabled = !muted
         if mediaSessionStarted && outgoingAudioEnabled != enabled {
             outgoingAudioEnabled = enabled
-            _ = try? endpoint.command("setOutgoingAudioEnabled", ["enabled": .bool(enabled)])
+            run("setOutgoingAudioEnabled", ["enabled": .bool(enabled)])
         } else {
             outgoingAudioEnabled = enabled
         }
@@ -92,7 +99,7 @@ public final class Call {
         let enabled = !muted
         if mediaSessionStarted && outgoingVideoEnabled != enabled {
             outgoingVideoEnabled = enabled
-            _ = try? endpoint.command("setOutgoingVideoEnabled", ["enabled": .bool(enabled)])
+            run("setOutgoingVideoEnabled", ["enabled": .bool(enabled)])
         } else {
             outgoingVideoEnabled = enabled
         }
@@ -101,7 +108,7 @@ public final class Call {
     public func setOutgoingVideoIsScreenShare(_ isScreenShare: Bool) {
         if mediaSessionStarted && outgoingVideoIsScreenShare != isScreenShare {
             outgoingVideoIsScreenShare = isScreenShare
-            _ = try? endpoint.command("setOutgoingVideoIsScreenShare", ["isScreenshare": .bool(isScreenShare)])
+            run("setOutgoingVideoIsScreenShare", ["isScreenshare": .bool(isScreenShare)])
         } else {
             outgoingVideoIsScreenShare = isScreenShare
         }
@@ -110,15 +117,15 @@ public final class Call {
     /// `VideoFrameSender`
     @discardableResult
     public func sendVideoFrame(width: Int, height: Int, format: VideoPixelFormat, buffer: [UInt8]) -> Bool {
-        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer)
+        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
     }
 
     /// `VideoFrameSource`: the latest remote frame as RGBA.
     public func receiveVideoFrame(into buffer: inout [UInt8], maxWidth: Int, maxHeight: Int) -> (width: Int, height: Int)? {
-        endpoint.receiveVideoFrame(demuxId: 0, maxWidth: maxWidth, maxHeight: maxHeight, into: &buffer)
+        endpoint.receiveVideoFrame(demuxId: 0, maxWidth: maxWidth, maxHeight: maxHeight, into: &buffer, generation: generation)
     }
 
     public func updateDataMode(_ mode: DataMode) {
-        _ = try? endpoint.command("updateDataMode", ["dataMode": .int(Int64(mode.rawValue))])
+        run("updateDataMode", ["dataMode": .int(Int64(mode.rawValue))])
     }
 }

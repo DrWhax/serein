@@ -23,16 +23,25 @@ public protocol GroupCallObserver: AnyObject {
 @MainActor
 public final class GroupCall {
     public let kind: GroupCallKind
-    let endpoint: NativeEndpoint
+    let endpoint: any RingRTCEndpoint
+    /// The endpoint generation the client was made on (as `Call.generation`).
+    let generation: UInt64
+    /// The group (Signal group calls), for checking what the endpoint asks to send.
+    public internal(set) var groupId: GroupId?
+    /// The members last given to ringrtc (`setGroupMembers`).
+    public internal(set) var members: [GroupMemberInfo] = []
     weak var observer: (any GroupCallObserver)?
     public let clientId: GroupCallClientId
     public private(set) var localDeviceState = LocalDeviceState()
     public private(set) var remoteDeviceStates: [RemoteDeviceState]?
     public private(set) var peekInfo: PeekInfo?
 
-    init(kind: GroupCallKind, endpoint: NativeEndpoint, observer: any GroupCallObserver, clientId: GroupCallClientId) {
+    init(kind: GroupCallKind, endpoint: any RingRTCEndpoint, observer: any GroupCallObserver, clientId: GroupCallClientId, groupId: GroupId? = nil,
+         generation: UInt64? = nil) {
         self.kind = kind
         self.endpoint = endpoint
+        self.generation = generation ?? endpoint.generation
+        self.groupId = groupId
         self.observer = observer
         self.clientId = clientId
     }
@@ -40,7 +49,7 @@ public final class GroupCall {
     func run(_ name: String, _ fields: [String: JSONValue] = [:]) {
         var f = fields
         f["clientId"] = .int(Int64(clientId))
-        _ = try? endpoint.command(name, f)
+        _ = try? endpoint.command(name, f, generation: generation)
     }
 
     public func connect() { run("connect") }
@@ -97,19 +106,22 @@ public final class GroupCall {
     public func denyUser(_ otherUserId: Data) { run("denyUser", ["otherUserId": .bytes(otherUserId)]) }
     public func removeClient(_ otherClientDemuxId: UInt32) { run("removeClient", ["otherDemuxId": .int(Int64(otherClientDemuxId))]) }
     public func blockClient(_ otherClientDemuxId: UInt32) { run("blockClient", ["otherDemuxId": .int(Int64(otherClientDemuxId))]) }
-    public func setGroupMembers(_ members: [GroupMemberInfo]) { run("setGroupMembers", ["members": .array(members.map(\.json))]) }
+    public func setGroupMembers(_ members: [GroupMemberInfo]) {
+        self.members = members
+        run("setGroupMembers", ["members": .array(members.map(\.json))])
+    }
     public func setMembershipProof(_ proof: Data) { run("setMembershipProof", ["proof": .bytes(proof)]) }
     public func setRtcStatsInterval(millis: Int) { run("setRtcStatsInterval", ["intervalMillis": .int(Int64(millis))]) }
 
     /// `VideoFrameSender`
     @discardableResult
     public func sendVideoFrame(width: Int, height: Int, format: VideoPixelFormat, buffer: [UInt8]) -> Bool {
-        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer)
+        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
     }
 
     /// `GroupCallVideoFrameSource.receiveVideoFrame`: also records the remote aspect ratio.
     public func receiveVideoFrame(demuxId: UInt32, into buffer: inout [UInt8], maxWidth: Int, maxHeight: Int) -> (width: Int, height: Int)? {
-        guard let f = endpoint.receiveVideoFrame(demuxId: demuxId, maxWidth: maxWidth, maxHeight: maxHeight, into: &buffer) else { return nil }
+        guard let f = endpoint.receiveVideoFrame(demuxId: demuxId, maxWidth: maxWidth, maxHeight: maxHeight, into: &buffer, generation: generation) else { return nil }
         setRemoteAspectRatio(demuxId: demuxId, Double(f.width) / Double(max(1, f.height)))
         return f
     }

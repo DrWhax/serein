@@ -1,0 +1,54 @@
+; Seatbelt rules for SignalCalling.xpc, on top of App Sandbox with outgoing network and the
+; microphone (below). Tools/build-app.sh puts each rule (one per line; `;` lines are comments,
+; `;!` lines entitlements) in the service's com.apple.security.temporary-exception.sbpl
+; entitlement, appended to the App Sandbox profile. App Sandbox's own allow rules carry filters
+; and win over an unfiltered deny, so every deny here has a filter that matches everything.
+;
+; The service runs ringrtc (WebRTC): it reads what remote peers send (RTP, RTCP, ICE, DTLS, the
+; call signalling the app passes in), sends and receives the call's media over UDP and TCP, and
+; plays and records the call's audio. It holds no keys, messages or files of the user: the app
+; hands it only what a call needs. Its HTTP goes through the app (to the SFU only), so it needs
+; no TLS of its own; DNS (ICE server names), the network stack and the audio system need their
+; system services, so Mach lookups stay as App Sandbox allows them.
+; Tools/check-sandbox-profile.sh runs a probe service under these rules, and the real service
+; places a call between two of its endpoints.
+;
+;! com.apple.security.network.client
+; Calls: the microphone (macOS asks the user on the app's behalf; the app itself may not use it).
+;! com.apple.security.device.audio-input
+;
+; No user data: nothing under /Users (the home directory and this service's container),
+; mounted volumes, or other users' temporary folders.
+; Its own bundle (SignalCalling.xpc: the executable, ringrtc's library, Info.plist with its
+; peers' signing identifiers, the signature) stays readable; nothing else is.
+(deny file-read* (require-all (subpath "/Users") (require-not (regex #"/SignalCalling\.xpc(/.*)?$"))))
+(deny file-read* (require-all (subpath "/Volumes") (require-not (regex #"/SignalCalling\.xpc(/.*)?$"))))
+; Nothing written or ioctl'd, anywhere.
+(deny file-write* (subpath "/"))
+(deny file-ioctl (subpath "/"))
+; No other programs, no children.
+(deny process-exec* (subpath "/"))
+(deny process-fork)
+; Registers no Mach services.
+(deny mach-register (global-name-regex #".*"))
+(deny mach-register (local-name-regex #".*"))
+; WebRTC's sockets: UDP bound to a port of its own (App Sandbox's client entitlement allows
+; connecting out, not binding), and the replies and the peer's media received on it. No TCP
+; listening: TCP is only ever outgoing (TURN over TCP or TLS).
+(allow network-bind (local udp "*:*"))
+(allow network-inbound (local udp "*:*"))
+; Never to this machine's own services: a peer's ICE candidates cannot aim the call's packets
+; at 127.0.0.1 or ::1.
+(deny network-outbound (remote ip "localhost:*"))
+; No camera (the app captures and hands it the frames), no scripting other apps.
+(deny device-camera)
+(deny appleevent-send)
+; No devices beyond the audio system's (which works through its own services).
+(deny iokit-open (iokit-user-client-class-regex #".*"))
+; No preferences written, no shared memory written, no semaphores.
+(deny user-preference-write (preference-domain-regex #".*"))
+(deny ipc-posix-shm-write* (ipc-posix-name-regex #".*"))
+(deny ipc-posix-sem (ipc-posix-name-regex #".*"))
+; No changing kernel state, no signalling other processes.
+(deny sysctl-write)
+(deny signal (target others))

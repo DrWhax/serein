@@ -48,7 +48,7 @@ def randomEv (s : St) (r : Rng) : Ev × Rng := Id.run do
   let ev : Ev := match k with
     | 0 | 1 => .call (.thumb (sizes.getD b 16) a)
     | 2 => .call (.openV a)
-    | 3 => .call .start
+    | 3 => .call (.start (a % 2 == 1))
     | 4 | 5 | 6 | 7 => .reply m (randomReply rk b a)
     | 8 => .crash (if a < 3 then .dec else .voice)
     | 9 => .unsolicited (if a < 2 then .dec else .voice)

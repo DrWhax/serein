@@ -25,6 +25,8 @@ let package = Package(
                 .product(name: "SignalI18n", package: "SignalI18n"),
                 .product(name: "SignalCore", package: "SignalCore"),
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
+                // ringrtc's endpoint in SignalCalling.xpc (never RingRTCNative: the app does not load ringrtc).
+                .product(name: "CallXPC", package: "SignalRingRTC"),
                 .product(name: "MediaXPCInterface", package: "SignalMediaService"),
                 .product(name: "SignalText", package: "SignalText"),
                 // Encoding our own drawings only (group avatars); decoders stay in the service.

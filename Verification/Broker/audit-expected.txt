@@ -30,14 +30,14 @@ number of parameters: 0
 constructors:
 Broker.Kind.thumb : Nat → Nat → Kind
 Broker.Kind.openV : Nat → Kind
-Broker.Kind.start : Kind
+Broker.Kind.start : Bool → Kind
 Broker.Kind.release : Ch → Nat → Kind
 def Broker.Kind.ch : Kind → Ch :=
 fun x =>
   match x with
   | Kind.thumb size input => Ch.dec
   | Kind.openV input => Ch.dec
-  | Kind.start => Ch.voice
+  | Kind.start mic => Ch.voice
   | Kind.release c u => c
 def Broker.Kind.input : Kind → Option Nat :=
 fun x =>
@@ -82,7 +82,7 @@ fun x x_1 =>
     (if w = size ∧ h = size then Status.ok (Val.thumb w h) else Status.failed Err.refused, none)
   | Kind.openV input, Reply.opened u true => (Status.ok (Val.session u), none)
   | Kind.openV input, Reply.opened u false => (Status.failed Err.refused, some u)
-  | Kind.start, Reply.voiceId u => (Status.ok (Val.session u), none)
+  | Kind.start mic, Reply.voiceId u => (Status.ok (Val.session u), none)
   | Kind.release c u, Reply.empty => (Status.ok Val.empty, none)
   | x, Reply.error => (Status.failed Err.helper, none)
   | x, x_2 => (Status.failed Err.refused, none)
@@ -90,7 +90,7 @@ def Broker.late : Kind → Reply → Option Nat :=
 fun x x_1 =>
   match x, x_1 with
   | Kind.openV input, Reply.opened u valid => some u
-  | Kind.start, Reply.voiceId u => some u
+  | Kind.start mic, Reply.voiceId u => some u
   | x, x_2 => none
 def Broker.ended : St → Nat → Bool :=
 fun s id => (Option.map (fun x => x.ended) s.sess[id]?).getD true
@@ -306,16 +306,16 @@ Broker.Ev.reply 234166935 -
 Broker.Ev.timeout 2953231022 -
 Broker.Ev.unsolicited 88420796 -
 Broker.Kind 3931117990 11953937779122919153
-Broker.Kind.casesOn 2672432561 870567250
-Broker.Kind.ch 4288787203 3150628577
-Broker.Kind.ctorIdx 1710553134 1868545934
+Broker.Kind.casesOn 1324653374 506397766
+Broker.Kind.ch 4288787203 3939680977
+Broker.Kind.ctorIdx 1710553134 1350300623
 Broker.Kind.input 2684897957 335436553
-Broker.Kind.input._sparseCasesOn_1 407921171 4076487160
+Broker.Kind.input._sparseCasesOn_1 407921171 568379815
 Broker.Kind.input.match_1 2556749971 1427446998
 Broker.Kind.openV 4001222802 -
-Broker.Kind.rec 874309283 -
+Broker.Kind.rec 2818973022 -
 Broker.Kind.release 2635259421 -
-Broker.Kind.start 4156840708 -
+Broker.Kind.start 2641672493 -
 Broker.Kind.thumb 1352130433 -
 Broker.NoLeak 3714213461 3035056263
 Broker.OkOwn 3714213461 1079526839
@@ -370,16 +370,16 @@ Broker.Val.empty 4145066730 -
 Broker.Val.rec 2849420635 -
 Broker.Val.session 3762315875 -
 Broker.Val.thumb 286601849 -
-Broker.accept 988306383 2334935130
+Broker.accept 988306383 2652138310
 Broker.accept._sparseCasesOn_1 1765458037 2082125822
 Broker.accept._sparseCasesOn_2 4256253336 1695818773
 Broker.accept._sparseCasesOn_3 3608311955 2174244756
 Broker.accept._sparseCasesOn_4 755737755 3955326226
-Broker.accept.match_1 3055686002 1911720795
+Broker.accept.match_1 1642300830 1577603215
 Broker.answer 39818156 3193032607
 Broker.bump 169084832 1600668352
 Broker.call 4130177237 1195280002
-Broker.call._sparseCasesOn_1 3491455784 1835199071
+Broker.call._sparseCasesOn_1 3491455784 236534494
 Broker.call.match_1 3246137564 2747763031
 Broker.cancel 2096595835 171752205
 Broker.cdn 2615109897 415541907
@@ -425,12 +425,12 @@ Broker.instDecidableEqVal.decEq._proof_8 3522872661 -
 Broker.instDecidableEqVal.decEq._proof_9 3516086260 -
 Broker.instDecidableEqVal.decEq.match_1 1681178170 134014861
 Broker.instReprEv.repr.match_1 356294807 3786004300
-Broker.instReprKind.repr.match_1 2730540827 967830122
-Broker.late 4094302908 3634559394
-Broker.late._sparseCasesOn_1 2997221393 803594198
+Broker.instReprKind.repr.match_1 2614513849 1376626023
+Broker.late 4094302908 2300713079
+Broker.late._sparseCasesOn_1 201496248 4022136471
 Broker.late._sparseCasesOn_2 4268196332 2672650617
 Broker.late._sparseCasesOn_3 4062783829 1367913054
-Broker.late.match_1 3001400753 2439649387
+Broker.late.match_1 3337714485 2136332268
 Broker.lostOn 2995919922 679213010
 Broker.lostSessions 743874770 134168240
 Broker.opened 1619792570 3957618490

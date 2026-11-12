@@ -31,6 +31,7 @@ let package = Package(
         .library(name: "GifSearch", targets: ["GifSearch"]),
         .executable(name: "SignalGifSearchService", targets: ["SignalGifSearchService"]),
         .library(name: "VoiceNoteEncoder", targets: ["VoiceNoteEncoder"]),
+        .library(name: "VoiceNoteService", targets: ["VoiceNoteService"]),
         .executable(name: "SignalVoiceNoteEncoderService", targets: ["SignalVoiceNoteEncoderService"]),
     ],
     dependencies: [.package(path: "../SignalCodecs"), .package(path: "../SignalText")],
@@ -65,7 +66,9 @@ let package = Package(
         // SignalVoiceNoteEncoder.xpc: the MP3 encoder for recorded voice notes, apart from every
         // decoder of received media (Sandbox/SignalVoiceNoteEncoder.sb).
         .target(name: "VoiceNoteEncoder", dependencies: ["MediaXPCInterface", .product(name: "AudioMP3", package: "SignalCodecs")], swiftSettings: strict),
-        .executableTarget(name: "SignalVoiceNoteEncoderService", dependencies: ["VoiceNoteEncoder", "MediaXPCInterface"], swiftSettings: strict),
+        // The service's requests and the microphone recorder (AVFAudio), linked by the service only.
+        .target(name: "VoiceNoteService", dependencies: ["VoiceNoteEncoder", "MediaXPCInterface"], swiftSettings: strict),
+        .executableTarget(name: "SignalVoiceNoteEncoderService", dependencies: ["VoiceNoteService", "MediaXPCInterface"], swiftSettings: strict),
         // SignalLinkPreviewParser.xpc: link-preview HTML only (HTMLMeta), under its own tighter
         // Seatbelt profile (Sandbox/SignalLinkPreviewParser.sb). No image decoders.
         .target(
@@ -88,7 +91,7 @@ let package = Package(
         .target(name: "GifSearch", dependencies: ["MediaXPCInterface", "WebFetch"], swiftSettings: strict),
         .executableTarget(name: "SignalGifSearchService", dependencies: ["GifSearch", "MediaXPCInterface", "WebFetch"], swiftSettings: strict),
         .testTarget(name: "SignalMediaDecoderTests",
-                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", "VoiceNoteEncoder", "LinkPreviewParser", "LinkPreviewFetcher", "GifSearch", "WebFetch",
+                    dependencies: ["SignalMediaDecoder", "MediaXPCInterface", "VoiceNoteEncoder", "VoiceNoteService", "LinkPreviewParser", "LinkPreviewFetcher", "GifSearch", "WebFetch",
                                    .product(name: "EncodePNG", package: "SignalCodecs"),
                                    .product(name: "ImagePNG", package: "SignalCodecs"),
                                    .product(name: "CodecCore", package: "SignalCodecs")],

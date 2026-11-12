@@ -1,4 +1,5 @@
 import Foundation
+import RingRTCNative
 import Testing
 @testable import SignalRingRTC
 
@@ -9,16 +10,15 @@ import Testing
         let inputs = try ep.command("getAudioInputs")
         #expect(inputs["devices"].array.count >= 0 && inputs["defaults"]["isWindows"] == .bool(false), "\(inputs)")
         // Static commands work without an endpoint.
-        let key = try NativeEndpoint.command(0, "callLinkRootKeyGenerate")
+        let key = try NativeEndpoint.staticCommand("callLinkRootKeyGenerate")
         let bytes = try #require(key.data)
         #expect(bytes.count == 21, "\(bytes.count)")   // ringrtc v1 root key
-        let formatted = try NativeEndpoint.command(0, "callLinkRootKeyToFormattedString", ["bytes": .bytes(bytes)])
-        let parsed = try NativeEndpoint.command(0, "callLinkRootKeyParse", ["string": formatted])
+        let formatted = try NativeEndpoint.staticCommand("callLinkRootKeyToFormattedString", ["bytes": .bytes(bytes)])
+        let parsed = try NativeEndpoint.staticCommand("callLinkRootKeyParse", ["string": formatted])
         #expect(parsed.data == bytes)
         // Events can be drained (log messages are process-wide: whichever endpoint drains
         // first gets them, so only the shape is checked here).
-        var buffer = [UInt8](repeating: 0, count: 1 << 16)
-        let events = ep.waitEvents(timeoutMs: 100, buffer: &buffer)
+        guard case .events(let events) = ep.waitEvents(timeoutMs: 100) else { Issue.record("an in-process endpoint is never lost"); return }
         #expect(events.allSatisfy { $0["type"].string != nil })
         // Errors come back as errors.
         #expect(throws: RingRTCError.self) { try ep.command("noSuchCommand") }

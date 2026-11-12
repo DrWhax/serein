@@ -42,6 +42,8 @@ public final class MediaXPCHandler: XPCMessageHandler {
         case .cancelVoiceNote(let id):
             await d.cancelVoiceNote(id)
             return try MediaXPCWire.encode(MediaEmpty())
+        // Recording from the microphone: only in SignalVoiceNoteEncoder.xpc.
+        case .recordVoiceNote, .voiceNoteProgress: throw MediaProcessingError.unsupportedFormat
         case .videoInfo(let b): return try MediaXPCWire.encode(try await d.videoInfo(b))
         case .posterFrame(let b): return try MediaXPCWire.encode(try await d.posterFrame(b))
         case .openVideo(let b):

@@ -67,22 +67,31 @@ extension RingRTC {
             handleSendHttpRequest(UInt32(clamping: e["requestId"].int ?? 0), e["url"].string ?? "", HttpMethod(rawValue: e["method"].int ?? 0) ?? .get, headers, e["body"].data)
         case "sendCallMessage":
             guard let handleSendCallMessage else { logError("RingRTC.handleSendCallMessage is not set!"); return }
-            handleSendCallMessage(e["recipientUuid"].data ?? Data(), e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable)
+            let recipient = e["recipientUuid"].data ?? Data()
+            guard mayMessage(recipient) else { logError("sendCallMessage: not a member or participant of a group call; dropped"); return }
+            handleSendCallMessage(recipient, e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable)
         case "sendCallMessageToGroup":
             guard let handleSendCallMessageToGroup else { logError("RingRTC.handleSendCallMessageToGroup is not set!"); return }
-            handleSendCallMessageToGroup(e["groupId"].data ?? Data(), e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable,
-                                         e["overrideRecipients"].array.compactMap(\.data))
+            let groupId = e["groupId"].data ?? Data(), recipients = e["overrideRecipients"].array.compactMap(\.data)
+            guard mayMessageGroup(groupId), recipients.allSatisfy(mayMessage) else { logError("sendCallMessageToGroup: not a group with a call; dropped"); return }
+            handleSendCallMessageToGroup(groupId, e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable, recipients)
         case "sendCallMessageToAdhocGroup":
             guard let handleSendCallMessageToAdhocGroup else { logError("RingRTC.handleSendCallMessageToAdhocGroup is not set!"); return }
             let pairs = e["recipientsToEndorsements"].array.compactMap { p -> (recipientId: Data, endorsement: Data)? in
                 guard let r = p["recipientId"].data, let d = p["endorsement"].data else { return nil }
                 return (r, d)
             }
+            guard groupCallByClientId.values.contains(where: { $0.kind == .callLink }), pairs.allSatisfy({ mayMessage($0.recipientId) }) else {
+                logError("sendCallMessageToAdhocGroup: not participants of a call link call; dropped")
+                return
+            }
             handleSendCallMessageToAdhocGroup(e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable,
                                               Date(timeIntervalSince1970: (e["expirationMillis"].double ?? 0) / 1000), pairs)
         case "groupCallRingUpdate":
             guard let handleGroupCallRingUpdate else { logError("RingRTC.handleGroupCallRingUpdate is not set!"); return }
-            handleGroupCallRingUpdate(e["groupId"].data ?? Data(), e["ringId"].int64 ?? 0, e["sender"].data ?? Data(), RingUpdate(rawValue: e["update"].int ?? 0) ?? .requested)
+            let sender = e["sender"].data ?? Data()
+            guard isRecent(callMessageSenders, sender) else { logError("groupCallRingUpdate: from no one whose call message we passed in; dropped"); return }
+            handleGroupCallRingUpdate(e["groupId"].data ?? Data(), e["ringId"].int64 ?? 0, sender, RingUpdate(rawValue: e["update"].int ?? 0) ?? .requested)
         case "handleRtcStatsReportComplete":
             handleRtcStatsReport?(e["reportJson"].string ?? "")
         case "handlePeekResponse":
@@ -174,7 +183,10 @@ extension RingRTC {
             }
             return
         }
-        let call = Call(endpoint: endpoint, remoteUserId: remoteUserId, callId: callId, isIncoming: true, isVideoCall: isVideoCall, state: .prering)
+        // Only for an offer we passed in, from that peer.
+        guard callInfoByCallId[callId]?.peer == remoteUserId else { logError("onStartIncomingCall: no offer for this call; ignored"); return }
+        let call = Call(endpoint: endpoint, remoteUserId: remoteUserId, callId: callId, isIncoming: true, isVideoCall: isVideoCall, state: .prering,
+                        generation: endpoint.generation)
         guard let handleIncomingCall, let handleStartCall else { call.ignore(); return }
         self.call = call
         Task { @MainActor in
@@ -217,6 +229,11 @@ extension RingRTC {
         }
         if e["broadcast"].bool != true { message.destinationDeviceId = DeviceId(clamping: e["remoteDeviceId"].int ?? 0) }
         let endpoint = self.endpoint
+        guard maySignal(remoteUserId, callId: callId) else {
+            logError("\(type): not the peer of a call or an offer; dropped")
+            _ = try? endpoint.command("signalingMessageSendFailed", ["callId": .id(callId)])
+            return
+        }
         Task { @MainActor in
             let sent = await self.handleOutgoingSignaling?(remoteUserId, message) ?? false
             _ = try? endpoint.command(sent ? "signalingMessageSent" : "signalingMessageSendFailed", ["callId": .id(callId)])

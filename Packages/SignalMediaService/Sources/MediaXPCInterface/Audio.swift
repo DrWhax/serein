@@ -122,6 +122,33 @@ public struct AudioSummary: Codable, Equatable, Sendable {
     }
 }
 
+/// A recording's progress since the last look (SignalVoiceNoteEncoder.xpc records it).
+public struct VoiceNoteProgress: Codable, Equatable, Sendable {
+    /// The level (RMS, 0…1) of each chunk of input since the last progress.
+    public var levels: [Float]
+    /// Seconds recorded.
+    public var seconds: Double
+    /// The recording stopped by itself: the hour is up (`timedOut`), or the input failed.
+    public var stopped: Bool
+    public var timedOut: Bool
+
+    public static let maxLevels = 2000
+
+    public init(levels: [Float], seconds: Double, stopped: Bool, timedOut: Bool) {
+        self.levels = levels
+        self.seconds = seconds
+        self.stopped = stopped
+        self.timedOut = timedOut
+    }
+
+    public func validated() throws -> VoiceNoteProgress {
+        guard levels.count <= Self.maxLevels, levels.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }), seconds.isFinite, seconds >= 0 else {
+            throw MediaProcessingError.invalidResult
+        }
+        return self
+    }
+}
+
 /// A finished voice note (upstream's AudioRecorder result).
 public struct VoiceNote: Codable, Equatable, Sendable {
     /// audio/mpeg, starting with the Xing/LAME tag frame.

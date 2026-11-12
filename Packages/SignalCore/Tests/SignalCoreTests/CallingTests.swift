@@ -6,6 +6,7 @@ import Foundation
 import GRDB
 import LibSignalClient
 import SignalProtos
+import RingRTCNative
 import SignalRingRTC
 import Testing
 import CryptoKit
@@ -106,7 +107,7 @@ import CryptoKit
             let sfu = URL(string: "https://localhost:\(c.server.ready.port)/callingService")!
             let calling = try await MainActor.run {
                 try CallingService(account: c.account, database: c.database, socket: c.socket, http: http, messenger: c.messenger, groups: groupsAPI,
-                                   credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu))
+                                   credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu), endpoint: NativeEndpoint.factory)
             }
 
             let link = try await calling.createCallLink()
@@ -145,7 +146,8 @@ import CryptoKit
             let groupsAPI = GroupsAPI(http: http, endpoints: c.endpoints, credentials: c.groupCredentials)
             let calling = try await MainActor.run {
                 try CallingService(account: c.account, database: c.database, socket: c.socket, http: http, messenger: c.messenger, groups: groupsAPI,
-                                   credentials: c.groupCredentials, config: CallingConfig(sfuURL: URL(string: "https://localhost:\(c.server.ready.port)/callingService")!))
+                                   credentials: c.groupCredentials, config: CallingConfig(sfuURL: URL(string: "https://localhost:\(c.server.ready.port)/callingService")!),
+                                   endpoint: NativeEndpoint.factory)
             }
             let servers = await calling.iceServers()
             #expect(servers.count >= 2 && servers.allSatisfy { !$0.urls.isEmpty || $0.hostname == "" })
@@ -191,7 +193,7 @@ private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d))
         let sfu = URL(string: "https://localhost:\(c.server.ready.port)/callingService")!
         return try CallingService(account: c.account, database: c.database, socket: c.socket, http: http, messenger: c.messenger,
                                   groups: GroupsAPI(http: http, endpoints: c.endpoints, credentials: c.groupCredentials),
-                                  credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu))
+                                  credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu), endpoint: NativeEndpoint.factory)
     }
 
     /// Polls `condition` for up to five seconds.

@@ -1,0 +1,97 @@
+import CallBoundary
+import Lean
+
+/-! Run by Tools/verify-callboundary.sh; compared with `audit-expected.txt`. -/
+
+open CallBoundary
+
+#print St
+#print Cmd
+#print CallR
+#print GroupR
+#print Out
+#print Ev
+#print Origin
+#print St.init
+#print selfId
+#print send
+#print send.sendLive
+#print run
+#print lookup
+#print findGroup
+#print findHeld
+#print insertGroup
+#print updGroup
+#print live
+#print maySignal
+#print mayMessage
+#print mayGroupMessage
+#print report
+#print step
+#print St.ran
+#print St.fresh
+#print Allowed
+#print CallBoundary.Inv
+#print Core
+#print Gens
+#print Configured
+
+open Lean Elab Command in
+/-- Every constant of the CallBoundary modules that the statements of `roots` use, following
+types and definition bodies (theorems' proofs are not followed), sorted, with hashes. -/
+elab "#audit_closure " roots:ident* : command => do
+  let env ← getEnv
+  let ours (c : Name) : Bool :=
+    match env.getModuleIdxFor? c with
+    | some i => (env.header.moduleNames[i.toNat]!).getRoot == `CallBoundary
+    | none => false
+  let mut todo : Array Name := #[]
+  for r in roots do
+    let n ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo r
+    let some ci := env.find? n | throwError "unknown {n}"
+    todo := todo ++ ci.type.getUsedConstants
+  let mut seen : NameSet := {}
+  while h : todo.size > 0 do
+    let c := todo[todo.size - 1]
+    todo := todo.pop
+    if seen.contains c || !ours c then continue
+    seen := seen.insert c
+    let some ci := env.find? c | continue
+    todo := todo ++ ci.type.getUsedConstants
+    match ci with
+    | .defnInfo v => todo := todo ++ v.value.getUsedConstants
+    | .inductInfo v => todo := todo ++ v.ctors.toArray
+    | .ctorInfo v => todo := todo.push v.induct
+    | _ => pure ()
+  let names := seen.toArray.qsort (fun a b => a.toString < b.toString)
+  logInfo m!"{names.size} definitions"
+  for c in names do
+    let some ci := env.find? c | continue
+    let v := match ci with
+      | .defnInfo v => toString v.value.hash
+      | .inductInfo v => toString (hash (v.ctors.map toString))
+      | _ => "-"
+    logInfo m!"{c} {ci.type.hash} {v}"
+
+#audit_closure send_cases send_none_cases stale_refused inv_init inv_step inv_reach gens_report step_out message_from_service
+
+#check @send_cases
+#check @send_none_cases
+#check @stale_refused
+#check @inv_init
+#check @inv_step
+#check @inv_reach
+#check @gens_report
+#check @step_out
+#check @message_from_service
+
+open Lean Elab Command in
+/-- `collectAxioms` for each theorem, on one line each. -/
+elab "#audit_axioms " roots:ident* : command => do
+  for r in roots do
+    let n ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo r
+    let axs ← liftCoreM <| collectAxioms n
+    let axs := axs.qsort (fun a b => a.toString < b.toString)
+    logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
+
+#audit_axioms send_cases send_none_cases stale_refused inv_init inv_step inv_reach gens_report step_out message_from_service

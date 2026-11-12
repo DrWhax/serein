@@ -6,11 +6,16 @@
 ; Sandbox's filtered allows win over unfiltered denies). The app checks at start-up that the
 ; sandbox is in force and exits otherwise.
 ;
-; Signal's servers (chat, storage, CDN, SFU), calls (ringrtc), contacts discovery.
+; Signal's servers (chat, storage, CDN, SFU), contacts discovery. (Calls run in SignalCalling.xpc.)
 ;! com.apple.security.network.client
-; Video calls and voice messages / calls.
+; Video calls: the app captures the camera and hands the frames to SignalCalling.xpc.
 ;! com.apple.security.device.camera
+; The microphone is not the app's: calls record in SignalCalling.xpc, voice notes in
+; SignalVoiceNoteEncoder.xpc. macOS asks the user for those services on the app's behalf, and
+; only for an app that carries this entitlement, so it stays; the rule below takes the
+; microphone itself away from the app (its input is silence).
 ;! com.apple.security.device.audio-input
+(deny device-microphone)
 ; Attachments, exports and saves the user picks (open/save panels, drag and drop).
 ;! com.apple.security.files.user-selected.read-write
 ; The crash-report dialog reads macOS's reports for this app (read-only).

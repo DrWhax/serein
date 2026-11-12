@@ -4,7 +4,6 @@
 // the messenger. Untrusted media goes to SignalMediaDecoder.xpc (MediaXPCClient).
 
 import AppKit
-import AVFAudio
 import Foundation
 import GRDB
 import LibSignalClient
@@ -168,8 +167,6 @@ import SignalUI
     @ObservationIgnored var ringtone: NSSound?
     /// The voice note being recorded (VoiceRecorder.swift), and its engine, samples and task.
     var recording: VoiceRecording?
-    @ObservationIgnored var recorderEngine: AVAudioEngine?
-    @ObservationIgnored var recorderSamples: MicSamples?
     @ObservationIgnored var recorderTask: Task<Void, Never>?
     /// The live composer's rich text (mentions, styles) and its "@query" (MentionSuggestions).
     @ObservationIgnored let composer = ComposerController()

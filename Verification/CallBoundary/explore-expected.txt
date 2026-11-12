@@ -1,0 +1,6 @@
+out-allowed OK
+commands-reach-their-generation OK
+loss-ends-older-calls OK
+live-endpoint-has-self OK
+stale-commands-refused OK
+message-to-app-known FAIL

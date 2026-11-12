@@ -1,8 +1,9 @@
 # The broker: the app and its sandboxed helpers
 
 The eleventh verification slice covers what a sandboxed helper's reply can do in the app: the media
-decoder, the voice-note encoder, the link-preview parser and fetcher, and the GIF service. It
-has three parts:
+decoder, the voice-note service (which records from the microphone and encodes), the link-preview
+parser and fetcher, and the GIF service. The calling service (ringrtc) has a slice of its own,
+[CallBoundary](../CallBoundary/README.md). This slice has three parts:
 - a Lean 4 model of the app's channels to them (`XPCChannel` and `MediaXPCClient` in
   `MediaXPCInterface`), with machine-checked proofs;
 - Swift tests that run production against hostile helpers;
@@ -31,8 +32,8 @@ Only that first event reaches the caller, and only once.
 - A reply is decoded as the request's own result type and validated with the request's own
   parameters. For example, a thumbnail must be exactly the size this request asked for.
 - A reply that arrives after its request ended is too late and is discarded. If it names a
-  session the helper opened for the request (a video player or a recording), the client closes
-  that session.
+  session the helper opened for the request (a video player, a recording, or a recording from
+  the microphone), the client closes that session.
 
 The helper is the adversary. It can:
 - answer any message it was sent, with anything, at any time;
@@ -78,7 +79,7 @@ descriptors in a reply are ignored, so no reply becomes a file operation.
 | `crash_ends` | After a crash, nothing on that channel is still waiting, and there is no live session. |
 | `send_fresh` | With no live session, a request goes on a new session that no earlier request used. |
 | `other_channel` | **Channels are separate.** An event on one helper's channel leaves every request on the other channel, and the other channel's session, unchanged. |
-| `noLeak_holds` | **No helper session is left behind.** A session a reply named for its request is either the caller's or released. This holds whether the reply came in time, was refused, or came after the request ended. |
+| `noLeak_holds` | **No helper session is left behind.** A session a reply named for its request is either the caller's or released. This holds whether the reply came in time, was refused, or came after the request ended. A recording from the microphone (`recordVoiceNote`) is such a session: one that starts after its caller stopped waiting is cancelled at once, so the microphone is not left on. |
 | `releaseNamed_holds` | A release goes to the helper that named the session, and names only sessions that helper named. Video ids never go to the voice service, and voice ids never go to the decoder. |
 | `strikes_holds` | **The strike count is exact**: an input gets two strikes for each timed-out request that carried it, and one for each ended session it was in flight on. |
 | `quarantine_cause` | **An input is quarantined only if it hung, or if it was in flight on two different sessions that ended.** A single crash never quarantines anything. |
@@ -118,6 +119,15 @@ status guards it.
   - **Before:** a reply arriving between the client's budget and the service's own cancellation
     (one second later) left the session open in the helper. The decoder allows 24 open videos
     and the encoder 4 recordings. With B2, every cancelled open would have leaked one.
+- **B4: a microphone recording that starts too late is cancelled.**
+  - **Now:** `recordVoiceNote` (the voice-note service records the microphone itself, since the
+    app may not) releases a late reply's recording like `startVoiceNote`: `cancelVoiceNote`.
+  - **Before** (only during the work that added it, never released): its caller could stop
+    waiting during the permission prompt (cancelled, or past its 120 s budget). The recording then
+    started with nobody to poll or finish it, until the service's own guard stopped it after
+    10 s.
+  - **The model:** `start` carries whether it records the microphone. Every theorem holds for
+    both.
 - **For the rig:**
   - `XPCChannel` has an internal init that takes the watchdog's sleep, so tests fire timeouts
     themselves.
@@ -128,7 +138,8 @@ status guards it.
 **`BrokerConformanceTests.randomRuns`** (SignalMediaService). It runs 300 runs of 30 events
 against production `MediaXPCClient`, with two hostile helpers: in-process listeners on raw XPC
 that keep every message.
-- **App calls:** `thumbnail` at three sizes, `openVideo`, and `startVoiceNote`, on four inputs.
+- **App calls:** `thumbnail` at three sizes, `openVideo`, `startVoiceNote` and `recordVoiceNote`,
+  on four inputs.
 - **Helper replies**, to any message the helper holds (in time, again, late, or on an ended
   session):
   - mostly the result the request expects;
@@ -177,6 +188,7 @@ Mutants (step 6), each of which must fail step 5:
   - a video session opened too late is kept;
   - a video session whose answer is refused is kept;
   - a recording opened too late is kept;
+  - a recording from the microphone opened too late is kept;
   - every release goes to the decoder.
 - **Validation:** a thumbnail is checked against a fixed size.
 - **Between helpers:**
@@ -185,7 +197,7 @@ Mutants (step 6), each of which must fail step 5:
   - a GIF URL with a port counts as the CDN;
   - a page's preview URLs are not checked.
 
-All 19 are killed.
+All 20 are killed.
 
 ## 5. Assumptions and limitations
 

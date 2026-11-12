@@ -56,7 +56,8 @@ let package = Package(
                 .product(name: "SignalText", package: "SignalText"),
                 // The media service's interface only: decoders never link into SignalCore.
                 .product(name: "MediaXPCInterface", package: "SignalMediaService"),
-                // Calling (ringrtc through our C ABI; not a media parser).
+                // Calling: RingRTC's Swift layer only. ringrtc itself runs in SignalCalling.xpc
+                // (the app hands CallingService that endpoint; tests one in this process).
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
             ],
             swiftSettings: strict,
@@ -66,6 +67,7 @@ let package = Package(
             name: "SignalCoreTests",
             dependencies: ["SignalCore", "SignalProtos", .product(name: "LibSignalClient", package: "libsignal"),
                            .product(name: "SignalRingRTC", package: "SignalRingRTC"),
+                           .product(name: "RingRTCNative", package: "SignalRingRTC"),
                            .product(name: "MediaXPCInterface", package: "SignalMediaService"),
                            .product(name: "SignalMediaDecoder", package: "SignalMediaService"),
                            .product(name: "LinkPreviewFetcher", package: "SignalMediaService"),

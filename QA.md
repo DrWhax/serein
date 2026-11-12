@@ -15,7 +15,7 @@ use the real clock (the audio and video playback engines, the animated-image tes
 
 ## 1. What "everything passes" means
 
-**The Lean slices** (`lean:<slice>` = `Tools/verify-<slice>.sh`, twelve of them; see
+**The Lean slices** (`lean:<slice>` = `Tools/verify-<slice>.sh`, thirteen of them; see
 [Verification/README.md](Verification/README.md)). Each script runs six steps, and all six must
 pass:
 1. no `sorry`, `admit`, `axiom` or other escape hatch in the Lean sources;
@@ -24,8 +24,8 @@ pass:
    theorem statements and their axioms (only `propext`, `Classical.choice`, `Quot.sound`) equal
    `audit-expected.txt`;
 4. the random explorer's verdict for each property equals `explore-expected.txt` (the broker
-   keeps one deliberately false property, `never-refused`, and the crypto slice four limits,
-   which must still fail);
+   keeps one deliberately false property, `never-refused`, the crypto slice four limits, and
+   the call boundary one, `message-to-app-known`; they must still fail);
 5. the Swift conformance rig: production runs against the model's oracle;
 6. the mutants: each bug planted in production must make step 5 fail, and fail in the expected
    way.
@@ -102,6 +102,9 @@ rig covers.
 | `JobQueue` | `lean:queue` `test:core` |
 | `Identity`, `ProtocolStore`, `Messenger+IdentityApproval`, `StorageRecords+Conversations` | `lean:identity` `test:core` |
 | `Calls.swift`, `CallLinksAndPresenting.swift`, SignalUI `ScreenShare.swift` | `lean:calls` `test:app` `test:ui` |
+| SignalRingRTC (`RingRTC`, `RingRTC+Events`, `Call`, `GroupCall`, `CallXPC`, `CallService`), `CallingService`, `Sandbox/SignalCalling.sb` | `lean:callboundary` `test:ringrtc` `test:core` `lean:calls` `app:sandbox` |
+| SignalRingRTC `CallLinkRootKey` (call-link keys, era ids) | `test:ringrtc` (compared with ringrtc's own) |
+| Voice-note recording (`VoiceNoteService`, `MediaXPCClient.recordVoiceNote`, the app's `VoiceRecorder.swift`), `Sandbox/SignalVoiceNoteEncoder.sb`, `Serein.sb`'s microphone rule | `lean:broker` `test:media` `app:sandbox` (it records a second from the terminal's microphone), and one real voice note in the app |
 | SignalUI components | `test:ui` (the snapshot tests compare with upstream Storybook captures) |
 | Transport padding (`MessageSender.pad`, `MessageReceiver.unpad`); a key derivation (`StorageService`, `Stickers`, `StorageRecords.roomId`, `ProfileService.accessKeyVerifier`, `ProvisioningCipher`, `DeviceNameCipher`); profile padding (`ProfileService`); `AttachmentCipher.decryptV1` | `lean:crypto` `test:core` `vectors` |
 | Other crypto in SignalCore | `vectors` `test:core` |
@@ -134,11 +137,14 @@ this machine. The Lean column is the number of theorems in `audit-expected.txt`.
 hour. The SignalMediaService, SignalUI, SignalCore and app tests, Broker, the lint, the sandbox
 check and the vectors are from a second run after the fixes that run needed; everything else is
 from the first. `lean:crypto` and `test:core` are from a later run, when the crypto slice was added.
+`lean:callboundary`, `lean:broker`, `lean:calls`, `app:sandbox` and the RingRTC, SignalCore, media
+and app tests are from 2026-11-12, after ringrtc moved into SignalCalling.xpc.
 
 | Step | Lean theorems | Swift | Mutants killed | Time |
 |---|---|---|---|---|
 | `lean:attachments` | 5 | rig: 4 tests | 14 | 1.5 min |
-| `lean:broker` | 19 | rig: 4 tests | 19 | 2.5 min |
+| `lean:broker` | 19 | rig: 4 tests | 20 | 2.5 min |
+| `lean:callboundary` | 9 | rig: 1 test (200 runs) | 18 | 4 min |
 | `lean:calls` | 15 | rig: 16 tests | 10 | 16.5 min |
 | `lean:codecs` | 9 | rig: 4 tests | 21 | 2 min |
 | `lean:crypto` | 32 | rig: 9 tests | 24 | 2.5 min |
@@ -150,10 +156,10 @@ from the first. `lean:crypto` and `test:core` are from a later run, when the cry
 | `lean:resend` | 6 | rig: 1 test | 11 | 1 min |
 | `lean:send` | 14 | rig: 3 tests | 12 | 2 min |
 | `test:codecs` | | 146 tests (12 test runs) | | 0.5 min |
-| `test:core` | | 285 tests | | 1 min |
+| `test:core` | | 286 tests | | 1 min |
 | `test:i18n` | | 24 tests | | 5 s |
-| `test:media` | | 78 tests | | 10 s |
-| `test:ringrtc` | | 5 tests | | 2 s |
+| `test:media` | | 80 tests | | 10 s |
+| `test:ringrtc` | | 17 tests | | 1.5 min |
 | `test:ui` | | 561 tests | | 13.5 min |
 | `test:app` | | 35 + 5 tests | | 20 s |
 | `lint:codecs` | | ok | | 3 s |

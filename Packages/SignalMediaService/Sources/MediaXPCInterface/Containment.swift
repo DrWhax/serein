@@ -206,15 +206,19 @@ extension MediaRequest {
         case .stickerImage(let b), .displayImage(let b, _), .displayAnimation(let b, _), .imageInfo(let b), .thumbnail(let b, _), .scaleForSending(let b, _, _),
              .stripMetadata(let b, _), .convertHEIC(let b), .audioSummary(let b), .decodeAudio(let b, _, _), .videoInfo(let b),
              .posterFrame(let b), .openVideo(let b): return b
-        case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote, .videoFrames, .seekVideo, .closeVideo: return nil
+        case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote, .recordVoiceNote, .voiceNoteProgress, .videoFrames, .seekVideo,
+             .closeVideo: return nil
         }
     }
 
     /// How long the request may take: a few times what the largest legitimate input needs.
     public var budget: Duration {
         switch self {
-        case .imageInfo, .videoInfo, .openVideo, .startVoiceNote, .appendVoiceNote, .cancelVoiceNote, .seekVideo, .closeVideo:
+        case .imageInfo, .videoInfo, .openVideo, .startVoiceNote, .appendVoiceNote, .cancelVoiceNote, .voiceNoteProgress, .seekVideo, .closeVideo:
             return .seconds(10)
+        // The first time, macOS asks the user for the microphone.
+        case .recordVoiceNote:
+            return .seconds(120)
         case .displayImage, .thumbnail, .stickerImage, .stripMetadata, .posterFrame, .videoFrames, .decodeAudio:
             return .seconds(15)
         case .scaleForSending, .convertHEIC, .audioSummary, .finishVoiceNote, .displayAnimation:

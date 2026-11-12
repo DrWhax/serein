@@ -1,26 +1,29 @@
-; Seatbelt rules for SignalVoiceNoteEncoder.xpc, on top of App Sandbox (the only other
-; entitlement). Tools/build-app.sh puts each rule (one per line; `;` lines are comments) in the
-; service's com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox
-; profile. App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every
-; deny has a filter that matches everything. The encoder needs none of this: it is handed the
-; recorded samples over its XPC connection and returns the MP3 and its waveform, in memory.
-; Tools/check-sandbox-profile.sh runs a probe service under these rules.
+; Seatbelt rules for SignalVoiceNoteEncoder.xpc, on top of App Sandbox with the microphone (the
+; only other entitlement). Tools/build-app.sh puts each rule (one per line; `;` lines are
+; comments, `;!` lines entitlements) in the service's com.apple.security.temporary-exception.sbpl
+; entitlement, appended to the App Sandbox profile. App Sandbox's own allow rules carry filters
+; and win over an unfiltered deny, so every deny has a filter that matches everything. The
+; service records voice notes from the microphone (macOS asks the user on the app's behalf; the
+; app itself may not use it) and returns the MP3 and its waveform, in memory: it needs the audio
+; system, which reads system files (its components, CoreAudio's own checks) and talks to its
+; services: so those stay as App Sandbox allows them, and nothing else does. Recording from the
+; microphone was tried under stricter rules: with no system file readable the audio unit is not
+; even made, and AVAudioEngine raises. Tools/check-sandbox-profile.sh runs a probe service under
+; these rules and records a voice note with the real service.
 ;
-; Files: nothing read (not even system files), written, or ioctl'd.
-; Its own bundle (SignalVoiceNoteEncoder.xpc: the executable, Info.plist with its peers' signing
-; identifiers, the signature) stays readable; nothing else is. Checking peers needs no files:
-; the system checks each session's peer against its requirement (XPCPeer.swift).
-(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalVoiceNoteEncoder\.xpc(/.*)?$"))))
+;! com.apple.security.device.audio-input
+;
+; No user data: nothing under /Users (the home directory and this service's container) or
+; mounted volumes; its own bundle (SignalVoiceNoteEncoder.xpc: the executable, Info.plist with its
+; peers' signing identifiers, the signature) stays readable. Nothing written or ioctl'd.
+(deny file-read* (require-all (subpath "/Users") (require-not (regex #"/SignalVoiceNoteEncoder\.xpc(/.*)?$"))))
+(deny file-read* (require-all (subpath "/Volumes") (require-not (regex #"/SignalVoiceNoteEncoder\.xpc(/.*)?$"))))
 (deny file-write* (subpath "/"))
 (deny file-ioctl (subpath "/"))
 ; No other programs, no children.
 (deny process-exec* (subpath "/"))
 (deny process-fork)
-; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any. The
-; peer checks need none either (Tools/check-sandbox-profile.sh: served as the app, refused
-; otherwise).
-(deny mach-lookup (global-name-regex #".*"))
-(deny mach-lookup (local-name-regex #".*"))
+; Registers no Mach services.
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))
 ; No network of any kind (App Sandbox without network entitlements already denies IP sockets).
@@ -28,11 +31,13 @@
 (deny network* (local ip))
 (deny network* (remote unix-socket))
 (deny network* (local unix-socket))
-; No preferences, devices, shared memory or semaphores.
-(deny user-preference-read (preference-domain-regex #".*"))
-(deny user-preference-write (preference-domain-regex #".*"))
+; No camera, no devices (the audio system works through its own services), no scripting other
+; apps, no preferences written, no shared memory written, no semaphores.
+(deny device-camera)
 (deny iokit-open (iokit-user-client-class-regex #".*"))
-(deny ipc-posix-shm* (ipc-posix-name-regex #".*"))
+(deny appleevent-send)
+(deny user-preference-write (preference-domain-regex #".*"))
+(deny ipc-posix-shm-write* (ipc-posix-name-regex #".*"))
 (deny ipc-posix-sem (ipc-posix-name-regex #".*"))
 ; No changing kernel state, no signalling other processes.
 (deny sysctl-write)

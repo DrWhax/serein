@@ -8,6 +8,7 @@ import Synchronization
 import GRDB
 import LibSignalClient
 import MediaXPCInterface
+public import SignalRingRTC
 
 public actor SignalClient {
     /// Where the client talks to.
@@ -82,12 +83,12 @@ public actor SignalClient {
     /// The calling service for the linked account (CallingClass): ringrtc with our signalling,
     /// SFU requests, relays and group credentials. Created on the main actor (RingRTC's
     /// callbacks and the call UI live there).
-    public func makeCallingService(sfuURL: URL, fieldTrials: [String: String] = [:]) async throws -> CallingService? {
+    public func makeCallingService(sfuURL: URL, fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) async throws -> CallingService? {
         guard let s = session else { return nil }
         let database = database, socket = socket
         return try await MainActor.run {
             try CallingService(account: s.account, database: database, socket: socket, http: s.http, messenger: s.messenger, groups: s.groups.api,
-                               credentials: s.groups.api.credentials, config: CallingConfig(sfuURL: sfuURL), fieldTrials: fieldTrials)
+                               credentials: s.groups.api.credentials, config: CallingConfig(sfuURL: sfuURL), fieldTrials: fieldTrials, endpoint: endpoint)
         }
     }
 

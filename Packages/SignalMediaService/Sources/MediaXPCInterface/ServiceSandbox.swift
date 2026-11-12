@@ -1,9 +1,9 @@
 // The services' start-up check that their Seatbelt profile is in force (Sandbox/*.sb, put in
 // each service's entitlements by Tools/build-app.sh). An SBPL rule that does not compile is
 // dropped silently, so the profile is tested, not assumed: nothing can be written, not even
-// in the service's own container, no program can be started, and (offline services) no system
-// file can be read, or (the web-facing services, which need the system's TLS and DNS) nothing
-// under the user's home. Fails closed.
+// in the service's own container, no program can be started, and no system file can be read,
+// or (the services that need the system's TLS, DNS or audio: the web-facing ones, calling, voice
+// notes) nothing under the user's home. Fails closed.
 
 import Foundation
 
@@ -15,9 +15,9 @@ public enum ServiceSandbox {
         if let r = home.range(of: "/Library/Containers/") { return String(home[..<r.lowerBound]) }
         return home
     }
-    public static func isConfined(network: Bool = false) -> Bool {
+    public static func isConfined(systemFiles: Bool = false) -> Bool {
         let fm = FileManager.default
-        if !network {
+        if !systemFiles {
             if fm.contents(atPath: "/System/Library/CoreServices/SystemVersion.plist") != nil { return false }
             if fm.contents(atPath: "/etc/hosts") != nil { return false }
         }
@@ -33,8 +33,8 @@ public enum ServiceSandbox {
     }
 
     /// Exits (before serving anything) unless confined.
-    public static func requireConfinement(_ service: String, network: Bool = false) {
-        guard isConfined(network: network) else {
+    public static func requireConfinement(_ service: String, systemFiles: Bool = false) {
+        guard isConfined(systemFiles: systemFiles) else {
             FileHandle.standardError.write(Data("\(service): sandbox profile not in force, exiting\n".utf8))
             exit(78)
         }

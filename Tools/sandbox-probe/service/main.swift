@@ -1,6 +1,7 @@
 // A probe XPC service signed with the profile under test: it tries what the profile must deny
 // and reports each outcome ("allowed" or "denied") to the host. Compiled with
 // MediaXPCInterface's sources, so it listens exactly as the real services do.
+import AudioToolbox
 import Foundation
 import IOKit
 import Network
@@ -60,9 +61,33 @@ func probes() -> String {
         IOServiceClose(connect)
         return true
     }
+    // UDP, as WebRTC sends media: to a documentation address (192.0.2.1, nothing answers) and
+    // to this machine. Only EPERM means the sandbox refused (an unreachable network is not it).
+    check("send udp") { udp(to: "192.0.2.1") }
+    check("send udp to 127.0.0.1") { udp(to: "127.0.0.1") }
+    check("bind a udp port") {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        let r = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        return r == 0
+    }
+    // The audio input runs (the audio system's services and devices), and hears something.
+    // It opens the microphone for half a second and keeps nothing. Without the microphone (no
+    // entitlement, or Serein.sb's deny) the input still runs but hears exact silence, as it
+    // also does when the user never allowed the microphone to whatever started this check.
+    // CoreAudio itself crashes (CAAppWorkArounds::CSCheckFix) where no system file can be read:
+    // there it cannot run at all, which is reported without starting it.
+    let systemReadable = fm.contents(atPath: "/System/Library/CoreServices/SystemVersion.plist") != nil
+    let (frames, peak) = systemReadable ? listen() : (0, 0)
+    out.append("\(frames > 0 ? "allowed" : "denied"): start the audio input")
+    out.append("\(peak > 0 ? "allowed" : "denied"): hear the microphone")
     // Each real service runs its own check at start-up; under its profile it must pass.
-    out.append("\(ServiceSandbox.isConfined() ? "allowed" : "denied"): pass the offline services' start-up check")
-    out.append("\(ServiceSandbox.isConfined(network: true) ? "allowed" : "denied"): pass the web services' start-up check")
+    out.append("\(ServiceSandbox.isConfined() ? "allowed" : "denied"): pass the start-up check without system files")
+    out.append("\(ServiceSandbox.isConfined(systemFiles: true) ? "allowed" : "denied"): pass the start-up check with system files")
     return out.joined(separator: "\n")
 }
 
@@ -87,6 +112,58 @@ func nonisolatedReady(_ sem: DispatchSemaphore, _ report: (Bool) -> Void) {
 }
 
 final class Box: @unchecked Sendable { var result = false }   // set before the semaphore it waits on
+
+final class Counter: @unchecked Sendable {
+    let lock = NSLock()
+    var n = 0
+    var top: Float = 0
+    func add(_ k: Int, _ level: Float) { lock.lock(); n += k; top = max(top, level); lock.unlock() }
+    var total: Int { lock.lock(); defer { lock.unlock() }; return n }
+    var peak: Float { lock.lock(); defer { lock.unlock() }; return top }
+}
+
+/// Half a second of the default input through an audio queue (CoreAudio's C API, which reports
+/// a refused service as an error where AVAudioEngine raises): frames delivered, peak level.
+func listen() -> (Int, Float) {
+    var format = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+                                             mFormatFlags: kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsPacked, mBytesPerPacket: 4,
+                                             mFramesPerPacket: 1, mBytesPerFrame: 4, mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
+    let heard = Counter()
+    var queue: AudioQueueRef?
+    let made = AudioQueueNewInputWithDispatchQueue(&queue, &format, 0, DispatchQueue(label: "probe.audio")) { q, buffer, _, _, _ in
+        let n = Int(buffer.pointee.mAudioDataByteSize) / 4
+        let samples = buffer.pointee.mAudioData.assumingMemoryBound(to: Float.self)
+        var peak: Float = 0
+        for i in 0..<n { peak = max(peak, abs(samples[i])) }
+        heard.add(n, peak)
+        AudioQueueEnqueueBuffer(q, buffer, 0, nil)
+    }
+    guard made == noErr, let q = queue else { return (0, 0) }
+    defer { AudioQueueDispose(q, true) }
+    for _ in 0..<3 {
+        var b: AudioQueueBufferRef?
+        if AudioQueueAllocateBuffer(q, 4096, &b) == noErr, let b { AudioQueueEnqueueBuffer(q, b, 0, nil) }
+    }
+    guard AudioQueueStart(q, nil) == noErr else { return (0, 0) }
+    Thread.sleep(forTimeInterval: 0.5)
+    AudioQueueStop(q, true)
+    return (heard.total, heard.peak)
+}
+
+/// One datagram to `host`:9; false only when the sandbox refused it.
+func udp(to host: String) -> Bool {
+    let fd = socket(AF_INET, SOCK_DGRAM, 0)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = UInt16(9).bigEndian
+    inet_pton(AF_INET, host, &addr.sin_addr)
+    let byte: [UInt8] = [0]
+    let n = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, byte, 1, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+    return n == 1 || (errno != EPERM && errno != EACCES)
+}
 
 struct Probe: XPCMessageHandler {
     var maxRequestBytes: Int { 0 }

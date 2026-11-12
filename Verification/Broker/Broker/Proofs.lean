@@ -713,7 +713,7 @@ theorem inv_call {s : St} (k : Kind) (hi : Inv s) : Inv (call s k) := by
     simp only [call]; split
     · exact inv_refuse hi (by simp)
     · exact inv_send hi (by simp)
-  | start =>
+  | start mic =>
     simp only [call]; split
     · exact inv_refuse hi (by simp)
     · exact inv_send hi (by simp)
@@ -955,7 +955,7 @@ theorem final_stable (s : St) (e : Ev) {m : Nat} {q : Req} (hq : s.reqs[m]? = so
       simp only [call]; split
       · exact ⟨q, getElem?_append_of_some hq, rfl, rfl⟩
       · exact ⟨q, send_old hq, rfl, rfl⟩
-    | start =>
+    | start mic =>
       simp only [call]; split
       · exact ⟨q, getElem?_append_of_some hq, rfl, rfl⟩
       · exact ⟨q, send_old hq, rfl, rfl⟩
@@ -1112,7 +1112,7 @@ theorem other_channel {s : St} {e : Ev} {c : Ch} (h : Reach s) (hc : chOf s e = 
       simp only [call]; split
       · exact ⟨fun _ _ hq _ => getElem?_append_of_some hq, fun _ _ => rfl⟩
       · exact ⟨fun _ _ hq _ => send_old hq, fun _ h' => by rw [send_live, opened_live_ne h']⟩
-    | start =>
+    | start mic =>
       simp only [call]; split
       · exact ⟨fun _ _ hq _ => getElem?_append_of_some hq, fun _ _ => rfl⟩
       · exact ⟨fun _ _ hq _ => send_old hq, fun _ h' => by rw [send_live, opened_live_ne h']⟩

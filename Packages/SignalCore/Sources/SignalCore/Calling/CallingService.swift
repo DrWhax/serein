@@ -118,8 +118,9 @@ public final class CallingService {
         guard generation == setupGeneration else { throw CallingError.cancelled }
     }
 
+    /// `endpoint`: where ringrtc runs (the app: SignalCalling.xpc, `RemoteCallEndpoint.factory()`).
     public init(account: Account, database: SignalDatabase, socket: SocketManager, http: HTTPClient, messenger: Messenger, groups: GroupsAPI,
-                credentials: GroupCredentials, config: CallingConfig, fieldTrials: [String: String] = [:]) throws {
+                credentials: GroupCredentials, config: CallingConfig, fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) throws {
         self.account = account
         self.database = database
         self.socket = socket
@@ -128,7 +129,7 @@ public final class CallingService {
         self.groups = groups
         self.credentials = credentials
         self.config = config
-        rtc = try RingRTC(fieldTrials: fieldTrials)
+        rtc = try RingRTC(fieldTrials: fieldTrials, endpoint: endpoint)
         try rtc.setSelfUuid(Self.uuidBytes(account.aci))
         wire()
     }
@@ -367,9 +368,11 @@ public final class CallingService {
     // MARK: SFU HTTP
 
     /// `#handleSendHttpRequest`: ringrtc's SFU requests over our HTTPS client. Error statuses
-    /// reach ringrtc with an empty body; transport failures as failures.
+    /// reach ringrtc with an empty body; transport failures as failures. Only to the SFU
+    /// (stricter than upstream: ringrtc runs in the calling service, which must not use the app
+    /// to reach anything else).
     func handleSendHttpRequest(requestId: UInt32, url: String, method: HttpMethod, headers: [String: String], body: Data?) {
-        guard let u = URL(string: url), u.scheme == "https" || u.scheme == "http" else {
+        guard let u = URL(string: url), Self.isSFU(u, config.sfuURL) else {
             rtc.httpRequestFailed(requestId: requestId, debugInfo: "bad url")
             return
         }
@@ -390,6 +393,14 @@ public final class CallingService {
                 self.rtc.httpRequestFailed(requestId: requestId, debugInfo: "\(error)")
             }
         }
+    }
+
+    /// `url` is on the SFU: its scheme, host and port, under its path.
+    nonisolated static func isSFU(_ url: URL, _ sfu: URL) -> Bool {
+        guard url.scheme == "https" || url.scheme == "http", url.scheme == sfu.scheme, let host = url.host, host.lowercased() == sfu.host?.lowercased(),
+              url.port == sfu.port, url.user == nil, url.password == nil else { return false }
+        let base = sfu.path.hasSuffix("/") ? sfu.path : sfu.path + "/"
+        return url.path == sfu.path || url.path.hasPrefix(base) || sfu.path.isEmpty
     }
 
     // MARK: direct calls

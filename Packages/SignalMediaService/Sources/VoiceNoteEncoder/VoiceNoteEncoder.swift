@@ -1,8 +1,9 @@
-// SignalVoiceNoteEncoder.xpc's work: voice notes recorded in the app are encoded to MP3 here,
-// apart from the media decoder, so that nothing received (decoded in SignalMediaDecoder.xpc)
-// ever shares a process with what the user is recording, and a decoder stopped by its
-// watchdog cannot take a recording with it. It links the MP3 encoder and nothing that parses
-// received data.
+// SignalVoiceNoteEncoder.xpc's work: voice notes are recorded from the microphone here
+// (VoiceNoteRecorder.swift; the app holds no microphone) and encoded to MP3, apart from the
+// media decoder, so that nothing received (decoded in SignalMediaDecoder.xpc) ever shares a
+// process with what the user is recording, and a decoder stopped by its watchdog cannot take a
+// recording with it. It links the MP3 encoder and nothing that parses received data, and has
+// no network.
 
 import AudioMP3
 import Foundation
@@ -49,36 +50,4 @@ public actor VoiceNoteSessions {
     }
 
     public func cancel(_ id: UUID) { sessions[id] = nil }
-}
-
-
-/// The service side: only voice-note requests; anything else is refused.
-public final class VoiceNoteXPCHandler: XPCMessageHandler {
-    let sessions = VoiceNoteSessions()
-    let gate: RequestGate
-
-    public init(gate: RequestGate = RequestGate(maxRunning: 2, maxWaiting: 16)) { self.gate = gate }
-
-    public var maxRequestBytes: Int { VoiceNoteLimits.maxRequestBytes }
-
-    public func reply(to request: XPCMessage) async throws -> XPCMessage {
-        let decoded = try MediaXPCWire.decode(MediaRequest.self, try request.requirePayload(), maxBytes: VoiceNoteLimits.maxRequestBytes)
-        let sessions = sessions
-        return XPCMessage(payload: try await gate.run(budget: decoded.budget) { try await Self.run(decoded, sessions) })
-    }
-
-    static func run(_ request: MediaRequest, _ s: VoiceNoteSessions) async throws -> Data {
-        switch request {
-        case .startVoiceNote(let rate): return try MediaXPCWire.encode(try await s.start(sampleRate: rate))
-        case .appendVoiceNote(let id, let samples):
-            try await s.append(id, samples)
-            return try MediaXPCWire.encode(MediaEmpty())
-        case .finishVoiceNote(let id): return try MediaXPCWire.encode(try await s.finish(id))
-        case .cancelVoiceNote(let id):
-            await s.cancel(id)
-            return try MediaXPCWire.encode(MediaEmpty())
-        default:
-            throw MediaProcessingError.unsupportedFormat
-        }
-    }
 }

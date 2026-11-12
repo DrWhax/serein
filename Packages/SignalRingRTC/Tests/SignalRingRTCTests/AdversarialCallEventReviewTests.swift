@@ -1,9 +1,10 @@
+import RingRTCNative
 import Testing
 @testable import SignalRingRTC
 
 @MainActor @Suite struct AdversarialCallEventReviewTests {
     @Test func oldCallEndMustNotEndTheCurrentCall() throws {
-        let rtc = try RingRTC()
+        let rtc = try RingRTC(endpoint: NativeEndpoint.factory)
         let current = Call(endpoint: rtc.endpoint, remoteUserId: "peer", callId: 200,
                            isIncoming: false, isVideoCall: false, state: .ringing)
         rtc.call = current

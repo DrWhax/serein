@@ -147,6 +147,7 @@ final class HostileHelper: Sendable {
         case .thumbnail(let b, let size)?: return "t:\(size):\(Names.inputNumber(b))"
         case .openVideo(let b)?: return "o:\(Names.inputNumber(b))"
         case .startVoiceNote?: return "s"
+        case .recordVoiceNote?: return "m"
         case .closeVideo(let u)?, .cancelVoiceNote(let u)?: return "r:\(Names.number(u))"
         default: return "?"
         }
@@ -321,7 +322,7 @@ struct BrokerConformanceTests {
         let k = r.below(100)
         if k < 14 { return "ct \(sizes[r.below(3)]) \(r.below(4))" }
         if k < 22 { return "co \(r.below(4))" }
-        if k < 29 { return "cs" }
+        if k < 29 { return r.below(2) == 0 ? "cs" : "cm" }
         if k < 66 {
             let c = r.below(3) < 2 ? "d" : "v"
             guard let hs = held[c], !hs.isEmpty else { return "u \(c)" }
@@ -333,7 +334,7 @@ struct BrokerConformanceTests {
             case (true, .thumbnail(_, let size)?):
                 return r.below(4) == 0 ? "r \(c) \(p) t \(sizes[r.below(3)]) \(size)" : "r \(c) \(p) t \(size) \(size)"
             case (true, .openVideo?): return "r \(c) \(p) o \(names) \(r.below(4) == 0 ? 0 : 1)"
-            case (true, .startVoiceNote?): return "r \(c) \(p) v \(names)"
+            case (true, .startVoiceNote?), (true, .recordVoiceNote?): return "r \(c) \(p) v \(names)"
             case (true, .closeVideo?), (true, .cancelVoiceNote?): return "r \(c) \(p) e"
             default:
                 switch r.below(6) {
@@ -368,6 +369,7 @@ struct BrokerConformanceTests {
             let input = Names.input(Int(words[1])!)
             w.call { c in "s:\(Names.number(try await c.openVideo(input).session))" }
         case "cs": w.call { c in "s:\(Names.number(try await c.startVoiceNote(sampleRate: 48000)))" }
+        case "cm": w.call { c in "s:\(Names.number(try await c.recordVoiceNote()))" }
         case "r": w.helper(words[1]).answer(Int(words[2])!, w.reply(Array(words[3...]), &r))
         case "k": w.helper(words[1]).crash()
         case "u": w.helper(words[1]).unsolicited()

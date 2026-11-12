@@ -6,6 +6,7 @@
 // a call is up the display stays awake (AppModel.isCallActive).
 
 import AppKit
+import CallXPC
 import Foundation
 import GRDB
 import SignalCore
@@ -112,7 +113,8 @@ extension CallingService: CallControl {
         Task { [weak self] in
             guard let self else { return }
             do {
-                guard let service = try await client.makeCallingService(sfuURL: sfu) else { return }
+                // ringrtc runs in SignalCalling.xpc (WebRTC, the call audio, the network paths).
+                guard let service = try await client.makeCallingService(sfuURL: sfu, endpoint: RemoteCallEndpoint.factory()) else { return }
                 await service.register()
                 service.onEvent = { [weak self] e in Task { @MainActor in self?.handleCallingEvent(e) } }
                 service.onCameraNeeded = { [weak self] on in Task { @MainActor in self?.setCameraSending(on) } }

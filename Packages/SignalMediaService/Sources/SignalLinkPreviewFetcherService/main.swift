@@ -9,7 +9,7 @@ import LinkPreviewFetcher
 import MediaXPCInterface
 import WebFetch
 
-ServiceSandbox.requireConfinement("SignalLinkPreviewFetcher", network: true)
+ServiceSandbox.requireConfinement("SignalLinkPreviewFetcher", systemFiles: true)
 // Straight to the site, and only to sites on the public internet (WebFetch/DestinationPolicy.swift).
 let handler = LinkPreviewFetcherXPCHandler(transport: PublicDestinationTransport(URLSessionWebTransport(proxy: .direct)),
                                            parserPeer: XPCPeer.required(.parser, by: "SignalLinkPreviewFetcher"))

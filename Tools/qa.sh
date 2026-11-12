@@ -16,7 +16,7 @@ cd "$root" || exit 1
 logs="$root/.build/qa"
 mkdir -p "$logs"
 
-slices="attachments broker calls codecs crypto group identity media modifiers queue resend send"
+slices="attachments broker callboundary calls codecs crypto group identity media modifiers queue resend send"
 all=""
 for s in $slices; do all="$all lean:$s"; done
 all="$all test:codecs test:core test:i18n test:media test:ringrtc test:ui test:app lint:codecs app:sandbox vectors"

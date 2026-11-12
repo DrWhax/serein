@@ -37,8 +37,10 @@ inductive Kind
   | thumb (size input : Nat)
   /-- `openVideo(bytes)`: opens a playback session in the decoder. -/
   | openV (input : Nat)
-  /-- `startVoiceNote`: opens a recording session in the voice-note encoder. -/
-  | start
+  /-- `startVoiceNote` (`mic` false: the app hands it samples) or `recordVoiceNote` (`mic` true:
+  the service records the microphone, after the user's permission): opens a recording session
+  in the voice-note service. The two differ in the request and in their budgets only. -/
+  | start (mic : Bool)
   /-- `closeVideo(u)` (decoder) or `cancelVoiceNote(u)` (voice). -/
   | release (c : Ch) (u : Nat)
   deriving DecidableEq, Repr
@@ -46,7 +48,7 @@ inductive Kind
 def Kind.ch : Kind → Ch
   | .thumb .. => .dec
   | .openV _ => .dec
-  | .start => .voice
+  | .start _ => .voice
   | .release c _ => c
 
 /-- The untrusted bytes a request hands the decoder: what quarantine is keyed by. -/
@@ -131,7 +133,7 @@ def accept : Kind → Reply → Status × Option Nat
   | .thumb size _, .thumb w h => (if w = size ∧ h = size then .ok (.thumb w h) else .failed .refused, none)
   | .openV _, .opened u true => (.ok (.session u), none)
   | .openV _, .opened u false => (.failed .refused, some u)
-  | .start, .voiceId u => (.ok (.session u), none)
+  | .start _, .voiceId u => (.ok (.session u), none)
   | .release .., .empty => (.ok .empty, none)
   | _, .error => (.failed .helper, none)
   | _, _ => (.failed .refused, none)
@@ -139,7 +141,7 @@ def accept : Kind → Reply → Status × Option Nat
 /-- A reply after its request ended: the session it names, if the request opens one. -/
 def late : Kind → Reply → Option Nat
   | .openV _, .opened u _ => some u
-  | .start, .voiceId u => some u
+  | .start _, .voiceId u => some u
   | _, _ => none
 
 /-- Whether session `id` has ended (or does not exist). -/

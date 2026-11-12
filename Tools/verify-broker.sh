@@ -131,6 +131,8 @@ mutant "a video session whose answer is refused is kept" "$c" \
   's/\} catch \{\n            release\(\.closeVideo\(o\.session\)\)\n            throw error/} catch {\n            throw error/'
 mutant "a recording opened too late is kept" "$c" \
   's/\{ \[weak self\] id in self\?\.release\(\.cancelVoiceNote\(id\)\) \}/{ _ in }/'
+mutant "a recording from the microphone opened too late is kept" "$c" \
+  's/\(\.recordVoiceNote, UUID\.self\) \{ \[weak self\] id in self\?\.release\(\.cancelVoiceNote\(id\)\) \}/(.recordVoiceNote, UUID.self)/'
 mutant "every release goes to the decoder" "$c" \
   's/Task \{ _ = try\? await self\.callData\(request\) \}/Task { _ = try? await self.channel.send(try MediaXPCWire.encode(request), maxReply: request.maxReplyBytes) }/'
 mutant "a thumbnail is checked against a fixed size" "$c" \

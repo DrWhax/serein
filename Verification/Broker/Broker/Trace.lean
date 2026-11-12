@@ -3,7 +3,8 @@ import Broker.Model
 /-! # Notation for the Swift rig
 
 One event per line, as the rig sees it:
-* `ct size input`, `co input`, `cs`: the app calls `thumbnail`, `openVideo`, `startVoiceNote`;
+* `ct size input`, `co input`, `cs`, `cm`: the app calls `thumbnail`, `openVideo`,
+  `startVoiceNote`, `recordVoiceNote`;
 * `r c p reply`: the helper answers the `p`th message it received on channel `c` (`d` or `v`)
   with `t w h`, `o u valid`, `v u`, `e`, `g` (garbage) or `x` (an error, or no payload);
 * `k c`: the helper's session on `c` ends; `u c`: it sends a message nobody asked for;
@@ -52,7 +53,8 @@ def parseEv (s : St) (line : String) : Option Ev :=
   match words line with
   | ["ct", size, i] => do pure (.call (.thumb (← size.toNat?) (← i.toNat?)))
   | ["co", i] => do pure (.call (.openV (← i.toNat?)))
-  | ["cs"] => some (.call .start)
+  | ["cs"] => some (.call (.start false))
+  | ["cm"] => some (.call (.start true))
   | "r" :: c :: p :: rest => do
     let m ← (sentOn s (← parseCh c))[← p.toNat?]?
     pure (.reply m (← parseReply rest))
@@ -77,7 +79,8 @@ def statusCode : Status → String
 def kindCode : Kind → String
   | .thumb size i => s!"t:{size}:{i}"
   | .openV i => s!"o:{i}"
-  | .start => "s"
+  | .start false => "s"
+  | .start true => "m"
   | .release _ u => s!"r:{u}"
 
 def orDash (xs : List String) (sep : String) : String := if xs.isEmpty then "-" else sep.intercalate xs
