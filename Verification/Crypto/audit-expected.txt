@@ -1,0 +1,728 @@
+def Crypto.paddingBlock : Nat :=
+80
+def Crypto.paddedLength : Nat → Nat :=
+fun n => (n + 2 + paddingBlock - 1) / paddingBlock * paddingBlock - 1
+def Crypto.pad : List Nat → List Nat :=
+fun m => m ++ 128 :: List.replicate (paddedLength m.length - m.length - 1) 0
+def Crypto.stripRev : List Nat → Option (List Nat) :=
+fun x => List.brecOn x stripRev._f
+def Crypto.unpad : List Nat → Option (List Nat) :=
+fun d => Option.map List.reverse (stripRev d.reverse)
+def Crypto.unpadUpstream : List Nat → Option (List Nat) :=
+fun d => if (d.all fun x => x == 0) = true then some d else unpad d
+def Crypto.ascii : String → List Nat :=
+fun s => List.map Char.toNat s.toList
+def Crypto.zeros : Nat → List Nat :=
+fun n => List.replicate n 0
+def Crypto.Bytes : List Nat → Prop :=
+fun l => ∀ (x : Nat), x ∈ l → x < 256
+@[irreducible] def Crypto.dec : Nat → List Nat :=
+WellFounded.Nat.fix (fun x => x) fun n a => if h : n < 10 then [48 + n] else a (n / 10) ⋯ ++ [48 + n % 10]
+def Crypto.b64char : Nat → Nat :=
+fun n => if n < 26 then 65 + n else if n < 52 then 71 + n else if n < 62 then n - 4 else if n = 62 then 43 else 47
+def Crypto.b64 : List Nat → List Nat :=
+fun x => List.brecOn x b64._f
+inductive Crypto.Source : Type
+number of parameters: 0
+constructors:
+Crypto.Source.masterKey : Source
+Crypto.Source.storageKey : Source
+Crypto.Source.recordIkm : Source
+Crypto.Source.groupV1Id : Source
+Crypto.Source.packKey : Source
+Crypto.Source.callLinkRoot : Source
+Crypto.Source.provisioningSecret : Source
+Crypto.Source.deviceNameSecret : Source
+Crypto.Source.deviceNameAuth : Source
+Crypto.Source.deviceNameCipher : Source
+Crypto.Source.accessKey : Source
+inductive Crypto.Prim : Type
+number of parameters: 0
+constructors:
+Crypto.Prim.hmac : Prim
+Crypto.Prim.hkdf : List Nat → Nat → Prim
+structure Crypto.Derivation : Type
+number of parameters: 0
+fields:
+  Crypto.Derivation.source : Source
+  Crypto.Derivation.prim : Prim
+  Crypto.Derivation.input : List Nat
+constructor:
+  Crypto.Derivation.mk (source : Source) (prim : Prim) (input : List Nat) : Derivation
+inductive Crypto.Use : Type
+number of parameters: 0
+constructors:
+Crypto.Use.storageKey : Use
+Crypto.Use.manifestKey : Nat → Use
+Crypto.Use.itemKey : List Nat → Use
+Crypto.Use.itemKeyIkm : List Nat → Use
+Crypto.Use.groupV1MasterKey : Use
+Crypto.Use.stickerPackKeys : Use
+Crypto.Use.callLinkRoomId : Use
+Crypto.Use.provisioningKeys : Use
+Crypto.Use.deviceNameAuth : Use
+Crypto.Use.deviceNameCipher : Use
+Crypto.Use.deviceNameIv : List Nat → Use
+Crypto.Use.deviceNameCipherKey : List Nat → Use
+Crypto.Use.accessKeyVerifier : Use
+def Crypto.derivation : Use → Derivation :=
+fun x =>
+  match x with
+  | Use.storageKey => { source := Source.masterKey, prim := Prim.hmac, input := ascii "Storage Service Encryption" }
+  | Use.manifestKey v => { source := Source.storageKey, prim := Prim.hmac, input := ascii "Manifest_" ++ dec v }
+  | Use.itemKey raw => { source := Source.storageKey, prim := Prim.hmac, input := ascii "Item_" ++ b64 raw }
+  | Use.itemKeyIkm raw =>
+    { source := Source.recordIkm, prim := Prim.hkdf [] 32,
+      input := ascii "20240801_SIGNAL_STORAGE_SERVICE_ITEM_" ++ raw }
+  | Use.groupV1MasterKey =>
+    { source := Source.groupV1Id, prim := Prim.hkdf (zeros 32) 32, input := ascii "GV2 Migration" }
+  | Use.stickerPackKeys => { source := Source.packKey, prim := Prim.hkdf (zeros 32) 64, input := ascii "Sticker Pack" }
+  | Use.callLinkRoomId =>
+    { source := Source.callLinkRoot, prim := Prim.hkdf [] 32, input := ascii "20230501-Signal-CallLinkRootKey-RoomId" }
+  | Use.provisioningKeys =>
+    { source := Source.provisioningSecret, prim := Prim.hkdf [] 64, input := ascii "TextSecure Provisioning Message" }
+  | Use.deviceNameAuth => { source := Source.deviceNameSecret, prim := Prim.hmac, input := ascii "auth" }
+  | Use.deviceNameCipher => { source := Source.deviceNameSecret, prim := Prim.hmac, input := ascii "cipher" }
+  | Use.deviceNameIv p => { source := Source.deviceNameAuth, prim := Prim.hmac, input := p }
+  | Use.deviceNameCipherKey iv => { source := Source.deviceNameCipher, prim := Prim.hmac, input := iv }
+  | Use.accessKeyVerifier => { source := Source.accessKey, prim := Prim.hmac, input := zeros 32 }
+structure Crypto.Canonical : Type
+number of parameters: 0
+fields:
+  Crypto.Canonical.source : Source
+  Crypto.Canonical.hkdf : Bool
+  Crypto.Canonical.salt : List Nat
+  Crypto.Canonical.input : List Nat
+constructor:
+  Crypto.Canonical.mk (source : Source) (hkdf : Bool) (salt input : List Nat) : Canonical
+def Crypto.stripZeros : List Nat → List Nat :=
+fun l => (List.dropWhile (fun x => x == 0) l.reverse).reverse
+def Crypto.Derivation.canonical : Derivation → Canonical :=
+fun d =>
+  match d.prim with
+  | Prim.hmac => { source := d.source, hkdf := false, salt := [], input := d.input }
+  | Prim.hkdf salt length => { source := d.source, hkdf := true, salt := stripZeros salt, input := d.input }
+def Crypto.Use.WF : Use → Prop :=
+fun x =>
+  match x with
+  | Use.itemKey raw => Bytes raw
+  | x => True
+inductive Crypto.Key : Type
+number of parameters: 0
+constructors:
+Crypto.Key.derived : List Nat → Use → Key
+Crypto.Key.profile : Nat → Key
+inductive Crypto.Material : Type
+number of parameters: 0
+constructors:
+Crypto.Material.derived : List Nat → Canonical → Material
+Crypto.Material.profile : Nat → Material
+def Crypto.Key.material : Key → Material :=
+fun x =>
+  match x with
+  | Key.derived s u => Material.derived s (derivation u).canonical
+  | Key.profile k => Material.profile k
+def Crypto.Key.WF : Key → Prop :=
+fun x =>
+  match x with
+  | Key.derived secret u => u.WF
+  | Key.profile key => True
+inductive Crypto.Field : Type
+number of parameters: 0
+constructors:
+Crypto.Field.name : Field
+Crypto.Field.about : Field
+Crypto.Field.aboutEmoji : Field
+def Crypto.Field.lengths : Field → List Nat :=
+fun x =>
+  match x with
+  | Field.name => [53, 257]
+  | Field.about => [128, 254, 512]
+  | Field.aboutEmoji => [32]
+def Crypto.nameBytes : List Nat → List Nat → List Nat :=
+fun gname fname => if fname = [] then gname else gname ++ 0 :: fname
+def Crypto.bucket : List Nat → Nat → Option Nat :=
+fun lengths n => List.find? (fun x => decide (n ≤ x)) lengths
+def Crypto.padTo : List Nat → List Nat → Option (List Nat) :=
+fun lengths item => Option.map (fun b => item ++ List.replicate (b - item.length) 0) (bucket lengths item.length)
+def Crypto.untilNUL : List Nat → List Nat :=
+fun l => List.takeWhile (fun x => x != 0) l
+def Crypto.decodeName : List Nat → List Nat × List Nat :=
+fun padded =>
+  have g := untilNUL padded;
+  (g, untilNUL (List.drop (g.length + 1) padded))
+def Crypto.decodeString : List Nat → List Nat :=
+fun padded => untilNUL padded
+inductive Crypto.Origin : Type → Type
+number of parameters: 1
+constructors:
+Crypto.Origin.sealed : {C : Type} → Key → C → Origin C
+Crypto.Origin.other : {C : Type} → Origin C
+def Crypto.opens : {C : Type} → Key → Origin C → Option C :=
+fun {C} k x =>
+  match x with
+  | Origin.sealed k' c => if k'.material = k.material then some c else none
+  | Origin.other => none
+inductive Crypto.Err : Type
+number of parameters: 0
+constructors:
+Crypto.Err.tooShort : Err
+Crypto.Err.malformed : Err
+Crypto.Err.badKey : Err
+Crypto.Err.badMAC : Err
+Crypto.Err.badPadding : Err
+Crypto.Err.proto : Err
+Crypto.Err.versionMismatch : Err
+Crypto.Err.unrequested : Err
+Crypto.Err.cannotDecrypt : Err
+structure Crypto.ManifestContent : Type
+number of parameters: 0
+fields:
+  Crypto.ManifestContent.parses : Bool
+  Crypto.ManifestContent.inner : Nat
+constructor:
+  Crypto.ManifestContent.mk (parses : Bool) (inner : Nat) : ManifestContent
+structure Crypto.ManifestCase : Type
+number of parameters: 0
+fields:
+  Crypto.ManifestCase.storage : Nat
+  Crypto.ManifestCase.version : Nat
+  Crypto.ManifestCase.current : Option Nat
+  Crypto.ManifestCase.origin : Origin ManifestContent
+constructor:
+  Crypto.ManifestCase.mk (storage version : Nat) (current : Option Nat) (origin : Origin ManifestContent) : ManifestCase
+def Crypto.manifestKey : Nat → Nat → Key :=
+fun storage version => Key.derived [storage] (Use.manifestKey version)
+def Crypto.fresh : Option Nat → Nat → Bool :=
+fun current v =>
+  match current with
+  | none => true
+  | some c => decide (c < v) || v == 0 && c == 0
+def Crypto.verifyManifest : ManifestCase → Except Err Nat :=
+fun c =>
+  match opens (manifestKey c.storage c.version) c.origin with
+  | none => Except.error Err.cannotDecrypt
+  | some m =>
+    if (!m.parses) = true then Except.error Err.proto
+    else
+      if (m.inner != c.version) = true then Except.error Err.versionMismatch
+      else if (!fresh c.current c.version) = true then Except.error Err.versionMismatch else Except.ok c.version
+structure Crypto.RecordContent : Type
+number of parameters: 0
+fields:
+  Crypto.RecordContent.parses : Bool
+constructor:
+  Crypto.RecordContent.mk (parses : Bool) : RecordContent
+structure Crypto.ItemsCase : Type
+number of parameters: 0
+fields:
+  Crypto.ItemsCase.storage : Nat
+  Crypto.ItemsCase.ikm : Option Nat
+  Crypto.ItemsCase.requested : List (List Nat)
+  Crypto.ItemsCase.items : List (List Nat × Origin RecordContent)
+constructor:
+  Crypto.ItemsCase.mk (storage : Nat) (ikm : Option Nat) (requested : List (List Nat))
+    (items : List (List Nat × Origin RecordContent)) : ItemsCase
+def Crypto.itemKey : Nat → Option Nat → List Nat → Key :=
+fun storage ikm raw =>
+  match ikm with
+  | some i => Key.derived [i] (Use.itemKeyIkm raw)
+  | none => Key.derived [storage] (Use.itemKey raw)
+def Crypto.decryptItems : Nat → Option Nat → List (List Nat × Origin RecordContent) → Except Err (List (List Nat)) :=
+fun storage ikm x => List.brecOn x (decryptItems._f storage ikm)
+def Crypto.verifyItems : ItemsCase → Except Err (List (List Nat) × Nat) :=
+fun c =>
+  if (!c.items.all fun i => c.requested.contains i.fst) = true then Except.error Err.unrequested
+  else
+    (fun x => (x, (List.filter (fun r => !c.items.any fun x => x.fst == r) c.requested.eraseDups).length)) <$>
+      decryptItems c.storage c.ikm c.items
+structure Crypto.ProfileContent : Type
+number of parameters: 0
+fields:
+  Crypto.ProfileContent.field : Field
+  Crypto.ProfileContent.plain : List Nat
+constructor:
+  Crypto.ProfileContent.mk (field : Field) (plain : List Nat) : ProfileContent
+structure Crypto.ProfileCase : Type
+number of parameters: 0
+fields:
+  Crypto.ProfileCase.key : Nat
+  Crypto.ProfileCase.field : Field
+  Crypto.ProfileCase.len : Nat
+  Crypto.ProfileCase.origin : Origin ProfileContent
+constructor:
+  Crypto.ProfileCase.mk (key : Nat) (field : Field) (len : Nat) (origin : Origin ProfileContent) : ProfileCase
+inductive Crypto.ProfileValue : Type
+number of parameters: 0
+constructors:
+Crypto.ProfileValue.name : List Nat → List Nat → ProfileValue
+Crypto.ProfileValue.text : List Nat → ProfileValue
+def Crypto.readField : Field → List Nat → ProfileValue :=
+fun f plain =>
+  match f with
+  | Field.name =>
+    match decodeName plain with
+    | (g, fam) => ProfileValue.name g fam
+  | x => ProfileValue.text (decodeString plain)
+def Crypto.decryptProfile : ProfileCase → Except Err ProfileValue :=
+fun c =>
+  if c.len < 12 + 1 + 16 then Except.error Err.tooShort
+  else
+    match opens (Key.profile c.key) c.origin with
+    | none => Except.error Err.badMAC
+    | some p => Except.ok (readField c.field p.plain)
+structure Crypto.StickerContent : Type
+number of parameters: 0
+fields:
+  Crypto.StickerContent.plain : Option Nat
+constructor:
+  Crypto.StickerContent.mk (plain : Option Nat) : StickerContent
+structure Crypto.StickerCase : Type
+number of parameters: 0
+fields:
+  Crypto.StickerCase.pack : Nat
+  Crypto.StickerCase.len : Nat
+  Crypto.StickerCase.origin : Origin StickerContent
+constructor:
+  Crypto.StickerCase.mk (pack len : Nat) (origin : Origin StickerContent) : StickerCase
+def Crypto.stickerKeys : Nat → Key :=
+fun pack => Key.derived [pack] Use.stickerPackKeys
+def Crypto.decryptSticker : StickerCase → Except Err Nat :=
+fun c =>
+  if c.len < 16 + 32 then Except.error Err.tooShort
+  else
+    match opens (stickerKeys c.pack) c.origin with
+    | none => Except.error Err.badMAC
+    | some s =>
+      match s.plain with
+      | none => Except.error Err.badPadding
+      | some n => Except.ok n
+structure Crypto.ProvisionContent : Type
+number of parameters: 0
+fields:
+  Crypto.ProvisionContent.plain : Option Bool
+constructor:
+  Crypto.ProvisionContent.mk (plain : Option Bool) : ProvisionContent
+structure Crypto.ProvisionCase : Type
+number of parameters: 0
+fields:
+  Crypto.ProvisionCase.parses : Bool
+  Crypto.ProvisionCase.fields : Bool
+  Crypto.ProvisionCase.bodyLen : Nat
+  Crypto.ProvisionCase.version : Nat
+  Crypto.ProvisionCase.keyOK : Bool
+  Crypto.ProvisionCase.ours : Nat
+  Crypto.ProvisionCase.eph : Nat
+  Crypto.ProvisionCase.origin : Origin ProvisionContent
+constructor:
+  Crypto.ProvisionCase.mk (parses fields : Bool) (bodyLen version : Nat) (keyOK : Bool) (ours eph : Nat)
+    (origin : Origin ProvisionContent) : ProvisionCase
+def Crypto.provisioningKeys : Nat → Nat → Key :=
+fun recipient eph => Key.derived [recipient, eph] Use.provisioningKeys
+def Crypto.provisionShape : ProvisionCase → Option Err :=
+fun c =>
+  if (!c.parses) = true then some Err.proto
+  else
+    if (!c.fields) = true then some Err.malformed
+    else
+      if c.bodyLen < 1 + 16 + 16 + 32 then some Err.malformed
+      else if (c.version != 1) = true then some Err.malformed else if (!c.keyOK) = true then some Err.badKey else none
+def Crypto.decryptProvision : ProvisionCase → Except Err Unit :=
+fun c =>
+  match provisionShape c with
+  | some e => Except.error e
+  | none =>
+    match opens (provisioningKeys c.ours c.eph) c.origin with
+    | none => Except.error Err.badMAC
+    | some p =>
+      match p.plain with
+      | none => Except.error Err.badPadding
+      | some false => Except.error Err.proto
+      | some true => Except.ok ()
+inductive Crypto.Author : Type
+number of parameters: 0
+constructors:
+Crypto.Author.ourDevice : Author
+Crypto.Author.someoneElse : Author
+structure Crypto.DeviceNameContent : Type
+number of parameters: 0
+fields:
+  Crypto.DeviceNameContent.author : Author
+  Crypto.DeviceNameContent.plain : List Nat
+constructor:
+  Crypto.DeviceNameContent.mk (author : Author) (plain : List Nat) : DeviceNameContent
+structure Crypto.DeviceNameCase : Type
+number of parameters: 0
+fields:
+  Crypto.DeviceNameCase.parses : Bool
+  Crypto.DeviceNameCase.fields : Bool
+  Crypto.DeviceNameCase.keyOK : Bool
+  Crypto.DeviceNameCase.identity : Nat
+  Crypto.DeviceNameCase.eph : Nat
+  Crypto.DeviceNameCase.origin : Origin DeviceNameContent
+constructor:
+  Crypto.DeviceNameCase.mk (parses fields keyOK : Bool) (identity eph : Nat) (origin : Origin DeviceNameContent) :
+    DeviceNameCase
+def Crypto.deviceNameKey : Nat → Nat → Key :=
+fun identity eph => Key.derived [identity, eph] Use.deviceNameAuth
+def Crypto.decryptDeviceName : DeviceNameCase → Except Err (List Nat) :=
+fun c =>
+  if (!c.parses) = true then Except.error Err.proto
+  else
+    if (!c.fields) = true then Except.error Err.malformed
+    else
+      if (!c.keyOK) = true then Except.error Err.badKey
+      else
+        match opens (deviceNameKey c.identity c.eph) c.origin with
+        | none => Except.error Err.badMAC
+        | some d => Except.ok d.plain
+235 definitions
+Crypto.Author 3931117990 7083509172839569482
+Crypto.Author.ourDevice 1692991774 -
+Crypto.Author.someoneElse 1692991774 -
+Crypto.Bytes 2639198051 1191949996
+Crypto.Canonical 3931117990 14853148025601583086
+Crypto.Canonical.casesOn 798437012 3324525616
+Crypto.Canonical.mk 339027835 -
+Crypto.Canonical.rec 1408466509 -
+Crypto.Derivation 3931117990 13267435411398206228
+Crypto.Derivation.canonical 358384898 2946906972
+Crypto.Derivation.input 422812311 4070600098
+Crypto.Derivation.mk 3083117223 -
+Crypto.Derivation.prim 1848520953 170979035
+Crypto.Derivation.source 670894933 2845497503
+Crypto.DeviceNameCase 3931117990 4150039375776474593
+Crypto.DeviceNameCase.eph 3389499286 776672405
+Crypto.DeviceNameCase.fields 1071876497 446529065
+Crypto.DeviceNameCase.identity 3389499286 4039872304
+Crypto.DeviceNameCase.keyOK 1071876497 997231680
+Crypto.DeviceNameCase.mk 1628126739 -
+Crypto.DeviceNameCase.origin 499459098 2048315081
+Crypto.DeviceNameCase.parses 1071876497 1353327650
+Crypto.DeviceNameContent 3931117990 16203980375961041847
+Crypto.DeviceNameContent.author 3321916001 2272840167
+Crypto.DeviceNameContent.mk 424627733 -
+Crypto.DeviceNameContent.plain 1964533548 2535726072
+Crypto.Err 3931117990 10830594858713898659
+Crypto.Err.badKey 2382686480 -
+Crypto.Err.badMAC 2382686480 -
+Crypto.Err.badPadding 2382686480 -
+Crypto.Err.cannotDecrypt 2382686480 -
+Crypto.Err.malformed 2382686480 -
+Crypto.Err.proto 2382686480 -
+Crypto.Err.tooShort 2382686480 -
+Crypto.Err.unrequested 2382686480 -
+Crypto.Err.versionMismatch 2382686480 -
+Crypto.Field 3931117990 2729966577694911868
+Crypto.Field.about 419839422 -
+Crypto.Field.aboutEmoji 419839422 -
+Crypto.Field.casesOn 2892368471 1716389967
+Crypto.Field.ctorIdx 3997921290 3099564595
+Crypto.Field.lengths 1160321246 822902405
+Crypto.Field.name 419839422 -
+Crypto.Field.rec 1180577569 -
+Crypto.ItemsCase 3931117990 4891547871484580729
+Crypto.ItemsCase.ikm 64908857 1681506242
+Crypto.ItemsCase.items 1620691158 3366597293
+Crypto.ItemsCase.mk 531915055 -
+Crypto.ItemsCase.requested 1961991504 481944545
+Crypto.ItemsCase.storage 4112870578 1723831434
+Crypto.Key 3931117990 13141792561258559705
+Crypto.Key.WF 3309484392 3590089556
+Crypto.Key.casesOn 832861877 327216668
+Crypto.Key.derived 1290885236 -
+Crypto.Key.material 3067940865 2733021201
+Crypto.Key.profile 1162402643 -
+Crypto.Key.rec 2132411108 -
+Crypto.ManifestCase 3931117990 2508022296478999258
+Crypto.ManifestCase.current 723281053 3491765179
+Crypto.ManifestCase.mk 3171507521 -
+Crypto.ManifestCase.origin 3176271400 2400973237
+Crypto.ManifestCase.storage 3621828830 2201046806
+Crypto.ManifestCase.version 3621828830 4210190417
+Crypto.ManifestContent 3931117990 14035239346180310890
+Crypto.ManifestContent.inner 3472127151 3650390884
+Crypto.ManifestContent.mk 2921978314 -
+Crypto.ManifestContent.parses 160032267 2193355967
+Crypto.Material 3931117990 15073116720670095625
+Crypto.Material.casesOn 274462884 3419698264
+Crypto.Material.derived 290281478 -
+Crypto.Material.profile 2385286477 -
+Crypto.Material.rec 109424795 -
+Crypto.Origin 2330190150 8787423231450821511
+Crypto.Origin.casesOn 3558339590 1574035112
+Crypto.Origin.other 847335339 -
+Crypto.Origin.rec 891796776 -
+Crypto.Origin.sealed 3622770587 -
+Crypto.Prim 3931117990 2906535353666820531
+Crypto.Prim.casesOn 4091260854 139623599
+Crypto.Prim.hkdf 599181769 -
+Crypto.Prim.hmac 2796602210 -
+Crypto.Prim.rec 3572565920 -
+Crypto.ProfileCase 3931117990 14364690212216715343
+Crypto.ProfileCase.field 1489615478 2155920785
+Crypto.ProfileCase.key 2754380941 942146702
+Crypto.ProfileCase.len 2754380941 2190356820
+Crypto.ProfileCase.mk 2237080835 -
+Crypto.ProfileCase.origin 3498737014 278264494
+Crypto.ProfileContent 3931117990 3319417064961873072
+Crypto.ProfileContent.field 2292802081 1189837006
+Crypto.ProfileContent.mk 2872998329 -
+Crypto.ProfileContent.plain 3005070896 2598415626
+Crypto.ProfileValue 3931117990 17921715172398995635
+Crypto.ProfileValue.name 675594947 -
+Crypto.ProfileValue.text 2988678223 -
+Crypto.ProvisionCase 3931117990 10413684372340732913
+Crypto.ProvisionCase.bodyLen 3299257857 2531099895
+Crypto.ProvisionCase.eph 3299257857 3738231053
+Crypto.ProvisionCase.fields 3578114398 2049235258
+Crypto.ProvisionCase.keyOK 3578114398 31969414
+Crypto.ProvisionCase.mk 4220454321 -
+Crypto.ProvisionCase.origin 2386647953 3231222201
+Crypto.ProvisionCase.ours 3299257857 624326408
+Crypto.ProvisionCase.parses 3578114398 3790557231
+Crypto.ProvisionCase.version 3299257857 3356268006
+Crypto.ProvisionContent 3931117990 3427270920337037359
+Crypto.ProvisionContent.mk 69367018 -
+Crypto.ProvisionContent.plain 52230636 485903953
+Crypto.RecordContent 3931117990 17650533058768210484
+Crypto.RecordContent.mk 2628669882 -
+Crypto.RecordContent.parses 4059747059 3936006365
+Crypto.Source 3931117990 18242361318577069348
+Crypto.Source.accessKey 1383049008 -
+Crypto.Source.callLinkRoot 1383049008 -
+Crypto.Source.casesOn 3168797404 3915825704
+Crypto.Source.ctorIdx 1642533006 1884130993
+Crypto.Source.deviceNameAuth 1383049008 -
+Crypto.Source.deviceNameCipher 1383049008 -
+Crypto.Source.deviceNameSecret 1383049008 -
+Crypto.Source.groupV1Id 1383049008 -
+Crypto.Source.masterKey 1383049008 -
+Crypto.Source.packKey 1383049008 -
+Crypto.Source.provisioningSecret 1383049008 -
+Crypto.Source.rec 3719480660 -
+Crypto.Source.recordIkm 1383049008 -
+Crypto.Source.storageKey 1383049008 -
+Crypto.StickerCase 3931117990 14963925170936326317
+Crypto.StickerCase.len 2004710139 1759118939
+Crypto.StickerCase.mk 1851294483 -
+Crypto.StickerCase.origin 2445280011 2808607251
+Crypto.StickerCase.pack 2004710139 1363942670
+Crypto.StickerContent 3931117990 15296103434944359067
+Crypto.StickerContent.mk 1597141485 -
+Crypto.StickerContent.plain 1029511426 1654124687
+Crypto.Use 3931117990 15386395884336477132
+Crypto.Use.WF 817243007 2065111716
+Crypto.Use.WF._sparseCasesOn_1 1643687470 782676256
+Crypto.Use.WF.match_1 2248101273 2032430684
+Crypto.Use.accessKeyVerifier 3180116443 -
+Crypto.Use.callLinkRoomId 3180116443 -
+Crypto.Use.casesOn 784671571 3793484501
+Crypto.Use.ctorIdx 2221911868 1393091394
+Crypto.Use.deviceNameAuth 3180116443 -
+Crypto.Use.deviceNameCipher 3180116443 -
+Crypto.Use.deviceNameCipherKey 2378859169 -
+Crypto.Use.deviceNameIv 2378859169 -
+Crypto.Use.groupV1MasterKey 3180116443 -
+Crypto.Use.itemKey 2378859169 -
+Crypto.Use.itemKeyIkm 2378859169 -
+Crypto.Use.manifestKey 1003826962 -
+Crypto.Use.provisioningKeys 3180116443 -
+Crypto.Use.rec 2389170092 -
+Crypto.Use.stickerPackKeys 3180116443 -
+Crypto.Use.storageKey 3180116443 -
+Crypto.ascii 2365706247 2053069414
+Crypto.b64 2557179738 173120834
+Crypto.b64._f 143430278 2831727978
+Crypto.b64.match_1 2057989851 3440407288
+Crypto.b64char 2546708756 3284121809
+Crypto.bucket 841790656 1181581390
+Crypto.dec 3208536212 3439682832
+Crypto.dec._proof_1 2158940919 -
+Crypto.decodeName 1384891583 810598566
+Crypto.decodeString 2557179738 2030370016
+Crypto.decryptDeviceName 3887402032 200218759
+Crypto.decryptDeviceName.match_1 1193197907 2837025147
+Crypto.decryptItems 2635072578 267421908
+Crypto.decryptItems._f 1090420303 221494233
+Crypto.decryptItems.match_1 2881844905 2938333931
+Crypto.decryptItems.match_3 4294090224 3381278021
+Crypto.decryptProfile 3337853316 2322982728
+Crypto.decryptProfile.match_1 4219607332 2354951673
+Crypto.decryptProvision 1218419713 3501514965
+Crypto.decryptProvision.match_1 1193135088 1350164962
+Crypto.decryptProvision.match_3 1820630313 1904504329
+Crypto.decryptProvision.match_5 2669659606 3729099925
+Crypto.decryptSticker 469744201 434028516
+Crypto.decryptSticker.match_1 2412369448 619466612
+Crypto.derivation 4064402731 3691551893
+Crypto.deviceNameKey 1744172182 866900620
+Crypto.fresh 2357458433 4250873221
+Crypto.fresh.match_1 3175174048 749409309
+Crypto.instDecidableEqCanonical 3393669852 1020442783
+Crypto.instDecidableEqCanonical.decEq 2408158906 336540429
+Crypto.instDecidableEqCanonical.decEq._proof_1 1504445806 -
+Crypto.instDecidableEqCanonical.decEq._proof_2 1651230986 -
+Crypto.instDecidableEqCanonical.decEq._proof_3 3253044045 -
+Crypto.instDecidableEqCanonical.decEq._proof_4 1076144703 -
+Crypto.instDecidableEqCanonical.decEq._proof_5 1108053729 -
+Crypto.instDecidableEqCanonical.decEq.match_1 1639685737 710150243
+Crypto.instDecidableEqMaterial 241049828 119189652
+Crypto.instDecidableEqMaterial.decEq 4288879130 2168213438
+Crypto.instDecidableEqMaterial.decEq._proof_1 2277106489 -
+Crypto.instDecidableEqMaterial.decEq._proof_2 3382880186 -
+Crypto.instDecidableEqMaterial.decEq._proof_3 2518330787 -
+Crypto.instDecidableEqMaterial.decEq._proof_4 2551881013 -
+Crypto.instDecidableEqMaterial.decEq._proof_5 4088815116 -
+Crypto.instDecidableEqMaterial.decEq._proof_6 736696161 -
+Crypto.instDecidableEqMaterial.decEq._proof_7 822986604 -
+Crypto.instDecidableEqMaterial.decEq.match_1 2660142968 2796118960
+Crypto.instDecidableEqSource 957303147 90201597
+Crypto.instDecidableEqSource._proof_1 1969620549 -
+Crypto.instDecidableEqSource._proof_2 3406056655 -
+Crypto.instReprField.repr.match_1 4200666016 2430023956
+Crypto.instReprKey.repr.match_1 1281906593 708739455
+Crypto.instReprOrigin.repr.match_1 3054992813 2560227771
+Crypto.instReprPrim.repr.match_1 4035755464 431653790
+Crypto.instReprUse.repr.match_1 1337831793 1592544313
+Crypto.itemKey 3812087222 417523132
+Crypto.itemKey.match_1 2549865312 3610645720
+Crypto.manifestKey 1744172182 4156966128
+Crypto.nameBytes 1661762796 149904474
+Crypto.opens 2818095415 358561698
+Crypto.pad 2557179738 3503582662
+Crypto.padTo 242690355 24233928
+Crypto.paddedLength 2546708756 2729399386
+Crypto.paddingBlock 421340980 1953335582
+Crypto.provisionShape 3871735347 1064497502
+Crypto.provisioningKeys 1744172182 3269939343
+Crypto.readField 2538506124 4112079831
+Crypto.readField._sparseCasesOn_3 3904380 2297223456
+Crypto.readField.match_1 926072531 2802805592
+Crypto.readField.match_3 1246014709 853431967
+Crypto.stickerKeys 1162402643 196043910
+Crypto.stripRev 1514274397 464678627
+Crypto.stripRev._f 867365116 4057290275
+Crypto.stripRev.match_1 171869156 3809820392
+Crypto.stripZeros 2557179738 91860867
+Crypto.unpad 1514274397 2720403997
+Crypto.unpadUpstream 1514274397 4291065574
+Crypto.untilNUL 2557179738 456391257
+Crypto.verifyItems 2055834571 3025715031
+Crypto.verifyManifest 3054724779 227788928
+Crypto.verifyManifest.match_1 3883879536 2202426548
+Crypto.zeros 3208536212 2407748678
+pad_length_bounds : ∀ (n : Nat),
+  (paddedLength n + 1) % 80 = 0 ∧ n + 2 ≤ paddedLength n + 1 ∧ paddedLength n + 1 < n + 2 + 80
+pad_length_iff : ∀ (m m' : List Nat), (pad m).length = (pad m').length ↔ (m.length + 1) / 80 = (m'.length + 1) / 80
+unpad_pad : ∀ (m : List Nat), unpad (pad m) = some m
+unpad_eq_some : ∀ (d m : List Nat), unpad d = some m ↔ ∃ k, d = m ++ 128 :: List.replicate k 0
+unpad_upstream_differs : ∀ (d : List Nat), (∀ (x : Nat), x ∈ d → x = 0) → unpad d = none ∧ unpadUpstream d = some d
+unpad_upstream_same : ∀ (d : List Nat), (¬∀ (x : Nat), x ∈ d → x = 0) → unpad d = unpadUpstream d
+@dec_inj : ∀ {m n : Nat}, dec m = dec n → m = n
+@b64_inj : ∀ {l l' : List Nat}, Bytes l → Bytes l' → b64 l = b64 l' → l = l'
+separated : ∀ (u u' : Use), u.WF → u'.WF → (derivation u).canonical = (derivation u').canonical → u = u'
+@key_binds : ∀ {k k' : Key}, k.WF → k'.WF → k.material = k'.material → k = k'
+bucket_least : ∀ (L : List Nat),
+  List.Pairwise (fun x1 x2 => x1 < x2) L →
+    ∀ (n b : Nat), bucket L n = some b → b ∈ L ∧ n ≤ b ∧ ∀ (b' : Nat), b' ∈ L → n ≤ b' → b ≤ b'
+lengths_sorted : ∀ (f : Field), List.Pairwise (fun x1 x2 => x1 < x2) f.lengths
+padTo_length : ∀ (L item p : List Nat),
+  padTo L item = some p →
+    bucket L item.length = some p.length ∧
+      item.length ≤ p.length ∧ p = item ++ List.replicate (p.length - item.length) 0
+padTo_none : ∀ (L item : List Nat), padTo L item = none ↔ ∀ (b : Nat), b ∈ L → b < item.length
+name_roundtrip : ∀ (g f p : List Nat),
+  ¬0 ∈ g → ¬0 ∈ f → padTo Field.name.lengths (nameBytes g f) = some p → decodeName p = (g, f)
+string_roundtrip : ∀ (L s p : List Nat), ¬0 ∈ s → padTo L s = some p → decodeString p = s
+name_nul_splits : ∃ g p,
+  padTo Field.name.lengths (nameBytes g []) = some p ∧ decodeName p = ([65], [66]) ∧ g = [65, 0, 66]
+manifest_ok : ∀ (c : ManifestCase) (v : Nat),
+  verifyManifest c = Except.ok v →
+    v = c.version ∧
+      fresh c.current c.version = true ∧
+        ∃ k m,
+          c.origin = Origin.sealed k m ∧
+            k.material = (manifestKey c.storage c.version).material ∧ m.parses = true ∧ m.inner = c.version
+manifest_bound : ∀ (c : ManifestCase) (v : Nat),
+  verifyManifest c = Except.ok v →
+    ∀ (k : Key) (m : ManifestContent), c.origin = Origin.sealed k m → k.WF → k = manifestKey c.storage c.version
+items_ok : ∀ (c : ItemsCase) (ids : List (List Nat)) (n : Nat),
+  verifyItems c = Except.ok (ids, n) →
+    ids = List.map (fun x => x.fst) c.items ∧
+      ∀ (i : List Nat × Origin RecordContent),
+        i ∈ c.items →
+          i.fst ∈ c.requested ∧
+            ∃ k r, i.snd = Origin.sealed k r ∧ k.material = (itemKey c.storage c.ikm i.fst).material ∧ r.parses = true
+items_bound : ∀ (c : ItemsCase) (ids : List (List Nat)) (n : Nat),
+  verifyItems c = Except.ok (ids, n) →
+    ∀ (i : List Nat × Origin RecordContent),
+      i ∈ c.items →
+        Bytes i.fst →
+          ∀ (k : Key) (r : RecordContent),
+            i.snd = Origin.sealed k r → k.WF → i.fst ∈ c.requested ∧ k = itemKey c.storage c.ikm i.fst
+profile_ok : ∀ (c : ProfileCase) (v : ProfileValue),
+  decryptProfile c = Except.ok v →
+    29 ≤ c.len ∧ ∃ p, c.origin = Origin.sealed (Key.profile c.key) p ∧ v = readField c.field p.plain
+profile_field_unbound : ∃ c v,
+  decryptProfile c = Except.ok v ∧ ∃ p, c.origin = Origin.sealed (Key.profile c.key) p ∧ p.field ≠ c.field
+sticker_ok : ∀ (c : StickerCase) (n : Nat),
+  decryptSticker c = Except.ok n →
+    48 ≤ c.len ∧ ∃ k s, c.origin = Origin.sealed k s ∧ k.material = (stickerKeys c.pack).material ∧ s.plain = some n
+sticker_bound : ∀ (c : StickerCase) (n : Nat),
+  decryptSticker c = Except.ok n →
+    ∀ (k : Key) (s : StickerContent), c.origin = Origin.sealed k s → k.WF → k = stickerKeys c.pack
+sticker_mac_first : ∀ (c : StickerCase),
+  opens (stickerKeys c.pack) c.origin = none →
+    decryptSticker c = Except.error (if c.len < 48 then Err.tooShort else Err.badMAC)
+provision_ok : ∀ (c : ProvisionCase),
+  decryptProvision c = Except.ok () →
+    provisionShape c = none ∧
+      ∃ k p, c.origin = Origin.sealed k p ∧ k.material = (provisioningKeys c.ours c.eph).material ∧ p.plain = some true
+provision_bound : ∀ (c : ProvisionCase),
+  decryptProvision c = Except.ok () →
+    ∀ (k : Key) (p : ProvisionContent), c.origin = Origin.sealed k p → k.WF → k = provisioningKeys c.ours c.eph
+provision_mac_first : ∀ (c : ProvisionCase),
+  opens (provisioningKeys c.ours c.eph) c.origin = none →
+    decryptProvision c = Except.error ((provisionShape c).getD Err.badMAC)
+deviceName_ok : ∀ (c : DeviceNameCase) (p : List Nat),
+  decryptDeviceName c = Except.ok p →
+    ∃ k d, c.origin = Origin.sealed k d ∧ k.material = (deviceNameKey c.identity c.eph).material ∧ d.plain = p
+deviceName_bound : ∀ (c : DeviceNameCase) (p : List Nat),
+  decryptDeviceName c = Except.ok p →
+    ∀ (k : Key) (d : DeviceNameContent), c.origin = Origin.sealed k d → k.WF → k = deviceNameKey c.identity c.eph
+deviceName_unauthenticated : ∃ c p,
+  decryptDeviceName c = Except.ok p ∧
+    ∃ d, c.origin = Origin.sealed (deviceNameKey c.identity c.eph) d ∧ d.author = Author.someoneElse
+Crypto.pad_length_bounds depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.pad_length_iff depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.unpad_pad depends on axioms: [propext]
+Crypto.unpad_eq_some depends on axioms: [Quot.sound, propext]
+Crypto.unpad_upstream_differs depends on axioms: [Quot.sound, propext]
+Crypto.unpad_upstream_same depends on axioms: [Quot.sound, propext]
+Crypto.dec_inj depends on axioms: [Quot.sound, propext]
+Crypto.b64_inj depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.separated depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.key_binds depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.bucket_least depends on axioms: [Quot.sound, propext]
+Crypto.lengths_sorted depends on axioms: []
+Crypto.padTo_length depends on axioms: [Quot.sound, propext]
+Crypto.padTo_none depends on axioms: [Quot.sound, propext]
+Crypto.name_roundtrip depends on axioms: [Quot.sound, propext]
+Crypto.string_roundtrip depends on axioms: [Quot.sound, propext]
+Crypto.name_nul_splits depends on axioms: []
+Crypto.manifest_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.manifest_bound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.items_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.items_bound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.profile_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.profile_field_unbound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.sticker_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.sticker_bound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.sticker_mac_first depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.provision_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.provision_bound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.provision_mac_first depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.deviceName_ok depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.deviceName_bound depends on axioms: [Classical.choice, Quot.sound, propext]
+Crypto.deviceName_unauthenticated depends on axioms: [Classical.choice, Quot.sound, propext]

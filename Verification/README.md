@@ -19,6 +19,7 @@ proved, what is only tested, and what is assumed.
 | [Attachments](Attachments/README.md) | Attachment authentication: only the named upload's verified plaintext reaches decoding or export, nothing partially validated is published, bounded transfers | `Tools/verify-attachments.sh` |
 | [Codecs](Codecs/README.md) | Codec components: byte cursor reads stay in their region, regions consumed exactly, allocation within static budgets, box boundaries and the box budget, the bit reader | `Tools/verify-codecs.sh` |
 | [Broker](Broker/README.md) | The app and its sandboxed helpers: a reply completes only its own outstanding request, once; cancellation, crashes, late and duplicate replies; no helper session left behind; quarantine strikes; what one helper's answer may ask of another | `Tools/verify-broker.sh` |
+| [Crypto](Crypto/README.md) | Crypto formats: transport padding; separation of every key SignalCore derives; profile padding; what an accepted storage manifest or record, profile field, sticker, provisioning envelope or device name can have been; no padding oracles | `Tools/verify-crypto.sh` |
 
 Every script: rejects escape hatches (`sorry`, `axiom`, …); builds (the kernel checks every proof);
 diffs an audit of the property definitions, every definition the theorems depend on (hashed), the

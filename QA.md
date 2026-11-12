@@ -15,7 +15,7 @@ use the real clock (the audio and video playback engines, the animated-image tes
 
 ## 1. What "everything passes" means
 
-**The Lean slices** (`lean:<slice>` = `Tools/verify-<slice>.sh`, eleven of them; see
+**The Lean slices** (`lean:<slice>` = `Tools/verify-<slice>.sh`, twelve of them; see
 [Verification/README.md](Verification/README.md)). Each script runs six steps, and all six must
 pass:
 1. no `sorry`, `admit`, `axiom` or other escape hatch in the Lean sources;
@@ -24,7 +24,8 @@ pass:
    theorem statements and their axioms (only `propext`, `Classical.choice`, `Quot.sound`) equal
    `audit-expected.txt`;
 4. the random explorer's verdict for each property equals `explore-expected.txt` (the broker
-   keeps one deliberately false property, `never-refused`, which must still fail);
+   keeps one deliberately false property, `never-refused`, and the crypto slice four limits,
+   which must still fail);
 5. the Swift conformance rig: production runs against the model's oracle;
 6. the mutants: each bug planted in production must make step 5 fail, and fail in the expected
    way.
@@ -102,7 +103,8 @@ rig covers.
 | `Identity`, `ProtocolStore`, `Messenger+IdentityApproval`, `StorageRecords+Conversations` | `lean:identity` `test:core` |
 | `Calls.swift`, `CallLinksAndPresenting.swift`, SignalUI `ScreenShare.swift` | `lean:calls` `test:app` `test:ui` |
 | SignalUI components | `test:ui` (the snapshot tests compare with upstream Storybook captures) |
-| Crypto in SignalCore | `vectors` `test:core` |
+| Transport padding (`MessageSender.pad`, `MessageReceiver.unpad`); a key derivation (`StorageService`, `Stickers`, `StorageRecords.roomId`, `ProfileService.accessKeyVerifier`, `ProvisioningCipher`, `DeviceNameCipher`); profile padding (`ProfileService`); `AttachmentCipher.decryptV1` | `lean:crypto` `test:core` `vectors` |
+| Other crypto in SignalCore | `vectors` `test:core` |
 
 ## 5. When a step fails
 
@@ -131,7 +133,7 @@ this machine. The Lean column is the number of theorems in `audit-expected.txt`.
 2026-11-11, on top of 3c15ad7 with the changes committed after it; the whole run took about an
 hour. The SignalMediaService, SignalUI, SignalCore and app tests, Broker, the lint, the sandbox
 check and the vectors are from a second run after the fixes that run needed; everything else is
-from the first.
+from the first. `lean:crypto` and `test:core` are from a later run, when the crypto slice was added.
 
 | Step | Lean theorems | Swift | Mutants killed | Time |
 |---|---|---|---|---|
@@ -139,6 +141,7 @@ from the first.
 | `lean:broker` | 19 | rig: 4 tests | 19 | 2.5 min |
 | `lean:calls` | 15 | rig: 16 tests | 10 | 16.5 min |
 | `lean:codecs` | 9 | rig: 4 tests | 21 | 2 min |
+| `lean:crypto` | 32 | rig: 9 tests | 24 | 2.5 min |
 | `lean:group` | 7 | rig: 3 tests | 8 | 1 min |
 | `lean:identity` | 8 | rig: 2 tests | 8 | 4.5 min |
 | `lean:media` | 9 | rig: 2 tests | 11 | 1.5 min |
@@ -147,7 +150,7 @@ from the first.
 | `lean:resend` | 6 | rig: 1 test | 11 | 1 min |
 | `lean:send` | 14 | rig: 3 tests | 12 | 2 min |
 | `test:codecs` | | 146 tests (12 test runs) | | 0.5 min |
-| `test:core` | | 276 tests | | 1 min |
+| `test:core` | | 285 tests | | 1 min |
 | `test:i18n` | | 24 tests | | 5 s |
 | `test:media` | | 78 tests | | 10 s |
 | `test:ringrtc` | | 5 tests | | 2 s |

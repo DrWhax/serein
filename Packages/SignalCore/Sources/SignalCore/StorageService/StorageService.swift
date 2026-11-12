@@ -219,16 +219,26 @@ public final class StorageService: Sendable {
     enum Fetched {
         case none
         case same
-        case manifest(Signalservice_ManifestRecord)
+        case manifest(Signalservice_StorageManifest)
     }
 
     /// `fetchManifest`
-    func fetchManifest(after local: UInt64?, storageKey: Data, headers: [String: String]) async throws -> Fetched {
+    func fetchManifest(after local: UInt64?, headers: [String: String]) async throws -> Fetched {
         let path = local.map { "v1/storage/manifest/version/\($0)" } ?? "v1/storage/manifest"
         let (status, body) = try await http.send("GET", url(path), headers: headers, accept: [204, 404])
         if status == 204 { return .same }
         if status == 404 { return .none }
-        return .manifest(try Self.decryptManifest(try Signalservice_StorageManifest(serializedBytes: body), storageKey: storageKey))
+        return .manifest(try Signalservice_StorageManifest(serializedBytes: body))
+    }
+
+    /// What a fetched manifest must pass: it decrypts under the key for the version the server says
+    /// it has, its record names that version, and that version is newer than ours (or both are 0,
+    /// upstream's rule): no rollback, no manifest passed off as another version's.
+    static func verifyManifest(_ manifest: Signalservice_StorageManifest, storageKey: Data, current: UInt64?) throws -> Signalservice_ManifestRecord {
+        let record = try decryptManifest(manifest, storageKey: storageKey)
+        let version = record.version
+        if let current, version <= current, version != 0 || current != 0 { throw StorageServiceError.manifestVersionMismatch }
+        return record
     }
 
     static func decryptManifest(_ manifest: Signalservice_StorageManifest, storageKey: Data) throws -> Signalservice_ManifestRecord {
@@ -252,9 +262,15 @@ public final class StorageService: Sendable {
             let (_, data) = try await http.send("PUT", url("v1/storage/read"), body: try read.serializedBytes() as Data, headers: headers)
             items += try Signalservice_StorageItems(serializedBytes: data).items
         }
+        return (items, try Self.requestedOnly(items, requested: keys))
+    }
+
+    /// The whole answer is refused if it has an item we did not ask for; else the requested keys it
+    /// has no item for.
+    static func requestedOnly(_ items: [Signalservice_StorageItem], requested keys: [Data]) throws -> Set<Data> {
         let wanted = Set(keys)
         guard items.allSatisfy({ wanted.contains($0.key) }) else { throw StorageServiceError.invalidWrite("unrequested storage item") }
-        return (items, wanted.subtracting(items.map(\.key)))
+        return wanted.subtracting(items.map(\.key))
     }
 
     // MARK: local records
@@ -331,17 +347,16 @@ public final class StorageService: Sendable {
         }
         let headers = try await headers()
         let manifest: Signalservice_ManifestRecord
-        switch try await fetchManifest(after: localVersion, storageKey: storageKey, headers: headers) {
+        switch try await fetchManifest(after: localVersion, headers: headers) {
         case .same:
             return SyncOutcome(result: nil, manifest: nil, same: true)
         case .none:
             try await database.pool.write { try Items.set($0, "storageFetchComplete", true) }
             return SyncOutcome(result: nil, manifest: nil, same: false)
         case .manifest(let m):
-            manifest = m
+            manifest = try Self.verifyManifest(m, storageKey: storageKey, current: localVersion)
         }
         let version = manifest.version
-        if let localVersion, version <= localVersion, version != 0 || localVersion != 0 { throw StorageServiceError.manifestVersionMismatch }
 
         // processManifest: which remote keys are new to us.
         let remoteTypes = Dictionary(manifest.identifiers.map { ($0.raw.base64EncodedString(), $0.type) }, uniquingKeysWith: { a, _ in a })

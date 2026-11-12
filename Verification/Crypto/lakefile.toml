@@ -1,0 +1,10 @@
+name = "Crypto"
+version = "0.1.0"
+defaultTargets = ["Crypto", "oracle"]
+
+[[lean_lib]]
+name = "Crypto"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"

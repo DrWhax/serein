@@ -7,9 +7,9 @@
 #      on (transitively), and the theorem statements must equal audit-expected.txt, and every
 #      theorem may depend only on propext, Classical.choice and Quot.sound;
 #   4. the explorer's verdict per property (fixed seed) must equal explore-expected.txt;
-#   5. Swift: MessageModifiers' decisions on a real database, whole runs of messages and modifiers
-#      (the stored messages, what they show, the waiting list), and the waiting list's evictions,
-#      against the Lean oracle (SEREIN_CODECS_CASES, default 3000);
+#   5. Swift: SignalCodecs' byte cursor, parser combinators, MP4 box grammar and bit reader on
+#      random grammars, inputs and box streams, against the Lean oracle (SEREIN_CODECS_CASES,
+#      default 5000);
 #   6. mutants: each check weakened in production must make step 5 fail. Each is applied to the
 #      working tree and the file restored afterwards (also on interrupt).
 #
