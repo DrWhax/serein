@@ -59,10 +59,7 @@ struct ConversationPane: View {
                         .equatable()
                 }
             } renderHeroRow: {
-                HeroRow {
-                    ConversationHero(conversationType: conversation.kind == .group ? .group : .direct, title: title(conversation),
-                                     avatar: avatar(conversation), isMe: isNoteToSelf, acceptedMessageRequest: conversation.isAccepted)
-                }
+                HeroRow { hero }
             } renderTypingBubble: {
                 let typists = session.typingContacts(conversation.id)
                 if !typists.isEmpty {
@@ -78,9 +75,9 @@ struct ConversationPane: View {
             .environment(\.textSelectionCenter, session.textSelection)
             if let selected = session.selectedMessageIds {
                 SelectModeActions(selectedCount: selected.count,
-                                  areSelectedMessagesForwardable: selected.allSatisfy { id in session.messages.first { $0.id == id }.map { !$0.isDeleted } ?? false },
+                                  areSelectedMessagesForwardable: selected.allSatisfy { id in session.messages.first { $0.id == id }.map { !$0.isDeleted && !$0.isViewOnce && $0.poll == nil } ?? false },
                                   onExitSelectMode: { session.exitSelectMode() }, onDeleteMessages: { session.requestDelete(selected) },
-                                  onForwardMessages: { session.forward(selected) })
+                                  onForwardMessages: { session.forward(selected) }, showTooManyToast: { session.toast = .tooManyMessagesToForward })
                     .background(AxoColor.surfacePrimary)
             } else {
                 composer
@@ -89,10 +86,40 @@ struct ConversationPane: View {
         .background(AxoColor.surfacePrimary)
     }
 
+    /// The timeline's first row (HeroRow): who this is, the name warnings, groups in common or
+    /// members, and the safety tips for a message request.
+    var hero: some View {
+        let d = session.details?.conversationId == conversation.id ? session.details : nil
+        let group = d?.group
+        let me = session.ourAci
+        var a = ConversationHero.Actions()
+        let serviceId = conversation.kind == .private ? conversation.serviceId : nil
+        a.toggleAboutContactModal = { if let serviceId { session.showAboutContact(serviceId) } }
+        a.toggleProfileNameWarningModal = { [isGroup = conversation.kind == .group] in session.contactDialog = .profileNameWarning(isGroup: isGroup) }
+        a.onShowSafetyTips = { session.contactDialog = .safetyTips }
+        a.openConversationDetails = { session.pushPanel("ConversationDetails") }
+        // The members line (`getGroupMemberships`), by their titles.
+        let members = (group?.membersV2 ?? []).map { m in HeroMember(isMe: m.aci == me, titleShort: m.aci == me ? nil : session.contactTitle(m.aci)) }
+        return ConversationHero(conversationType: conversation.kind == .group ? .group : .direct, title: title(conversation),
+                                avatar: avatar(conversation), isMe: isNoteToSelf, acceptedMessageRequest: conversation.isAccepted,
+                                hasProfileName: d?.hasProfileName ?? false, hasNickname: d?.hasNickname ?? false,
+                                isInSystemContacts: d?.isInSystemContacts ?? false, isGroupNameVerified: d?.isGroupNameVerified ?? true,
+                                groupDescription: group?.description,
+                                sharedGroupNames: (d?.groupsInCommon ?? []).compactMap { session.conversation($0)?.title },
+                                memberships: members, invitesCount: (group?.pendingMembersV2.count ?? 0) + (group?.pendingAdminApprovalV2.count ?? 0),
+                                actions: a)
+    }
+
     var composer: some View {
             CompositionArea(text: $session.draft, model: composerModel, actions: {
                 var a = CompositionAreaActions()
                 a.onCloseQuote = { session.quotedMessageId = nil }
+                // A join request still waiting for an admin, withdrawn (`cancelJoinRequest`).
+                a.cancelJoinRequest = { session.leaveGroup() }
+                // AnnouncementsOnlyGroupBanner's admins: their 1:1 chat.
+                a.showConversation = { session.openDirect(serviceId: $0) }
+                // `onClickQuotedMessage`: the quoted message in the timeline.
+                a.onClickQuote = { if let id = session.quotedMessageId { session.goToMessage(id) } }
                 a.onCloseLinkPreview = { session.closeLinkPreview() }
                 a.onEditLastMessage = { [isNoteToSelf] in session.editLastMessage(noteToSelf: isNoteToSelf) }
                 a.discardEditMessage = { session.discardEdit() }
@@ -155,7 +182,9 @@ struct ConversationPane: View {
             ScrollView {
                 MessageDetail(message: message, contacts: contacts, errors: d?.errors ?? [], sentAt: Date(milliseconds: m.sentAt),
                               receivedAt: m.direction == .incoming ? Date(milliseconds: d?.receivedAt ?? m.receivedAt) : nil,
-                              expirationTimestamp: message.expirationTimestamp, isEditedMessage: m.isEdited)
+                              expirationTimestamp: message.expirationTimestamp, isEditedMessage: m.isEdited,
+                              showEditHistoryModal: { session.editHistoryMessageId = $0 },
+                              toggleSafetyNumberModal: { id in session.showSafetyNumber((d?.recipients ?? []).first { $0.conversationId == id }?.serviceId) })
             }
         }
     }
@@ -181,11 +210,21 @@ struct ConversationPane: View {
         if !m.isDeleted && session.canPinMessages {
             if m.isPinned { a.unpin = { session.unpin(id) } } else { a.pin = { session.requestPin(id) } }
         }
-        // Download: a message's attachments (not a sticker), saved where the user chooses.
-        if !m.isDeleted && m.sticker == nil && !m.attachments.isEmpty { a.download = { session.saveAttachments(m) } }
+        // canDownload: a message's attachments, all downloaded (not a sticker or view-once media, and
+        // an incoming one only in an accepted chat), saved where the user chooses.
+        let viewOnce = m.isViewOnce && !m.isDeleted
+        if !m.isDeleted && m.sticker == nil && !viewOnce && !m.attachments.isEmpty && m.attachments.allSatisfy(\.attachment.isDownloaded)
+            && (m.direction == .outgoing || conversation.isAccepted) {
+            a.download = { session.saveAttachments(m) }
+        }
         if m.direction == .outgoing, m.status == .failed { a.retrySend = { session.retrySend(id) } }
+        // canEndPoll: our own poll, still running, in a group that has not ended.
+        if m.direction == .outgoing, let poll = m.poll, !poll.terminated, !m.isDeleted, session.details?.group?.terminated != true {
+            a.endPoll = { session.endPoll(id) }
+        }
         a.moreInfo = { session.messageDetailId = id }
-        if !m.isDeleted && (m.sticker != nil || !m.body.isEmpty || !m.attachments.isEmpty) { a.forward = { session.forward([id]) } }
+        // canForward: not view-once media, deleted, or a poll.
+        if !m.isDeleted && !viewOnce && m.poll == nil && (m.sticker != nil || !m.body.isEmpty || !m.attachments.isEmpty) { a.forward = { session.forward([id]) } }
         a.delete = { session.requestDelete([id]) }
         return a
     }
@@ -314,8 +353,29 @@ struct ConversationPane: View {
         request.blockAndReportSpam = { session.respond(id, .blockAndSpam) }
         request.reportSpam = { session.respond(id, .spam) }
         request.deleteConversation = { session.respond(id, .delete) }
+        let d = session.details?.conversationId == conversation.id ? session.details : nil
+        let group = d?.group, me = session.ourAci ?? ""
+        request.isBlocked = d?.isBlocked ?? false
         var m = CompositionAreaModel(conversationId: conversation.id, messageRequest: request)
         m.acceptedMessageRequest = conversation.isAccepted
+        // The branch upstream picks from the conversation: blocked (unblock), invited, ended, left,
+        // a join request waiting for an admin (cancel it), announcements only (admins may send).
+        m.isBlocked = request.isBlocked
+        m.left = d?.left ?? false
+        m.terminated = group?.terminated ?? false
+        m.areWePending = group?.isPending(me) ?? false
+        m.areWePendingApproval = group?.isPendingApproval(me) ?? false
+        m.announcementsOnly = group?.announcementsOnly ?? false
+        m.areWeAdmin = group?.isAdmin(me) ?? false
+        m.groupAdmins = (group?.membersV2 ?? []).filter { $0.role == GroupRole.administrator }.map { a in
+            GroupAdmin(id: a.aci, avatar: ConversationAvatarData(title: a.aci == me ? i18n("icu:you") : session.contactTitle(a.aci), conversationType: .direct,
+                                                                 color: session.contactColor(a.aci), image: session.avatarImage(session.contacts[a.aci]?.avatar)),
+                       isMe: a.aci == me)
+        }
+        // Not offered: sharing a contact (behind upstream's remote config, and not sent by
+        // SignalCore) and sending view-once media (not sent by SignalCore yet).
+        m.isShareContactEnabled = false
+        m.isViewOnceSendEnabled = false
         m.quote = composerQuote
         m.quotedMessageId = session.quotedMessageId
         m.isEditingMessage = session.editingMessageId != nil
@@ -352,9 +412,13 @@ struct ConversationPane: View {
             return .verificationNotification(VerificationNotification(type: verified ? .markVerified : .markNotVerified, isLocal: local,
                                                                       contactTitle: conversation.title))
         case .deliveryIssue(let sender):
-            return .deliveryIssue(DeliveryIssueNotification(senderName: sender.map { session.contactTitle($0) }, inGroup: conversation.kind == .group))
+            let name = sender.map { session.contactTitle($0) }
+            let inGroup = conversation.kind == .group
+            return .deliveryIssue(DeliveryIssueNotification(senderName: name, inGroup: inGroup, onLearnMore: {
+                session.contactDialog = .deliveryIssue(senderTitle: name ?? "", inGroup: inGroup)
+            }))
         case .chatSessionRefreshed:
-            return .chatSessionRefreshed(ChatSessionRefreshedNotification())
+            return .chatSessionRefreshed(ChatSessionRefreshedNotification(onLearnMore: { session.contactDialog = .chatSessionRefreshed }))
         }
     }
 
@@ -379,12 +443,29 @@ struct ConversationPane: View {
         }
         p.status = m.status.map(Self.messageStatus)
         if m.direction == .outgoing { p.bubbleColor = session.bubbleColor(session.conversationColor) }
-        p.attachments = m.attachments.map { attachment($0.attachment, alone: m.attachments.count == 1) }
-        if let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 != 0, AttachmentPolicy.isVideo(first.contentType) {
+        let viewOnce = m.isViewOnce && !m.isDeleted
+        if viewOnce {
+            // View-once media (`isTapToView`): the tap-to-view row; its picture is never decoded
+            // for the timeline, only once, when opened (ViewOnce.swift).
+            p.attachments = m.attachments.map { t in
+                var a = SignalUI.MessageAttachment(contentType: t.attachment.contentType, fileName: nil, size: t.attachment.size)
+                a.isDownloaded = t.attachment.isDownloaded
+                a.pending = t.attachment.pending ?? false
+                return a
+            }
+            p.tapToView = TapToViewState(isExpired: m.direction == .incoming && m.isErased, isViewed: m.isViewed)
+            p.openTapToView = { [session] in session.openTapToView(m) }
+            p.showTapToViewNotAvailableModal = { [session] in
+                session.contactDialog = .tapToViewNotAvailable(expired: m.isErased, name: session.contactTitle(m.author))
+            }
+        } else {
+            p.attachments = m.attachments.map { attachment($0.attachment, alone: m.attachments.count == 1) }
+        }
+        if !viewOnce, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 != 0, AttachmentPolicy.isVideo(first.contentType) {
             p.gifPlayer = session.gifPlayer(for: first)
         }
-        if m.attachments.count == 1, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 == 0, AttachmentPolicy.isVideo(first.contentType),
-           first.isDownloaded {
+        if !viewOnce, m.attachments.count == 1, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 == 0,
+           AttachmentPolicy.isVideo(first.contentType), first.isDownloaded {
             if let v = session.inlineVideo, v.messageId == m.id { p.inlineVideoPlayer = v.player }
             p.playVideoInline = { [session] in session.playVideoInline(m) }
         }
@@ -407,10 +488,10 @@ struct ConversationPane: View {
             guard LinkPreviewRules.shouldPreviewHref(href), let url = URL(string: href) else { return }
             if !session.openCallLinkURL(url) { NSWorkspace.shared.open(url) }
         }
-        p.showLightbox = { [session] i in session.openLightbox(m, index: i) }
+        if !viewOnce { p.showLightbox = { [session] i in session.openLightbox(m, index: i) } }
         if m.attachments.contains(where: { !$0.attachment.isDownloaded }) { p.kickOffAttachmentDownload = { [session] in session.downloadAttachments(m) } }
         if m.attachments.contains(where: { $0.attachment.pending == true }) { p.cancelAttachmentDownload = { [session] in session.cancelDownloads(m) } }
-        p.saveAttachment = { [session] i in session.saveAttachments(m, only: i) }
+        if !viewOnce { p.saveAttachment = { [session] i in session.saveAttachments(m, only: i) } }
         if let first = m.attachments.first?.attachment, AttachmentPolicy.isAudio(first.contentType) {
             p.isVoiceMessagePlayed = m.direction == .outgoing || m.isViewed
             p.audioControls = session.audioControls(m)
@@ -429,7 +510,9 @@ struct ConversationPane: View {
             }
         }
         if let poll = m.poll { p.poll = session.messagePoll(poll); p.canSendPollVote = !poll.terminated && conversation.isAccepted
-            p.sendPollVote = { [session] indexes in session.vote(m.id, indexes) } }
+            p.sendPollVote = { [session] indexes in session.vote(m.id, indexes) }
+            p.showPollVotes = { [session] in session.contactDialog = .pollVotes(messageId: m.id) } }
+        p.showMediaNoLongerAvailableToast = { [session] in session.toast = .mediaNoLongerAvailable }
         p.isEdited = m.isEdited
         if m.editHistory.count > 1 { p.showEditHistory = { [session] in session.editHistoryMessageId = m.id } }
         if let t = m.expireTimer, t > 0 {

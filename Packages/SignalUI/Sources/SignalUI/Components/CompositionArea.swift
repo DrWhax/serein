@@ -62,6 +62,8 @@ public struct CompositionAreaModel {
     public var isActive = true
     public var isPollSend1to1Enabled = true
     public var isShareContactEnabled = true
+    /// Whether the app can send view-once media (the toggle on a lone photo or video).
+    public var isViewOnceSendEnabled = true
 
     public init(conversationId: String, messageRequest: MessageRequestModel) {
         self.conversationId = conversationId
@@ -70,7 +72,7 @@ public struct CompositionAreaModel {
 
     /// `isViewOnceEligible`: exactly one image or video and no quote.
     var showViewOnceToggle: Bool {
-        draftAttachments.count == 1 && (draftAttachments[0].isImage || draftAttachments[0].isVideo) && quotedMessageId == nil && quote == nil
+        isViewOnceSendEnabled && draftAttachments.count == 1 && (draftAttachments[0].isImage || draftAttachments[0].isVideo) && quotedMessageId == nil && quote == nil
     }
     var isViewOnceActive: Bool { isViewOnce && showViewOnceToggle }
     var showMediaQualitySelector: Bool { draftAttachments.contains { $0.isImage } }
@@ -79,7 +81,6 @@ public struct CompositionAreaModel {
 /// The callbacks of `<CompositionArea>`.
 public struct CompositionAreaActions {
     public var onSubmit: () -> Void = {}
-    public var onForceSend: () -> Void = {}
     public var onToggleViewOnce: () -> Void = {}
     public var setMediaQualitySetting: (Bool) -> Void = { _ in }
     public var onCloseQuote: () -> Void = {}
@@ -242,12 +243,18 @@ public struct CompositionArea: View {
         }
     }
 
+    /// `handleForceSend`: the send button leaves the large editor and submits the input, as Enter does.
+    func forceSend() {
+        large = false
+        actions.onSubmit()
+    }
+
     @ViewBuilder var sendButton: some View {
         if !model.isEditingMessage {
             Spacer(minLength: 0)
             cell(last: true) {
                 AxoIconButton.Root(label: i18n("icu:sendMessageToContact"), variant: .strongPrimary, size: .md, symbol: "send-fill",
-                                   action: actions.onForceSend)
+                                   action: forceSend)
                     .frame(width: 32, height: 32)
             }
         }
@@ -305,7 +312,7 @@ public struct CompositionArea: View {
                 if viewOnce {
                     cell(last: true) {
                         AxoIconButton.Root(label: i18n("icu:sendMessageToContact"), variant: .strongPrimary, size: .md, symbol: "send-fill",
-                                           action: actions.onForceSend)
+                                           action: forceSend)
                             .frame(width: 32, height: 32)
                     }
                 }

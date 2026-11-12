@@ -299,7 +299,8 @@ public enum GroupMembersNames {
 
 /// GroupDescription (ts/components/conversation/GroupDescription.dom.tsx): the description
 /// (GroupDescriptionText: emoji, links underlined in the text colour, newlines) clamped to
-/// two lines, with a bold "read more" when it overflows.
+/// two lines, with a bold "read more" when it overflows, which opens the whole description in a
+/// dialog titled with the group's name (`showFullDescription`; `onReadMore` is told as well).
 public struct GroupDescription: View {
     let title: String
     let text: String
@@ -310,10 +311,11 @@ public struct GroupDescription: View {
     let style: CSSTextStyle
     let color: AxoColor
     @Environment(\.i18n) var i18n
+    @Environment(\.axoModalStack) var modals
     @State private var width: CGFloat = 0
 
     public init(title: String, text: String, alignment: CSSTextAlign = .start, style: CSSTextStyle = CSSTextStyle(AxoType.bodyLarge),
-                color: AxoColor = .labelPrimary, onReadMore: @escaping () -> Void) {
+                color: AxoColor = .labelPrimary, onReadMore: @escaping () -> Void = {}) {
         self.title = title
         self.text = text
         self.alignment = alignment
@@ -339,7 +341,7 @@ public struct GroupDescription: View {
             CSSText(runs: runs, style: style, wrap: .clamp(2), alignment: alignment)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             if overflows {
-                SwiftUI.Button(action: onReadMore) {
+                SwiftUI.Button(action: showFullDescription) {
                     CSSText(i18n("icu:GroupDescription__read-more"), style: { var s = style; s.fontName = AxoFonts.interName(weight: 600); return s }(),
                             wrap: .nowrap)
                 }
@@ -347,6 +349,26 @@ public struct GroupDescription: View {
             }
         }
         .cssTextColor(color)
+    }
+
+    /// The whole description: AxoDialog md, the group's name, close.
+    func showFullDescription() {
+        onReadMore()
+        guard let modals else { return }
+        let id = "group-description"
+        let runs = runs
+        modals.present(id: id) {
+            AxoDialog.Content(size: .md, hasFooter: false) {
+                AxoDialog.Header {
+                    AxoDialog.Title(title)
+                    AxoDialog.Close { modals.dismiss(id: id) }
+                }
+                AxoDialog.Body {
+                    CSSText(runs: runs, style: CSSTextStyle(AxoType.bodyLarge), wrap: .wrap).cssTextColor(.labelPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 }
 

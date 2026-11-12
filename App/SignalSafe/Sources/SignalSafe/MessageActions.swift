@@ -75,6 +75,19 @@ struct PinMessageRequest {
         }
     }
 
+    /// Deletes messages outside the timeline's dialog (a story's replies), then `done`.
+    func deleteMessages(_ ids: [String], forEveryone: Bool, done: @escaping @MainActor () -> Void) {
+        guard let session = signalSession else { return }
+        Task {
+            do {
+                if forEveryone { for id in ids { try await session.messenger.deleteForEveryone(id) } } else { try await session.messenger.deleteForMe(ids) }
+            } catch {
+                Self.trace("delete failed: \(error)")
+            }
+            done()
+        }
+    }
+
     func deleteForMe(_ r: DeleteMessagesRequest) {
         deleteRequest = nil
         selectedMessageIds = nil
@@ -416,6 +429,14 @@ struct PinMessageRequest {
         guard let session = signalSession else { return }
         Task {
             do { try await session.messenger.vote(on: messageId, optionIndexes: optionIndexes) } catch { Self.trace("vote failed: \(error)") }
+        }
+    }
+
+    /// `endPoll`: our poll stops taking votes (a poll-terminate message to the chat).
+    func endPoll(_ messageId: String) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.messenger.endPoll(messageId) } catch { Self.trace("end poll failed: \(error)") }
         }
     }
 

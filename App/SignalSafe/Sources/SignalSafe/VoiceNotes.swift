@@ -42,6 +42,7 @@ import SignalUI
 
     /// `loadVoiceNoteAudio` + play: this message's audio from `position` (0…1).
     func playAudio(_ m: TimelineMessage, at position: Double) {
+        Self.trace("audio: play \(m.id) at \(position) (active \(activeAudioMessageId == m.id), engine playing \(audioEngine?.isPlaying ?? false))")
         guard let a = m.attachments.first?.attachment, AttachmentPolicy.isAudio(a.contentType), a.isDownloaded,
               let session = signalSession else { return }
         guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else { return }
@@ -91,6 +92,7 @@ import SignalUI
     }
 
     func setAudioPlaying(_ playing: Bool) {
+        Self.trace("audio: setPlaying(\(playing)) for \(activeAudioMessageId ?? "-"), engine \(audioEngine.map { $0.isPlaying ? "playing" : "paused" } ?? "none")")
         guard let engine = audioEngine else { return }
         if playing {
             Task {

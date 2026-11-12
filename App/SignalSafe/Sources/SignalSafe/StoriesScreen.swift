@@ -30,6 +30,11 @@ struct StoriesScreen: View {
     /// MyStories "Forward", and the story settings.
     @State private var forwardStoryId: String?
     @State private var showingSettings = false
+    /// The send dialog's groups (members, announcements only, admin), read when it opens.
+    @State private var storyGroups: [String: StoryGroupState] = [:]
+    /// What the send dialog picked so far: each list's or group's members (`onSelectedStoryList`),
+    /// whose safety numbers are checked before the story goes out.
+    @State private var storySelection: [String: [String]] = [:]
 
     struct ViewsNReplies: Equatable {
         var storyId: String
@@ -215,6 +220,8 @@ struct StoriesScreen: View {
                         actions: {
                 var a = StoryViewerActions()
                 a.onClose = { close() }
+                // The speaker button on a story without sound.
+                a.showNoSoundToast = { session.toast = .storyMuted }
                 a.viewNext = { step(1) }
                 a.viewPrevious = { step(-1) }
                 a.setPaused = { paused = $0 }
@@ -280,12 +287,27 @@ struct StoriesScreen: View {
                     case .text(let t): .text(Self.storyText(t))
                     case .media(let m): .file(OutgoingAttachment(data: m.data, contentType: m.contentType, fileName: m.fileName))
                     }
-                    session.sendStory(content, listIds: listIds, groupConversationIds: conversationIds)
+                    // `blockSendUntilConversationsAreVerified` for the story's recipients.
+                    let members = (listIds + conversationIds).flatMap { storySelection[$0] ?? [] }
+                    session.sendStoryAfterReview(content, listIds: listIds, groupConversationIds: conversationIds, recipients: members)
                     self.draft = nil
                 }
+                a.onSelectedStoryList = { conversationId, listId, serviceIds in storySelection[listId ?? conversationId] = serviceIds }
+                a.onDeleteList = { session.deleteStoryList($0) }
+                a.onDistributionListCreated = { name, viewers in
+                    let id = UUID().uuidString.lowercased()
+                    session.createStoryList(id: id, name: name, members: viewers)
+                    return id
+                }
+                a.toggleGroupsForStorySend = { ids in session.setGroupStorySendMode(ids, always: true) }
+                a.settings = settingsActions
                 return a
             }())
-            .onAppear { session.loadComposable() }
+            .onAppear {
+                session.loadComposable()
+                storySelection = [:]
+            }
+            .task { await loadStoryGroups() }
         }
     }
 
@@ -304,17 +326,44 @@ struct StoriesScreen: View {
     }
 
     var lists: [StoryDistributionList] {
-        session.storyLists.map { l in
+        let byId = Dictionary(candidates.map { ($0.listItem.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return session.storyLists.map { l in
             StoryDistributionList(id: l.id, name: l.id == StoryStore.myStoryId ? i18n("icu:Stories__mine") : l.name, allowsReplies: l.allowsReplies,
-                                  isBlockList: l.isBlockList)
+                                  isBlockList: l.isBlockList, members: l.members.compactMap { byId[$0] })
         }
     }
 
+    /// A group as the send dialog needs it: who gets the story, and whether we may post.
+    struct StoryGroupState {
+        var members: [String]
+        var announcementsOnly: Bool
+        var areWeAdmin: Bool
+        var terminated: Bool
+    }
+
     var groups: [GroupStoryInfo] {
-        session.composable.filter { $0.kind == .group }.map {
-            GroupStoryInfo(id: $0.id, title: $0.title, avatar: ConversationAvatarData(title: $0.title, conversationType: .group, color: $0.color),
-                           membersCount: $0.membersCount)
-        }
+        session.composable.filter { $0.kind == .group }.map { c in
+            let state = storyGroups[c.id]
+            var g = GroupStoryInfo(id: c.id, title: c.title, avatar: ConversationAvatarData(title: c.title, conversationType: .group, color: c.color),
+                                   membersCount: c.membersCount, memberServiceIds: state?.members)
+            g.announcementsOnly = state?.announcementsOnly ?? false
+            g.areWeAdmin = state?.areWeAdmin ?? false
+            g.terminated = state?.terminated ?? false
+            return g
+        }.filter { !$0.terminated }
+    }
+
+    func loadStoryGroups() async {
+        guard let db = session.clientDatabase else { return }
+        let ids = session.composable.filter { $0.kind == .group }.map(\.id)
+        let me = session.ourAci ?? ""
+        let states = (try? await db.pool.read { db in
+            try ids.compactMap { id in try ConversationQueries.details(db, conversationId: id)?.group.map { (id, $0) } }
+        }) ?? []
+        storyGroups = Dictionary(states.map { id, g in
+            (id, StoryGroupState(members: g.membersV2.map(\.aci).filter { $0 != me }, announcementsOnly: g.announcementsOnly, areWeAdmin: g.isAdmin(me),
+                                 terminated: g.terminated))
+        }, uniquingKeysWith: { a, _ in a })
     }
 }
 
@@ -383,7 +432,7 @@ extension StoriesScreen {
                                      forwardStoryId = nil
                                      session.doForwardStory(id, to: targets, body: edited.first?.messageBody)
                                  },
-                                 onClose: { forwardStoryId = nil })
+                                 onClose: { forwardStoryId = nil }, showCannotForwardEmptyToast: { session.toast = .cannotForwardEmptyMessage })
         }
     }
 
@@ -398,37 +447,41 @@ extension StoriesScreen {
             }
             StoriesSettingsModal(candidateConversations: candidates, distributionLists: settingsLists, groupStories: groupStories,
                                  signalConnectionsCount: candidates.count, me: ConversationAvatarData(title: me.title, color: me.color),
-                                 storyViewReceiptsEnabled: session.accountSettings.storyViewReceipts, regionCode: nil, actions: {
-                var a = StoriesSettingsActions()
-                a.hideStoriesSettings = { showingSettings = false }
-                a.onDeleteList = { session.deleteStoryList($0) }
-                a.toggleGroupsForStorySend = { ids in
-                    let current = Set(groupStories.map(\.id))
-                    session.setGroupStorySendMode(ids.filter { !current.contains($0) }, always: true)
-                    session.setGroupStorySendMode(ids.filter { current.contains($0) }, always: false)
-                }
-                a.onDistributionListCreated = { name, viewers in session.createStoryList(name: name, members: viewers) }
-                a.onHideMyStoriesFrom = { session.updateStoryList(StoryStore.myStoryId, isBlockList: true, members: $0) }
-                a.onRemoveMembers = { listId, ids in
-                    let members = session.storyLists.first { $0.id == listId }?.members ?? []
-                    session.updateStoryList(listId, members: members.filter { !ids.contains($0) })
-                }
-                a.onRepliesNReactionsChanged = { listId, allows in session.updateStoryList(listId, allowsReplies: allows) }
-                a.onStoryViewReceiptsChange = { session.setStoryViewReceipts($0) }
-                a.onViewersUpdated = { listId, ids in
-                    // My Story's "Only share with…" is an allow list; other lists just take the viewers.
-                    session.updateStoryList(listId, isBlockList: listId == StoryStore.myStoryId ? false : nil, members: ids)
-                }
-                a.setMyStoriesToAllSignalConnections = { session.updateStoryList(StoryStore.myStoryId, isBlockList: true, members: []) }
-                a.setStoriesDisabled = { off in
-                    showingSettings = false
-                    session.setStoriesDisabled(off)
-                    if off { model.selectedTab = .chats }
-                }
-                return a
-            }())
+                                 storyViewReceiptsEnabled: session.accountSettings.storyViewReceipts, regionCode: nil, actions: settingsActions)
             .onAppear { session.loadComposable() }
         }
+    }
+
+    /// Story settings' actions (also the send dialog's, which edits lists and My Story too).
+    var settingsActions: StoriesSettingsActions {
+        var a = StoriesSettingsActions()
+        a.hideStoriesSettings = { showingSettings = false }
+        a.onDeleteList = { session.deleteStoryList($0) }
+        a.toggleGroupsForStorySend = { ids in
+            let current = Set(groupStories.map(\.id))
+            session.setGroupStorySendMode(ids.filter { !current.contains($0) }, always: true)
+            session.setGroupStorySendMode(ids.filter { current.contains($0) }, always: false)
+        }
+        a.onDistributionListCreated = { name, viewers in session.createStoryList(name: name, members: viewers) }
+        a.onHideMyStoriesFrom = { session.updateStoryList(StoryStore.myStoryId, isBlockList: true, members: $0) }
+        a.onRemoveMembers = { listId, ids in
+            let members = session.storyLists.first { $0.id == listId }?.members ?? []
+            session.updateStoryList(listId, members: members.filter { !ids.contains($0) })
+        }
+        a.onRepliesNReactionsChanged = { listId, allows in session.updateStoryList(listId, allowsReplies: allows) }
+        a.onStoryViewReceiptsChange = { session.setStoryViewReceipts($0) }
+        a.onViewersUpdated = { listId, ids in
+            // My Story's "Only share with…" is an allow list; other lists just take the viewers.
+            session.updateStoryList(listId, isBlockList: listId == StoryStore.myStoryId ? false : nil, members: ids)
+        }
+        a.setMyStoriesToAllSignalConnections = { session.updateStoryList(StoryStore.myStoryId, isBlockList: true, members: []) }
+        a.toggleSignalConnectionsModal = { session.contactDialog = .signalConnections }
+        a.setStoriesDisabled = { off in
+            showingSettings = false
+            session.setStoriesDisabled(off)
+            if off { model.selectedTab = .chats }
+        }
+        return a
     }
 
     /// Groups in the story send list (upstream storySendMode Always).
@@ -486,6 +539,13 @@ struct StoryViewsNRepliesLoader: View {
             a.onReply = { text in
                 session.replyToStory(item.id, body: text)
                 if isGroup { revision += 1 } else { onClose() }
+            }
+            // A group story's replies: deleted here, or for everyone (`deleteGroupStoryReply…`).
+            a.deleteGroupStoryReply = { id in
+                session.deleteMessages([id], forEveryone: false) { revision += 1 }
+            }
+            a.deleteGroupStoryReplyForEveryone = { id in
+                session.deleteMessages([id], forEveryone: true) { revision += 1 }
             }
             return a
         }())

@@ -100,7 +100,11 @@ enum CallLinkModal: Equatable {
         callLocalVideo = true
         setCameraPreview(true)
         if let calling, let key = try? CallLinkRootKey.fromBytes(link.rootKey) {
-            Task { _ = try? await calling.peekCallLinkCall(roomId: roomId, rootKey: key) }
+            // The lobby's "N people in this call".
+            Task { [weak self] in
+                let info = try? await calling.peekCallLinkCall(roomId: roomId, rootKey: key)
+                if self?.activeCall?.conversationId == roomId { self?.callPeek = (roomId, info) }
+            }
         }
     }
 

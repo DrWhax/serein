@@ -90,6 +90,14 @@ import SignalUI
         run("mark unread") { try await $0.messenger.setMarkedUnread(id, unread) }
     }
 
+    /// Settings → Blocked → "Add blocked user": that chat blocked (and synced).
+    func blockConversation(_ conversationId: String) {
+        guard let session else { return }
+        Task {
+            do { try await session.messenger.setBlocked(conversationId, true) } catch { Self.trace("block failed: \(error)") }
+        }
+    }
+
     func setBlocked(_ blocked: Bool) {
         guard let id = selectedConversationId else { return }
         run("block") { try await $0.messenger.setBlocked(id, blocked) }

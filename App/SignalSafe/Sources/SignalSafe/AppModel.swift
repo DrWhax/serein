@@ -11,6 +11,8 @@ import SignalUI
     var selectedTab: NavTab = .chats
     /// The Settings tab's page (other places open a page: chat folders, notifications).
     var settingsPage: SettingsPage = .general
+    /// A new chat folder started from a chat's context menu ("Create new folder"): that chat.
+    var newChatFolderWith: String?
     var navTabsCollapsed = false
     /// `preferredLeftPaneWidth` item (default 320 upstream).
     var preferredLeftPaneWidth: CGFloat = 320

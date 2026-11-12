@@ -198,8 +198,8 @@ public enum StoryDistributionLists {
 
     /// Creates a custom list (`createNewStoryDistributionList`); returns its id.
     @discardableResult
-    public static func create(_ db: Database, name: String, members: [String], allowsReplies: Bool = true) throws -> String {
-        let id = UUID().uuidString.lowercased()
+    public static func create(_ db: Database, id: String? = nil, name: String, members: [String], allowsReplies: Bool = true) throws -> String {
+        let id = id ?? UUID().uuidString.lowercased()
         try db.execute(sql: "INSERT INTO storyDistributions (id, name, allowsReplies, isBlockList, senderKeyInfoJson) VALUES (?, ?, ?, 0, NULL)",
                        arguments: [id, name, allowsReplies])
         try setMembers(db, listId: id, members)

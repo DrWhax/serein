@@ -48,7 +48,7 @@ struct ChatDialogs: View {
                                      session.shareText = nil
                                      session.sendText(edited.first?.messageBody ?? text, to: targets)
                                  },
-                                 onClose: { session.shareText = nil })
+                                 onClose: { session.shareText = nil }, showCannotForwardEmptyToast: { session.toast = .cannotForwardEmptyMessage })
         }
         if session.isEditingNewGroupAvatar { AxoBaseDialog.Host { newGroupAvatar } }
         if let id = session.avatarLightboxFor, let c = session.conversation(id) {
@@ -144,7 +144,7 @@ struct ChatDialogs: View {
         }
         return ForwardMessagesModal(drafts: drafts, candidateConversations: Self.forwardCandidates(session, i18n),
                                     doForwardMessages: { targets, edited in session.doForward(to: targets, drafts: edited) },
-                                    onClose: { session.forwardMessageIds = nil })
+                                    onClose: { session.forwardMessageIds = nil }, showCannotForwardEmptyToast: { session.toast = .cannotForwardEmptyMessage })
     }
 }
 

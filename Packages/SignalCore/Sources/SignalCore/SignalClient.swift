@@ -111,6 +111,23 @@ public actor SignalClient {
         await socket.disconnect()
     }
 
+    /// `deleteAllData` on a linked device: this device is unlinked on the server (`DELETE
+    /// /v1/devices/{id}`, as upstream; a failure there does not keep the data), the session's work
+    /// and connection stop, the database closes, and the account folder (database, attachments,
+    /// everything) and the database key are deleted. The client is unusable afterwards; the app
+    /// starts afresh.
+    public func deleteAllData(keyStore: any DatabaseKeyStore) async {
+        if let account = try? await storedAccount() {
+            do { _ = try await socket.authenticatedRequest("DELETE", "/v1/devices/\(account.deviceId)") } catch {
+                Self.diagnose("unlink failed, deleting anyway: \(String(describing: error).prefix(120))")
+            }
+        }
+        await shutdown()
+        do { try database.pool.close() } catch { Self.diagnose("database close failed: \(error)") }
+        do { try FileManager.default.removeItem(at: directory) } catch { Self.diagnose("data folder not removed: \(error)") }
+        do { try keyStore.deleteKey() } catch { Self.diagnose("database key not removed: \(error)") }
+    }
+
     /// The session's background work stops, and what it was doing finishes (the job queue's
     /// handler, a download, a pre-key check that is mid-request).
     func stopWorkers() async {

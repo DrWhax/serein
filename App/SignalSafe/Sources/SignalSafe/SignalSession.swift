@@ -23,6 +23,8 @@ import SignalUI
         /// The database could not be opened (upstream: the database-error dialog).
         case failed(String)
         case ready
+        /// "Delete all data" running (ClearingData), then the app starts afresh.
+        case deletingData
     }
 
     /// `SIGNALSAFE_ENV=staging` (or the `signalEnvironment` default) selects staging; each
@@ -124,6 +126,18 @@ import SignalUI
     var calling: CallingService?
     var activeCall: ActiveCallState?
     var ringingCall: (conversationId: String, isVideo: Bool, callId: UInt64)?
+    /// A group call ringing us (CallsExtras.swift): its ring and who rang.
+    var ringingGroupCall: (conversationId: String, ringId: Int64, ringerAci: String, members: [String])?
+    /// The active group call's synced state the screen shows (CallsExtras.swift), reset with each
+    /// call: the lobby's peek, raised hands, reactions, the lower-hand hint, remote mutes.
+    var callPeek: (conversationId: String, info: PeekInfo?)?
+    var callRaisedHands: [UInt32] = []
+    var callReactions: [CallReaction] = []
+    var callSuggestLowerHand = false
+    var callMutedBy: UInt32?
+    var callObservedRemoteMute: ObservedRemoteMute?
+    @ObservationIgnored var callReactionsModel: CallReactionsModel?
+    @ObservationIgnored var callButtonToasts: CallingButtonToasts?
     var callLocalAudio = true
     var callLocalVideo = false
     var callPip = false
@@ -232,10 +246,21 @@ import SignalUI
     var panels: [String] = []
     /// The open ContactModal (a member's service id).
     var contactModalId: String?
+    /// ContactSurfaces.swift: AboutContactModal's contact (live), the smaller dialogs opened
+    /// from a contact (connections, name warning, note, safety tips, nickname, add to a group,
+    /// their avatar), and "Add to a group"'s groups.
+    var aboutContact: ContactAboutInfo?
+    @ObservationIgnored var aboutContactTask: Task<Void, Never>?
+    var contactDialog: ContactDialog?
+    var addToGroupCandidates: [AddUserToAnotherGroupCandidate] = []
+    /// The nickname editor's contact (their saved nickname and note).
+    var nicknameContact: ContactAboutInfo?
     /// Search (the left pane): the term, the chat it is limited to (the header's 🔍), results.
     var searchTerm = ""
     var searchConversationId: String?
     var searchHits: [MessageSearchHit] = []
+    /// The search input's unread filter (`filterByUnread`): only unread chats, unmuted.
+    var filterByUnread = false
     var searchTask: Task<Void, Never>?
     /// A message to scroll to once its chat's timeline has loaded (a search result).
     var pendingScrollMessageId: String?
@@ -262,6 +287,9 @@ import SignalUI
     /// Compose's sub-screens (new group, find by username / phone number) and their state.
     var composeMode = ComposeMode.compose
     var groupSelection: [String] = []
+    /// New-group members found by number or username (ComposeActions.swift), and the lookup running.
+    var groupLookups: [GroupLookup] = []
+    var groupLookupFetching: String?
     var newGroupName = ""
     var newGroupTimer = 0
     /// The new group's avatar (AvatarEditor's result; a photo's bytes are in `newGroupPhoto`).
@@ -327,6 +355,8 @@ import SignalUI
     @ObservationIgnored var inlineVideoGeneration: UInt64 = 0
     /// The open Lightbox (MediaViewer).
     var lightbox: LightboxState?
+    /// View-once media being viewed (ViewOnce.swift): already erased, shown from memory.
+    var viewOnceViewer: ViewOnceViewer?
     var signalSession: SignalClient.Session? { session }
     /// Largest side of a decoded timeline image (the bubble is at most ~ 480 pt wide at 2×).
     static let displayMaxDimension = 1024
@@ -341,6 +371,8 @@ import SignalUI
     /// The open safety-number viewer for one contact.
     var safetyNumberSheet: SafetyNumberSheet?
     private var linkTask: Task<Void, Never>?
+    /// The database key's store (the Keychain, or a mock's in-memory key), for "Delete all data".
+    @ObservationIgnored private var databaseKeys: (any DatabaseKeyStore)?
 
     var isStaging: Bool { environment == .staging }
 
@@ -363,7 +395,7 @@ import SignalUI
         func deleteKey() throws {}
     }
 
-    static func mockClient(_ path: String, media: MediaXPCClient) throws -> SignalClient {
+    static func mockClient(_ path: String, media: MediaXPCClient, keys: EphemeralKeyStore = EphemeralKeyStore()) throws -> SignalClient {
         let ready = try JSONDecoder().decode(MockReady.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         let pem = ready.certificateAuthority.split(separator: "\n").filter { !$0.hasPrefix("-----") }.joined()
         guard let ca = Data(base64Encoded: pem), let spp = Data(base64Encoded: ready.serverPublicParams),
@@ -377,7 +409,7 @@ import SignalUI
                                          serverPublicParams: spp, genericServerPublicParams: gspp)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SignalSafe-mock-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return try SignalClient(config: config, directory: folder, keyStore: EphemeralKeyStore(), media: media)
+        return try SignalClient(config: config, directory: folder, keyStore: keys, media: media)
     }
 
     func start() {
@@ -386,7 +418,9 @@ import SignalUI
         if Self.tracing { SignalClient.diagnostics.withLock { $0 = { Self.trace($0) } } }
         if let path = Self.mockReadyPath {
             do {
-                let client = try Self.mockClient(path, media: media)
+                let keys = EphemeralKeyStore()
+                databaseKeys = keys
+                let client = try Self.mockClient(path, media: media, keys: keys)
                 self.client = client
                 observeInbox(client.database)
             } catch {
@@ -401,6 +435,7 @@ import SignalUI
             let folder = support.appendingPathComponent(isStaging ? "signal-safe-staging" : "signal-safe", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let keys = KeychainDatabaseKeyStore(account: isStaging ? "sqlcipher-key-staging" : "sqlcipher-key")
+            databaseKeys = keys
             let client = try SignalClient(config: try .signal(environment, userAgent: Self.userAgent), directory: folder, keyStore: keys,
                                           media: media)
             self.client = client
@@ -435,6 +470,24 @@ import SignalUI
             if (try? await client.storedAccount()) != nil { phase = .ready; return }
         }
         link()
+    }
+
+    /// Settings → General → "Delete all data" (`doDeleteAllData`, upstream deleteAllData for a
+    /// linked device): this device unlinked, the account's data and database key deleted, then
+    /// the app relaunched to the install screen.
+    func deleteAllData() {
+        guard let client, let keys = databaseKeys, phase != .deletingData else { return }
+        phase = .deletingData
+        if activeCall != nil { hangUp() }
+        Task {
+            await client.deleteAllData(keyStore: keys)
+            Self.trace("deleted all data; relaunching")
+            let config = NSWorkspace.OpenConfiguration()
+            config.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+                Task { @MainActor in NSApp.terminate(nil) }
+            }
+        }
     }
 
     /// Install screen: request a provisioning URL and wait for the phone to scan it.
@@ -814,6 +867,7 @@ import SignalUI
         composeSearch = ""
         composeMode = .compose
         groupSelection = []
+        groupLookups = []
         newGroupName = ""
         newGroupTimer = 0
         newGroupAvatar = nil
@@ -1048,6 +1102,41 @@ import SignalUI
         return conversations.filter { ChatFolderStore.contains(folder, $0.folderProps) }
     }
 
+    /// Settings → Notifications → Reset (`onResetNotificationSettings`): the account's settings
+    /// back to their defaults, and every chat's own choices cleared.
+    func resetNotificationSettings() {
+        saveNotificationSettings { $0 = SignalCore.NotificationSettings() }
+        guard let session else { return }
+        Task {
+            do { try await session.messenger.resetAllNotificationSettings() } catch { Self.trace("notification reset failed: \(error)") }
+        }
+    }
+
+    /// The profile editor's name and about (`onProfileChanged`): written to the server, then here.
+    func writeOwnProfile(_ fields: OwnProfileFields) {
+        guard let writer = session?.profileWriter else { return }
+        Task {
+            do { try await writer.write(fields: fields) } catch {
+                Self.trace("profile not changed: \(error)")
+                toast = .error
+            }
+        }
+    }
+
+    func setShowUnreadReminders(_ conversationId: String, _ on: Bool) {
+        guard let session else { return }
+        Task {
+            do { try await session.messenger.setShowUnreadReminders(conversationId, on) } catch { Self.trace("unread reminders not changed: \(error)") }
+        }
+    }
+
+    /// Settings → Chats → "Sync now" (`makeSyncRequest`): contacts, blocked list, configuration
+    /// and keys asked of the primary again.
+    func requestSyncNow() async throws {
+        guard let session else { throw InstallError() }
+        try await session.messenger.requestSync()
+    }
+
     func saveNotificationSettings(_ change: (inout SignalCore.NotificationSettings) -> Void) {
         var n = notificationSettings
         change(&n)
@@ -1072,6 +1161,14 @@ import SignalUI
     func unblock(_ conversationId: String) { respond(conversationId, .accept) }
 
     func accountEntropyPool() async -> String? { try? await client?.database.accountEntropyPool() }
+
+    /// `updateChatFolderMute`: every chat in the folder muted for that long, or unmuted.
+    func muteFolder(_ id: String, _ option: MuteOption?) {
+        guard let folder = chatFolders.first(where: { $0.id == id }) else { return }
+        for c in conversations where ChatFolderStore.contains(folder, c.folderProps, ignoreShowOnlyUnread: true, ignoreShowMutedChats: true) {
+            setMute(option, for: c.id)
+        }
+    }
 
     /// Upstream `markChatFolderRead`: every unread chat in the folder.
     func markFolderRead(_ id: String) {
@@ -1163,6 +1260,21 @@ import SignalUI
             } catch {
                 Self.trace("story failed: \(error)")
             }
+        }
+    }
+
+    /// `sendStoryMessage`'s `blockSendUntilConversationsAreVerified`: recipients whose safety
+    /// number changed are put to the user first; cancelling sends nothing.
+    func sendStoryAfterReview(_ content: OutgoingStoryContent, listIds: [String], groupConversationIds: [String], recipients: [String]) {
+        guard let session else { return }
+        Task {
+            let pending: [String]
+            do { pending = try await session.messenger.identitiesNeedingApproval(serviceIds: recipients) } catch {
+                Self.trace("story identity check failed: \(error)")
+                pending = []     // the identity store still refuses unapproved keys
+            }
+            let send: @MainActor () -> Void = { self.sendStory(content, listIds: listIds, groupConversationIds: groupConversationIds) }
+            if pending.isEmpty { send() } else { await review(pending, confirmed: send) }
         }
     }
 

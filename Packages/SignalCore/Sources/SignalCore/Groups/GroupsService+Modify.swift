@@ -146,7 +146,20 @@ extension GroupsService {
             }
         }
         try await sendUpdate(keys, revision: 0, groupChange: nil, before: nil, after: state, timestamp: timestamp)
+        try await recordVerifiedName(keys, title)
         return keys
+    }
+
+    /// `groupVerifiedNameHash`: a name we gave the group ourselves is verified, so its hero shows
+    /// no "group name not verified" warning. A name someone else sets is not (until a sync says so).
+    func recordVerifiedName(_ keys: GroupKeys, _ title: String) async throws {
+        try await database.pool.write { db in
+            let stored = try GroupStore.conversation(db, keys: keys)
+            try MessageStore.updateConversationJSON(db, conversationId: stored.conversationId) {
+                $0["groupVerifiedNameHash"] = GroupNames.verifiedHash(title)
+            }
+            try StorageWriteBack.conversationChanged(db, conversationId: stored.conversationId)
+        }
     }
 
     // MARK: operations
@@ -171,7 +184,10 @@ extension GroupsService {
         }
     }
 
-    public func setTitle(_ keys: GroupKeys, _ title: String) async throws { try await modify(keys) { try $0.updateAttributes(title: title) } }
+    public func setTitle(_ keys: GroupKeys, _ title: String) async throws {
+        try await modify(keys) { try $0.updateAttributes(title: title) }
+        try await recordVerifiedName(keys, title)
+    }
     public func setDescription(_ keys: GroupKeys, _ text: String) async throws { try await modify(keys) { try $0.updateAttributes(description: text) } }
 
     public func setAvatar(_ keys: GroupKeys, _ image: Data?) async throws {
@@ -229,5 +245,16 @@ extension GroupsService {
     public func shareProfileKey(_ keys: GroupKeys) async throws {
         guard let ours = try await credential(ourAci) else { return }
         try await modify(keys) { try $0.modifyOurProfileKey(ours) }
+    }
+}
+
+/// `computeGroupNameHash`: base64(SHA-256(name)).
+public enum GroupNames {
+    public static func verifiedHash(_ name: String) -> String { SignalCrypto.sha256(Data(name.utf8)).base64EncodedString() }
+
+    /// `isGroupNameVerified`: the hash recorded for the group matches its current name.
+    public static func isVerified(name: String?, hash: String?) -> Bool {
+        guard let name, !name.isEmpty, let hash else { return false }
+        return verifiedHash(name) == hash
     }
 }

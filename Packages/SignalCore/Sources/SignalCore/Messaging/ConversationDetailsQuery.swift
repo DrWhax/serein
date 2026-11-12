@@ -26,6 +26,18 @@ public struct ConversationDetailsInfo: Sendable, Equatable {
     public var notifyForMentionsIfMuted: Bool?
     public var notifyForRepliesIfMuted: Bool?
     public var hasMedia: Bool
+    /// A 1:1 chat's groups in common (`getGroupsInCommonSorted`): the groups (not left or ended)
+    /// they are in, by conversation id, sorted by name.
+    public var groupsInCommon: [String] = []
+    /// The hero's name warnings: a 1:1 contact's profile name, nickname and system contact; a
+    /// group's name verified by us (`isGroupNameVerified`).
+    public var hasProfileName = false
+    public var hasNickname = false
+    public var isInSystemContacts = false
+    public var isGroupNameVerified = false
+    public var groupDescription: String?
+    /// The chat's own unread-reminders choice (nil: the account's, `getShowUnreadReminders`).
+    public var showUnreadReminders: Bool?
 }
 
 extension ConversationQueries {
@@ -45,6 +57,15 @@ extension ConversationQueries {
               AND (contentType LIKE 'image/%' OR contentType LIKE 'video/%') LIMIT 1
             """, arguments: [conversationId]) != nil
         func flag(_ k: String) -> Bool? { json[k] as? Bool }
+        var common: [String] = []
+        if !isGroup, let serviceId {
+            common = try Row.fetchAll(db, sql: "SELECT id, json FROM conversations WHERE type = 'group'").compactMap { g -> (String, String)? in
+                let gj = (try? MessageStore.jsonObject(g["json"] ?? "{}")) ?? [:]
+                guard gj["left"] as? Bool != true, gj["terminated"] as? Bool != true, let name = gj["name"] as? String, !name.isEmpty else { return nil }
+                let members = (gj["membersV2"] as? [[String: Any]] ?? []).compactMap { $0["aci"] as? String }
+                return members.contains(serviceId) ? (g["id"], name) : nil
+            }.sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }.map(\.0)
+        }
         return ConversationDetailsInfo(
             conversationId: conversationId, isGroup: isGroup, serviceId: serviceId, masterKey: stored?.keys.masterKey,
             muteExpiresAt: (json["muteExpiresAt"] as? NSNumber)?.int64Value, expireTimer: timer.seconds.map(Int.init),
@@ -52,7 +73,13 @@ extension ConversationQueries {
             markedUnread: flag("markedUnread") ?? false, left: flag("left") ?? false,
             about: json["about"] as? String, aboutEmoji: json["aboutEmoji"] as? String, group: stored?.state,
             notifyForCallsIfMuted: flag("notifyForCallsIfMuted"), notifyForMentionsIfMuted: flag("notifyForMentionsIfMuted"),
-            notifyForRepliesIfMuted: flag("notifyForRepliesIfMuted"), hasMedia: media)
+            notifyForRepliesIfMuted: flag("notifyForRepliesIfMuted"), hasMedia: media, groupsInCommon: common,
+            hasProfileName: ((json["profileName"] as? String) ?? "").isEmpty == false,
+            hasNickname: ["nicknameGivenName", "nicknameFamilyName"].contains { ((json[$0] as? String) ?? "").isEmpty == false },
+            isInSystemContacts: ["systemGivenName", "systemFamilyName", "systemNickname"].contains { ((json[$0] as? String) ?? "").isEmpty == false }
+                || ((json["name"] as? String) ?? "").isEmpty == false && !isGroup,
+            isGroupNameVerified: isGroup && GroupNames.isVerified(name: json["name"] as? String, hash: json["groupVerifiedNameHash"] as? String),
+            showUnreadReminders: flag("showUnreadReminders"))
     }
 }
 
@@ -69,6 +96,24 @@ extension Messenger {
             $0["notifyForCallsIfMuted"] = calls
             $0["notifyForMentionsIfMuted"] = mentions
             $0["notifyForRepliesIfMuted"] = replies
+        }
+    }
+
+    /// `setShowUnreadReminders` for one chat (ContactRecord / GroupV2Record, synced).
+    public func setShowUnreadReminders(_ conversationId: String, _ on: Bool) async throws {
+        try await changeConversation(conversationId) { $0["showUnreadReminders"] = on }
+    }
+
+    /// `resetAllNotificationSettings` (Settings → Notifications → Reset): every chat's own
+    /// "notify while muted" and unread-reminder choices go, so the account's defaults apply.
+    public func resetAllNotificationSettings() async throws {
+        let keys = ["notifyForCallsIfMuted", "notifyForMentionsIfMuted", "notifyForRepliesIfMuted", "showUnreadReminders"]
+        let ids = try await database.pool.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM conversations WHERE "
+                                + keys.map { "json_extract(json, '$.\($0)') IS NOT NULL" }.joined(separator: " OR "))
+        }
+        for id in ids {
+            try await changeConversation(id) { json in for k in keys { json[k] = nil } }
         }
     }
 }

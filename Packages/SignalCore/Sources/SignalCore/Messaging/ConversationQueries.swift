@@ -108,6 +108,10 @@ public struct TimelineMessage: Sendable, Equatable, Identifiable {
     public var previews: [TimelinePreview] = []
     /// `readStatus` is Viewed (a played voice note, an opened view-once).
     public var isViewed = false
+    /// View-once media (`isTapToView`: `isViewOnce`, or an old `messageTimer`), and whether it was
+    /// erased (opened here or on another device: its attachments are gone).
+    public var isViewOnce = false
+    public var isErased = false
     /// A poll (`poll`): its question, options and votes.
     public var poll: TimelinePoll?
     /// `bodyRanges`: mentions and styles of the body.
@@ -475,6 +479,8 @@ public enum ConversationQueries {
             TimelineEdit(body: e["body"] as? String ?? "", timestamp: int64(e["timestamp"]) ?? 0)
         }
         m.isViewed = (json["readStatus"] as? NSNumber).flatMap { ReadStatus(rawValue: $0.intValue) } == .viewed
+        m.isViewOnce = json["isViewOnce"] as? Bool == true || json["messageTimer"] != nil
+        m.isErased = json["isErased"] as? Bool == true
         m.previews = (json["preview"] as? [[String: Any]] ?? []).compactMap { p in
             guard let url = p["url"] as? String else { return nil }
             return TimelinePreview(url: url, title: p["title"] as? String, description: p["description"] as? String, date: int64(p["date"]),

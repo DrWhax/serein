@@ -191,8 +191,8 @@ extension Messenger {
     // MARK: lists and settings
 
     @discardableResult
-    public func createStoryList(name: String, members: [String], allowsReplies: Bool = true) async throws -> String {
-        let id = try await database.pool.write { try StoryDistributionLists.create($0, name: name, members: members, allowsReplies: allowsReplies) }
+    public func createStoryList(id: String? = nil, name: String, members: [String], allowsReplies: Bool = true) async throws -> String {
+        let id = try await database.pool.write { try StoryDistributionLists.create($0, id: id, name: name, members: members, allowsReplies: allowsReplies) }
         jobs.poke()
         return id
     }

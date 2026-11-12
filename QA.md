@@ -98,10 +98,11 @@ rig covers.
 | SignalCore `MediaAvailability`; the app's image cache and viewers (`SignalSession`, `MediaAvailability.swift`, `MediaViewer.swift`) | `lean:media` `test:core` `test:app` |
 | `MessageSender`, `GroupSender`, `SocketManager` | `lean:send` `lean:group` `test:core` |
 | `MessageModifiers`, `MessageStore` | `lean:modifiers` `test:core` |
+| View-once media: the app's `ViewOnce.swift`, `Messenger.openViewOnce`, `TimelineMessage.isViewOnce` | `lean:modifiers` `test:core` `test:app`, and one real view-once photo in the app |
 | `SendLog` | `lean:resend` `test:core` |
 | `JobQueue` | `lean:queue` `test:core` |
 | `Identity`, `ProtocolStore`, `Messenger+IdentityApproval`, `StorageRecords+Conversations` | `lean:identity` `test:core` |
-| `Calls.swift`, `CallLinksAndPresenting.swift`, SignalUI `ScreenShare.swift` | `lean:calls` `test:app` `test:ui` |
+| `Calls.swift`, `CallsExtras.swift` (group rings, peek, raised hands, reactions), `CallLinksAndPresenting.swift`, SignalUI `ScreenShare.swift` | `lean:calls` `test:app` `test:ui` |
 | SignalRingRTC (`RingRTC`, `RingRTC+Events`, `Call`, `GroupCall`, `CallXPC`, `CallService`), `CallingService`, `Sandbox/SignalCalling.sb` | `lean:callboundary` `test:ringrtc` `test:core` `lean:calls` `app:sandbox` |
 | SignalRingRTC `CallLinkRootKey` (call-link keys, era ids) | `test:ringrtc` (compared with ringrtc's own) |
 | Voice-note recording (`VoiceNoteService`, `MediaXPCClient.recordVoiceNote`, the app's `VoiceRecorder.swift`), `Sandbox/SignalVoiceNoteEncoder.sb`, `Serein.sb`'s microphone rule | `lean:broker` `test:media` `app:sandbox` (it records a second from the terminal's microphone), and one real voice note in the app |
@@ -138,7 +139,8 @@ hour. The SignalMediaService, SignalUI, SignalCore and app tests, Broker, the li
 check and the vectors are from a second run after the fixes that run needed; everything else is
 from the first. `lean:crypto` and `test:core` are from a later run, when the crypto slice was added.
 `lean:callboundary`, `lean:broker`, `lean:calls`, `app:sandbox` and the RingRTC, SignalCore, media
-and app tests are from 2026-11-12, after ringrtc moved into SignalCalling.xpc.
+and app tests are from 2026-11-12, after ringrtc moved into SignalCalling.xpc. The SignalCore,
+SignalUI and app tests were rerun later that day, after the unconnected controls were wired up.
 
 | Step | Lean theorems | Swift | Mutants killed | Time |
 |---|---|---|---|---|
@@ -156,12 +158,12 @@ and app tests are from 2026-11-12, after ringrtc moved into SignalCalling.xpc.
 | `lean:resend` | 6 | rig: 1 test | 11 | 1 min |
 | `lean:send` | 14 | rig: 3 tests | 12 | 2 min |
 | `test:codecs` | | 146 tests (12 test runs) | | 0.5 min |
-| `test:core` | | 286 tests | | 1 min |
+| `test:core` | | 292 tests | | 1 min |
 | `test:i18n` | | 24 tests | | 5 s |
 | `test:media` | | 80 tests | | 10 s |
 | `test:ringrtc` | | 17 tests | | 1.5 min |
-| `test:ui` | | 561 tests | | 13.5 min |
-| `test:app` | | 35 + 5 tests | | 20 s |
+| `test:ui` | | 569 tests | | 14 min |
+| `test:app` | | 36 + 5 tests | | 20 s |
 | `lint:codecs` | | ok | | 3 s |
 | `app:sandbox` | | build, then `check-sandbox-profile: ok` | | 2.5 min |
 | `vectors` | | upstream read all 34 Swift outputs | | 5 s |

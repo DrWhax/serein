@@ -203,7 +203,7 @@ extension CallingService: CallControl {
         case .groupCallAudioLevels(let id):
             if activeCall?.conversationId == id { activeCall?.groupRevision += 1 }
         default:
-            break
+            handleCallExtrasEvent(e)     // CallsExtras.swift: what the screen shows, nothing of the call's lifecycle
         }
     }
 
@@ -212,6 +212,7 @@ extension CallingService: CallControl {
         let id = activeCall?.conversationId
         activeCall = nil
         callPip = false
+        resetCallExtras()
         releaseCallMedia(conversationId: id)
     }
 

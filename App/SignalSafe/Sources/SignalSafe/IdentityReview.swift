@@ -113,7 +113,7 @@ struct IdentityReviewDialog: View {
                                      onCancel: { session.cancelIdentityReview() },
                                      onConfirm: { session.confirmIdentityReview() }) { contactId, onClose in
                 SafetyNumberViewer(contactTitle: review.contacts.first { $0.id == contactId }?.title ?? contactId, isVerified: false,
-                                   safetyNumber: review.numbers[contactId], verificationDisabled: true, onClose: onClose)
+                                   safetyNumber: review.numbers[contactId], verificationDisabled: true, isKeyTransparencyEnabled: false, onClose: onClose)
             }
         }
     }
@@ -172,7 +172,9 @@ struct SafetyNumberSheetDialog: View {
                 }
                 AxoDialog.Body(maxHeight: 560) {
                     SafetyNumberViewer(contactTitle: sheet.title, isVerified: sheet.isVerified, safetyNumber: sheet.number,
-                                       verificationDisabled: sheet.number == nil, toggleVerified: { session.toggleVerified() },
+                                       verificationDisabled: sheet.number == nil,
+                                       // The key transparency check (Identity.keyTransparencyCheck) is not offered here yet.
+                                       isKeyTransparencyEnabled: false, toggleVerified: { session.toggleVerified() },
                                        onClose: { session.safetyNumberSheet = nil })
                 }
             }

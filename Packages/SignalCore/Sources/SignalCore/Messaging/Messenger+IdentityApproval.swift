@@ -50,6 +50,15 @@ extension Messenger {
         }
     }
 
+    /// The same for a set of recipients (a story's lists and groups, `verifyStoryListMembers`):
+    /// those whose key changed recently and was not approved since.
+    public func identitiesNeedingApproval(serviceIds: [String], threshold: Int64 = ProtocolStore.approvalWindow) async throws -> [String] {
+        let ourAci = account.aci
+        return try await database.pool.read { db in
+            try Set(serviceIds).filter { $0 != ourAci }.filter { try ProtocolStore.needsApproval(db, serviceId: $0, threshold: threshold) }.sorted()
+        }
+    }
+
     /// Whether we marked this contact's current identity key as verified.
     public func verifiedStatus(_ serviceId: String) async throws -> VerifiedStatus {
         try await database.pool.read { db in try ProtocolStore.verifiedStatus(db, serviceId: serviceId) }

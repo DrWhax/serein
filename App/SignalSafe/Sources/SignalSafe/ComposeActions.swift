@@ -14,6 +14,16 @@ struct ComposeError {
     var args: [String: String]
 }
 
+/// A new-group member found by number or username (`togglePhoneNumber` / `toggleUsername`):
+/// their 1:1 chat, ACI and how they were found.
+struct GroupLookup: Equatable {
+    var conversationId: String
+    var serviceId: String
+    var title: String
+    var e164: String?
+    var username: String?
+}
+
 @MainActor extension SignalSession {
     func showComposeMode(_ mode: ComposeMode) {
         if !isComposing { startComposing() }
@@ -23,7 +33,73 @@ struct ComposeError {
 
     /// `toggleConversationInChooseMembers`
     func toggleGroupMember(_ conversationId: String) {
-        if let i = groupSelection.firstIndex(of: conversationId) { groupSelection.remove(at: i) } else { groupSelection.append(conversationId) }
+        if let i = groupSelection.firstIndex(of: conversationId) {
+            groupSelection.remove(at: i)
+            groupLookups.removeAll { $0.conversationId == conversationId }
+        } else {
+            groupSelection.append(conversationId)
+        }
+    }
+
+    /// `togglePhoneNumber` in "choose members": the number looked up (CDSI) and its account added,
+    /// or, if already added, removed.
+    func toggleGroupPhoneNumber(_ p: ParsedPhoneNumber) {
+        if let found = groupLookups.first(where: { $0.e164 == p.e164 }) { return toggleGroupMember(found.conversationId) }
+        guard p.isValid else {
+            composeError = ComposeError(key: "icu:startConversation--phone-number-not-valid", args: ["phoneNumber": p.userInput])
+            return
+        }
+        guard let session = signalSession, !isLookingUp else { return }
+        isLookingUp = true
+        groupLookupFetching = "e164:\(p.e164)"
+        Task {
+            defer { isLookingUp = false; groupLookupFetching = nil }
+            do {
+                // Group members are ACIs: a number known only by its PNI can't be added here.
+                let entries = try await session.discovery.lookup(e164s: [p.e164])
+                guard let aci = entries.first(where: { $0.e164 == p.e164 })?.aci else {
+                    composeError = ComposeError(key: "icu:startConversation--phone-number-not-found", args: ["phoneNumber": p.userInput])
+                    return
+                }
+                let id = try await session.messenger.directConversation(serviceId: aci, e164: p.e164)
+                Task.detached { _ = try? await session.profiles.fetch(aci) }
+                addGroupLookup(GroupLookup(conversationId: id, serviceId: aci, title: p.userInput, e164: p.e164))
+            } catch {
+                Self.trace("group member lookup failed: \(error)")
+                composeError = ComposeError(key: "icu:startConversation--phone-number-not-found", args: ["phoneNumber": p.userInput])
+            }
+        }
+    }
+
+    /// `toggleUsername` in "choose members".
+    func toggleGroupUsername(_ raw: String) {
+        let username = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        if let found = groupLookups.first(where: { $0.username == username }) { return toggleGroupMember(found.conversationId) }
+        guard let session = signalSession, !username.isEmpty, !isLookingUp else { return }
+        isLookingUp = true
+        groupLookupFetching = "username:\(username)"
+        Task {
+            defer { isLookingUp = false; groupLookupFetching = nil }
+            do {
+                guard let aci = try await session.usernames.lookUp(username) else {
+                    composeError = ComposeError(key: "icu:startConversation--username-not-found", args: ["atUsername": "@\(username)"])
+                    return
+                }
+                let id = try await session.messenger.directConversation(serviceId: aci, username: username)
+                Task.detached { _ = try? await session.profiles.fetch(aci) }
+                addGroupLookup(GroupLookup(conversationId: id, serviceId: aci, title: "@" + username, username: username))
+            } catch {
+                Self.trace("group member lookup failed: \(error)")
+                composeError = ComposeError(key: "icu:startConversation--username-not-found", args: ["atUsername": "@\(username)"])
+            }
+        }
+    }
+
+    private func addGroupLookup(_ l: GroupLookup) {
+        groupLookups.removeAll { $0.conversationId == l.conversationId }
+        groupLookups.append(l)
+        if !groupSelection.contains(l.conversationId) { groupSelection.append(l.conversationId) }
+        composeSearch = ""
     }
 
     /// `createGroup`: the group with the chosen members, then its chat opens.
@@ -31,7 +107,9 @@ struct ComposeError {
         guard let session = signalSession, let db = clientDatabase, !isCreatingGroup else { return }
         let name = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let members = groupSelection.compactMap { id in composable.first { $0.id == id }?.serviceId }
+        let members = groupSelection.compactMap { id in
+            composable.first { $0.id == id }?.serviceId ?? groupLookups.first { $0.conversationId == id }?.serviceId
+        }
         let timer = newGroupTimer
         let avatar = newGroupAvatar, photo = newGroupPhoto
         isCreatingGroup = true

@@ -95,8 +95,8 @@ extension SignalSession {
         run("stories disabled") { try await $0.messenger.setStorySettings(storiesDisabled: off) }
     }
 
-    func createStoryList(name: String, members: [String]) {
-        run("create story list") { _ = try await $0.messenger.createStoryList(name: name, members: members) }
+    func createStoryList(id: String? = nil, name: String, members: [String]) {
+        run("create story list") { _ = try await $0.messenger.createStoryList(id: id, name: name, members: members) }
     }
 
     func updateStoryList(_ id: String, allowsReplies: Bool? = nil, isBlockList: Bool? = nil, members: [String]? = nil) {

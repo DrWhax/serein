@@ -135,7 +135,13 @@ struct ConversationPanelView: View {
         m.hasMedia = d?.hasMedia ?? false
         m.memberships = memberships
         m.invitesCount = (group?.pendingMembersV2.count ?? 0) + (group?.pendingAdminApprovalV2.count ?? 0)
-        m.canHaveNicknameAndNote = false
+        // canHaveNicknameAndNote: a 1:1 chat with someone else.
+        m.canHaveNicknameAndNote = conversation.kind == .private && !m.isMe && conversation.serviceId != nil
+        // Ending a group is behind upstream's version-gated remote config
+        // (`desktop.groupTerminate.send`), which has no meaning for Serein: not offered.
+        m.isTerminateGroupEnabled = false
+        m.hasActiveCall = session.activeCall != nil && session.activeCall?.conversationId != conversation.id
+        m.groupsInCommon = (d?.groupsInCommon ?? []).compactMap { id in session.conversation(id).map { avatar($0) } }
         m.bubbleColor = session.bubbleColor(session.conversationColor)
         return m
     }
@@ -178,6 +184,15 @@ struct ConversationPanelView: View {
         }
         c.setMuteExpiration = { session.setMute($0) }
         c.openLink = { NSWorkspace.shared.open($0) }
+        let id = conversation.id, serviceId = conversation.kind == .private ? conversation.serviceId : nil
+        c.searchInConversation = { session.startConversationSearch() }
+        c.onOutgoingVideoCall = { session.openCallLobby(id, video: true) }
+        c.onOutgoingAudioCall = { session.openCallLobby(id, video: false) }
+        c.toggleSafetyNumberModal = { session.showSafetyNumber(serviceId) }
+        c.toggleAboutContactModal = { if let serviceId { session.showAboutContact(serviceId) } }
+        c.toggleAddUserToAnotherGroupModal = { if let serviceId { session.showAddToGroup(serviceId) } }
+        c.onOpenEditNicknameAndNote = { if let serviceId { session.editNickname(serviceId) } }
+        c.onDeleteNicknameAndNote = { session.deleteNickname(id) }
         c.actions.blockConversation = { session.setBlocked(true) }
         c.actions.onArchive = { session.setArchived(true) }
         c.actions.onUnarchive = { session.setArchived(false) }
@@ -201,9 +216,12 @@ struct ConversationPanelView: View {
     var notificationSettings: some View {
         ScrollView {
             ConversationNotificationsSettings(isGroup: conversation.kind == .group, muteExpiresAt: details?.muteExpiresAt.map(Double.init),
-                                              notifyWhileMuted: notifyWhileMuted, showUnreadReminders: false,
+                                              notifyWhileMuted: notifyWhileMuted,
+                                              // DEFAULT_SHOW_UNREAD_REMINDERS: off unless the chat says otherwise.
+                                              showUnreadReminders: details?.showUnreadReminders ?? false,
                                               onOpenWhileMutedSettings: { session.pushPanel("WhileMuted") },
-                                              setMuteExpiration: { session.setMute($0) })
+                                              setMuteExpiration: { session.setMute($0) },
+                                              setShowUnreadReminders: { [id = conversation.id] on in session.setShowUnreadReminders(id, on) })
         }
     }
 
@@ -319,7 +337,8 @@ struct MemberContactModal: View {
         contact.avatar = session.avatarImage(session.contacts[serviceId]?.avatar)
         contact.hasAvatar = contact.avatar != nil
         contact.isBlocked = session.blockedConversationIds.contains { session.conversation($0)?.serviceId == serviceId }
-        contact.canHaveNicknameAndNote = false
+        // canHaveNicknameAndNote: anyone but ourselves.
+        contact.canHaveNicknameAndNote = serviceId != me
         let conversation: ContactModal.Group? = group.map { g in
             var c = ContactModal.Group(id: session.selectedConversationId ?? "")
             c.terminated = g.terminated
@@ -343,8 +362,24 @@ struct MemberContactModal: View {
             session.removeMember(serviceId)
         }
         actions.blockConversation = { _ in session.blockContact(serviceId) }
+        actions.onOutgoingVideoCall = { _ in session.callContact(serviceId, video: true) }
+        actions.onOutgoingAudioCall = { _ in session.callContact(serviceId, video: false) }
+        actions.toggleAboutContactModal = { session.showAboutContact($0) }
+        actions.toggleSafetyNumberModal = { session.showSafetyNumber($0) }
+        actions.toggleAddUserToAnotherGroupModal = { session.showAddToGroup($0) }
+        actions.onOpenEditNicknameAndNoteModal = {
+            session.contactModalId = nil
+            session.editNickname(serviceId)
+        }
+        actions.showAvatar = {
+            if contact.avatar != nil {
+                session.contactModalId = nil
+                session.contactDialog = .avatar(serviceId: serviceId)
+            }
+        }
+        actions.toggleGroupMemberLabelInfoModal = { _ in session.contactDialog = .memberLabelInfo }
         return ContactModal(contact: contact, conversation: conversation, areWeAdmin: group?.isAdmin(me) ?? false, isAdmin: member?.role == GroupRole.administrator,
-                            isMember: member != nil, contactLabel: label, contactNameColor: label != nil ? ContactNameColors.colors(group)[serviceId] : nil,
-                            actions: actions)
+                            isMember: member != nil, hasActiveCall: session.activeCall != nil, contactLabel: label,
+                            contactNameColor: label != nil ? ContactNameColors.colors(group)[serviceId] : nil, actions: actions)
     }
 }

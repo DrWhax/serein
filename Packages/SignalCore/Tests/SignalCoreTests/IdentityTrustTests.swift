@@ -328,11 +328,14 @@ import Testing
             #expect(row.publicKey == fresh["identityKey"] as? String && !row.firstUse && !row.nonblockingApproval)
             #expect(try await keyChanges(c) == 1)
             #expect(try await c.messenger.identitiesNeedingApproval(conversationId: conversationId) == [c.aliceAci])
+            // A story's recipients (`verifyStoryListMembers`) say the same, once each, never us.
+            #expect(try await c.messenger.identitiesNeedingApproval(serviceIds: [c.aliceAci, c.aliceAci, c.account.aci]) == [c.aliceAci])
             // …and alice's new installation has received nothing.
             #expect((try await c.server.json("pendingMessages", ["account": "alice"]))["count"] as? Int == 0)
 
             try await c.messenger.approveIdentities([try await c.messenger.safetyNumber(with: c.aliceAci).identity])
             #expect(try await c.messenger.identitiesNeedingApproval(conversationId: conversationId).isEmpty)
+            #expect(try await c.messenger.identitiesNeedingApproval(serviceIds: [c.aliceAci]).isEmpty)
             try await c.messenger.retrySend(messageId: messageId)
             // (The probe used above does see a delivered message before anyone waits for it.)
             var delivered = 0

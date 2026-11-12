@@ -36,6 +36,7 @@ struct RootView: View {
                 }
             }, renderOverlays: {
                 MediaLightbox(session: session, i18n: i18n)
+                ViewOnceLightbox(session: session, i18n: i18n)
                 AppCallManager(session: session, model: model, i18n: i18n)
                 if model.pendingCrashReports > 0 {
                     CrashReportDialog(onSend: { model.saveCrashReports() }, onErase: { model.eraseCrashReports() })
@@ -52,6 +53,7 @@ struct RootView: View {
                                             })
                 }
                 if let id = session.contactModalId { MemberContactModal(session: session, serviceId: id, i18n: i18n) }
+                ContactSurfaceDialogs(session: session, model: model, i18n: i18n)
                 ChatDialogs(session: session, i18n: i18n)
                 callLinkModal
                 if let e = session.composeError {
@@ -60,9 +62,14 @@ struct RootView: View {
                 if let r = session.deleteRequest {
                     DeleteMessagesModal(isMe: session.conversation(r.conversationId).map { $0.kind == .private && $0.serviceId != nil && $0.serviceId == session.ourAci } ?? false,
                                         canDeleteForEveryone: r.canDeleteForEveryone, needsAdminDelete: r.needsAdminDelete,
-                                        isDeletingOwnMessages: r.isDeletingOwnMessages, messageCount: r.messageIds.count,
+                                        isDeletingOwnMessages: r.isDeletingOwnMessages,
+                                        // Shown once: the admin-delete explainer, then remembered.
+                                        hasSeenAdminDeleteEducationDialog: UserDefaults.standard.bool(forKey: "hasSeenAdminDeleteEducationDialog"),
+                                        messageCount: r.messageIds.count,
                                         onClose: { session.deleteRequest = nil }, onDeleteForMe: { session.deleteForMe(r) },
-                                        onDeleteForEveryone: { session.deleteForEveryone(r) })
+                                        onDeleteForEveryone: { session.deleteForEveryone(r) },
+                                        onSeenAdminDeleteEducationDialog: { UserDefaults.standard.set(true, forKey: "hasSeenAdminDeleteEducationDialog") },
+                                        showTooManyMessagesToast: { session.toast = .tooManyMessagesToDeleteForEveryone(count: $0) })
                 }
                 if let r = session.pinRequest {
                     PinMessageDialog(hasMaxPinnedMessages: r.hasMaxPinnedMessages, isPinningDisappearingMessage: r.isDisappearing,
@@ -87,7 +94,7 @@ struct RootView: View {
     var appView: AppViewType {
         switch session.phase {
         case .starting: .blank
-        case .linking, .linkError, .failed: .installer
+        case .linking, .linkError, .failed, .deletingData: .installer
         case .ready: model.appView
         }
     }
@@ -102,6 +109,8 @@ struct RootView: View {
         case .failed(let reason):
             Text(reason).font(.system(size: 13)).foregroundStyle(.secondary).padding(40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(AxoColor.surfacePrimary)
+        case .deletingData:
+            ClearingData(step: .deletingData)
         case .starting, .ready:
             Rectangle().fill(AxoColor.surfacePrimary)
         }
@@ -149,13 +158,22 @@ struct RootView: View {
         context.renderToastManager = {
             var actions = ToastManagerActions()
             actions.hideToast = { session.toast = nil }
+            // "Undo" on "Chat archived": back to the inbox, pinned again if it was.
+            actions.onUndoArchive = { id, wasPinned in
+                session.setArchived(false, for: id)
+                if wasPinned { session.setPinnedChat(true, for: id) }
+            }
             actions.openFileInFolder = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) }
             return AnyView(ToastManager(toast: session.toast, actions: actions))
         }
         context.updateSearchTerm = { if session.isComposing { session.composeSearch = $0 } else { session.updateSearch($0) } }
         context.clearSearchQuery = { if session.isComposing { session.composeSearch = "" } else { session.updateSearch("") } }
         context.endConversationSearch = { session.endConversationSearch() }
-        context.endSearch = { session.endSearch() }
+        context.endSearch = {
+            session.endSearch()
+            session.filterByUnread = false
+        }
+        context.updateFilterByUnread = { session.filterByUnread = $0 }
         var actions = ConversationListActions()
         let helper: any LeftPaneHelper
         if session.isComposing {
@@ -166,6 +184,8 @@ struct RootView: View {
             actions.lookupUsername = { session.lookUpUsername($0) }
             actions.lookupPhoneNumber = { session.lookUpPhoneNumber($0) }
             actions.onClickContactCheckbox = { id, reason in if reason == nil { session.toggleGroupMember(id) } }
+            actions.togglePhoneNumber = { session.toggleGroupPhoneNumber($0) }
+            actions.toggleUsername = { session.toggleGroupUsername($0) }
             context.showChooseGroupMembers = { session.composeMode = .chooseGroupMembers }
             context.startSettingGroupMetadata = { session.composeMode = .setGroupMetadata }
             context.createGroup = { session.createGroup() }
@@ -175,22 +195,34 @@ struct RootView: View {
             // Archived chats (back returns to the inbox).
             actions.onSelectConversation = { session.selectedConversationId = $0 }
             helper = LeftPaneArchiveHelper(archivedConversations: session.conversations.filter(\.isArchived).map { listItem($0).data })
-        } else if session.isSearching {
-            // Search: chats whose title matches (searching everywhere), then messages.
+        } else if session.isSearching || session.filterByUnread {
+            // Search: chats whose title matches (searching everywhere), then messages. With the
+            // unread filter, only unread, unmuted chats (and the open one), even without a term.
             actions.onSelectConversation = { session.selectedConversationId = $0 }
+            actions.onClickClearFilterButton = { session.filterByUnread = false }
             let term = session.searchTerm.trimmingCharacters(in: .whitespaces)
             let scope = session.searchConversationId.flatMap { session.conversation($0) }
-            let chats = scope == nil && !term.isEmpty
-                ? session.conversations.filter { listItem($0).data.title.localizedCaseInsensitiveContains(term) }.map { listItem($0).data } : []
-            let hits = Dictionary(session.searchHits.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let unreadOnly = session.filterByUnread && scope == nil
+            func unread(_ d: ConversationListItemData) -> Bool {
+                d.id == session.selectedConversationId
+                    || (d.unreadCount > 0 || d.markedUnread || d.unreadMentionsCount > 0) && !((d.muteExpiresAt ?? .distantPast) > .now)
+            }
+            let chats = scope == nil && (!term.isEmpty || unreadOnly)
+                ? session.conversations.map { listItem($0).data }
+                    .filter { (term.isEmpty || $0.title.localizedCaseInsensitiveContains(term)) && (!unreadOnly || unread($0)) } : []
+            let unreadIds = Set(chats.map(\.id))
+            let shownHits = unreadOnly ? session.searchHits.filter { unreadIds.contains($0.conversationId) } : session.searchHits
+            let hits = Dictionary(shownHits.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             actions.renderMessageSearchResult = { id in
                 guard let h = hits[id] else { return AnyView(EmptyView()) }
                 return AnyView(searchResult(h))
             }
-            helper = LeftPaneSearchHelper(conversationResults: .loaded(chats), contactResults: .loaded([]), messageResults: .loaded(session.searchHits.map(\.id)),
+            helper = LeftPaneSearchHelper(conversationResults: .loaded(chats), contactResults: .loaded([]), messageResults: .loaded(shownHits.map(\.id)),
                                           searchTerm: session.searchTerm,
                                           searchConversation: scope.map { SearchConversation(id: $0.id, avatar: listItem($0).data.avatar) },
-                                          searchConversationName: scope.map { listItem($0).data.title }, isSearchingGlobally: scope == nil)
+                                          searchConversationName: scope.map { listItem($0).data.title }, isSearchingGlobally: scope == nil,
+                                          filterByUnread: unreadOnly)
+            if unreadOnly && session.chatFolders.count > 1 { context.renderLeftPaneChatFolders = { AnyView(folderBar) } }
         } else {
             actions.onSelectConversation = { session.selectedConversationId = $0 }
             actions.onClickArchiveButton = { session.isShowingArchive = true }
@@ -209,6 +241,26 @@ struct RootView: View {
                 m.onArchive = { session.setArchived(true, for: id) }
                 m.onUnarchive = { session.setArchived(false, for: id) }
                 m.onDelete = { session.deleteChat(id) }
+                // Chat folders: add to or take out of a custom folder, or start a new one with it.
+                let custom = session.chatFolders.filter { $0.folderType == .custom }
+                m.customChatFolders = custom.enumerated().map { i, f in folderItem(f, position: i) }
+                m.foldersContainingChat = Set(custom.filter { f in c.map { ChatFolderStore.contains(f, $0.folderProps, ignoreShowOnlyUnread: true,
+                                                                                                    ignoreShowMutedChats: true) } ?? false }.map(\.id))
+                let selected = session.chatFolders.first { $0.id == session.selectedChatFolderId && $0.folderType == .custom }
+                m.selectedCustomChatFolderId = selected?.id
+                m.onChatFolderToggleChat = { folderId, included in
+                    session.editChatFolders { try ChatFolderStore.toggle($0, folderId: folderId, conversationId: id, included: included) }
+                }
+                m.onChatFolderRemoveChat = {
+                    if let folderId = selected?.id {
+                        session.editChatFolders { try ChatFolderStore.toggle($0, folderId: folderId, conversationId: id, included: false) }
+                    }
+                }
+                m.onChatFolderCreateNew = {
+                    model.newChatFolderWith = id
+                    model.settingsPage = .editChatFolder
+                    model.selectedTab = .settings
+                }
                 return m
             }
             let custom = session.chatFolders.first { $0.id == session.selectedChatFolderId }?.folderType == .custom
@@ -235,14 +287,26 @@ struct RootView: View {
         let term = session.composeSearch.trimmingCharacters(in: .whitespaces).lowercased()
         let contacts = session.composable.filter { $0.kind == .private && !isMe($0) && $0.serviceId != nil }
         func item(_ c: ConversationSummary) -> ContactListItemData { ContactListItemData(id: c.id, title: title(c), avatar: avatar(c)) }
-        let selected = session.groupSelection.compactMap { id in contacts.first { $0.id == id } }.map(item)
+        // Chosen members: contacts, and people found by number or username.
+        let selected = session.groupSelection.compactMap { id -> ContactListItemData? in
+            if let c = contacts.first(where: { $0.id == id }) { return item(c) }
+            return session.groupLookups.first { $0.conversationId == id }.map { l in
+                ContactListItemData(id: l.conversationId, title: session.contactTitle(l.serviceId) == l.serviceId ? l.title : session.contactTitle(l.serviceId),
+                                    avatar: ConversationAvatarData(title: l.title, color: session.contactColor(l.serviceId)))
+            }
+        }
+        let rawTerm = session.composeSearch.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        let termIsUsername = rawTerm.range(of: #"^[A-Za-z_][A-Za-z0-9_]{2,31}\.[0-9]{2,9}$"#, options: .regularExpression) != nil
         switch session.composeMode {
         case .compose:
             return composeHelper
         case .chooseGroupMembers:
             let matches = contacts.filter { term.isEmpty || title($0).lowercased().contains(term) || ($0.e164 ?? "").contains(term) }
             return LeftPaneChooseGroupMembersHelper(candidateContacts: matches.map(item), selectedContacts: selected, searchTerm: session.composeSearch,
-                                                    regionCode: session.phoneRegion)
+                                                    regionCode: session.phoneRegion, username: termIsUsername ? rawTerm : nil,
+                                                    uuidFetchState: Set([session.groupLookupFetching].compactMap { $0 }),
+                                                    selectedE164s: Set(session.groupLookups.compactMap(\.e164)),
+                                                    selectedUsernames: Set(session.groupLookups.compactMap(\.username)))
         case .setGroupMetadata:
             return LeftPaneSetGroupMetadataHelper(groupName: session.newGroupName, groupExpireTimer: session.newGroupTimer, isCreating: session.isCreatingGroup,
                                                   selectedContacts: selected, onChangeGroupName: { session.newGroupName = $0 },
@@ -289,13 +353,15 @@ struct RootView: View {
     }
 
     /// LeftPaneChatFolders over SignalCore's folders, with per-folder unread and mute stats.
+    func folderItem(_ f: SignalCore.ChatFolder, position i: Int) -> SignalUI.ChatFolder {
+        SignalUI.ChatFolder(id: f.id, folderType: f.folderType == .all ? .all : .custom, name: f.name, position: i,
+                            preset: ChatFolderPreset(showOnlyUnread: f.showOnlyUnread, showMutedChats: f.showMutedChats,
+                                                     includeAllIndividualChats: f.includeAllIndividualChats, includeAllGroupChats: f.includeAllGroupChats,
+                                                     includedConversationIds: f.includedConversationIds, excludedConversationIds: f.excludedConversationIds))
+    }
+
     var folderBar: some View {
-        let folders = session.chatFolders.enumerated().map { i, f in
-            SignalUI.ChatFolder(id: f.id, folderType: f.folderType == .all ? .all : .custom, name: f.name, position: i,
-                                preset: ChatFolderPreset(showOnlyUnread: f.showOnlyUnread, showMutedChats: f.showMutedChats,
-                                                         includeAllIndividualChats: f.includeAllIndividualChats, includeAllGroupChats: f.includeAllGroupChats,
-                                                         includedConversationIds: f.includedConversationIds, excludedConversationIds: f.excludedConversationIds))
-        }
+        let folders = session.chatFolders.enumerated().map { i, f in folderItem(f, position: i) }
         var unread: [String: UnreadStats] = [:]
         var muted: [String: MutedStats] = [:]
         let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -312,6 +378,7 @@ struct RootView: View {
                                    unreadStats: unread, mutedStats: muted,
                                    onSelectedChatFolderIdChange: { session.selectedChatFolderId = $0 },
                                    onChatFolderMarkRead: { session.markFolderRead($0) },
+                                   onChatFolderUpdateMute: { session.muteFolder($0, $1) },
                                    onChatFolderOpenSettings: { _ in model.selectedTab = .settings })
     }
 

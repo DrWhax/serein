@@ -113,6 +113,9 @@ public struct MessageProps {
     public var attachmentDroppedDueToSize = false
     /// `isTapToView` (view-once media) and its state.
     public var tapToView: TapToViewState?
+    /// `#handleOpen` for view-once media: a click on the row (the app opens it once, starts its
+    /// download, or says it was already viewed).
+    public var openTapToView: (() -> Void)?
     public var showLightbox: ((Int) -> Void)?
     /// `theme`: picks the default blurhash (nil: the environment's colour scheme).
     public var theme: ColorScheme?
@@ -715,9 +718,14 @@ public struct Message: View {
                                           withContentAbove: quoteModel != nil || shouldRenderAuthor)
                 .cssTextColor(textColor)
         } else {
-            MessageTapToView(state: tv, attachment: props.attachments.first, direction: props.direction,
-                             withContentAbove: placement != .notRendered && props.conversationType == .group && incoming,
-                             metadata: placement == .notRendered ? nil : metadata)
+            let row = MessageTapToView(state: tv, attachment: props.attachments.first, direction: props.direction,
+                                       withContentAbove: placement != .notRendered && props.conversationType == .group && incoming,
+                                       metadata: placement == .notRendered ? nil : metadata)
+            if let open = props.openTapToView {
+                SwiftUI.Button(action: open) { row.contentShape(Rectangle()) }.buttonStyle(.plain)
+            } else {
+                row
+            }
         }
         if placement == .bottom { metadata.padding(.top, 3).frame(maxWidth: .infinity, alignment: .trailing) }
     }

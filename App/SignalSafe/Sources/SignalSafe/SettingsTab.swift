@@ -31,16 +31,24 @@ struct SettingsTab: View {
     @State private var profileSyncEnabled = true
     @State private var profileOnboardingSeen: Bool?
     @State private var usernameEdit: UsernameEditState = .editing
+    /// Our own profile as stored (name, about), for the profile editor.
+    @State private var ownProfile: ContactAboutInfo?
 
     var body: some View {
         Preferences(me: me, page: pageBinding, preferredWidth: model.preferredLeftPaneWidth,
+                    // The header's QR code: Profile → the username link.
+                    onOpenUsernameLink: {
+                        profilePage = .usernameLink
+                        self.page = .profile
+                    },
                     navTabs: NavSidebarNavTabs(collapsed: model.navTabsCollapsed, onToggleCollapse: { model.navTabsCollapsed = $0 })) { page in
             switch page {
-            case .general: PreferencesGeneralPage(settings: general)
+            case .general: PreferencesGeneralPage(settings: general, doDeleteAllData: { session.deleteAllData() })
             case .appearance: PreferencesAppearancePage(localeText: nil, themeSetting: theme, zoomFactor: zoom, onOpenChatColor: { self.page = .chatColor })
             case .chatColor: chatColorPage
             case .chats: PreferencesChatsPage(settings: chats, onOpenChatFolders: { self.page = .chatFolders },
-                                              startPlaintextExport: { session.startPlaintextExport() })
+                                              startPlaintextExport: { session.startPlaintextExport() },
+                                              makeSyncRequest: { [session] in try await session.requestSyncNow() })
             case .privacy: PreferencesPrivacyPage(settings: privacy, onOpenPNP: { self.page = .pnp }, onOpenBlocked: { self.page = .blocked })
             case .pnp:
                 PreferencesPNPPage(whoCanSeeMe: Binding(get: { session.accountSettings.sharesPhoneNumber ? .everybody : .nobody },
@@ -49,12 +57,14 @@ struct SettingsTab: View {
                                                          set: { session.setDiscoverableByPhoneNumber($0 == .discoverable) }),
                                    onBack: { self.page = .privacy }, showReadOnlyToast: { session.toast = .whoCanFindMeReadOnly })
             case .notifications: PreferencesNotificationsPage(settings: notifications, onOpenWhileMuted: { self.page = .whileMuted },
-                                                              onOpenNotificationProfiles: { self.page = .notificationProfilesHome })
+                                                              onOpenNotificationProfiles: { self.page = .notificationProfilesHome },
+                                                              onResetNotificationSettings: { session.resetNotificationSettings() })
             case .notificationProfilesHome: notificationProfilesHome
             case .notificationProfilesCreateFlow: notificationProfilesCreateFlow
             case .whileMuted: PreferencesWhileMutedPage(notifyWhileMuted: whileMuted, onBack: { self.page = .notifications })
             case .blocked: PreferencesBlocked(blockedContacts: blocked(groups: false), blockedGroups: blocked(groups: true),
-                                              goBack: { self.page = .privacy }, onUnblock: { session.unblock($0) })
+                                              goBack: { self.page = .privacy }, onUnblock: { session.unblock($0) },
+                                              onBlock: { session.blockConversation($0) })
             case .chatFolders: chatFoldersPage
             case .editChatFolder: editChatFolderPage
             case .account: PreferencesAccountPage(onOpenAccountKeys: { self.page = .accountKeys }, promptOSAuth: Self.promptOSAuth)
@@ -143,9 +153,7 @@ struct SettingsTab: View {
     /// speakers, the cameras), and always relaying calls.
     var callsPage: some View {
         let devices = session.callDevices
-        func pref(_ id: String?, _ list: AudioDeviceList) -> AudioDevicePref {
-            id.flatMap { id in list.devices.first { $0.uniqueId == id } }.map { .specificDevice($0) } ?? .nonWindowsDefault
-        }
+        let pref = CallDevices.pref
         return PreferencesCallsPage(
             hasIncomingCallNotifications: Binding(get: { session.accountSettings.incomingCallNotification },
                                                   set: { v in session.updateAccountSettings { $0.incomingCallNotification = v } }),
@@ -368,7 +376,7 @@ struct SettingsTab: View {
         PreferencesChatFoldersPage(
             chatFolders: session.chatFolders.enumerated().map { uiFolder($1, position: $0) },
             onBack: { page = .chats },
-            onOpenEditChatFoldersPage: { id in editingFolderId = id; page = .editChatFolder },
+            onOpenEditChatFoldersPage: { id in model.newChatFolderWith = nil; editingFolderId = id; page = .editChatFolder },
             onCreateChatFolder: { name, preset in
                 let folder = Self.coreFolder(UUID().uuidString.lowercased(), name, preset)
                 session.editChatFolders { db in
@@ -383,21 +391,26 @@ struct SettingsTab: View {
     }
 
     var editChatFolderPage: some View {
-        let existing = editingFolderId.flatMap { id in session.chatFolders.first { $0.id == id } }
-        let params = existing.map { ChatFolderParams(name: $0.name, preset: uiFolder($0, position: 0).preset) } ?? ChatFolderParams()
+        // A folder started from a chat's context menu is a new one.
+        let editingId = model.newChatFolderWith == nil ? editingFolderId : nil
+        let existing = editingId.flatMap { id in session.chatFolders.first { $0.id == id } }
+        var params = existing.map { ChatFolderParams(name: $0.name, preset: uiFolder($0, position: 0).preset) } ?? ChatFolderParams()
+        // From a chat's context menu: the new folder starts with that chat.
+        if existing == nil, let id = model.newChatFolderWith { params.preset.includedConversationIds = [id] }
         let chats = session.conversations.map { c in
             SearchableConversation(listItem: ContactListItemData(id: c.id, title: c.title, type: c.kind == .group ? .group : .direct,
                                                                  avatar: ConversationAvatarData(title: c.title, conversationType: c.kind == .group ? .group : .direct,
                                                                                                 color: c.color, image: session.avatarImage(c.avatar))))
         }
         return PreferencesEditChatFolderPage(
-            existingChatFolderId: editingFolderId, initChatFolderParams: params, conversations: chats,
+            existingChatFolderId: editingId, initChatFolderParams: params, conversations: chats,
             conversationSelector: { id in
                 let c = chats.first { $0.id == id }
                 return SelectedChatPill(data: c?.listItem ?? ContactListItemData(id: id, title: i18n("icu:unknownContact")))
             },
-            onBack: { page = .chatFolders },
+            onBack: { model.newChatFolderWith = nil; page = .chatFolders },
             onCreateChatFolder: { p in
+                model.newChatFolderWith = nil
                 let folder = Self.coreFolder(UUID().uuidString.lowercased(), p.name, p.preset)
                 session.editChatFolders { db in
                     _ = try ChatFolderStore.ensureAllChats(db)
@@ -455,8 +468,11 @@ struct SettingsTab: View {
         let mine = session.ourAci.flatMap { session.contacts[$0] }
         let title = mine?.title ?? ""
         let parts = title.split(separator: " ", maxSplits: 1).map(String.init)
-        return ProfileEditor(color: mine?.color, avatar: session.avatarImage(mine?.avatar), firstName: parts.first ?? title,
-                             familyName: parts.count > 1 ? parts[1] : nil, username: session.accountSettings.username,
+        let own = ownProfile
+        let first = own?.profileName ?? parts.first ?? title
+        let family = own == nil ? (parts.count > 1 ? parts[1] : nil) : own?.profileFamilyName
+        return ProfileEditor(aboutEmoji: own?.aboutEmoji, aboutText: own?.about, color: mine?.color, avatar: session.avatarImage(mine?.avatar),
+                             firstName: first, familyName: family, username: session.accountSettings.username,
                              usernameLink: session.accountSettings.usernameLink, hasCompletedUsernameLinkOnboarding: true,
                              editState: $profilePage, usernameEditState: $usernameEdit, actions: {
             var a = ProfileEditor.Actions()
@@ -465,9 +481,23 @@ struct SettingsTab: View {
         }()) { subpage, close in
             if subpage == .usernameLink, let link = session.accountSettings.usernameLink, let name = session.accountSettings.username {
                 AnyView(UsernameLinkSave(link: link, username: name, i18n: i18n, close: close))
+            } else if subpage == .profileName {
+                AnyView(ProfileNameEditor(firstName: first, familyName: family, onSave: { given, familyName in
+                    session.writeOwnProfile(OwnProfileFields(givenName: given, familyName: familyName, about: own?.about, aboutEmoji: own?.aboutEmoji))
+                    close()
+                }, onCancel: close))
+            } else if subpage == .bio {
+                AnyView(ProfileBioEditor(aboutText: own?.about, aboutEmoji: own?.aboutEmoji, onSave: { text, emoji in
+                    session.writeOwnProfile(OwnProfileFields(givenName: first, familyName: family, about: text, aboutEmoji: emoji))
+                    close()
+                }, onCancel: close))
             } else {
                 AnyView(EmptyView())
             }
+        }
+        .task(id: session.ourAci) {
+            guard let db = session.clientDatabase, let me = session.ourAci else { return }
+            do { for try await info in db.contactAboutUpdates(serviceId: me, ourAci: me) { ownProfile = info } } catch {}
         }
     }
 }
