@@ -113,11 +113,21 @@ import SwiftUI
         return true
     }
 
-    /// The composer's plain attributes (the base font, no mention or style).
-    static func plainContainer() -> AttributeContainer {
-        var c = AttributeContainer()
-        c.appKit.font = baseFont
-        return c
+    /// The composer's plain attributes (no mention or style; the font goes on in `converted`).
+    static func plainContainer() -> AttributeContainer { AttributeContainer() }
+
+    /// `a` for the text view, each piece in its font (UTF-16 lengths, in order). An
+    /// AttributedString cannot hold an NSFont (not Sendable), so fonts go on after conversion.
+    static func converted(_ a: AttributedString, fonts: [(length: Int, font: NSFont)]) -> NSAttributedString? {
+        guard let ns = try? NSAttributedString(a, including: \.signalComposer) else { return nil }
+        let out = NSMutableAttributedString(attributedString: ns)
+        var offset = 0
+        for f in fonts where f.length > 0 {
+            guard offset + f.length <= out.length else { return nil }
+            out.addAttribute(.font, value: f.font, range: NSRange(location: offset, length: f.length))
+            offset += f.length
+        }
+        return out
     }
 
     /// Replaces the "@query" with the member's pill and a space.
@@ -127,7 +137,8 @@ import SwiftUI
         pill.signalMention = m.aci
         pill.appKit.backgroundColor = NSColor.systemGray.withAlphaComponent(0.25)
         pill += AttributedString(" ", attributes: Self.plainContainer())
-        guard let ns = try? NSAttributedString(pill, including: \.signalComposer) else { return }
+        let text = "@" + m.title + " "
+        guard let ns = Self.converted(pill, fonts: [(text.utf16.count, Self.baseFont)]) else { return }
         tv.typingAttributes = Self.plainAttributes(tv)
         tv.insertText(ns, replacementRange: q.range)
         tv.typingAttributes = Self.plainAttributes(tv)
@@ -171,6 +182,7 @@ import SwiftUI
         let selected = runs(tv.attributedString().attributedSubstring(from: sel))
         let all = selected.allSatisfy { $0.styles & bit != 0 }
         var rebuilt = AttributedString()
+        var fonts: [(length: Int, font: NSFont)] = []
         for run in selected {
             var piece = AttributedString(run.text, attributes: run.attributes)
             let mask = all ? run.styles & ~bit : run.styles | bit
@@ -178,12 +190,12 @@ import SwiftUI
             var dict: [NSAttributedString.Key: Any] = [Self.mentionKey: run.mention as Any]
             if run.mention == nil { dict[Self.mentionKey] = nil }
             Self.applyVisuals(&dict, mask: mask, base: Self.baseFont)
-            piece.appKit.font = dict[.font] as? NSFont
+            fonts.append((run.text.utf16.count, dict[.font] as? NSFont ?? Self.baseFont))
             piece.appKit.strikethroughStyle = (dict[.strikethroughStyle] as? Int).map { NSUnderlineStyle(rawValue: $0) }
             if run.mention == nil { piece.appKit.backgroundColor = dict[.backgroundColor] as? NSColor }
             rebuilt += piece
         }
-        guard let ns = try? NSAttributedString(rebuilt, including: \.signalComposer) else { return }
+        guard let ns = Self.converted(rebuilt, fonts: fonts) else { return }
         // insertText fills attributes the new text lacks from the typing attributes (the old
         // style's): start from plain ones.
         tv.typingAttributes = Self.plainAttributes(tv)
@@ -242,7 +254,8 @@ import SwiftUI
         guard let tv = textView, ObjectIdentifier(tv) != staleView, let draft = pendingDraft else { return }
         pendingDraft = nil
         staleView = nil
-        guard let ns = try? NSAttributedString(Self.attributed(body: draft.body, ranges: draft.ranges), including: \.signalComposer) else { return }
+        let (text, fonts) = Self.attributedWithFonts(body: draft.body, ranges: draft.ranges)
+        guard let ns = Self.converted(text, fonts: fonts) else { return }
         tv.typingAttributes = Self.plainAttributes(tv)
         tv.insertText(ns, replacementRange: NSRange(location: 0, length: (tv.string as NSString).length))
         tv.typingAttributes = Self.plainAttributes(tv)
@@ -250,7 +263,11 @@ import SwiftUI
 
     /// The composer content for a body and its ranges: each U+FFFC with a mention range becomes
     /// "@title" (a pill); style ranges set the style mask and its look.
-    static func attributed(body: String, ranges: [BodyRange]) -> AttributedString {
+    static func attributed(body: String, ranges: [BodyRange]) -> AttributedString { attributedWithFonts(body: body, ranges: ranges).text }
+
+    /// `attributed`, with each piece's font for `converted`.
+    static func attributedWithFonts(body: String, ranges: [BodyRange]) -> (text: AttributedString, fonts: [(length: Int, font: NSFont)]) {
+        var fonts: [(length: Int, font: NSFont)] = []
         let units = Array(body.utf16)
         var masks = [Int](repeating: 0, count: units.count)
         var mentions: [Int: (aci: String, title: String)] = [:]
@@ -268,7 +285,7 @@ import SwiftUI
             var dict: [NSAttributedString.Key: Any] = [:]
             if let mention { dict[mentionKey] = mention }
             applyVisuals(&dict, mask: mask, base: baseFont)
-            a.appKit.font = dict[.font] as? NSFont
+            fonts.append((text.utf16.count, dict[.font] as? NSFont ?? baseFont))
             a.appKit.strikethroughStyle = (dict[.strikethroughStyle] as? Int).map { NSUnderlineStyle(rawValue: $0) }
             if mention != nil {
                 a.signalMention = mention
@@ -294,7 +311,7 @@ import SwiftUI
             out += piece(String(decoding: units[i..<j], as: UTF16.self), mask: masks[i], mention: nil)
             i = j
         }
-        return out
+        return (out, fonts)
     }
 
     // MARK: sending

@@ -2,6 +2,7 @@
 // beside the conversation stack, which shows the selected conversation or, with none open,
 // the splash: the 96px logo, "Welcome to Signal", the what's-new link and the nonprofit line.
 
+import SignalI18n
 import SwiftUI
 
 public struct ChatsTab<LeftPaneView: View, ConversationView: View, MiniPlayer: View>: View {

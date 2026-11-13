@@ -1,6 +1,7 @@
 // Port of ts/components/AddUserToAnotherGroupModal.dom.tsx: pick a group to add a contact to
 // (a searchable list of GroupListItems; members and pending members disabled), then confirm.
 
+import SignalI18n
 import SwiftUI
 
 /// A candidate group (`ConversationType` of a group the user can add members to).

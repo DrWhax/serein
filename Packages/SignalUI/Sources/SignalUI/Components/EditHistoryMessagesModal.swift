@@ -3,6 +3,7 @@
 // versions (date headers between days); each message offers Copy timestamp.
 
 import AppKit
+import SignalI18n
 import SwiftUI
 
 public struct EditHistoryMessagesModal: View {

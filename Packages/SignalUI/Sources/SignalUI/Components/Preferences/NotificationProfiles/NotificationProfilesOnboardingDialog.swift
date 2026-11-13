@@ -1,6 +1,7 @@
 // Port of ts/components/preferences/notificationProfiles/NotificationProfilesOnboardingDialog
 // and `ProfileAvatar` / `EmojiOrMoon` of ts/components/PreferencesNotificationProfiles.dom.tsx.
 
+import SignalI18n
 import SwiftUI
 
 /// `IconSize` of the notification profile avatars.

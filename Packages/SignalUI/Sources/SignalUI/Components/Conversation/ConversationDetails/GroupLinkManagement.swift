@@ -49,7 +49,7 @@ public struct GroupLinkManagement: View {
             AxoList.Group {
                 ConversationDetailsList {
                     AxoSwitchItem.Root(label: i18n("icu:ConversationDetails--group-link"), description: hasGroupLink ? groupLink : nil,
-                                       checked: Binding(get: { hasGroupLink }, set: changeHasGroupLink),
+                                       checked: Binding(get: { hasGroupLink }, set: { changeHasGroupLink($0) }),
                                        onClickDescription: { copyGroupLink(groupLink ?? "") },
                                        descriptionLabel: i18n("icu:GroupLinkManagement__CopyGroupLinkButtonLabel"))
                 }
@@ -64,7 +64,7 @@ public struct GroupLinkManagement: View {
                 if hasGroupLink && isAdmin {
                     ConversationDetailsList {
                         AxoSwitchItem.Root(label: i18n("icu:GroupLinkManagement--approve-label"), description: i18n("icu:GroupLinkManagement--approve-info"),
-                                           checked: Binding(get: { addFromInviteLink == .administrator }, set: setAccessControlAddFromInviteLinkSetting))
+                                           checked: Binding(get: { addFromInviteLink == .administrator }, set: { setAccessControlAddFromInviteLinkSetting($0) }))
                     }
                 }
             }

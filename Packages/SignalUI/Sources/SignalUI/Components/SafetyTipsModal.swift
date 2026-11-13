@@ -1,6 +1,7 @@
 // Port of ts/components/SafetyTipsModal.dom.tsx: three safety tips with icons, and "View more"
 // opening a six-card carousel (previous / next buttons and page dots).
 
+import SignalI18n
 import SwiftUI
 
 public struct SafetyTipsModal: View {

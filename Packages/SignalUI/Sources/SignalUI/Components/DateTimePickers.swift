@@ -5,6 +5,7 @@
 // Fields: rounded-lg, a 2.5px transparent border (Blink draws 2px), fill-primary, px-2 py-0.5;
 // segments are body-medium with 1px side padding.
 
+import SignalI18n
 import SwiftUI
 
 /// A calendar day (`CalendarDate`).

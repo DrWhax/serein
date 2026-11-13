@@ -1,6 +1,7 @@
 // Port of ts/components/EditNicknameAndNoteModal.dom.tsx: a contact's nickname (given and
 // family name) and note, in an AxoFieldList; Save is enabled once something changed.
 
+import SignalI18n
 import SwiftUI
 
 /// `NicknameAndNote`

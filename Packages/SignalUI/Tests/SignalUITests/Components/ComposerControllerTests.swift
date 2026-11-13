@@ -47,6 +47,32 @@ import Testing
         #expect(Set(out.ranges) == Set(ranges))
     }
 
+    /// Each piece shows in its style's font: the pill and plain text in the body font, bold and
+    /// monospace in theirs (fonts go on after the AttributedString conversion).
+    @Test func stylesShowInTheirFonts() {
+        let (c, tv) = make("")
+        func font(at i: Int) -> NSFont? { tv.attributedString().fontAttributes(in: NSRange(location: i, length: 1))[.font] as? NSFont }
+        let base = ComposerController.baseFont
+        c.load(body: "hi \u{FFFC} bold mono 🎉", ranges: [
+            BodyRange(start: 3, length: 1, kind: .mention(aci: "aci-1", conversationID: "aci-1", replacementText: "Alice")),
+            BodyRange(start: 5, length: 4, kind: .formatting(.bold)),
+            BodyRange(start: 10, length: 4, kind: .formatting(.monospace)),
+        ])
+        #expect(tv.string == "hi @Alice bold mono 🎉")
+        #expect(font(at: 0) == base && font(at: 4) == base && font(at: 19) == base)
+        #expect(font(at: 10)?.fontDescriptor.symbolicTraits.contains(.bold) == true)
+        #expect(font(at: 15)?.isFixedPitch == true && font(at: 15)?.pointSize == base.pointSize)
+        // Toggled off, plain again; a new pill is in the body font.
+        tv.setSelectedRange(NSRange(location: 10, length: 4))
+        c.toggle(.bold)
+        #expect(font(at: 10) == base)
+        tv.setSelectedRange(NSRange(location: 0, length: 0))
+        tv.insertText("@b", replacementRange: tv.selectedRange())
+        tv.setSelectedRange(NSRange(location: 2, length: 0))
+        c.insertMention(.init(aci: "aci-2", title: "Bob"))
+        #expect(tv.string.hasPrefix("@Bob hi") && font(at: 1) == base && font(at: 4) == base)
+    }
+
     @Test func deletingIntoAPillRemovesIt() {
         let (c, tv) = make("@a")
         tv.setSelectedRange(NSRange(location: 2, length: 0))

@@ -5,6 +5,7 @@
 // its aspect ratio (110×107.08).
 
 import AppKit
+import SignalI18n
 import SwiftUI
 
 struct KeyTransparencyIllustration: View {

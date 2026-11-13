@@ -634,10 +634,20 @@ struct TimelineRow: View, Equatable {
     let message: TimelineMessage
     let previous: TimelineMessage?
     let next: TimelineMessage?
+    /// The pane's session, by identity (the session itself is main-actor state; == is not).
+    let session: ObjectIdentifier
+
+    init(pane: ConversationPane, message: TimelineMessage, previous: TimelineMessage?, next: TimelineMessage?) {
+        self.pane = pane
+        self.message = message
+        self.previous = previous
+        self.next = next
+        session = ObjectIdentifier(pane.session)
+    }
 
     nonisolated static func == (a: TimelineRow, b: TimelineRow) -> Bool {
         a.message == b.message && a.previous == b.previous && a.next == b.next && a.pane.conversation == b.pane.conversation
-            && a.pane.session === b.pane.session
+            && a.session == b.session
     }
 
     var body: some View {

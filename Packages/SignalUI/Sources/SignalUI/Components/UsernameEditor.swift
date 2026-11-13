@@ -2,6 +2,7 @@
 // one field group), with reservation progress and errors, Learn more, and the change /
 // recover confirmations.
 
+import SignalI18n
 import SwiftUI
 
 /// `UsernameReservationState`

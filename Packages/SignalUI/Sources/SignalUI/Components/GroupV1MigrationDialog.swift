@@ -1,6 +1,7 @@
 // Port of ts/components/GroupV1MigrationDialog.dom.tsx: what the New Groups migration does,
 // then the invited and the dropped members (a sorted contact list, or just their count).
 
+import SignalI18n
 import SwiftUI
 
 /// A member shown in the migration dialog.

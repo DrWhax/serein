@@ -2,6 +2,7 @@
 // contact (searchable list, system names first), then choose what to share — photo, name,
 // phone, nickname, note — with editors for the name and the photo, and send.
 
+import SignalI18n
 import SwiftUI
 
 /// `EmbeddedContactName`

@@ -3,6 +3,7 @@
 // Color, the link with copy, help, Reset; the colour picker; and the reset / error / recovered
 // confirmations. The exported PNG is the caller's (`onSave`).
 
+import SignalI18n
 import SwiftUI
 
 /// `UsernameLinkState`

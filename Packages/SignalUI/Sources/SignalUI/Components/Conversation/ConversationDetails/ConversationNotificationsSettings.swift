@@ -147,7 +147,7 @@ public struct ConversationNotificationsSettings: View {
                                     AxoItem.Label(unreadRemindersLabel)
                                     AxoItem.Description(i18n("icu:UnreadReminders__description"))
                                     AxoItem.Accessory {
-                                        AxoSwitch.Root(checked: Binding(get: { showUnreadReminders }, set: setShowUnreadReminders),
+                                        AxoSwitch.Root(checked: Binding(get: { showUnreadReminders }, set: { setShowUnreadReminders($0) }),
                                                        label: unreadRemindersLabel)
                                     }
                                 }

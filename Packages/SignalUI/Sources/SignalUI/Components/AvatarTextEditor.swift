@@ -6,7 +6,7 @@ import SignalI18n
 import SwiftUI
 
 public struct AvatarTextEditor: View {
-    static let bubbleSize: CGFloat = 120
+    nonisolated static let bubbleSize: CGFloat = 120
     static let maxLength = 3
 
     let initialText: String

@@ -2,6 +2,7 @@
 // profiles — a header (on / on until …), each profile (ProfileAvatar small + name; the active
 // one offers "for 1 hour" and "until <time>"), and Notification profile settings.
 
+import SignalI18n
 import SwiftUI
 
 /// The parts of `NotificationProfileType` the menu shows.

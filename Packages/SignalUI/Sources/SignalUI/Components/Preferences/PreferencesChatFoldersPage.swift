@@ -2,6 +2,7 @@
 // DeleteChatFolderDialog.dom.tsx): the folder list (create, reorder by drag, edit and delete
 // from a context menu) and the suggested folders not yet added.
 
+import SignalI18n
 import SwiftUI
 
 /// `ChatFolderPresetId`

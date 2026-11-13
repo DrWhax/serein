@@ -3,6 +3,7 @@
 // monospace cards, Save as PDF) and the Account page row that opens it after OS auth.
 // The print layout (`print:` variants) belongs to the PDF export.
 
+import SignalI18n
 import SwiftUI
 
 /// `formatBackupKeyForDisplay`: upper-case, groups of four; `convertAmbiguousChars` maps O → #

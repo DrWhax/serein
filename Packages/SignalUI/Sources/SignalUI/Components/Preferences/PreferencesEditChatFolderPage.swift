@@ -7,6 +7,7 @@
 // block sidebar navigation the same way. An emoji is appended to the name (the legacy Input
 // does not expose its caret).
 
+import SignalI18n
 import SwiftUI
 
 /// `ChatFolderParams`: a folder's name and filter.

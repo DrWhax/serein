@@ -4,6 +4,7 @@
 // out with backups and donations.
 
 import CoreText
+import SignalI18n
 import SwiftUI
 
 /// The Internal page's calling and testing overrides (nil: the default).

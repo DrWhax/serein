@@ -1,6 +1,7 @@
 // Port of ts/components/preferences/PreferencesSelectChatsDialog.dom.tsx: choose the chats
 // (and, optionally, the 1:1 / group chat types) a chat folder includes.
 
+import SignalI18n
 import SwiftUI
 
 /// `ChatFolderSelection`

@@ -5,6 +5,7 @@
 // The avatar page is AvatarEditor. The name, about, username and username-link pages are
 // supplied by the caller (`renderSubpage`); their editors are ported separately.
 
+import SignalI18n
 import SwiftUI
 
 /// `ProfileEditorPage`
