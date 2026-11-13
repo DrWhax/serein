@@ -128,6 +128,9 @@ public actor SignalClient {
         do { try keyStore.deleteKey() } catch { Self.diagnose("database key not removed: \(error)") }
     }
 
+    /// The Mac woke or the network changed: reconnect now (SocketManager.reconnectNow).
+    public func reconnectNow() async { await socket.reconnectNow() }
+
     /// The session's background work stops, and what it was doing finishes (the job queue's
     /// handler, a download, a pre-key check that is mid-request).
     func stopWorkers() async {

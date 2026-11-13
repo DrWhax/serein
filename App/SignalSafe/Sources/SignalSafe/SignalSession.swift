@@ -319,6 +319,8 @@ import SignalUI
     var onEvent: ((ReceiveEvent, SignalSession) -> Void)?
 
     private var client: SignalClient?
+    /// Reconnects at once on wake and network changes (Connectivity.swift).
+    @ObservationIgnored private var connectivity: ConnectivityMonitor?
     var clientDatabase: SignalDatabase? { client?.database }
 
     /// Quitting: the client's background work finishes (or `timeout` passes).
@@ -605,6 +607,11 @@ import SignalUI
     private func becameReady(_ session: SignalClient.Session, client: SignalClient) {
         self.session = session
         observeMediaAvailability()
+        connectivity?.stop()
+        connectivity = ConnectivityMonitor {
+            Self.trace("connectivity: woke or network changed, reconnecting")
+            Task { await client.reconnectNow() }
+        }
         ourAci = session.account.aci
         phase = .ready
         // Startup storage-service sync (upstream runStorageServiceSyncJob): contacts, groups,

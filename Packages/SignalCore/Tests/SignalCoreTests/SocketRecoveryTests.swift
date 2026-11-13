@@ -23,6 +23,28 @@ import LibSignalClient
             #expect(try await c.server.json("waitForMessage", ["account": "alice"])["body"] as? String == "two")
         }
     }
+
+    /// Waking or a network change (reconnectNow): a new connection at once, no backoff wait, and
+    /// receiving and sealed sending work on it.
+    @Test func reconnectNowReplacesTheConnectionAtOnce() async throws {
+        try await LinkedClient.with { c in
+            let before = try #require(await c.socket.authenticated)
+            let start = ContinuousClock.now
+            await c.socket.reconnectNow()
+            var after: AuthenticatedChatConnection?
+            for _ in 0 ..< 100 {
+                after = await c.socket.authenticated
+                if let a = after, a !== before { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(after.map { $0 !== before } ?? false, "a new authenticated connection")
+            #expect(ContinuousClock.now - start < .seconds(2), "without waiting out a backoff")
+            let t = try await c.send(["body": "after the reconnect"])
+            _ = try await c.messageId(sentAt: t)
+            _ = try await c.messenger.sendMessage("still here", attachments: [], quoting: nil, to: c.aliceAci)
+            #expect(try await c.server.json("waitForMessage", ["account": "alice"])["body"] as? String == "still here")
+        }
+    }
 }
 
 /// A listener for a socket that never connects.

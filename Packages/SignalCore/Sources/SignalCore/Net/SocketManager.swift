@@ -43,6 +43,8 @@ public actor SocketManager {
     var authenticated: AuthenticatedChatConnection?
     weak var listener: (any ChatConnectionListener & Sendable)?
     var reconnectTask: Task<Void, Never>?
+    /// The current reconnect task's number: a superseded task does not clear its successor.
+    var reconnectGeneration = 0
     var stopped = false
 
     public init(net: Net, credentials: ChatCredentials? = nil) {
@@ -130,31 +132,62 @@ public actor SocketManager {
     func connectAuthenticated() async throws {
         guard let c = credentials, let l = listener else { throw ChatRequestError.notConnected }
         let chat = try await net.connectAuthenticatedChat(username: c.username, password: c.password, receiveStories: true)
+        // A reconnect superseded while it was connecting (reconnectNow) leaves its connection.
+        if Task.isCancelled {
+            try? await chat.disconnect()
+            throw CancellationError()
+        }
         chat.start(listener: ReconnectingListener(inner: l, manager: self))
         authenticated = chat
     }
 
-    nonisolated func connectionInterrupted() {
-        Task { await self.scheduleReconnect() }
+    nonisolated func connectionInterrupted(_ chat: AuthenticatedChatConnection) {
+        Task { await self.interrupted(chat) }
     }
 
-    func scheduleReconnect() {
+    /// The connection dropped: reconnect, unless it was already replaced (a replaced
+    /// connection's late interruption would otherwise drop its successor).
+    func interrupted(_ chat: AuthenticatedChatConnection) {
+        guard authenticated === chat else { return }
+        scheduleReconnect()
+    }
+
+    /// Reconnects in the background with backoff (250 ms doubling to 30 s), or at once first
+    /// (`immediately`).
+    func scheduleReconnect(immediately: Bool = false) {
         authenticated = nil
         guard !stopped, reconnectTask == nil else { return }
+        reconnectGeneration += 1
+        let generation = reconnectGeneration
         reconnectTask = Task {
-            var delay: UInt64 = 250_000_000
+            var delay: UInt64 = immediately ? 0 : 250_000_000
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: delay)
-                if self.stopped { break }
+                if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+                if self.stopped || Task.isCancelled { break }
                 do {
                     try await self.connectAuthenticated()
                     break
                 } catch {
-                    delay = min(delay * 2, 30_000_000_000)
+                    delay = max(250_000_000, min(delay * 2, 30_000_000_000))
                 }
             }
-            self.reconnectTask = nil
+            if self.reconnectGeneration == generation { self.reconnectTask = nil }
         }
+    }
+
+    /// The Mac woke or the network changed: the connections, which may have died unnoticed, are
+    /// replaced now, and a reconnect waiting out its backoff goes at once instead of up to 30 s
+    /// later. (The unauthenticated one reopens at its next request.)
+    public func reconnectNow() {
+        guard !stopped, credentials != nil, listener != nil else { return }
+        if let u = unauthenticated {
+            unauthenticated = nil
+            Task { try? await u.disconnect() }
+        }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        if let a = authenticated { Task { try? await a.disconnect() } }
+        scheduleReconnect(immediately: true)
     }
 
 
@@ -229,7 +262,7 @@ final class ReconnectingListener: ChatConnectionListener, Sendable {
     func chatConnection(_ chat: AuthenticatedChatConnection, didReceiveAlerts alerts: [String]) { inner.chatConnection(chat, didReceiveAlerts: alerts) }
     func connectionWasInterrupted(_ service: AuthenticatedChatConnection, error: Error?) {
         inner.connectionWasInterrupted(service, error: error)
-        manager.connectionInterrupted()
+        manager.connectionInterrupted(service)
     }
 }
 
