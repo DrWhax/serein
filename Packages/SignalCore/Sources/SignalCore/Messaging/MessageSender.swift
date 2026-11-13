@@ -49,6 +49,7 @@ public struct OutgoingPayload: Sendable {
     public var plaintextContent: Data?
     /// The group the message belongs to (sealed sender's group id), if any.
     public var groupId = Data()
+    var resendAuthorization: SendLog.Authorization? = nil
 
     public init(content: Signalservice_Content, timestamp: UInt64, contentHint: ContentHint = .resendable, urgent: Bool = true, online: Bool = false,
                 story: Bool = false) {
@@ -113,7 +114,16 @@ public final class MessageSender: Sendable {
     public let certificates: SenderCertificates
     let maxAttempts = 4
 
-    public init(account: Account, database: SignalDatabase, socket: SocketManager, trustRoots: [PublicKey]) {
+    private let beforeSubmission: (@Sendable () async -> Void)?
+
+    public convenience init(account: Account, database: SignalDatabase, socket: SocketManager, trustRoots: [PublicKey]) {
+        self.init(account: account, database: database, socket: socket, trustRoots: trustRoots, beforeSubmission: nil)
+    }
+
+    /// Tests can hold the real send after encryption, before the transport's authorization.
+    init(account: Account, database: SignalDatabase, socket: SocketManager, trustRoots: [PublicKey],
+         beforeSubmission: (@Sendable () async -> Void)?) {
+        self.beforeSubmission = beforeSubmission
         self.account = account
         self.database = database
         self.socket = socket
@@ -145,7 +155,7 @@ public final class MessageSender: Sendable {
     /// payload goes only to current members (`serviceId`, or every one of `recipients` for a
     /// multi-recipient send), unless it is a group update, which also reaches those it removes.
     func authorization(to serviceId: String?, groupId: Data, messageIds: [String], retracting: Bool = false, groupUpdate: Bool = false,
-                       recipients: [String] = [], senderKey: SenderKeyAuthorization? = nil) -> @Sendable () throws -> Void {
+                       recipients: [String] = [], senderKey: SenderKeyAuthorization? = nil, encryptedIdentity: Data? = nil, resend: SendLog.Authorization? = nil) -> @Sendable () throws -> Void {
         { [database, account] in
             try database.pool.read { db in
                 if !groupId.isEmpty {
@@ -160,6 +170,14 @@ public final class MessageSender: Sendable {
                     }
                 } else if let serviceId, serviceId != account.aci {
                     if try Self.isBlocked(db, serviceId: serviceId) { throw JobError.permanent("recipient blocked") }
+                }
+                if let resend { try SendLog.authorize(db, resend, ourAci: account.aci) }
+                if let encryptedIdentity, let serviceId, serviceId != account.aci {
+                    guard let current = try ProtocolStore.identityRow(db, serviceId: serviceId)?.key,
+                          SignalCrypto.constantTimeEqual(current, encryptedIdentity),
+                          try !ProtocolStore.needsApproval(db, serviceId: serviceId) else {
+                        throw SendError.untrustedIdentities([serviceId])
+                    }
                 }
                 if let senderKey {
                     try GroupSender.authorizeSenderKey(db, conversationId: senderKey.conversationId,
@@ -183,7 +201,7 @@ public final class MessageSender: Sendable {
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
                      logged: Bool = true) async throws -> SendResult {
         let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
-                                      groupUpdate: payload.isGroupUpdateOnly)
+                                      groupUpdate: payload.isGroupUpdateOnly, resend: payload.resendAuthorization)
         try authorize()
         try await PreKeyMaintenance(account: account, database: database, socket: socket).ensureKeysCurrent()
         let isSelf = serviceId == account.aci
@@ -206,19 +224,25 @@ public final class MessageSender: Sendable {
 
             let cert = certificate
             let targets = devices
-            let encrypted: [DeviceMessage]? = try await database.pool.write { db in
+            let encrypted: ([DeviceMessage], Data?)? = try await database.pool.write { db in
                 do {
-                    return try self.encrypt(db, padded, for: serviceId, devices: targets, certificate: cert, contentHint: payload.contentHint,
-                                            plaintextContent: payload.plaintextContent, groupId: payload.groupId)
+                    let messages = try self.encrypt(db, padded, for: serviceId, devices: targets, certificate: cert, contentHint: payload.contentHint,
+                                                    plaintextContent: payload.plaintextContent, groupId: payload.groupId)
+                    let identity = payload.plaintextContent == nil && serviceId != self.account.aci
+                        ? try ProtocolStore.identityRow(db, serviceId: serviceId)?.key : nil
+                    return (messages, identity)
                 } catch SignalError.untrustedIdentity {
                     // Upstream OutgoingMessage: close every session with them, fail the send.
                     try ProtocolStore.archiveSessions(db, serviceId: serviceId)
                     return nil
                 }
             }
-            guard let messages = encrypted else { throw SendError.untrustedIdentities([serviceId]) }
+            guard let (messages, identity) = encrypted else { throw SendError.untrustedIdentities([serviceId]) }
             let json = try JSONEncoder().encode(MessageList(messages: messages, timestamp: payload.timestamp,
                                                             online: payload.online && !isSelf, urgent: payload.urgent))
+            let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
+                                          groupUpdate: payload.isGroupUpdateOnly, encryptedIdentity: identity, resend: payload.resendAuthorization)
+            await beforeSubmission?()
             let path = "/v1/messages/\(serviceId)" + (storySend ? "?story=true" : "")
             do {
                 if storySend {
@@ -233,7 +257,7 @@ public final class MessageSender: Sendable {
                 if logged {
                     _ = try await database.pool.write { db in
                         try SendLog.record(db, timestamp: payload.timestamp, contentHint: payload.contentHint.rawValue, proto: proto, urgent: payload.urgent,
-                                           recipient: serviceId, devices: sent, messageIds: messageIds)
+                                           recipient: serviceId, devices: sent, messageIds: messageIds, groupId: payload.groupId, story: payload.story)
                     }
                 }
                 return SendResult(serviceId: serviceId, devices: devices, sealed: accessKey != nil || storySend)

@@ -108,6 +108,24 @@ Mutants (step 6), each of which must make a trace disagree:
 | The storage merge ignores the key match. |
 | A new key keeps the old key's approval. |
 
+### Async review and send boundary
+
+The approval and verification closures contain no awaits: reviewed-key validation, trust changes
+and sync insertion share one writer transaction. The later `jobs.poke()` changes scheduling, not
+trust. Safety-number generation may return an already-stale snapshot; commit must and does
+validate it again. Validation now also loads the active account inside that same transaction;
+comparing only the retained Messenger's immutable account allowed an old task to approve after
+logout or relink. The conformance rig now persists its account-switch events. The existing
+held-writer race tests cover stale peer-key approval, and cross-slice tests retain an old Messenger
+across replacement/logout and require both approval and verification to refuse it.
+
+`CrossSliceSendTests` adds a separate boundary: encryption captures the peer key in its writer
+transaction and transport authorization rechecks that exact key and current trust. Even approval
+of a replacement key cannot authorize ciphertext made for the old one. Tests suspend real sends
+after encryption and during uploads. `GroupReservationTests` changes an identity during key
+distribution and checks that late completion cannot clear the reset requirement. These are
+cross-slice Swift tests, not consequences of the standalone identity proofs.
+
 ## 5. Assumptions and limitations
 
 - The rig's random traces use three peers, four keys and two ACIs × two keys of ours. The proofs

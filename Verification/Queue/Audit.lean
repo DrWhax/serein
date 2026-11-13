@@ -59,13 +59,13 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure Inv.reach shutdownClean_holds noRestartWhileDraining_holds oneAtATime_holds drain_terminates
+#audit_closure Inv.reach shutdownClean_holds noRestartWhileDraining_holds oneAtATime_holds drain_can_terminate
 
 #check @Inv.reach
 #check @shutdownClean_holds
 #check @noRestartWhileDraining_holds
 #check @oneAtATime_holds
-#check @drain_terminates
+#check @drain_can_terminate
 
 open Lean Elab Command in
 /-- `collectAxioms` for each theorem, on one line each. -/
@@ -76,4 +76,4 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms Inv.reach shutdownClean_holds noRestartWhileDraining_holds oneAtATime_holds drain_terminates
+#audit_axioms Inv.reach shutdownClean_holds noRestartWhileDraining_holds oneAtATime_holds drain_can_terminate

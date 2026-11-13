@@ -82,6 +82,8 @@ swift_tests App/SignalSafe 'MediaApplyConformanceTests' "$tmp/app" || status=$?
 grep -E 'Test run|passed after|failed after|disagree|model ' "$tmp/app" | tail -10
 [ "$status" -eq 0 ] || exit "$status"
 
+swift_tests Packages/SignalUI 'PlaybackCancellationTests|AudioPlaybackEngineTests|VideoPlaybackEngineTests' "$tmp/playback" || { cat "$tmp/playback"; exit 1; }
+
 if [ "${SKIP_MUTANTS:-}" = 1 ]; then echo "== 6. mutants: skipped"; exit 0; fi
 echo "== 6. mutants: each planted bug must make step 5 fail"
 # mutant <name> <file> <perl substitution> <package dir> <test filter> [what must fail]

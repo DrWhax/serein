@@ -56,7 +56,7 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure permits_other_ref deleted_permits_nothing erased_permits_nothing expired_permits_nothing avail_mem out_step handedOutPermitted_holds decodePermitted_holds updateRevokes_holds
+#audit_closure permits_other_ref deleted_permits_nothing erased_permits_nothing expired_permits_nothing avail_mem out_step handedOutPermitted_holds decodePermitted_holds updateRevokes_holds Playback.completion_authorized
 
 #check @permits_other_ref
 #check @deleted_permits_nothing
@@ -77,4 +77,5 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms permits_other_ref deleted_permits_nothing erased_permits_nothing expired_permits_nothing avail_mem out_step handedOutPermitted_holds decodePermitted_holds updateRevokes_holds
+#audit_axioms permits_other_ref deleted_permits_nothing erased_permits_nothing expired_permits_nothing avail_mem out_step handedOutPermitted_holds decodePermitted_holds updateRevokes_holds Playback.completion_authorized
+#check @Playback.completion_authorized

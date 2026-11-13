@@ -119,6 +119,7 @@ final class IdentityRig: @unchecked Sendable {   // used by one serialized test 
 
     func reset() throws {
         try db.pool.write { db in
+            try account(0, 0).save(db)
             try db.execute(sql: "DELETE FROM identityKeys")
             try db.execute(sql: "DELETE FROM messages")
             try db.execute(sql: "DELETE FROM jobs")
@@ -193,6 +194,8 @@ final class IdentityRig: @unchecked Sendable {   // used by one serialized test 
             try await db.pool.write { db in try self.saveKey(db, p, k) }
         case "acct":
             current = (n(1), n(2))
+            let active = account(current.0, current.1)
+            try await db.pool.write { try active.save($0) }
         case "win":
             let id = peers[n(1)]
             try await db.pool.write { db in

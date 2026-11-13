@@ -19,6 +19,7 @@ public struct AttachmentDownloadJob: Sendable, Equatable {
     public var retryAfter: Int64?
     public var lastAttemptTimestamp: Int64?
     public var source = "standard"
+    var leaseId: String? = nil
 
     var ciphertextSize: Int {
         AttachmentCipher.ivLength + AttachmentCipher.aesCBCCiphertextSize(AttachmentCipher.logPadSize(attachment.size)) + AttachmentCipher.macLength
@@ -30,23 +31,25 @@ public enum AttachmentDownloads {
     public static func add(_ db: Database, _ job: AttachmentDownloadJob) throws {
         try db.execute(sql: """
             INSERT INTO attachment_downloads (messageId, attachmentType, attachmentSignature, receivedAt, sentAt, contentType, size,
-                attachmentJson, active, attempts, retryAfter, lastAttemptTimestamp, source, ciphertextSize, originalSource)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                attachmentJson, active, attempts, retryAfter, lastAttemptTimestamp, source, ciphertextSize, originalSource, leaseId)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (messageId, attachmentType, attachmentSignature) DO UPDATE SET
-                attachmentJson = excluded.attachmentJson, active = 0, attempts = excluded.attempts, retryAfter = excluded.retryAfter
+                attachmentJson = excluded.attachmentJson, leaseId = excluded.leaseId, active = 0, attempts = excluded.attempts, retryAfter = excluded.retryAfter
             """, arguments: [job.messageId, job.attachmentType.rawValue, job.signature, job.receivedAt, job.sentAt, job.attachment.contentType,
                              job.attachment.size, String(decoding: try JSONEncoder().encode(job.attachment), as: UTF8.self), job.attempts,
-                             job.retryAfter, job.lastAttemptTimestamp, job.source, job.ciphertextSize, job.source])
+                             job.retryAfter, job.lastAttemptTimestamp, job.source, job.ciphertextSize, job.source, UUID().uuidString])
     }
 
     static func job(_ row: Row) throws -> AttachmentDownloadJob? {
         guard let type = MessageAttachmentType(rawValue: row["attachmentType"]) else { return nil }
         let json: String = row["attachmentJson"]
-        return AttachmentDownloadJob(messageId: row["messageId"], attachmentType: type, signature: row["attachmentSignature"],
+        var job = AttachmentDownloadJob(messageId: row["messageId"], attachmentType: type, signature: row["attachmentSignature"],
                                      receivedAt: row["receivedAt"], sentAt: row["sentAt"],
                                      attachment: try JSONDecoder().decode(MessageAttachment.self, from: Data(json.utf8)),
                                      attempts: row["attempts"], retryAfter: row["retryAfter"], lastAttemptTimestamp: row["lastAttemptTimestamp"],
                                      source: row["source"])
+        job.leaseId = row["leaseId"]
+        return job
     }
 
     /// `getNextAttachmentDownloadJobs`
@@ -76,20 +79,20 @@ public enum AttachmentDownloads {
     static func key(_ j: AttachmentDownloadJob) -> StatementArguments { [j.messageId, j.attachmentType.rawValue, j.signature] }
 
     static func setActive(_ db: Database, _ j: AttachmentDownloadJob, _ active: Bool) throws {
-        try db.execute(sql: "UPDATE attachment_downloads SET active = ? WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
-                       arguments: [active ? 1 : 0] + key(j))
+        try db.execute(sql: "UPDATE attachment_downloads SET active = ? WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ? AND (? IS NULL OR leaseId = ?)",
+                       arguments: [active ? 1 : 0] + key(j) + [j.leaseId, j.leaseId])
     }
 
     static func remove(_ db: Database, _ j: AttachmentDownloadJob) throws {
-        try db.execute(sql: "DELETE FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
-                       arguments: key(j))
+        try db.execute(sql: "DELETE FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ? AND (? IS NULL OR leaseId = ?)",
+                       arguments: key(j) + [j.leaseId, j.leaseId])
     }
 
     static func retryLater(_ db: Database, _ j: AttachmentDownloadJob, now: Int64) throws {
         try db.execute(sql: """
             UPDATE attachment_downloads SET active = 0, attempts = ?, retryAfter = ?, lastAttemptTimestamp = ?
-            WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?
-            """, arguments: [j.attempts + 1, now + AttachmentDownloadManager.backoff(attempt: j.attempts + 1), now] + key(j))
+            WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ? AND (? IS NULL OR leaseId = ?)
+            """, arguments: [j.attempts + 1, now + AttachmentDownloadManager.backoff(attempt: j.attempts + 1), now] + key(j) + [j.leaseId, j.leaseId])
     }
 
     /// Startup: jobs left active by a crash become runnable again.
@@ -133,6 +136,9 @@ public actor AttachmentDownloadManager {
     /// Test hook: the clock.
     var clock: @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     var onUpdate: (@Sendable (String) -> Void)?
+    /// Test seam after validation and the first cancellation check, before the writer resumes.
+    var beforePublication: (@Sendable () async -> Void)?
+    func setBeforePublication(_ hook: (@Sendable () async -> Void)?) { beforePublication = hook }
 
     public init(db: DatabaseWriter, http: HTTPClient, endpoints: ServiceEndpoints, store: AttachmentStore, media: (any MediaProcessing)?) {
         self.db = db
@@ -275,6 +281,7 @@ public actor AttachmentDownloadManager {
             let updated = try await download(job)
             // Cancelled (`cancelDownloads`) while finishing: the user stopped it; keep nothing.
             if Task.isCancelled { return }
+            await beforePublication?()
             try await db.write { db in
                 try Self.replace(db, job: job) { _ in updated }
                 try AttachmentDownloads.remove(db, job)
@@ -308,9 +315,16 @@ public actor AttachmentDownloadManager {
 
     /// Finds the job's attachment on its message (by type and signature) and rewrites it.
     static func replace(_ db: Database, job: AttachmentDownloadJob, _ change: (MessageAttachment) -> MessageAttachment) throws {
-        guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, sent_at, received_at, type FROM messages WHERE id = ?", arguments: [job.messageId])
+        if let lease = job.leaseId {
+            guard try String.fetchOne(db, sql: "SELECT leaseId FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
+                                      arguments: AttachmentDownloads.key(job)) == lease else { return }
+        }
+        guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, sent_at, received_at, type FROM messages WHERE id = ? AND COALESCE(json ->> '$.isErased', 0) = 0 AND (expiresAt IS NULL OR expiresAt > ?)", arguments: [job.messageId, MessageStore.now()])
         else { return }
         for (loc, a) in try MessageAttachments.fetch(db, messageId: job.messageId) where loc.type == job.attachmentType && a.signature == job.signature {
+            // A matching digest is not a snapshot: size, keys or the pending flag can change
+            // while the CDN or media service is awaited. Never overwrite the new attachment.
+            guard a == job.attachment, a.pending == true, !a.isDownloaded else { continue }
             try MessageAttachments.upsert(db, loc, conversationId: row["conversationId"], sentAt: row["sent_at"], receivedAt: row["received_at"],
                                           messageType: row["type"] ?? "incoming", change(a))
         }

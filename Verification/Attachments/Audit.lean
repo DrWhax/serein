@@ -66,7 +66,7 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure decrypt_ok describe_ok delivered_holds published_holds fetched_holds
+#audit_closure decrypt_ok describe_ok delivered_holds published_holds fetched_holds Publication.publish_current
 
 #check @decrypt_ok
 #check @describe_ok
@@ -83,4 +83,5 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms decrypt_ok describe_ok delivered_holds published_holds fetched_holds
+#audit_axioms decrypt_ok describe_ok delivered_holds published_holds fetched_holds Publication.publish_current
+#check @Publication.publish_current

@@ -34,18 +34,22 @@ must not let its viewer go on because the other still references the file.
 | `deleted_permits_nothing`, `erased_permits_nothing`, `expired_permits_nothing` | A deleted, erased or expired message permits nothing, whatever else references the file. |
 | `handedOutPermitted_holds` | Everything handed out in a step (an export after the save panel returns, a video or voice note started) is permitted by its own message at that step: **expiry or deletion while the save panel is open refuses the export.** |
 | `decodePermitted_holds` | **Expiry during decoding**: a finished decode enters the cache only if its message still permits the file when it finishes. |
+| `Playback.completion_authorized` | A delayed playback completion must still belong to the current session generation and its own live message/file relation. |
 | `updateRevokes_holds` | After an availability update, the open lightbox's message is live and references every file it shows; the inline video and the voice note are their messages' own live references; every cached file is still referenced by some live message. |
 
 **What the proofs are worth.** `permits_other_ref` and the three `_permits_nothing` theorems are
 about the decision production's `permits` and `fetch` are compared with; `updateRevokes_holds` is
 about `apply`, which production's `applyMediaAvailability` is compared with. The other two follow
-from the model's actions re-checking at their moment, which is read from the code: the open,
-play and decode re-checks are not run by a rig (the export's is).
+from the model's actions re-checking at their moment. `Media/Playback.lean` separately models
+pending requests, stops, session replacement and delayed completions. Engine regressions hold
+rewinds and audio loads across cancellation; full XPC/UI playback is still not a refinement proof.
 
 **Latency, stated precisely.** An open viewer is closed at the next availability update: the
 database observation (deletions, erasures) or the expiry timer (scheduled for the next
-`expiresAt`). Between a revocation and that update, a viewer already open stays open; nothing new
-is started, decoded into a viewer, or exported in that window (the actions re-check).
+`expiresAt`). Between a revocation and that update, a viewer already open stays open; actions re-check before accepting new results. A synchronous database authorization read is a
+snapshot: rendering and a concurrent database commit are not one transaction. Expiry is judged
+at the check's timestamp. Export uses the writer transaction, so revocation cannot commit between
+its authorization and synchronous file write.
 
 ## 3. Production changes made for this slice
 
@@ -56,8 +60,15 @@ expiry update closed it. Timeline decodes stay checked by file: their cache is s
 a bubble is only drawn for a live message.
 
 **M2: the export after the save panel is one SignalCore function** (`MediaAvailability.export`):
-the message's own reference is checked and the plaintext written in one database read. It was the
+the message's own reference is checked and the plaintext written in one database writer transaction. A WAL read alone would
+not prevent a revocation from committing while the file is written. It was the
 same check inline in the app; now the test can call exactly what the app calls.
+
+**M3: cancelled playback cannot resume after its await.** Video play rechecks both source and
+playback generations after rewind/audio awaits; stopping invalidates pending playback even if
+`isPlaying` has not become true. Audio pause invalidates pending loads. Voice-note requests retain
+engine ownership, session generation and the message relation through loading and seeking;
+queued resume actions recheck their reference when they actually run.
 
 ## 4. What is only tested against Swift
 
@@ -71,6 +82,10 @@ same check inline in the app; now the test can call exactly what the app calls.
 - `MediaApplyConformanceTests.randomViewers` (app): 3,000 random viewer states (a lightbox with one
   or two attachments, or none downloaded; an inline video; a voice note; cached files) and random
   availabilities through `applyMediaAvailability`, against the oracle.
+
+- `PlaybackCancellationTests` (SignalUI): pause, unload and replacement during an awaited video
+  rewind cannot restart playback; pausing a suspended audio load cannot install its late source.
+  `Tools/verify-async-boundaries.py` requires the old cancellation behaviors to fail these tests.
 
 Mutants (step 6), each of which must fail step 5: `permits` ignores which message, erasure, or
 expiry; `fetch` ignores erasure or expiry; the export does not check again; the lightbox, the inline
@@ -88,6 +103,7 @@ its message is live; decoded pixels outliving the last reference.
 
 ## 6. Files
 
+`Media/Playback.lean` (await boundaries), `Media/Nonvacuity.lean` (positive behavior),
 `Media/Model.lean` (the model), `Media/Props.lean`, `Media/Proofs.lean`, `Media/Trace.lean`,
 `Main.lean` (the `oracle`: `db`, `apply`, `explore`), `Audit.lean`, `audit-expected.txt`,
 `explore-expected.txt`.

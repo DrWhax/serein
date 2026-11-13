@@ -294,7 +294,7 @@ public struct GroupSender: Sendable {
         try await database.pool.write { db in
             for (id, ds) in delivered {
                 try SendLog.record(db, timestamp: payload.timestamp, contentHint: payload.contentHint.rawValue, proto: proto, urgent: payload.urgent,
-                                   recipient: id, devices: ds, messageIds: messageIds)
+                                   recipient: id, devices: ds, messageIds: messageIds, groupId: keys.groupId, story: payload.story)
             }
         }
         return (delivered.map(\.0), gone)

@@ -227,7 +227,7 @@ constructor:
   Attachments.Inv.mk {s : S} (ids : (List.map (fun x => x.id) s.atts).Nodup)
     (paths : (List.map (fun x => x.path) s.files).Nodup) (lt : ∀ (f : File), f ∈ s.files → f.path < s.nextPath)
     (pub : Published s) (delivered : Delivered s) (fetched : Fetched s) : Attachments.Inv s
-112 definitions
+134 definitions
 Attachments.Att 3931117990 3453760593446479962
 Attachments.Att.bucket 127012305 3485389603
 Attachments.Att.casesOn 3933573342 3325539478
@@ -289,6 +289,28 @@ Attachments.Integrity.digest 3775673850 -
 Attachments.Integrity.hash 2461782683 -
 Attachments.Integrity.macOnly 3596760082 -
 Attachments.Integrity.rec 2936657135 -
+Attachments.Publication.Ev 3931117990 11582591744252440298
+Attachments.Publication.Ev.begin 191150787 -
+Attachments.Publication.Ev.cancel 191150787 -
+Attachments.Publication.Ev.casesOn 1932728920 1185607454
+Attachments.Publication.Ev.finish 191150787 -
+Attachments.Publication.Ev.rec 1006163239 -
+Attachments.Publication.Ev.replace 191150787 -
+Attachments.Publication.Ev.requeue 191150787 -
+Attachments.Publication.Ev.revoke 191150787 -
+Attachments.Publication.S 3931117990 5350532075709537897
+Attachments.Publication.S.cancelled 3086570900 1182677931
+Attachments.Publication.S.lease 3682496950 355661856
+Attachments.Publication.S.live 3086570900 1012084199
+Attachments.Publication.S.mk 2287016826 -
+Attachments.Publication.S.pending 3086570900 2084207607
+Attachments.Publication.S.published 1430988857 60207706
+Attachments.Publication.S.version 3682496950 2839627473
+Attachments.Publication.S.work 1247320658 2201814070
+Attachments.Publication.safe 3245712669 3500235499
+Attachments.Publication.step 808297939 41496703
+Attachments.Publication.step.match_1 1688932127 3012553731
+Attachments.Publication.step.match_3 3327285249 3462662822
 Attachments.Published 162228479 3281586080
 Attachments.Reach 2411830122 17709572662944162327
 Attachments.Reach.init 1670830199 -
@@ -360,3 +382,6 @@ Attachments.describe_ok depends on axioms: [Quot.sound, propext]
 Attachments.delivered_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 Attachments.published_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 Attachments.fetched_holds depends on axioms: [Classical.choice, Quot.sound, propext]
+Attachments.Publication.publish_current depends on axioms: [Classical.choice, Quot.sound, propext]
+Publication.publish_current : ∀ (s : Publication.S) (e : Publication.Ev),
+  Publication.safe s (Publication.step s e) = true

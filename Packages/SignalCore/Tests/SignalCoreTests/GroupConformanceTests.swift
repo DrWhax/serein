@@ -352,4 +352,23 @@ struct GroupReservationTests {
         #expect(info.deliveredDevices == [])
     }
 
+    @Test func identityChangeDuringDistributionInvalidatesTheReservedKey() async throws {
+        let r = try await Rig()
+        let address = try ProtocolAddress(name: r.members[0], deviceId: 1)
+        try await r.db.pool.write { db in
+            _ = try r.group.sender.store.saveIdentity(db, IdentityKeyPair.generate().identityKey, for: address)
+        }
+        let devices = Set([r.device(0), r.device(1)])
+        let ticket = try await r.prepare(devices)
+        // A distribution is in flight when a different identity is learned.
+        try await r.db.pool.write { db in
+            _ = try r.group.sender.store.saveIdentity(db, IdentityKeyPair.generate().identityKey, for: address)
+        }
+        try await r.delivered(ticket, devices)
+        #expect(throws: SendError.notAMember("sender key changed")) { try r.authorize(ticket, recipients: r.members) }
+        let next = try await r.prepare(devices)
+        #expect(next.generation != ticket.generation)
+        #expect(next.deliveredDevices == [])
+    }
+
 }

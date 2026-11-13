@@ -130,3 +130,17 @@ Mutants (step 6), each of which must fail step 5:
 | `Send/Props.lean`, `Send/Proofs.lean` | The properties and proofs. |
 | `Send/Trace.lean`, `Main.lean` | Notation and the `oracle` (`decide`, `check`, `explore`). |
 | `Audit.lean`, `audit-expected.txt`, `explore-expected.txt`, `traces/regressions.txt` | What the script compares. |
+
+## Cross-slice async regressions
+
+`CrossSliceSendTests` gates real sends after encryption and real attachment uploads through an
+injected upload-form source. Blocking, deleting the source message, or changing the peer identity
+while suspended must prevent submission. An allowed retry after unblocking must succeed.
+Encryption now captures the peer identity in its transaction; authorization checks that exact
+key again at submission, even if a different key has since been approved. Group distribution
+also uses this direct-send boundary. Group-key generation/reset checks remain in the Group slice.
+
+The same suite tests real group sends followed by membership removal or group blocking before
+resend, and a retained Messenger after account replacement/logout. These composition tests are
+not implied by the separate Lean proofs. `Tools/verify-async-boundaries.py` runs targeted runtime
+mutants; `Send/Nonvacuity.lean` independently checks positive model behavior.

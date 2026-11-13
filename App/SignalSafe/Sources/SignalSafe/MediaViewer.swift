@@ -77,7 +77,14 @@ extension SignalSession {
             _ = largeImage(for: a, of: l.messageId)
             return
         }
-        guard l.players[index] == nil else { Task { await l.players[index]?.play() }; return }
+        guard l.players[index] == nil else {
+            Task {
+                guard lightbox?.id == l.id, lightbox?.index == index, let path = a.path,
+                      mediaIsAvailable(path: path, messageId: l.messageId) else { return }
+                await l.players[index]?.play()
+            }
+            return
+        }
         let messageId = l.messageId
         let instance = l.id
         if inlineVideo?.messageId == messageId { inlineVideo?.player.pause() }
@@ -124,7 +131,11 @@ extension SignalSession {
         guard let a = m.attachments.first?.attachment, AttachmentPolicy.isVideo(a.contentType), a.isDownloaded else { return }
         guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else { return }
         if let current = inlineVideo, current.messageId == m.id {
-            Task { await current.player.play() }
+            Task {
+                guard inlineVideo?.player === current.player,
+                      mediaIsAvailable(path: path, messageId: m.id) else { return }
+                await current.player.play()
+            }
             return
         }
         stopInlineVideo()

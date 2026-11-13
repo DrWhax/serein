@@ -18,10 +18,11 @@ import SignalUI
         guard let session = signalSession, !audioWaveformLoading.contains(path) else { return nil }
         audioWaveformLoading.insert(path)
         let store = session.attachmentStore, media = media
+        let generation = mediaObservationGeneration
         Task {
             defer { audioWaveformLoading.remove(path) }
             guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil,
-                  let summary = try? await media.audioSummary(bytes), mediaIsAvailable(path: path) else { return }
+                  let summary = try? await media.audioSummary(bytes), generation == mediaObservationGeneration, mediaIsAvailable(path: path) else { return }
             audioWaveforms[path] = AudioWaveform(waveform: summary.waveform, duration: summary.duration)
         }
         return nil
@@ -47,32 +48,32 @@ import SignalUI
               let session = signalSession else { return }
         guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else { return }
         let store = session.attachmentStore, media = media
+        let loading = activeAudioMessageId != m.id || audioEngine?.isLoaded != true
+        if loading { stopAudio() }
+        let engine = audioEngine ?? AudioPlaybackEngine()
+        audioEngine = engine
+        activeAudioMessageId = m.id
+        activeAudioPath = path
+        activeAudioAuthor = m.direction == .outgoing ? nil : m.author
+        let generation = mediaObservationGeneration
         Task { [weak self] in
             guard let self else { return }
-            let engine = audioEngine ?? AudioPlaybackEngine()
-            audioEngine = engine
-            if activeAudioMessageId != m.id {
-                engine.pause()
-                guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil else { return }
+            @MainActor func permitted() -> Bool {
+                audioEngine === engine && activeAudioMessageId == m.id && generation == mediaObservationGeneration &&
+                    mediaIsAvailable(path: path, messageId: m.id)
+            }
+            guard permitted() else { return }
+            if loading {
+                guard let bytes = try? await Task.detached(operation: { try store.plaintext(of: a) }).value ?? nil,
+                      permitted() else { return }
                 let source: PCMSource = { start, count in
                     let c = try await media.decodeAudio(bytes, startFrame: start, maxFrames: count)
                     return PCMChunk(sampleRate: c.sampleRate, channels: c.channels, totalFrames: c.totalFrames, startFrame: c.startFrame,
                                     samples: c.floats)
                 }
-                do {
-                    try await engine.load(source, playbackRate: audioRate)
-                } catch {
-                    Self.trace("audio failed: \(error)")
-                    return
-                }
-                guard let path = a.path, mediaIsAvailable(path: path, messageId: m.id) else {
-                    engine.pause()
-                    if audioEngine === engine { audioEngine = nil }
-                    return
-                }
-                activeAudioMessageId = m.id
-                activeAudioPath = path
-                activeAudioAuthor = m.direction == .outgoing ? nil : m.author
+                do { try await engine.load(source, playbackRate: audioRate) }
+                catch { if audioEngine === engine { stopAudio() }; return }
+                guard permitted(), engine.isLoaded else { engine.pause(); return }
                 audioTime = 0
                 engine.onEnded = { [weak self] in Task { @MainActor in self?.audioEnded(m.id) } }
                 if m.direction == .incoming, !m.isViewed {
@@ -80,7 +81,9 @@ import SignalUI
                 }
             }
             if position > 0, let d = engine.duration { await engine.seek(to: position * d) }
+            guard permitted() else { engine.pause(); return }
             await engine.play()
+            guard permitted() else { engine.pause(); return }
             startAudioClock()
         }
     }
@@ -95,8 +98,17 @@ import SignalUI
         Self.trace("audio: setPlaying(\(playing)) for \(activeAudioMessageId ?? "-"), engine \(audioEngine.map { $0.isPlaying ? "playing" : "paused" } ?? "none")")
         guard let engine = audioEngine else { return }
         if playing {
+            if !engine.isLoaded, let message = messages.first(where: { $0.id == activeAudioMessageId }) {
+                playAudio(message, at: 0)
+                return
+            }
+            let id = activeAudioMessageId, path = activeAudioPath, generation = mediaObservationGeneration
             Task {
+                guard audioEngine === engine, generation == mediaObservationGeneration,
+                      let id, let path, mediaIsAvailable(path: path, messageId: id) else { return }
                 await engine.play()
+                guard audioEngine === engine, generation == mediaObservationGeneration,
+                      mediaIsAvailable(path: path, messageId: id) else { engine.pause(); return }
                 startAudioClock()
             }
         } else {

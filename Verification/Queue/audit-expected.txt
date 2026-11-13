@@ -313,10 +313,10 @@ Queue.stopAndWait 4225362756 1507412249
 @shutdownClean_holds : ∀ {s : S}, Reach s → ∀ (e : Ev), shutdownClean s e (step s e) = true
 noRestartWhileDraining_holds : ∀ (s : S) (e : Ev), noRestartWhileDraining s e (step s e) = true
 oneAtATime_holds : ∀ (s : S) (e : Ev), oneAtATime s e (step s e) = true
-@drain_terminates : ∀ {s : S},
+@drain_can_terminate : ∀ {s : S},
   Reach s → ∃ es, es.all Ev.isDrain = true ∧ (run s es).stopWaiters = [] ∧ (run s es).returns = []
 Queue.Inv.reach depends on axioms: [Quot.sound, propext]
 Queue.shutdownClean_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 Queue.noRestartWhileDraining_holds depends on axioms: [Quot.sound, propext]
 Queue.oneAtATime_holds depends on axioms: [Classical.choice, Quot.sound, propext]
-Queue.drain_terminates depends on axioms: [Quot.sound, propext]
+Queue.drain_can_terminate depends on axioms: [Quot.sound, propext]

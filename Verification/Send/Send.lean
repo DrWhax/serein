@@ -4,3 +4,5 @@ import Send.Proofs
 import Send.Trace
 
 import Send.Regression
+
+import Send.Nonvacuity

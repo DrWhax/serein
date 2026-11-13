@@ -6,8 +6,8 @@ The fifth verification slice: SignalCore's `JobQueue` actor. It contains:
   with an explicit scheduler, as in the call model: the loop's next segment, a wake-up, a
   `stopAndWait`'s continuation are pending work that a scheduler event runs, in any order; the
   handler runs outside the actor and returns when the environment says, however it says;
-- machine-checked proofs of shutdown's postcondition and of the other properties below, and a
-  separate termination theorem that assumes the handler returns;
+- machine-checked proofs of shutdown's postcondition and of the other properties below, and an
+  existence theorem constructing one terminating drain schedule;
 - a Swift test that runs the real `JobQueue` on a real database with handlers held at gates, and
   mutants.
 
@@ -27,7 +27,12 @@ SKIP_SWIFT=1 Tools/verify-queue.sh    # the Lean side only
 | `shutdownClean_holds` | **Shutdown's postcondition**: when a `stopAndWait` returns, no loop exists — no handler running, no selection or finishing pending. | reachable states |
 | `noRestartWhileDraining_holds` | `start()` changes nothing while a `stopAndWait` is pending. | every state |
 | `oneAtATime_holds` | A step finishes at most one job, and only the one whose handler returned. | every state |
-| `drain_terminates` | **Eventual termination, if workers finish**: from any reachable state, a run of only scheduler events and handler returns (no user action, no new job) returns every pending `stopAndWait`. | reachable states |
+| `drain_can_terminate` | **Existence of a terminating drain**: from any reachable state, there exists a finite schedule of scheduler events and handler returns (no user action, no new job) that returns every pending `stopAndWait`. | reachable states |
+
+This is an existential reachability theorem, not eventual termination on every fair schedule.
+The model permits arbitrary stuttering events, so a scheduler can leave a continuation pending
+forever. No fairness predicate or universal liveness theorem is currently proved. The safety
+proofs hold for every schedule; the Swift rig tests only its documented settled schedule.
 
 Ownership within one queue holds by construction: the loop is one task, and `start()` creates
 one only when none exists.
@@ -65,7 +70,7 @@ each user or environment event (`start`, `stop`, `stopAndWait`, `enqueue`, a han
 waits until the actor is quiet (no loop, the loop waiting, or a handler held; every `stopAndWait`
 returned or still waiting for a live loop) and compares: the loop's state, `wantsRunning`,
 `draining`, the persisted jobs, the jobs finished, and how many `stopAndWait` calls returned; and that
-no two handlers ever ran at once. The conformance is for this settled schedule; the proofs cover any.
+no two handlers ever ran at once. The conformance is for this settled schedule; the safety proofs cover any schedule.
 Traces: `traces/regressions.txt` (11) and 300 random traces of 16 events.
 
 Mutants (step 6): `start` ignores a pending drain; `stopAndWait` does not wait for the loop; the loop

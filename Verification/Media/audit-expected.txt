@@ -166,7 +166,7 @@ fun _s e s' =>
           s'.u.audio &&
       s'.u.cache.all (permitsAny s'.d)
   | x => true
-63 definitions
+86 definitions
 Media.Db 3931117990 1336385436704099376
 Media.Db.mk 3427712000 -
 Media.Db.now 1938727245 149762440
@@ -189,6 +189,29 @@ Media.Ev.rec 794697878 -
 Media.Ev.ref 3811792881 -
 Media.Ev.tick 2068104071 -
 Media.Ev.update 2068104071 -
+Media.Playback.Ev 3931117990 16870088125428427824
+Media.Playback.Ev.casesOn 736861398 2043541816
+Media.Playback.Ev.erase 1655365138 -
+Media.Playback.Ev.ready 1012106845 -
+Media.Playback.Ev.rec 2979037141 -
+Media.Playback.Ev.replaceSession 4034098250 -
+Media.Playback.Ev.request 3293211757 -
+Media.Playback.Ev.stop 1012106845 -
+Media.Playback.S 3931117990 18340206675024921458
+Media.Playback.S.db 2988820642 2061350930
+Media.Playback.S.generation 2222587018 1990018715
+Media.Playback.S.mk 1052789075 -
+Media.Playback.S.out 4111843982 2257528531
+Media.Playback.S.pending 3960996202 3083830893
+Media.Playback.Ticket 3931117990 11410012064782544569
+Media.Playback.Ticket.generation 2172627568 686843592
+Media.Playback.Ticket.message 2172627568 1521933104
+Media.Playback.Ticket.mk 3843184016 -
+Media.Playback.Ticket.path 2172627568 420927646
+Media.Playback.safe 2587965277 3456179743
+Media.Playback.step 1326563972 1720506533
+Media.Playback.step.match_1 2734971862 2672287229
+Media.Playback.step.match_3 1054870850 4183871103
 Media.Row 3931117990 18262352753000364926
 Media.Row.erased 1270362506 1370607212
 Media.Row.expires 2536916395 1995012794
@@ -252,3 +275,5 @@ Media.out_step depends on axioms: [Quot.sound, propext]
 Media.handedOutPermitted_holds depends on axioms: [Quot.sound, propext]
 Media.decodePermitted_holds depends on axioms: [Classical.choice, Quot.sound, propext]
 Media.updateRevokes_holds depends on axioms: [Quot.sound, propext]
+Media.Playback.completion_authorized depends on axioms: [Quot.sound, propext]
+Playback.completion_authorized : ∀ (s : Playback.S) (e : Playback.Ev), Playback.safe s (Playback.step s e)

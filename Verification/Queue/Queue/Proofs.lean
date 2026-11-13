@@ -283,10 +283,10 @@ theorem drain_step (h : Inv s) (hp : ¬(s.stopWaiters = [] ∧ s.returns = [])) 
       refine ⟨.handlerReturns .cancelled, rfl, ?_⟩
       simp [Queue.step, hl, measure, weight]
 
-/-- **Termination, if the workers finish**: from any reachable state, there is a run of the
+/-- **Existence of a terminating schedule**: from any reachable state, there is a run of the
 scheduler and of handlers returning — no user action, no new job — after which every pending
 `stopAndWait` has returned. -/
-theorem drain_terminates (hr : Reach s) :
+theorem drain_can_terminate (hr : Reach s) :
     ∃ es : List Ev, es.all Ev.isDrain = true ∧ (run s es).stopWaiters = [] ∧ (run s es).returns = [] := by
   have h := Inv.reach hr
   suffices ∀ n (s : S), measure s = n → Inv s →

@@ -32,6 +32,19 @@ public final class SignalDatabase: Sendable {
         m.registerMigration("upstream-1870") { db in
             for statement in UpstreamSchema.statements { try db.execute(sql: statement) }
         }
+        m.registerMigration("serein-send-log-authorization") { db in
+            try db.execute(sql: """
+                CREATE TABLE serein_sendLogAuthorization (
+                    payloadId INTEGER PRIMARY KEY REFERENCES sendLogPayloads(id) ON DELETE CASCADE,
+                    groupId BLOB NOT NULL,
+                    story INTEGER NOT NULL
+                )
+                """)
+        }
+        m.registerMigration("serein-attachment-download-leases") { db in
+            try db.execute(sql: "ALTER TABLE attachment_downloads ADD COLUMN leaseId TEXT NOT NULL DEFAULT ''")
+            try db.execute(sql: "UPDATE attachment_downloads SET leaseId = lower(hex(randomblob(16)))")
+        }
         return m
     }
 

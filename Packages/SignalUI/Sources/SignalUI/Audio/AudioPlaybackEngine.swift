@@ -102,6 +102,9 @@ public final class AudioPlaybackEngine {
     /// Prepares `source` (fetching its first chunk to learn the format and length).
     public func load(_ source: @escaping PCMSource, playbackRate: Double = 1) async throws {
         stopNode()
+        isLoaded = false
+        self.source = nil
+        format = nil
         generation += 1
         let gen = generation
         let first = try await source(0, Self.chunkFrames)
@@ -157,8 +160,8 @@ public final class AudioPlaybackEngine {
     }
 
     public func pause() {
-        guard isPlaying else { return }
-        pausedAt = currentFrame
+        if isPlaying { pausedAt = currentFrame }
+        // Also invalidate a suspended load, before playback has become active.
         stopNode()
     }
 

@@ -85,6 +85,23 @@ Mutants (step 6), each of which must fail step 5:
 
 All 11 are killed.
 
+### Preserving authorization through resend
+
+The send log now retains the original group id and story flag in `serein_sendLogAuthorization`,
+a local table keyed by payload with cascading deletion. `SentProto.payload()` restores that
+context; `Messenger.resend` then uses the ordinary send authorization plus a resend-specific
+check of the requester block and original log entry. That lookup is repeated at submission,
+including retention and story-list eligibility, rather than trusting the pre-encryption read. Previously rebuilding a
+payload lost its group id, allowing group membership/block checks to be bypassed on retry.
+Legacy log rows without this context are retained for receipts/pruning but are not resent; they
+cannot safely distinguish a direct payload from a group-key distribution. Message history is
+unchanged. The table is added by a database migration.
+
+`CrossSliceSendTests` sends and logs a real group payload, removes its recipient, and verifies
+resend refuses it; blocking the group also refuses it. A separate case covers context persistence
+for key distributions and legacy refusal. This composition is tested in Swift, not proved by the
+standalone retry model.
+
 ## 5. Assumptions and limitations
 
 - The model's sends record what they were given. That production records the devices it actually

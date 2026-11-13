@@ -784,9 +784,7 @@ public final class Messenger: Sendable {
         }
         switch answer {
         case .resend(let logged):
-            let content = try Signalservice_Content(serializedBytes: logged.proto)
-            try await sender.send(OutgoingPayload(content: content, timestamp: logged.timestamp, contentHint: ContentHint(rawValue: logged.contentHint),
-                                                  urgent: logged.urgent), to: requester, messageIds: logged.messageIds, logged: false)
+            try await sender.send(logged.payload(for: requester, device: device), to: requester, messageIds: logged.messageIds, logged: false)
         case .nothing:
             return
         case .nullMessage:

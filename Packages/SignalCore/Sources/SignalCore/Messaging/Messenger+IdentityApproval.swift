@@ -19,6 +19,12 @@ public struct ReviewedIdentity: Sendable, Equatable {
     public let key: Data
 
     func validate(_ db: Database, account: Account) throws {
+        // A retained Messenger can outlive logout/relink. Its immutable account is not the
+        // authority for the database currently being modified.
+        guard let active = try Account.load(db), active.aci == account.aci,
+              SignalCrypto.constantTimeEqual(active.aciIdentity.publicKey.serialize(), account.aciIdentity.publicKey.serialize()) else {
+            throw IdentityReviewError.identityChanged
+        }
         guard ourServiceId == account.aci, SignalCrypto.constantTimeEqual(ourKey, account.aciIdentity.publicKey.serialize()),
               let current = try ProtocolStore.identityRow(db, serviceId: serviceId)?.key,
               SignalCrypto.constantTimeEqual(current, key) else { throw IdentityReviewError.identityChanged }

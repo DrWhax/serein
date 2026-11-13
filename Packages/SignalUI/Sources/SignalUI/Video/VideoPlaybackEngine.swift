@@ -54,6 +54,7 @@ public final class VideoPlaybackEngine {
     @ObservationIgnored var lastQueuedTime = -Double.infinity
     @ObservationIgnored var fetching = false
     @ObservationIgnored var generation = 0
+    @ObservationIgnored var playbackEpoch = 0
     /// Host-clock anchor: media time `anchorMedia` at host time `anchorHost`.
     @ObservationIgnored var anchorHost = 0.0
     @ObservationIgnored var anchorMedia = 0.0
@@ -87,19 +88,31 @@ public final class VideoPlaybackEngine {
         currentFrame = nil
         anchorMedia = 0
         isLoaded = true
-        await fill(generation)
+        let gen = generation
+        await fill(gen)
+        guard gen == generation, isLoaded else { return }
         present(at: 0)
     }
 
     public func play() async {
         guard isLoaded, !isPlaying else { return }
-        if sourceEnded && queue.isEmpty { await seek(to: 0) }
+        var gen = generation
+        var intent = playbackEpoch
+        if sourceEnded && queue.isEmpty {
+            // seek advances the generation once; any additional change cancelled this play.
+            gen += 1
+            intent += 1
+            await seek(to: 0)
+        }
+        guard gen == generation, intent == playbackEpoch, isLoaded else { return }
         isPlaying = true
         anchorHost = now()
         anchorMedia = currentTime
         if let audio, audio.isLoaded, currentTime < (audio.duration ?? 0) {
             await audio.seek(to: currentTime)
+            guard gen == generation, intent == playbackEpoch, isLoaded, isPlaying else { return }
             await audio.play()
+            guard gen == generation, intent == playbackEpoch, isLoaded, isPlaying else { audio.pause(); return }
             audioActive = audio.isPlaying
         }
         guard isPlaying else { return }
@@ -122,18 +135,18 @@ public final class VideoPlaybackEngine {
     }
 
     public func pause() {
-        guard isPlaying else { return }
-        currentTime = mediaTime
+        if isPlaying { currentTime = mediaTime }
         stop()
     }
 
     func stop() {
+        playbackEpoch += 1
         isPlaying = false
         driver?.cancel()
         driver = nil
         prefetcher?.cancel()
         prefetcher = nil
-        if audioActive { audio?.pause() }
+        audio?.pause()
         audioActive = false
     }
 
@@ -144,23 +157,25 @@ public final class VideoPlaybackEngine {
         stop()
         generation += 1
         let gen = generation
+        let intent = playbackEpoch
         let t = min(max(0, seconds), duration)
         queue = []
         sourceEnded = false
         lastQueuedTime = -.infinity
         fetching = false
         do { try await source.seek(to: t) } catch { lastError = "\(error)"; return }
-        guard gen == generation else { return }
+        guard gen == generation, intent == playbackEpoch else { return }
         // Decode forward from the sync frame until the frame for `t` is known.
         while gen == generation, !sourceEnded, queue.last.map({ $0.time <= t }) ?? true {
             await fetch(gen)
             present(at: t, show: false)
         }
-        guard gen == generation else { return }
+        guard gen == generation, intent == playbackEpoch else { return }
         present(at: t)
         currentTime = t
         if let f = currentFrame { onFrame?(f) }
         if let audio, audio.isLoaded { await audio.seek(to: t) }
+        guard gen == generation, intent == playbackEpoch, isLoaded else { return }
         if wasPlaying { await play() }
     }
 
