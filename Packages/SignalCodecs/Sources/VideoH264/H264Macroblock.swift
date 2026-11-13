@@ -17,20 +17,61 @@ struct SliceDeblock: Sendable {
     var alpha: Int, beta: Int
 }
 
-/// What reconstruction and deblocking need of a slice.
-struct SliceInfo: Sendable {
-    var header: H264SliceHeader
-    var pps: H264PPS
-    var refs: SliceRefs
-    var dequant: H264Dequant
-    var deblock: SliceDeblock
+/// What reconstruction and deblocking need of a slice. A class: every macroblock of the slice
+/// refers to it, from every reconstruction thread, and copying the struct (its arrays) per
+/// macroblock cost more than reconstructing.
+final class SliceInfo: Sendable {
+    let header: H264SliceHeader
+    let pps: H264PPS
+    let refs: SliceRefs
+    let dequant: H264Dequant
+    let deblock: SliceDeblock
+    /// Which entries of each reference list hold a picture.
+    let present: [[Bool]]
+    /// The list-1 length, and the prediction weights per pair of reference indices in use
+    /// (−1: that list unused): `weights[(refIdx0 + 1) · (count1 + 1) + refIdx1 + 1]`, computed
+    /// once here rather than per partition.
+    let count1: Int
+    let weights: [PartitionWeights?]
+
+    init(header: H264SliceHeader, pps: H264PPS, refs: SliceRefs, dequant: H264Dequant, deblock: SliceDeblock) {
+        self.header = header
+        self.pps = pps
+        self.refs = refs
+        self.dequant = dequant
+        self.deblock = deblock
+        present = refs.lists.map { $0.map { $0 != nil } }
+        let n0 = refs.lists.first?.count ?? 0, n1 = refs.lists.count > 1 ? refs.lists[1].count : 0
+        count1 = n1
+        var table = [PartitionWeights?](repeating: nil, count: (n0 + 1) * (n1 + 1))
+        for a in -1 ..< n0 {
+            for b in -1 ..< n1 {
+                table[(a + 1) * (n1 + 1) + b + 1] = header.type == .b
+                    ? H264PictureDecoder.bWeights(header, pps, refIdx: (a, b), refs: refs.lists, currentPOC: refs.currentPOC)
+                    : H264PictureDecoder.weights(header, pps, refIdx: (a, -1), refs: refs.lists)
+            }
+        }
+        weights = table
+    }
+
+    /// Another object with the same contents (the arrays are shared): one per reconstruction
+    /// thread, so the retains each macroblock does are not on a count every thread writes.
+    init(copying o: SliceInfo) {
+        header = o.header; pps = o.pps; refs = o.refs; dequant = o.dequant; deblock = o.deblock
+        present = o.present; count1 = o.count1; weights = o.weights
+    }
 }
+
+/// Luma, Cb and Cr weights of one partition's prediction.
+typealias PartitionWeights = (luma: PredWeights, cb: PredWeights, cr: PredWeights)
 
 struct H264PictureDecoder: Sendable {
     let sps: H264SPS
     var st: MBState
     var slices: [SliceInfo] = []
     var dequantCache: [Int: H264Dequant] = [:]
+    /// The slice being parsed's co-located picture (B slices).
+    var colocated: ColocatedPicture?
     // Per-macroblock scratch.
     var coeff = [Int32](repeating: 0, count: 16 * 16 + 2 * 16 * 4)  // luma 4x4 blocks (raster blk·16), then Cb, Cr
     var coeff8 = [Int32](repeating: 0, count: 4 * 64)

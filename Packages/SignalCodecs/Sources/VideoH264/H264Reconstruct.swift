@@ -41,6 +41,24 @@ struct TopBorder {
     var v = [UInt8](repeating: 0, count: 9)
 }
 
+/// What every macroblock's reconstruction reads, passed down borrowed: loading these per
+/// macroblock from the decoder retained objects that every thread shares.
+struct ReconContext: Sendable {
+    /// Reference list entries per list (at most 32 active + 1).
+    static let listStride = 33
+    let slices: [SliceInfo]
+    /// The distinct reference pictures.
+    let refs: [RefPlanes]
+    /// Index into `refs` per (slice, list, refIdx): `(slice · 2 + list) · listStride + refIdx`, −1 none.
+    let slot: [Int]
+
+    /// This context with its own objects (same samples and tables) for one thread: calls on an
+    /// array's object retain it, and a count written by every thread costs more than the call.
+    func forWorker() -> ReconContext {
+        ReconContext(slices: slices.map(SliceInfo.init(copying:)), refs: refs.map { RefPlanes($0.picture) }, slot: slot)
+    }
+}
+
 struct Reconstructor {
     let pd: H264PictureDecoder
     let width: Int, cwidth: Int
@@ -53,9 +71,12 @@ struct Reconstructor {
     var coeff8 = [Int32](repeating: 0, count: 256)
 
     let st: MBState
+    /// This worker's context (ReconContext.forWorker).
+    let ctx: ReconContext
 
-    init(_ pd: H264PictureDecoder) {
+    init(_ pd: H264PictureDecoder, ctx: ReconContext) {
         self.pd = pd
+        self.ctx = ctx
         st = pd.st
         width = pd.st.widthMbs * 16
         cwidth = width / 2
@@ -66,20 +87,11 @@ struct Reconstructor {
 
     mutating func reconstruct(_ mb: Int, y: inout [UInt8], u: inout [UInt8], v: inout [UInt8], top: TopBorder) {
         let kind = st.kind[mb]
-        let base = mb * MBState.levelStride
+        let base = st.levelReadBase(mb)
         let mx = (mb % st.widthMbs) * 16
-        if kind.contains(.pcm) {
-            for j in 0 ..< 16 { for i in 0 ..< 16 { y[j * width + mx + i] = UInt8(truncatingIfNeeded: st.levels[base + j * 16 + i]) } }
-            for j in 0 ..< 8 {
-                for i in 0 ..< 8 {
-                    u[j * cwidth + mx / 2 + i] = UInt8(truncatingIfNeeded: st.levels[base + 256 + j * 8 + i])
-                    v[j * cwidth + mx / 2 + i] = UInt8(truncatingIfNeeded: st.levels[base + 320 + j * 8 + i])
-                }
-            }
-            return
-        }
+        if kind.contains(.pcm) { return copyPCM(base: base, mx: mx, y: &y, u: &u, v: &v) }
         let slice = Int(st.slice[mb])
-        let info = pd.slices[slice]
+        let info = ctx.slices[slice]
         let cbp = Int(st.cbp[mb])
         let qp = Int(st.qp[mb])
         // Levels into the scratch (only the coded parts).
@@ -93,31 +105,47 @@ struct Reconstructor {
         if cbp >> 4 == 2 { for i in 256 ..< 384 { coeff[i] = st.levels[base + i] } }
         if kind.isIntra {
             reconstructIntraLuma(mb, kind, cbp: cbp, qp: qp, info, y: &y, top: top, base: base)
-            let constrained = info.pps.constrainedIntraPred
-            let sl = Int32(slice)
-            let ea = pd.intraUsable(pd.neighbour(mb, 0, slice: sl), constrained: constrained)
-            let eb = pd.intraUsable(pd.neighbour(mb, 1, slice: sl), constrained: constrained)
-            let ed = pd.intraUsable(pd.neighbour(mb, 3, slice: sl), constrained: constrained)
-            let cx = mx / 2
-            for c in 0 ..< 2 {
-                var e = IntraEdge(top: Array(repeating: 0, count: 16), left: Array(repeating: 0, count: 8), topLeft: 0, hasTop: eb, hasLeft: ea, hasTopLeft: ed, hasTopRight: false)
-                let border = c == 0 ? top.u : top.v
-                if eb { for i in 0 ..< 8 { e.top[i] = Int32(border[1 + i]) }; for i in 8 ..< 16 { e.top[i] = e.top[7] } }
-                if ed { e.topLeft = Int32(border[0]) }
-                if ea { for j in 0 ..< 8 { e.left[j] = Int32(c == 0 ? u[j * cwidth + cx - 1] : v[j * cwidth + cx - 1]) } }
-                // The mode was checked against availability while parsing; a bad stream predicts 128.
-                let p = H264Intra.predictChroma(Int(st.chromaPredMode[mb]), e) ?? Array(repeating: 128, count: 64)
-                for j in 0 ..< 8 {
-                    for i in 0 ..< 8 {
-                        if c == 0 { u[j * cwidth + cx + i] = UInt8(truncatingIfNeeded: p[j * 8 + i]) } else { v[j * cwidth + cx + i] = UInt8(truncatingIfNeeded: p[j * 8 + i]) }
-                    }
-                }
-            }
+            predictIntraChroma(mb, slice: slice, constrained: info.pps.constrainedIntraPred, mx: mx, top: top, u: &u, v: &v)
         } else {
-            predictInter(mb, info, y: &y, u: &u, v: &v)
+            predictInter(mb, slice, info, y: &y, u: &u, v: &v)
             if cbp & 15 != 0 { addLumaResidual(mb, kind, cbp: cbp, qp: qp, info, intra: false, y: &y) }
         }
         addChroma(mb, cbp: cbp, intra: kind.isIntra, info, base: base, u: &u, v: &v)
+    }
+
+    /// I_PCM: the samples as sent.
+    @inline(never) func copyPCM(base: Int, mx: Int, y: inout [UInt8], u: inout [UInt8], v: inout [UInt8]) {
+        for j in 0 ..< 16 { for i in 0 ..< 16 { y[j * width + mx + i] = UInt8(truncatingIfNeeded: st.levels[base + j * 16 + i]) } }
+        for j in 0 ..< 8 {
+            for i in 0 ..< 8 {
+                u[j * cwidth + mx / 2 + i] = UInt8(truncatingIfNeeded: st.levels[base + 256 + j * 8 + i])
+                v[j * cwidth + mx / 2 + i] = UInt8(truncatingIfNeeded: st.levels[base + 320 + j * 8 + i])
+            }
+        }
+    }
+
+    /// Intra chroma prediction of both planes. (Its own function: inlined into reconstruct,
+    /// it triggered a Swift 6.4 SimplifyCFG bug in whole-module release builds.)
+    @inline(never) func predictIntraChroma(_ mb: Int, slice: Int, constrained: Bool, mx: Int, top: TopBorder, u: inout [UInt8], v: inout [UInt8]) {
+        let sl = Int32(slice)
+        let ea = pd.intraUsable(pd.neighbour(mb, 0, slice: sl), constrained: constrained)
+        let eb = pd.intraUsable(pd.neighbour(mb, 1, slice: sl), constrained: constrained)
+        let ed = pd.intraUsable(pd.neighbour(mb, 3, slice: sl), constrained: constrained)
+        let cx = mx / 2
+        for c in 0 ..< 2 {
+            var e = IntraEdge(top: Array(repeating: 0, count: 16), left: Array(repeating: 0, count: 8), topLeft: 0, hasTop: eb, hasLeft: ea, hasTopLeft: ed, hasTopRight: false)
+            let border = c == 0 ? top.u : top.v
+            if eb { for i in 0 ..< 8 { e.top[i] = Int32(border[1 + i]) }; for i in 8 ..< 16 { e.top[i] = e.top[7] } }
+            if ed { e.topLeft = Int32(border[0]) }
+            if ea { for j in 0 ..< 8 { e.left[j] = Int32(c == 0 ? u[j * cwidth + cx - 1] : v[j * cwidth + cx - 1]) } }
+            // The mode was checked against availability while parsing; a bad stream predicts 128.
+            let p = H264Intra.predictChroma(Int(st.chromaPredMode[mb]), e) ?? Array(repeating: 128, count: 64)
+            for j in 0 ..< 8 {
+                for i in 0 ..< 8 {
+                    if c == 0 { u[j * cwidth + cx + i] = UInt8(truncatingIfNeeded: p[j * 8 + i]) } else { v[j * cwidth + cx + i] = UInt8(truncatingIfNeeded: p[j * 8 + i]) }
+                }
+            }
+        }
     }
 
     // MARK: intra
@@ -154,7 +182,7 @@ struct Reconstructor {
             write(H264Intra.predict16x16(Int(st.i16Mode[mb]), e) ?? Array(repeating: 128, count: 256), 0, 0, 16, &y)
             var dc = [Int32](repeating: 0, count: 16)
             for i in 0 ..< 16 { dc[i] = st.levels[base + 384 + i] }
-            let dcs = H264Transform.lumaDC(dc, scale: dq.scale4[0][qp % 6][0], qp: qp)
+            let dcs = H264Transform.lumaDC(dc, scale: dq.dc4(list: 0, qp: qp), qp: qp)
             for blk in 0 ..< 16 {
                 let p = blkY(blk) * width + mx + blkX(blk)
                 if cbp & 15 != 0 {
@@ -195,79 +223,55 @@ struct Reconstructor {
 
     // MARK: inter
 
-    mutating func predictInter(_ mb: Int, _ info: SliceInfo, y: inout [UInt8], u: inout [UInt8], v: inout [UInt8]) {
-        let m = st.motion
-        let isB = info.header.type == .b
+    /// A partition size code (0, 1, 2) in samples: 4, 8, 16.
+    @inline(__always) static func partSize(_ code: Int) -> Int { code == 0 ? 4 : code == 1 ? 8 : 16 }
+
+    mutating func predictInter(_ mb: Int, _ slice: Int, _ info: SliceInfo, y: inout [UInt8], u: inout [UInt8], v: inout [UInt8]) {
+        let n0 = info.present[0].count, n1 = info.count1
+        let n4 = st.motion.n4, n16 = st.motion.n16
         for k in 0 ..< Int(st.partCount[mb]) {
             let code = Int(st.parts[mb * 16 + k])
             let x = (code & 3) * 4, yy = ((code >> 2) & 3) * 4
-            let w = [4, 8, 16][(code >> 4) & 3], h = [4, 8, 16][(code >> 6) & 3]
+            let w = Self.partSize((code >> 4) & 3), h = Self.partSize((code >> 6) & 3)
             let b8 = (yy >> 3) * 2 + (x >> 3), b = (yy >> 2) * 4 + (x >> 2)
-            let r0 = Int(m.refIdx[mb * 4 + b8]), r1 = Int(m.refIdx[m.n4 + mb * 4 + b8])
-            let ref0 = r0 >= 0 && r0 < info.refs.lists[0].count ? info.refs.lists[0][r0] : nil
-            let ref1 = r1 >= 0 && r1 < info.refs.lists[1].count ? info.refs.lists[1][r1] : nil
-            let mv0 = (Int(m.mvX[mb * 16 + b]), Int(m.mvY[mb * 16 + b])), mv1 = (Int(m.mvX[m.n16 + mb * 16 + b]), Int(m.mvY[m.n16 + mb * 16 + b]))
-            let wt = isB ? pd.bWeights(info.header, info.pps, refIdx: (ref0 != nil ? r0 : -1, ref1 != nil ? r1 : -1), refs: info.refs.lists, currentPOC: info.refs.currentPOC)
-                         : pd.weights(info.header, info.pps, refIdx: (r0, -1), refs: info.refs.lists)
-            predictPartition(mb, x: x, y: yy, w: w, h: h, ref0: ref0, ref1: ref1, mv0: mv0, mv1: mv1, weights: wt, dy: &y, du: &u, dv: &v)
+            // The reference indices in use (−1: none, or no picture there).
+            var r0 = Int(st.motion.refIdx[mb * 4 + b8]), r1 = Int(st.motion.refIdx[n4 + mb * 4 + b8])
+            if r0 < 0 || r0 >= n0 || !info.present[0][r0] { r0 = -1 }
+            if r1 < 0 || r1 >= n1 || !info.present[1][r1] { r1 = -1 }
+            let mv0 = (Int(st.motion.mvX[mb * 16 + b]), Int(st.motion.mvY[mb * 16 + b]))
+            let mv1 = (Int(st.motion.mvX[n16 + mb * 16 + b]), Int(st.motion.mvY[n16 + mb * 16 + b]))
+            let wt = info.weights[(r0 + 1) * (n1 + 1) + r1 + 1]
+            predictPartition(mb, x: x, y: yy, w: w, h: h, slice, r0: r0, r1: r1, mv0: mv0, mv1: mv1, weights: wt, dy: &y, du: &u, dv: &v)
         }
     }
 
-    /// Predicts a partition (luma + chroma) into the stripe from one or two references.
-    mutating func predictPartition(_ mb: Int, x: Int, y: Int, w: Int, h: Int, ref0: RefPicture?, ref1: RefPicture?, mv0: (Int, Int), mv1: (Int, Int),
-                                   weights wt: (luma: PredWeights, cb: PredWeights, cr: PredWeights)?, dy py: inout [UInt8], du pu: inout [UInt8], dv pv: inout [UInt8]) {
+    /// Predicts a partition (luma + chroma) into the stripe from one or two references (list
+    /// indices `r0`, `r1` of the slice's lists, −1 for none).
+    mutating func predictPartition(_ mb: Int, x: Int, y: Int, w: Int, h: Int, _ slice: Int, r0: Int, r1: Int, mv0: (Int, Int), mv1: (Int, Int),
+                                   weights wt: PartitionWeights?, dy py: inout [UInt8], du pu: inout [UInt8], dv pv: inout [UInt8]) {
+        guard r0 >= 0 || r1 >= 0 else { return }
         let mbx = (mb % st.widthMbs) * 16, mby = (mb / st.widthMbs) * 16
         let mx = mbx + x, my = mby + y
         let cw = w / 2, ch = h / 2
-        let both = ref0 != nil && ref1 != nil
-        let single = ref0 != nil ? 0 : 1
-        guard let r = ref0 ?? ref1 else { return }
-        let mv = ref0 != nil ? mv0 : mv1
-        H264PictureDecoder.lumaMC(r.picture, x0: mx, y0: my, w: w, h: h, mvx: mv.0, mvy: mv.1, into: &predY0, src: &mcSrc, tmp: &mcTmp)
-        H264PictureDecoder.chromaMC(r.picture.u, width: r.picture.chromaWidth, height: r.picture.chromaHeight, x0: mx / 2, y0: my / 2, w: cw, h: ch, mvx: mv.0, mvy: mv.1, into: &predU0)
-        H264PictureDecoder.chromaMC(r.picture.v, width: r.picture.chromaWidth, height: r.picture.chromaHeight, x0: mx / 2, y0: my / 2, w: cw, h: ch, mvx: mv.0, mvy: mv.1, into: &predV0)
-        if both, let r1 = ref1 {
-            H264PictureDecoder.lumaMC(r1.picture, x0: mx, y0: my, w: w, h: h, mvx: mv1.0, mvy: mv1.1, into: &predY1, src: &mcSrc, tmp: &mcTmp)
-            H264PictureDecoder.chromaMC(r1.picture.u, width: r1.picture.chromaWidth, height: r1.picture.chromaHeight, x0: mx / 2, y0: my / 2, w: cw, h: ch, mvx: mv1.0, mvy: mv1.1, into: &predU1)
-            H264PictureDecoder.chromaMC(r1.picture.v, width: r1.picture.chromaWidth, height: r1.picture.chromaHeight, x0: mx / 2, y0: my / 2, w: cw, h: ch, mvx: mv1.0, mvy: mv1.1, into: &predV1)
-        }
-        // Destination rows relative to the stripe.
-        let pw = width, pcw = cwidth, ly = y, cy = y / 2, cx = mx / 2
+        let both = r0 >= 0 && r1 >= 0
+        let single = r0 >= 0 ? 0 : 1
+        let s0 = slice * 2 * ReconContext.listStride, s1 = s0 + ReconContext.listStride
+        ctx.refs[r0 >= 0 ? ctx.slot[s0 + r0] : ctx.slot[s1 + r1]].predict(x0: mx, y0: my, w: w, h: h, mv: r0 >= 0 ? mv0 : mv1, y: &predY0, u: &predU0, v: &predV0, src: &mcSrc, tmp: &mcTmp)
         if both {
-            if let wt {
-                for j in 0 ..< h { for i in 0 ..< w { py[(ly + j) * pw + mx + i] = H264Weighted.bi(predY0[j * w + i], predY1[j * w + i], wt.luma) } }
-                for j in 0 ..< ch {
-                    for i in 0 ..< cw {
-                        pu[(cy + j) * pcw + cx + i] = H264Weighted.bi(predU0[j * cw + i], predU1[j * cw + i], wt.cb)
-                        pv[(cy + j) * pcw + cx + i] = H264Weighted.bi(predV0[j * cw + i], predV1[j * cw + i], wt.cr)
-                    }
-                }
-            } else {
-                for j in 0 ..< h { for i in 0 ..< w { py[(ly + j) * pw + mx + i] = UInt8(truncatingIfNeeded: (predY0[j * w + i] + predY1[j * w + i] + 1) >> 1) } }
-                for j in 0 ..< ch {
-                    for i in 0 ..< cw {
-                        pu[(cy + j) * pcw + cx + i] = UInt8(truncatingIfNeeded: (predU0[j * cw + i] + predU1[j * cw + i] + 1) >> 1)
-                        pv[(cy + j) * pcw + cx + i] = UInt8(truncatingIfNeeded: (predV0[j * cw + i] + predV1[j * cw + i] + 1) >> 1)
-                    }
-                }
-            }
-        } else if let wt {
-            for j in 0 ..< h { for i in 0 ..< w { py[(ly + j) * pw + mx + i] = H264Weighted.single(predY0[j * w + i], wt.luma, single) } }
-            for j in 0 ..< ch {
-                for i in 0 ..< cw {
-                    pu[(cy + j) * pcw + cx + i] = H264Weighted.single(predU0[j * cw + i], wt.cb, single)
-                    pv[(cy + j) * pcw + cx + i] = H264Weighted.single(predV0[j * cw + i], wt.cr, single)
-                }
-            }
-        } else {
-            for j in 0 ..< h { for i in 0 ..< w { py[(ly + j) * pw + mx + i] = UInt8(truncatingIfNeeded: predY0[j * w + i]) } }
-            for j in 0 ..< ch {
-                for i in 0 ..< cw {
-                    pu[(cy + j) * pcw + cx + i] = UInt8(truncatingIfNeeded: predU0[j * cw + i])
-                    pv[(cy + j) * pcw + cx + i] = UInt8(truncatingIfNeeded: predV0[j * cw + i])
-                }
-            }
+            ctx.refs[ctx.slot[s1 + r1]].predict(x0: mx, y0: my, w: w, h: h, mv: mv1, y: &predY1, u: &predU1, v: &predV1, src: &mcSrc, tmp: &mcTmp)
         }
+        // Into the stripe: rows relative to it.
+        let mode: PredictionCombine, cb: PredictionCombine, cr: PredictionCombine
+        if both {
+            if let wt { (mode, cb, cr) = (.bi(wt.luma), .bi(wt.cb), .bi(wt.cr)) } else { (mode, cb, cr) = (.average, .average, .average) }
+        } else if let wt {
+            (mode, cb, cr) = (.single(wt.luma, single), .single(wt.cb, single), .single(wt.cr, single))
+        } else {
+            (mode, cb, cr) = (.copy, .copy, .copy)
+        }
+        PredictionCombine.store(into: &py, stride: width, x: mx, y: y, w: w, h: h, predY0, predY1, mode)
+        PredictionCombine.store(into: &pu, stride: cwidth, x: mx / 2, y: y / 2, w: cw, h: ch, predU0, predU1, cb)
+        PredictionCombine.store(into: &pv, stride: cwidth, x: mx / 2, y: y / 2, w: cw, h: ch, predV0, predV1, cr)
     }
 
     // MARK: residual
@@ -300,7 +304,7 @@ struct Reconstructor {
             let list = (intra ? 1 : 4) + c
             var dc = [Int32](repeating: 0, count: 4)
             for i in 0 ..< 4 { dc[i] = st.levels[base + 400 + c * 4 + i] }
-            let dcs = H264Transform.chromaDC(dc, scale: dq.scale4[list][q % 6][0], qp: q)
+            let dcs = H264Transform.chromaDC(dc, scale: dq.dc4(list: list, qp: q), qp: q)
             for b in 0 ..< 4 {
                 let pos = (b >> 1) * 4 * cwidth + cx + (b & 1) * 4
                 if cbp >> 4 == 2 {

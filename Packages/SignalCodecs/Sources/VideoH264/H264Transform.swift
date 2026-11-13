@@ -1,19 +1,24 @@
 // Scaling and transforms (H.264 8.5.6 … 8.5.15): LevelScale tables from the scaling lists,
 // the 4x4 and 8x8 inverse transforms, the Intra16x16 luma DC Hadamard and the 2x2 chroma DC.
 
-struct H264Dequant: Sendable {
-    /// levelScale4[list 0…5][qp % 6][raster 16], lists: Y/Cb/Cr intra, Y/Cb/Cr inter.
-    var scale4: [[[Int32]]]
-    /// levelScale8[list 0…1][qp % 6][raster 64], Y intra, Y inter.
-    var scale8: [[[Int32]]]
+/// The LevelScale tables of a PPS. A class over flat arrays: every macroblock of every
+/// reconstruction thread reads them (copying nested arrays retained each level).
+final class H264Dequant: Sendable {
+    /// levelScale4, flat: [(list · 6 + qp % 6) · 16 + raster], lists 0…5: Y/Cb/Cr intra, Y/Cb/Cr inter.
+    let scale4: [Int32]
+    /// levelScale8, flat: [(list · 6 + qp % 6) · 64 + raster], lists 0…1: Y intra, Y inter.
+    let scale8: [Int32]
+
+    /// LevelScale4 at raster 0 (the DC scale).
+    @inline(__always) func dc4(list: Int, qp: Int) -> Int32 { scale4[(list * 6 + qp % 6) * 16] }
 
     static let v4: [[Int32]] = [[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]]
     static let v8: [[Int32]] = [[20, 18, 32, 19, 25, 24], [22, 19, 35, 21, 28, 26], [26, 23, 42, 24, 33, 31],
                                 [28, 25, 45, 26, 35, 33], [32, 28, 51, 30, 40, 38], [36, 32, 58, 34, 46, 43]]
 
     init(lists4: [[UInt8]]?, lists8: [[UInt8]]?) {
-        scale4 = (0 ..< 6).map { l in
-            (0 ..< 6).map { m in
+        scale4 = (0 ..< 6).flatMap { l in
+            (0 ..< 6).flatMap { m in
                 (0 ..< 16).map { k in
                     let i = k >> 2, j = k & 3
                     let n: Int32 = (i & 1 == 0 && j & 1 == 0) ? Self.v4[m][0] : (i & 1 == 1 && j & 1 == 1) ? Self.v4[m][1] : Self.v4[m][2]
@@ -21,8 +26,8 @@ struct H264Dequant: Sendable {
                 }
             }
         }
-        scale8 = (0 ..< 2).map { l in
-            (0 ..< 6).map { m in
+        scale8 = (0 ..< 2).flatMap { l in
+            (0 ..< 6).flatMap { m in
                 (0 ..< 64).map { k in
                     let i = k >> 3, j = k & 7
                     let c: Int
@@ -37,16 +42,16 @@ struct H264Dequant: Sendable {
 
     /// Scales a 4x4 block's coefficients in place (raster), skipping index 0 when `skipDC`.
     @inline(__always) func dequant4(_ c: inout [Int32], at o: Int, list: Int, qp: Int, skipDC: Bool) {
-        let ls = scale4[list][qp % 6], q6 = qp / 6
+        let b = (list * 6 + qp % 6) * 16, q6 = qp / 6
         for k in (skipDC ? 1 : 0) ..< 16 where c[o + k] != 0 {
-            if q6 >= 4 { c[o + k] = (c[o + k] &* ls[k]) << (q6 - 4) } else { c[o + k] = (c[o + k] &* ls[k] + (1 << (3 - q6))) >> (4 - q6) }
+            if q6 >= 4 { c[o + k] = (c[o + k] &* scale4[b + k]) << (q6 - 4) } else { c[o + k] = (c[o + k] &* scale4[b + k] + (1 << (3 - q6))) >> (4 - q6) }
         }
     }
 
     @inline(__always) func dequant8(_ c: inout [Int32], at o: Int, list: Int, qp: Int) {
-        let ls = scale8[list][qp % 6], q6 = qp / 6
+        let b = (list * 6 + qp % 6) * 64, q6 = qp / 6
         for k in 0 ..< 64 where c[o + k] != 0 {
-            if q6 >= 6 { c[o + k] = (c[o + k] &* ls[k]) << (q6 - 6) } else { c[o + k] = (c[o + k] &* ls[k] + (1 << (5 - q6))) >> (6 - q6) }
+            if q6 >= 6 { c[o + k] = (c[o + k] &* scale8[b + k]) << (q6 - 6) } else { c[o + k] = (c[o + k] &* scale8[b + k] + (1 << (5 - q6))) >> (6 - q6) }
         }
     }
 }
@@ -55,7 +60,7 @@ enum H264Transform {
     /// Inverse 4x4 transform of `c[o..<o+16]` (raster), added to the 4x4 block at `dst[p]`
     /// (stride `s`), clipped.
     @inline(__always) static func add4x4(_ c: [Int32], _ o: Int, _ dst: inout [UInt8], _ p: Int, _ s: Int) {
-        var t = [Int32](repeating: 0, count: 16)
+        var t = InlineArray<16, Int32>(repeating: 0)
         for i in 0 ..< 4 {
             let d0 = c[o + i * 4], d1 = c[o + i * 4 + 1], d2 = c[o + i * 4 + 2], d3 = c[o + i * 4 + 3]
             let e0 = d0 &+ d2, e1 = d0 &- d2, e2 = (d1 >> 1) &- d3, e3 = d1 &+ (d3 >> 1)
@@ -64,11 +69,11 @@ enum H264Transform {
         for j in 0 ..< 4 {
             let f0 = t[j], f1 = t[4 + j], f2 = t[8 + j], f3 = t[12 + j]
             let g0 = f0 &+ f2, g1 = f0 &- f2, g2 = (f1 >> 1) &- f3, g3 = f1 &+ (f3 >> 1)
-            let r = [g0 &+ g3, g1 &+ g2, g1 &- g2, g0 &- g3]
-            for i in 0 ..< 4 {
-                let q = p + i * s + j
-                dst[q] = clip255(Int32(dst[q]) &+ ((r[i] &+ 32) >> 6))
-            }
+            let r0 = g0 &+ g3, r1 = g1 &+ g2, r2 = g1 &- g2, r3 = g0 &- g3
+            dst[p + j] = clip255(Int32(dst[p + j]) &+ ((r0 &+ 32) >> 6))
+            dst[p + s + j] = clip255(Int32(dst[p + s + j]) &+ ((r1 &+ 32) >> 6))
+            dst[p + 2 * s + j] = clip255(Int32(dst[p + 2 * s + j]) &+ ((r2 &+ 32) >> 6))
+            dst[p + 3 * s + j] = clip255(Int32(dst[p + 3 * s + j]) &+ ((r3 &+ 32) >> 6))
         }
     }
 
@@ -80,8 +85,8 @@ enum H264Transform {
     }
 
     static func add8x8(_ c: [Int32], _ o: Int, _ dst: inout [UInt8], _ p: Int, _ s: Int) {
-        var t = [Int32](repeating: 0, count: 64)
-        func row(_ d: [Int32]) -> [Int32] {
+        var t = InlineArray<64, Int32>(repeating: 0)
+        func row(_ d: InlineArray<8, Int32>) -> InlineArray<8, Int32> {
             let a0 = d[0] &+ d[4], a4 = d[0] &- d[4]
             let a2 = (d[2] >> 1) &- d[6], a6 = d[2] &+ (d[6] >> 1)
             let b0 = a0 &+ a6, b2 = a4 &+ a2, b4 = a4 &- a2, b6 = a0 &- a6
@@ -91,14 +96,20 @@ enum H264Transform {
             let a7 = d[3] &+ d[5] &+ d[1] &+ (d[1] >> 1)
             let b1 = a1 &+ (a7 >> 2), b7 = a7 &- (a1 >> 2)
             let b3 = a3 &+ (a5 >> 2), b5 = (a3 >> 2) &- a5
-            return [b0 &+ b7, b2 &+ b5, b4 &+ b3, b6 &+ b1, b6 &- b1, b4 &- b3, b2 &- b5, b0 &- b7]
+            var out = InlineArray<8, Int32>(repeating: 0)
+            out[0] = b0 &+ b7; out[1] = b2 &+ b5; out[2] = b4 &+ b3; out[3] = b6 &+ b1
+            out[4] = b6 &- b1; out[5] = b4 &- b3; out[6] = b2 &- b5; out[7] = b0 &- b7
+            return out
         }
+        var d = InlineArray<8, Int32>(repeating: 0)
         for i in 0 ..< 8 {
-            let r = row(Array(c[o + i * 8 ..< o + i * 8 + 8]))
+            for k in 0 ..< 8 { d[k] = c[o + i * 8 + k] }
+            let r = row(d)
             for j in 0 ..< 8 { t[i * 8 + j] = r[j] }
         }
         for j in 0 ..< 8 {
-            let col = row((0 ..< 8).map { t[$0 * 8 + j] })
+            for k in 0 ..< 8 { d[k] = t[k * 8 + j] }
+            let col = row(d)
             for i in 0 ..< 8 {
                 let q = p + i * s + j
                 dst[q] = clip255(Int32(dst[q]) &+ ((col[i] &+ 32) >> 6))

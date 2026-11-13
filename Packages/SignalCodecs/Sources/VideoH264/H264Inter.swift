@@ -3,13 +3,41 @@
 // (8.4.2.2: 6-tap luma at quarter samples, bilinear chroma at eighth samples, reference
 // coordinates clamped to the picture), and weighted sample prediction (8.4.2.3).
 
-/// A reference picture as the slice sees it.
-struct RefPicture: Sendable {
-    var picture: YUVPicture
-    var motion: PictureMotion
-    var poc: Int
-    var longTerm: Bool
-    var id: Int32
+/// A reference picture as the slice sees it. A class: partitions refer to it per block, and a
+/// struct copy retained and released its planes and motion arrays each time.
+final class RefPicture: Sendable {
+    /// Its samples: complete once reconstruction gets to a picture that refers to it.
+    let samples: PictureSamples
+    /// Its motion: published once its parse is done (only B slices' co-located picture's is read).
+    let motion: MotionPromise
+    let poc: Int
+    let longTerm: Bool
+    let id: Int32
+
+    init(samples: PictureSamples, motion: MotionPromise, poc: Int, longTerm: Bool, id: Int32) {
+        self.samples = samples
+        self.motion = motion
+        self.poc = poc
+        self.longTerm = longTerm
+        self.id = id
+    }
+}
+
+/// A reference picture's samples during reconstruction (a class, so partitions read its
+/// planes in place).
+final class RefPlanes: Sendable {
+    let picture: YUVPicture
+    init(_ picture: YUVPicture) { self.picture = picture }
+
+    /// Luma and chroma prediction of a w×h block at (x0, y0) + `mv` from this picture, into
+    /// `y`, `u`, `v` (`src` and `tmp` scratch). A method, so the planes are read in place.
+    func predict(x0: Int, y0: Int, w: Int, h: Int, mv: (Int, Int), y: inout [Int32], u: inout [Int32], v: inout [Int32], src: inout [Int32], tmp: inout [Int32]) {
+        H264PictureDecoder.lumaMC(picture, x0: x0, y0: y0, w: w, h: h, mvx: mv.0, mvy: mv.1, into: &y, src: &src, tmp: &tmp)
+        H264PictureDecoder.chromaMC(picture.u, width: picture.chromaWidth, height: picture.chromaHeight, x0: x0 / 2, y0: y0 / 2, w: w / 2, h: h / 2,
+                                    mvx: mv.0, mvy: mv.1, into: &u)
+        H264PictureDecoder.chromaMC(picture.v, width: picture.chromaWidth, height: picture.chromaHeight, x0: x0 / 2, y0: y0 / 2, w: w / 2, h: h / 2,
+                                    mvx: mv.0, mvy: mv.1, into: &v)
+    }
 }
 
 /// A neighbouring partition's motion for one list: refIdx (−1: unused/intra) and vector;
@@ -113,29 +141,32 @@ extension H264PictureDecoder {
     /// Luma prediction of a w×h block at integer position (x0, y0) + quarter-sample vector,
     /// into `out[0 ..< w·h]`. `src` and `tmp` are scratch (≥ 21·21 entries each).
     static func lumaMC(_ ref: YUVPicture, x0: Int, y0: Int, w: Int, h: Int, mvx: Int, mvy: Int, into out: inout [Int32], src: inout [Int32], tmp: inout [Int32]) {
+        if lumaMCFast(ref, x0: x0, y0: y0, w: w, h: h, mvx: mvx, mvy: mvy, into: &out) { return }
+        let ry = ref.y.span
+        var ov = out.mutableSpan, sv = src.mutableSpan, tv = tmp.mutableSpan
         let xi = x0 + (mvx >> 2), yi = y0 + (mvy >> 2), fx = mvx & 3, fy = mvy & 3
         let W = ref.width, H = ref.height
         let sw = w + 5, sh = h + 5
         if fx == 0 && fy == 0 && xi >= 0 && yi >= 0 && xi + w <= W && yi + h <= H {
-            for j in 0 ..< h { let row = (yi + j) * W + xi; for i in 0 ..< w { out[j * w + i] = Int32(ref.y[row + i]) } }
+            for j in 0 ..< h { let row = (yi + j) * W + xi; for i in 0 ..< w { ov[j * w + i] = Int32(ry[row + i]) } }
             return
         }
         // Source window: 2 samples before, 3 after, clamped to the picture.
         if xi - 2 >= 0 && yi - 2 >= 0 && xi + w + 3 <= W && yi + h + 3 <= H {
             for j in 0 ..< sh {
                 let row = (yi - 2 + j) * W + xi - 2
-                for i in 0 ..< sw { src[j * sw + i] = Int32(ref.y[row + i]) }
+                for i in 0 ..< sw { sv[j * sw + i] = Int32(ry[row + i]) }
             }
         } else {
             for j in 0 ..< sh {
                 let row = clip3(0, H - 1, yi - 2 + j) * W
-                for i in 0 ..< sw { src[j * sw + i] = Int32(ref.y[row + clip3(0, W - 1, xi - 2 + i)]) }
+                for i in 0 ..< sw { sv[j * sw + i] = Int32(ry[row + clip3(0, W - 1, xi - 2 + i)]) }
             }
         }
         @inline(__always) func clip(_ v: Int32) -> Int32 { v < 0 ? 0 : v > 255 ? 255 : v }
         let o = 2 * sw + 2   // G(0, 0)
         if fx == 0 && fy == 0 {
-            for j in 0 ..< h { for i in 0 ..< w { out[j * w + i] = src[o + j * sw + i] } }
+            for j in 0 ..< h { for i in 0 ..< w { ov[j * w + i] = sv[o + j * sw + i] } }
             return
         }
         if fy == 0 || fx == 0 {
@@ -145,8 +176,8 @@ extension H264PictureDecoder {
             for j in 0 ..< h {
                 for i in 0 ..< w {
                     let p = o + j * sw + i
-                    let half = clip((src[p - 2 * step] - 5 * src[p - step] + 20 * src[p] + 20 * src[p + step] - 5 * src[p + 2 * step] + src[p + 3 * step] + 16) >> 5)
-                    out[j * w + i] = frac == 2 ? half : (half + src[frac == 1 ? p : p + step] + 1) >> 1
+                    let half = clip((sv[p - 2 * step] - 5 * sv[p - step] + 20 * sv[p] + 20 * sv[p + step] - 5 * sv[p + 2 * step] + sv[p + 3 * step] + 16) >> 5)
+                    ov[j * w + i] = frac == 2 ? half : (half + sv[frac == 1 ? p : p + step] + 1) >> 1
                 }
             }
             return
@@ -157,10 +188,10 @@ extension H264PictureDecoder {
             for j in 0 ..< h {
                 for i in 0 ..< w {
                     let pb = o + j * sw + i + rowOff
-                    let b = clip((src[pb - 2] - 5 * src[pb - 1] + 20 * src[pb] + 20 * src[pb + 1] - 5 * src[pb + 2] + src[pb + 3] + 16) >> 5)
+                    let b = clip((sv[pb - 2] - 5 * sv[pb - 1] + 20 * sv[pb] + 20 * sv[pb + 1] - 5 * sv[pb + 2] + sv[pb + 3] + 16) >> 5)
                     let ph = o + j * sw + i + colOff
-                    let hh = clip((src[ph - 2 * sw] - 5 * src[ph - sw] + 20 * src[ph] + 20 * src[ph + sw] - 5 * src[ph + 2 * sw] + src[ph + 3 * sw] + 16) >> 5)
-                    out[j * w + i] = (b + hh + 1) >> 1
+                    let hh = clip((sv[ph - 2 * sw] - 5 * sv[ph - sw] + 20 * sv[ph] + 20 * sv[ph + sw] - 5 * sv[ph + 2 * sw] + sv[ph + 3 * sw] + 16) >> 5)
+                    ov[j * w + i] = (b + hh + 1) >> 1
                 }
             }
             return
@@ -170,39 +201,42 @@ extension H264PictureDecoder {
         for j in 0 ..< sh {
             for i in 0 ..< w {
                 let p = j * sw + i + 2
-                tmp[j * w + i] = src[p - 2] - 5 * src[p - 1] + 20 * src[p] + 20 * src[p + 1] - 5 * src[p + 2] + src[p + 3]
+                tv[j * w + i] = sv[p - 2] - 5 * sv[p - 1] + 20 * sv[p] + 20 * sv[p + 1] - 5 * sv[p + 2] + sv[p + 3]
             }
         }
         for j in 0 ..< h {
             for i in 0 ..< w {
                 let p = (j + 2) * w + i
-                let jj = clip((tmp[p - 2 * w] - 5 * tmp[p - w] + 20 * tmp[p] + 20 * tmp[p + w] - 5 * tmp[p + 2 * w] + tmp[p + 3 * w] + 512) >> 10)
+                let jj = clip((tv[p - 2 * w] - 5 * tv[p - w] + 20 * tv[p] + 20 * tv[p + w] - 5 * tv[p + 2 * w] + tv[p + 3 * w] + 512) >> 10)
                 var v = jj
                 if fx == 2 && fy != 2 {
                     // f / q: with the horizontal half sample of row j (fy 1) or j + 1 (fy 3).
-                    let b = clip((tmp[p + (fy == 3 ? w : 0)] + 16) >> 5)
+                    let b = clip((tv[p + (fy == 3 ? w : 0)] + 16) >> 5)
                     v = (jj + b + 1) >> 1
                 } else if fy == 2 && fx != 2 {
                     // i / k: with the vertical half sample of column i (fx 1) or i + 1 (fx 3).
                     let ph = o + j * sw + i + (fx == 3 ? 1 : 0)
-                    let hh = clip((src[ph - 2 * sw] - 5 * src[ph - sw] + 20 * src[ph] + 20 * src[ph + sw] - 5 * src[ph + 2 * sw] + src[ph + 3 * sw] + 16) >> 5)
+                    let hh = clip((sv[ph - 2 * sw] - 5 * sv[ph - sw] + 20 * sv[ph] + 20 * sv[ph + sw] - 5 * sv[ph + 2 * sw] + sv[ph + 3 * sw] + 16) >> 5)
                     v = (jj + hh + 1) >> 1
                 }
-                out[j * w + i] = v
+                ov[j * w + i] = v
             }
         }
     }
 
     /// Chroma prediction (one plane) of a w×h chroma block at chroma position (x0, y0)
-    /// with an eighth-sample vector, into `out[0 ..< w·h]`.
+    /// with an eighth-sample vector, into `ov[0 ..< w·h]`.
     static func chromaMC(_ plane: [UInt8], width W: Int, height H: Int, x0: Int, y0: Int, w: Int, h: Int, mvx: Int, mvy: Int, into out: inout [Int32]) {
+        if chromaMCFast(plane, width: W, height: H, x0: x0, y0: y0, w: w, h: h, mvx: mvx, mvy: mvy, into: &out) { return }
+        let pv = plane.span
+        var ov = out.mutableSpan
         let xi = x0 + (mvx >> 3), yi = y0 + (mvy >> 3), fx = Int32(mvx & 7), fy = Int32(mvy & 7)
         let wa = (8 - fx) * (8 - fy), wb = fx * (8 - fy), wc = (8 - fx) * fy, wd = fx * fy
         if xi >= 0 && yi >= 0 && xi + w + 1 <= W && yi + h + 1 <= H {
             for j in 0 ..< h {
                 let r0 = (yi + j) * W + xi, r1 = r0 + W
                 for i in 0 ..< w {
-                    out[j * w + i] = (wa * Int32(plane[r0 + i]) + wb * Int32(plane[r0 + i + 1]) + wc * Int32(plane[r1 + i]) + wd * Int32(plane[r1 + i + 1]) + 32) >> 6
+                    ov[j * w + i] = (wa * Int32(pv[r0 + i]) + wb * Int32(pv[r0 + i + 1]) + wc * Int32(pv[r1 + i]) + wd * Int32(pv[r1 + i + 1]) + 32) >> 6
                 }
             }
             return
@@ -211,7 +245,7 @@ extension H264PictureDecoder {
             let y0r = clip3(0, H - 1, yi + j) * W, y1r = clip3(0, H - 1, yi + j + 1) * W
             for i in 0 ..< w {
                 let x0c = clip3(0, W - 1, xi + i), x1c = clip3(0, W - 1, xi + i + 1)
-                out[j * w + i] = (wa * Int32(plane[y0r + x0c]) + wb * Int32(plane[y0r + x1c]) + wc * Int32(plane[y1r + x0c]) + wd * Int32(plane[y1r + x1c]) + 32) >> 6
+                ov[j * w + i] = (wa * Int32(pv[y0r + x0c]) + wb * Int32(pv[y0r + x1c]) + wc * Int32(pv[y1r + x0c]) + wd * Int32(pv[y1r + x1c]) + 32) >> 6
             }
         }
     }
@@ -221,6 +255,43 @@ extension H264PictureDecoder {
 struct PredWeights {
     var logWD: Int
     var w0: Int, w1: Int, o0: Int, o1: Int
+}
+
+/// How a partition's prediction samples (one or two lists, 0…255) become the picture's
+/// (8.4.2.3): copied, averaged, or weighted. Whole blocks at a time, through spans (no
+/// copy-on-write check per sample); the same arithmetic as H264Weighted, which cannot overflow
+/// in Int32 (|weights|, |offsets| ≤ 128).
+enum PredictionCombine {
+    case copy, average
+    case single(PredWeights, Int)
+    case bi(PredWeights)
+
+    static func store(into dst: inout [UInt8], stride: Int, x: Int, y: Int, w: Int, h: Int, _ a: [Int32], _ b: [Int32], _ mode: PredictionCombine) {
+        if storeFast(into: &dst, stride: stride, x: x, y: y, w: w, h: h, a, b, mode) { return }
+        var d = dst.mutableSpan
+        let pa = a.span, pb = b.span
+        @inline(__always) func clip(_ v: Int32) -> UInt8 { UInt8(truncatingIfNeeded: v < 0 ? 0 : v > 255 ? 255 : v) }
+        switch mode {
+        case .copy:
+            for j in 0 ..< h { let o = (y + j) * stride + x, s = j * w; for i in 0 ..< w { d[o + i] = UInt8(truncatingIfNeeded: pa[s + i]) } }
+        case .average:
+            for j in 0 ..< h { let o = (y + j) * stride + x, s = j * w; for i in 0 ..< w { d[o + i] = UInt8(truncatingIfNeeded: (pa[s + i] &+ pb[s + i] &+ 1) >> 1) } }
+        case .bi(let wt):
+            let w0 = Int32(wt.w0), w1 = Int32(wt.w1), round = Int32(1 << wt.logWD), shift = Int32(wt.logWD + 1), offset = Int32((wt.o0 + wt.o1 + 1) >> 1)
+            for j in 0 ..< h {
+                let o = (y + j) * stride + x, s = j * w
+                for i in 0 ..< w { d[o + i] = clip(((pa[s + i] &* w0 &+ pb[s + i] &* w1 &+ round) >> shift) &+ offset) }
+            }
+        case .single(let wt, let l):
+            let wl = Int32(l == 0 ? wt.w0 : wt.w1), o0 = Int32(l == 0 ? wt.o0 : wt.o1)
+            if wt.logWD >= 1 {
+                let round = Int32(1 << (wt.logWD - 1)), shift = Int32(wt.logWD)
+                for j in 0 ..< h { let o = (y + j) * stride + x, s = j * w; for i in 0 ..< w { d[o + i] = clip(((pa[s + i] &* wl &+ round) >> shift) &+ o0) } }
+            } else {
+                for j in 0 ..< h { let o = (y + j) * stride + x, s = j * w; for i in 0 ..< w { d[o + i] = clip(pa[s + i] &* wl &+ o0) } }
+            }
+        }
+    }
 }
 
 enum H264Weighted {

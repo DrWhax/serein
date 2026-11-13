@@ -25,14 +25,15 @@ extension H264PictureDecoder {
     /// vectors, or a vector component differing by ≥ 4 quarter samples.
     func motionDiffers(_ pm: Int, _ pb: Int, _ qm: Int, _ qb: Int) -> Bool {
         let pb8 = pm * 4 + (pb >> 3) * 2 + ((pb & 3) >> 1), qb8 = qm * 4 + (qb >> 3) * 2 + ((qb & 3) >> 1)
-        let m = st.motion
-        let p0 = m.refIdx[(0) * m.n4 + pb8] >= 0 ? m.refID[(0) * m.n4 + pb8] : -1, p1 = m.refIdx[(1) * m.n4 + pb8] >= 0 ? m.refID[(1) * m.n4 + pb8] : -1
-        let q0 = m.refIdx[(0) * m.n4 + qb8] >= 0 ? m.refID[(0) * m.n4 + qb8] : -1, q1 = m.refIdx[(1) * m.n4 + qb8] >= 0 ? m.refID[(1) * m.n4 + qb8] : -1
+        // (st.motion read in place: a local copy retained its seven arrays per edge segment.)
+        let n4 = st.motion.n4, n16 = st.motion.n16
+        let p0 = st.motion.refIdx[n4 * 0 + pb8] >= 0 ? st.motion.refID[n4 * 0 + pb8] : -1, p1 = st.motion.refIdx[n4 + pb8] >= 0 ? st.motion.refID[n4 + pb8] : -1
+        let q0 = st.motion.refIdx[n4 * 0 + qb8] >= 0 ? st.motion.refID[n4 * 0 + qb8] : -1, q1 = st.motion.refIdx[n4 + qb8] >= 0 ? st.motion.refID[n4 + qb8] : -1
         let np = (p0 >= 0 ? 1 : 0) + (p1 >= 0 ? 1 : 0), nq = (q0 >= 0 ? 1 : 0) + (q1 >= 0 ? 1 : 0)
         if np != nq { return true }
         let pi = pm * 16 + pb, qi = qm * 16 + qb
         @inline(__always) func far(_ la: Int, _ ia: Int, _ lb: Int, _ ib: Int) -> Bool {
-            abs(Int(m.mvX[(la) * m.n16 + ia]) - Int(m.mvX[(lb) * m.n16 + ib])) >= 4 || abs(Int(m.mvY[(la) * m.n16 + ia]) - Int(m.mvY[(lb) * m.n16 + ib])) >= 4
+            abs(Int(st.motion.mvX[la * n16 + ia]) - Int(st.motion.mvX[lb * n16 + ib])) >= 4 || abs(Int(st.motion.mvY[la * n16 + ia]) - Int(st.motion.mvY[lb * n16 + ib])) >= 4
         }
         if np == 1 {
             let lp = p0 >= 0 ? 0 : 1, lq = q0 >= 0 ? 0 : 1
@@ -95,10 +96,13 @@ struct Deblocker: Sendable {
     let width: Int, cwidth: Int
 
     let st: MBState
+    /// Each slice's filter parameters (plain values: no slice object per macroblock).
+    let params: [SliceDeblock]
 
     init(_ pd: H264PictureDecoder) {
         self.pd = pd
         st = pd.st
+        params = pd.slices.map(\.deblock)
         width = pd.st.widthMbs * 16
         cwidth = width / 2
     }
@@ -106,14 +110,21 @@ struct Deblocker: Sendable {
 
     struct Edges {
         var leftMb: Int?, topMb: Int?
-        /// bS per (edge 0…3, segment 0…3), vertical and horizontal.
-        var v = [Int](repeating: 0, count: 16), h = [Int](repeating: 0, count: 16)
+        /// bS per (edge 0…3, segment 0…3), vertical and horizontal (inline: one pair per macroblock).
+        var v = InlineArray<16, Int>(repeating: 0), h = InlineArray<16, Int>(repeating: 0)
         var params: SliceDeblock
+
+        /// One edge's four segment strengths.
+        @inline(__always) static func four(_ a: InlineArray<16, Int>, _ edge: Int) -> InlineArray<4, Int> {
+            var r = InlineArray<4, Int>(repeating: 0)
+            for k in 0 ..< 4 { r[k] = a[edge * 4 + k] }
+            return r
+        }
     }
 
     func edges(_ mb: Int) -> Edges? {
         guard st.slice[mb] >= 0 else { return nil }
-        let p = pd.slices[Int(st.slice[mb])].deblock
+        let p = params[Int(st.slice[mb])]
         guard p.disable != 1 else { return nil }
         let w = st.widthMbs, mx = mb % w, my = mb / w
         var e = Edges(leftMb: mx > 0 && (p.disable != 2 || st.slice[mb - 1] == st.slice[mb]) && st.slice[mb - 1] >= 0 ? mb - 1 : nil,
@@ -151,8 +162,8 @@ struct Deblocker: Sendable {
         let mx = (mb % st.widthMbs) * 16
         let qp = Int(st.qp[mb])
         for edge in (horizontal ? 1 : 0) ..< 4 {
-            let bs = horizontal ? Array(e.h[edge * 4 ..< edge * 4 + 4]) : Array(e.v[edge * 4 ..< edge * 4 + 4])
-            guard bs != [0, 0, 0, 0] else { continue }
+            let bs = Edges.four(horizontal ? e.h : e.v, edge)
+            guard bs[0] | bs[1] | bs[2] | bs[3] != 0 else { continue }
             let pqp = !horizontal && edge == 0 ? Int(st.qp[e.leftMb!]) : qp
             if let t = thresholds((pqp + qp + 1) >> 1, e.params) {
                 for k in 0 ..< 4 where bs[k] > 0 {
@@ -195,8 +206,8 @@ struct Deblocker: Sendable {
     /// The top macroblock edge: p samples in the stripe above (`ay`, …), q in this one.
     func filterTop(_ mb: Int, _ e: Edges, ay: inout [UInt8], au: inout [UInt8], av: inout [UInt8], y: inout [UInt8], u: inout [UInt8], v: inout [UInt8]) {
         guard let top = e.topMb else { return }
-        let bs = Array(e.h[0 ..< 4])
-        guard bs != [0, 0, 0, 0] else { return }
+        let bs = Edges.four(e.h, 0)
+        guard bs[0] | bs[1] | bs[2] | bs[3] != 0 else { return }
         let mx = (mb % st.widthMbs) * 16
         let qp = Int(st.qp[mb])
         if let t = thresholds((Int(st.qp[top]) + qp + 1) >> 1, e.params) {

@@ -7,6 +7,8 @@
 // unit and continue (the next IDR resynchronises).
 
 public import CodecCore
+import Dispatch
+import Synchronization
 
 
 public struct H264Frame: Sendable {
@@ -16,6 +18,16 @@ public struct H264Frame: Sendable {
     public var pts: Int64?
     public var fullRange: Bool
     public var matrixCoefficients: Int
+}
+
+/// A picture bumped for output, with what its frame needs.
+struct PendingFrame: Sendable {
+    let samples: PictureSamples
+    let poc: Int
+    let pts: Int64?
+    let fullRange: Bool
+    let matrix: Int
+    let crop: (left: Int, top: Int, width: Int, height: Int)
 }
 
 public struct H264Decoder: Sendable {
@@ -31,7 +43,7 @@ public struct H264Decoder: Sendable {
     var pps: [Int: H264PPS] = [:]
     let limits: Limits
     var active: H264SPS?
-    var current: H264PictureDecoder?
+    var current: PictureInProgress?
     var currentHeader: H264SliceHeader?
     var currentPOC = (top: 0, bottom: 0, poc: 0, msb: 0)
     var currentPTS: Int64?
@@ -44,9 +56,21 @@ public struct H264Decoder: Sendable {
     var prevFrameNumOffset = 0, prevFrameNum = 0
     var prevRefHadMMCO5 = false
     var output: [H264Frame] = []
-    /// NAL units or slices that could not be decoded (their macroblocks were concealed).
-    public private(set) var errorCount = 0
-    public private(set) var lastError: ParseFailure?
+    /// Output in order whose samples may still be reconstructing (at most the last picture).
+    var pendingOutput: [PendingFrame] = []
+    /// Pictures whose jobs may still run, in decode order.
+    var jobs: [PictureJob] = []
+    /// Pictures parsing or reconstructing at once (each holds its macroblock state).
+    static let maxInFlight = 6
+    public static var maxPicturesInFlight: Int { maxInFlight }
+    /// Pictures whose jobs are still running: below maxPicturesInFlight, `decode` does not wait.
+    public var picturesInFlight: Int { jobs.reduce(0) { $0 + ($1.samples.isReady ? 0 : 1) } }
+    var recordedErrors = 0
+    var recordedLast: ParseFailure?
+    /// NAL units or slices that could not be decoded (their macroblocks were concealed),
+    /// including those of pictures still parsing.
+    public var errorCount: Int { recordedErrors + jobs.reduce(0) { $0 + $1.report.count } }
+    public var lastError: ParseFailure? { jobs.reversed().lazy.compactMap(\.report.last).first ?? recordedLast }
 
     public init(limits: Limits = Limits()) { self.limits = limits }
 
@@ -80,6 +104,7 @@ public struct H264Decoder: Sendable {
         if damaged { record(ParseFailure(offset: 0, rule: "nal_unit", reason: .invalid("damaged NAL length"))) }
         for u in units { decodeNALResilient(u, pts: pts) }
         finishPicture()
+        drainOutput(waiting: false)
         let out = output
         output = []
         return out
@@ -93,14 +118,34 @@ public struct H264Decoder: Sendable {
             record(error)
         }
         finishPicture()
+        drainOutput(waiting: true)
         let out = output
         output = []
         return out
     }
 
+    /// Moves bumped pictures to `output`, in order: those reconstructed already, or all
+    /// (`waiting`). A picture just started is returned by the next call, one frame later.
+    mutating func drainOutput(waiting: Bool) {
+        while let f = pendingOutput.first, waiting || f.samples.isReady {
+            pendingOutput.removeFirst()
+            let pic = f.samples.picture.cropped(left: f.crop.left, top: f.crop.top, width: f.crop.width, height: f.crop.height)
+            output.append(H264Frame(picture: pic, poc: f.poc, pts: f.pts, fullRange: f.fullRange, matrixCoefficients: f.matrix))
+        }
+    }
+
     mutating func record(_ e: ParseFailure) {
-        errorCount += 1
-        lastError = e
+        recordedErrors += 1
+        recordedLast = e
+    }
+
+    /// Forgets finished jobs (from the oldest), keeping their errors.
+    mutating func retireJobs(waiting: Bool = false) {
+        while let j = jobs.first, waiting || j.samples.isReady {
+            j.samples.waitUntilReady()
+            if let e = j.report.last { recordedErrors += j.report.count; recordedLast = e }
+            jobs.removeFirst()
+        }
     }
 
     mutating func decodeNALResilient(_ nal: NALUnit, pts: Int64?) {
@@ -111,6 +156,8 @@ public struct H264Decoder: Sendable {
     public mutating func flush() -> [H264Frame] {
         finishPicture()
         while bump() {}
+        drainOutput(waiting: true)
+        retireJobs(waiting: true)
         let out = output
         output = []
         return out
@@ -120,7 +167,6 @@ public struct H264Decoder: Sendable {
         switch nal.type {
         case NALUnit.slice, NALUnit.sliceIDR:
             let (h, reader, s, p) = try H264SliceHeader.parse(nal, sps: { sps[$0] }, pps: { pps[$0] })
-            var r = reader
             if h.firstMb == 0 || current == nil || currentHeader?.frameNum != h.frameNum || active?.id != s.id {
                 // A new picture (when its first slice was lost, the missing part is concealed).
                 finishPicture()
@@ -129,15 +175,13 @@ public struct H264Decoder: Sendable {
             sliceCount += 1
             guard sliceCount <= Int32(limits.maxSlicesPerPicture) else { throw ParseFailure(offset: 0, rule: "slice", reason: .limitExceeded("too many slices")) }
             let refs = SliceRefs(lists: try referenceLists(h, s), currentPOC: currentPOC.poc)
-            let dq = current!.dequantCache[p.id] ?? current!.dequant(p)
+            let sps = current!.sps
+            let dq = current!.dequantCache[p.id] ?? H264Dequant(lists4: p.scaling4 ?? sps.scaling4, lists8: p.scaling8 ?? sps.scaling8)
             current!.dequantCache[p.id] = dq
             current!.slices.append(SliceInfo(header: h, pps: p, refs: refs, dequant: dq,
                                              deblock: SliceDeblock(disable: h.disableDeblocking, alpha: h.alphaOffset, beta: h.betaOffset)))
-            if p.cabac {
-                try current!.decodeSliceCABAC(h, p, r, rbsp: nal.rbsp, slice: sliceCount - 1, refs: refs)
-            } else {
-                try current!.decodeSliceCAVLC(h, p, &r, slice: sliceCount - 1, refs: refs)
-            }
+            // The slice data is parsed by the picture's job (finishPicture).
+            current!.work.append(PendingSlice(header: h, pps: p, reader: reader, rbsp: nal.rbsp, index: sliceCount - 1, refs: refs))
         case NALUnit.sps, NALUnit.pps:
             finishPicture()
             try addNAL(nal)
@@ -165,21 +209,26 @@ public struct H264Decoder: Sendable {
         currentHeader = h
         currentPTS = pts
         currentPOC = computePOC(h, s)
-        current = H264PictureDecoder(sps: s)
+        current = PictureInProgress(sps: s)
         sliceCount = 0
     }
 
     mutating func finishPicture() {
-        guard var pd = current, let h = currentHeader, let s = active else { return }
+        guard let picture = current, let h = currentHeader, let s = active else { return }
         current = nil
         currentHeader = nil
-        if pd.st.slice.contains(where: { $0 < 0 }) {
-            conceal(&pd)
+        // The picture's job: parse, conceal, reconstruct (H264FrameJobs). At most maxInFlight
+        // run; concealment copies from the most recent reference picture as of now.
+        retireJobs()
+        while jobs.count >= Self.maxInFlight { jobs[0].samples.waitUntilReady(); retireJobs() }
+        let inputs = ConcealInputs(last: dpb.filter(\.isReference).max { $0.decodeIndex < $1.decodeIndex }.map(refPicture),
+                                   pps: picture.slices.first?.pps ?? pps.values.first ?? H264PPS(), poc: currentPOC.poc)
+        let samples = PictureSamples(), motion = MotionPromise(), report = ParseReport(), threads = limits.threads
+        DispatchQueue.global(qos: .userInitiated).async {
+            H264PictureDecoder.run(picture, conceal: inputs, threads: threads, motion: motion, samples: samples, report: report)
         }
-        let picture = pd.reconstructPicture(threads: limits.threads)
-        // References keep only what later pictures read.
-        pd.slices = []
-        var dp = DecodedPicture(picture: picture, motion: pd.st.motion, poc: currentPOC.poc, frameNum: h.frameNum, decodeIndex: decodeIndex, epoch: epoch, pts: currentPTS)
+        jobs.append(PictureJob(samples: samples, report: report))
+        var dp = DecodedPicture(samples: samples, motion: motion, poc: currentPOC.poc, frameNum: h.frameNum, decodeIndex: decodeIndex, epoch: epoch, pts: currentPTS)
         decodeIndex += 1
         let hadMMCO5 = h.mmco.contains { $0.op == 5 }
         if h.nalRefIdc != 0 {
@@ -205,12 +254,11 @@ public struct H264Decoder: Sendable {
 
     /// Fills macroblocks no slice decoded: zero-motion copies of the most recent reference
     /// picture, or mid-grey without one; they are not deblocked.
-    func conceal(_ pd: inout H264PictureDecoder) {
-        let last = dpb.filter(\.isReference).max { $0.decodeIndex < $1.decodeIndex }.map(refPicture)
-        let pps = pd.slices.first?.pps ?? self.pps.values.first ?? H264PPS()
+    static func conceal(_ pd: inout H264PictureDecoder, _ inputs: ConcealInputs) {
+        let last = inputs.last, pps = inputs.pps
         var header = H264SliceHeader()
         header.type = last != nil ? .p : .i
-        let info = SliceInfo(header: header, pps: pps, refs: SliceRefs(lists: [last.map { [$0] } ?? [], []], currentPOC: currentPOC.poc),
+        let info = SliceInfo(header: header, pps: pps, refs: SliceRefs(lists: [last.map { [$0] } ?? [], []], currentPOC: inputs.poc),
                              dequant: pd.dequant(pps), deblock: SliceDeblock(disable: 1, alpha: 0, beta: 0))
         pd.slices.append(info)
         let slice = Int32(pd.slices.count - 1)
@@ -220,14 +268,14 @@ public struct H264Decoder: Sendable {
             pd.st.cbp[mb] = 0
             pd.setQP(mb, 26, pps)
             if let ref = last {
-                pd.st.kind[mb] = [.inter, .skip, .decoded]
+                pd.st.kind[mb] = .pSkipped
                 pd.st.motion.intra[mb] = false
                 pd.setMotion(mb, x: 0, y: 0, w: 16, h: 16, list: 0, refIdx: 0, mvx: 0, mvy: 0, ref: ref)
                 pd.addPart(mb, x: 0, y: 0, w: 16, h: 16)
             } else {
-                pd.st.kind[mb] = [.pcm, .decoded]
+                pd.st.kind[mb] = .pcmDecoded
                 pd.st.motion.intra[mb] = true
-                let base = mb * MBState.levelStride
+                let base = pd.st.levelBase(mb)
                 for i in 0 ..< 384 { pd.st.levels[base + i] = 128 }
             }
         }
@@ -251,8 +299,8 @@ public struct H264Decoder: Sendable {
         dpb[i].neededForOutput = false
         if let s = active {
             let c = s.crop
-            let pic = dpb[i].picture.cropped(left: 2 * c.left, top: 2 * c.top, width: s.width, height: s.height)
-            output.append(H264Frame(picture: pic, poc: dpb[i].poc, pts: dpb[i].pts, fullRange: s.videoFullRange, matrixCoefficients: s.matrixCoefficients))
+            pendingOutput.append(PendingFrame(samples: dpb[i].samples, poc: dpb[i].poc, pts: dpb[i].pts, fullRange: s.videoFullRange,
+                                              matrix: s.matrixCoefficients, crop: (2 * c.left, 2 * c.top, s.width, s.height)))
         }
         if !dpb[i].isReference { dpb.remove(at: i) }
         return true
@@ -261,7 +309,7 @@ public struct H264Decoder: Sendable {
     // MARK: reference lists (8.2.4)
 
     func refPicture(_ p: DecodedPicture) -> RefPicture {
-        RefPicture(picture: p.picture, motion: p.motion, poc: p.poc, longTerm: p.longTerm, id: Int32(truncatingIfNeeded: p.decodeIndex))
+        RefPicture(samples: p.samples, motion: p.motion, poc: p.poc, longTerm: p.longTerm, id: Int32(truncatingIfNeeded: p.decodeIndex))
     }
 
     /// RefPicList0/1 for the slice: initialised (8.2.4.2) and modified (8.2.4.3).
@@ -418,3 +466,4 @@ public struct H264Decoder: Sendable {
 
     func picNumOf(_ p: DecodedPicture, _ currentFrameNum: Int, _ maxFrameNum: Int) -> Int { frameNumWrap(p, currentFrameNum, maxFrameNum) }
 }
+

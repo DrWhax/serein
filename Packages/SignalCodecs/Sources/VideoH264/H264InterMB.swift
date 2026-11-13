@@ -21,7 +21,7 @@ extension H264PictureDecoder {
     }
 
     /// The explicit (P) weights for a partition, nil for default prediction.
-    func weights(_ h: H264SliceHeader, _ pps: H264PPS, refIdx: (Int, Int), refs: [[RefPicture?]]) -> (luma: PredWeights, cb: PredWeights, cr: PredWeights)? {
+    static func weights(_ h: H264SliceHeader, _ pps: H264PPS, refIdx: (Int, Int), refs: [[RefPicture?]]) -> PartitionWeights? {
         guard let ws = h.weights else { return nil }
         let w0 = refIdx.0 >= 0 && refIdx.0 < ws[0].count ? ws[0][refIdx.0] : nil
         let w1 = ws.count > 1 && refIdx.1 >= 0 && refIdx.1 < ws[1].count ? ws[1][refIdx.1] : nil

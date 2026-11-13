@@ -107,12 +107,12 @@ extension H264PictureDecoder {
         st.cbp[mb] = 0
         setQP(mb, qp, pps)
         if h.type == .b {
-            st.kind[mb] = [.inter, .skip, .direct16x16, .decoded]
+            st.kind[mb] = .bSkipped
             let d = try directMotion(mb, h, slice: slice, refs: refs.lists, currentPOC: refs.currentPOC)
             try applyDirect(mb, d, mask: 0xFFFF, h, pps, refs: refs.lists, currentPOC: refs.currentPOC)
             return
         }
-        st.kind[mb] = [.inter, .skip, .decoded]
+        st.kind[mb] = .pSkipped
         let (mvx, mvy) = pSkipMV(mb, slice: slice)
         guard let ref = refs.lists[0].first ?? nil else { throw ParseFailure(offset: 0, rule: "P_Skip", reason: .invalid("no reference picture")) }
         setMotion(mb, x: 0, y: 0, w: 16, h: 16, list: 0, refIdx: 0, mvx: mvx, mvy: mvy, ref: ref)
@@ -248,11 +248,11 @@ extension H264PictureDecoder {
         st.motion.intra[mb] = true
         if mbType == 25 {
             e.pcmStart()
-            let base = mb * MBState.levelStride
+            let base = st.levelBase(mb)
             for i in 0 ..< 384 { st.levels[base + i] = Int32(try e.pcmByte()) }
             e.pcmEnd()
             e.noQpDelta()
-            st.kind[mb] = [.pcm, .decoded]
+            st.kind[mb] = .pcmDecoded
             setQP(mb, 0, pps)
             for i in 0 ..< 24 { st.nnz[mb * 24 + i] = 16 }
             st.cbp[mb] = 0x2F
@@ -316,7 +316,7 @@ extension H264PictureDecoder {
     /// residual(): the levels into the macroblock's level store (raster within each block;
     /// see MBState.levels).
     mutating func parseResidual<E: H264Entropy>(_ mb: Int, cbp: Int, _ e: inout E, intra: Bool, slice: Int32) throws(ParseFailure) {
-        let base = mb * MBState.levelStride
+        let base = st.levelBase(mb)
         let zz = H264SPS.zigzag4
         let kind = st.kind[mb]
         var lv = [Int32](repeating: 0, count: 64)
@@ -460,14 +460,14 @@ extension H264PictureDecoder {
             let d = try directMotion(mb, h, slice: slice, refs: refs.lists, currentPOC: refs.currentPOC)
             try applyDirect(mb, d, mask: 0xFFFF, h, pps, refs: refs.lists, currentPOC: refs.currentPOC)
         } else {
-            var direct: [DirectMotion]?
+            var direct: DirectMotions?
             var directDone = Set<Int>()
             for (k, p) in parts.enumerated() {
                 if p.pred == 0 {
                     guard !directDone.contains(p.sub) else { continue }
                     directDone.insert(p.sub)
                     if direct == nil { direct = try directMotion(mb, h, slice: slice, refs: refs.lists, currentPOC: refs.currentPOC) }
-                    let mask: UInt16 = [0x0033, 0x00CC, 0x3300, 0xCC00][p.sub]
+                    let mask: UInt16 = p.sub == 0 ? 0x0033 : p.sub == 1 ? 0x00CC : p.sub == 2 ? 0x3300 : 0xCC00
                     try applyDirect(mb, direct!, mask: mask, h, pps, refs: refs.lists, currentPOC: refs.currentPOC)
                     done |= mask
                     continue

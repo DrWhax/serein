@@ -23,30 +23,37 @@ struct DirectMotion {
     var mv0: (Int, Int), mv1: (Int, Int)
 }
 
+/// A macroblock's direct motion, per 4x4 block (raster); inline, no allocation.
+typealias DirectMotions = InlineArray<16, DirectMotion>
+
 extension H264PictureDecoder {
     // MARK: direct prediction
 
     /// Co-located motion for 4x4 block `b` (raster) of `mb`: (mvCol, refIdxCol, the referenced
     /// picture's id and POC and long-term flag); refIdxCol −1 when the co-located block is intra.
-    func colocated(_ col: RefPicture, _ mb: Int, _ b: Int, inference: Bool) -> (mv: (Int, Int), refIdx: Int, id: Int32, poc: Int, longTerm: Bool) {
-        let blk = inference ? [0, 3, 12, 15][(b >> 3) * 2 + ((b & 3) >> 1)] : b
+    func colocated(_ col: ColocatedPicture, _ mb: Int, _ b: Int, inference: Bool) -> (mv: (Int, Int), refIdx: Int, id: Int32, poc: Int, longTerm: Bool) {
+        // direct_8x8_inference: the 8x8's corner block (0, 3, 12, 15).
+        let k = (b >> 3) * 2 + ((b & 3) >> 1)
+        let blk = inference ? (k >> 1) * 12 + (k & 1) * 3 : b
         let b8 = (blk >> 3) * 2 + ((blk & 3) >> 1)
-        let m = col.motion
-        if m.intra[mb] { return ((0, 0), -1, -1, 0, false) }
-        let l = m.refIdx[(0) * m.n4 + mb * 4 + b8] >= 0 ? 0 : 1
-        let r = Int(m.refIdx[(l) * m.n4 + mb * 4 + b8])
+        // (col.motion read in place: a local copy retained its seven arrays per block.)
+        if col.motion.intra[mb] { return ((0, 0), -1, -1, 0, false) }
+        let n4 = col.motion.n4, n16 = col.motion.n16
+        let l = col.motion.refIdx[mb * 4 + b8] >= 0 ? 0 : 1
+        let r = Int(col.motion.refIdx[l * n4 + mb * 4 + b8])
         guard r >= 0 else { return ((0, 0), -1, -1, 0, false) }
-        return ((Int(m.mvX[(l) * m.n16 + mb * 16 + blk]), Int(m.mvY[(l) * m.n16 + mb * 16 + blk])), r, m.refID[(l) * m.n4 + mb * 4 + b8], Int(m.refPOC[(l) * m.n4 + mb * 4 + b8]), m.refLongTerm[(l) * m.n4 + mb * 4 + b8])
+        return ((Int(col.motion.mvX[l * n16 + mb * 16 + blk]), Int(col.motion.mvY[l * n16 + mb * 16 + blk])), r, col.motion.refID[l * n4 + mb * 4 + b8],
+                Int(col.motion.refPOC[l * n4 + mb * 4 + b8]), col.motion.refLongTerm[l * n4 + mb * 4 + b8])
     }
 
     /// Direct motion for every 4x4 block of `mb` (8.4.1.2).
-    func directMotion(_ mb: Int, _ h: H264SliceHeader, slice: Int32, refs: [[RefPicture?]], currentPOC: Int) throws(ParseFailure) -> [DirectMotion] {
-        guard let col = refs[1].first ?? nil else { throw ParseFailure(offset: 0, rule: "direct", reason: .invalid("no RefPicList1[0]")) }
+    func directMotion(_ mb: Int, _ h: H264SliceHeader, slice: Int32, refs: [[RefPicture?]], currentPOC: Int) throws(ParseFailure) -> DirectMotions {
+        guard let col = colocated else { throw ParseFailure(offset: 0, rule: "direct", reason: .invalid("no RefPicList1[0]")) }
         let inference = sps.direct8x8Inference
-        var out = [DirectMotion](repeating: DirectMotion(refIdx: (-1, -1), mv0: (0, 0), mv1: (0, 0)), count: 16)
+        var out = DirectMotions(repeating: DirectMotion(refIdx: (-1, -1), mv0: (0, 0), mv1: (0, 0)))
         if h.directSpatialMvPred {
-            var refIdx = [-1, -1]
-            var mvp = [(0, 0), (0, 0)]
+            var refIdx = InlineArray<2, Int>(repeating: -1)
+            var mvp = InlineArray<2, (Int, Int)>(repeating: (0, 0))
             for l in 0 ..< 2 {
                 var (a, b, c) = neighbours(mb, x: 0, y: 0, w: 16, list: l, done: 0, slice: slice)
                 func minPositive(_ x: Int, _ y: Int) -> Int { x >= 0 && y >= 0 ? min(x, y) : max(x, y) }
@@ -54,7 +61,7 @@ extension H264PictureDecoder {
                 if refIdx[l] >= 0 { mvp[l] = median(&a, &b, &c, refIdx[l]) }
             }
             var zero = false
-            if refIdx[0] < 0 && refIdx[1] < 0 { refIdx = [0, 0]; zero = true }
+            if refIdx[0] < 0 && refIdx[1] < 0 { refIdx[0] = 0; refIdx[1] = 0; zero = true }
             let colShortTerm = !col.longTerm
             for b in 0 ..< 16 {
                 let c = colocated(col, mb, b, inference: inference)
@@ -95,7 +102,7 @@ extension H264PictureDecoder {
     }
 
     /// Implicit bi-prediction weights (8.4.2.3.1) for references (ref0, ref1).
-    func implicitWeights(_ r0: RefPicture, _ r1: RefPicture, currentPOC: Int) -> PredWeights {
+    static func implicitWeights(_ r0: RefPicture, _ r1: RefPicture, currentPOC: Int) -> PredWeights {
         let tb = clip3(-128, 127, currentPOC - r0.poc), td = clip3(-128, 127, r1.poc - r0.poc)
         var w0 = 32, w1 = 32
         if td != 0 && !r0.longTerm && !r1.longTerm {
@@ -107,7 +114,7 @@ extension H264PictureDecoder {
     }
 
     /// Prediction weights for a B partition.
-    func bWeights(_ h: H264SliceHeader, _ pps: H264PPS, refIdx: (Int, Int), refs: [[RefPicture?]], currentPOC: Int) -> (luma: PredWeights, cb: PredWeights, cr: PredWeights)? {
+    static func bWeights(_ h: H264SliceHeader, _ pps: H264PPS, refIdx: (Int, Int), refs: [[RefPicture?]], currentPOC: Int) -> PartitionWeights? {
         if pps.weightedBipredIdc == 1 { return weights(h, pps, refIdx: refIdx, refs: refs) }
         if pps.weightedBipredIdc == 2 && refIdx.0 >= 0 && refIdx.1 >= 0, let a = refs[0][refIdx.0], let b = refs[1][refIdx.1] {
             let w = implicitWeights(a, b, currentPOC: currentPOC)
@@ -118,26 +125,25 @@ extension H264PictureDecoder {
 
     /// Applies direct motion to the 4x4 blocks selected by `mask` and predicts them, an 8x8
     /// at a time where its four blocks share their motion (always with direct_8x8_inference).
-    mutating func applyDirect(_ mb: Int, _ d: [DirectMotion], mask: UInt16, _ h: H264SliceHeader, _ pps: H264PPS, refs: [[RefPicture?]], currentPOC: Int) throws(ParseFailure) {
+    mutating func applyDirect(_ mb: Int, _ d: DirectMotions, mask: UInt16, _ h: H264SliceHeader, _ pps: H264PPS, refs: [[RefPicture?]], currentPOC: Int) throws(ParseFailure) {
         func same(_ a: DirectMotion, _ b: DirectMotion) -> Bool { a.refIdx == b.refIdx && a.mv0 == b.mv0 && a.mv1 == b.mv1 }
         for b8 in 0 ..< 4 {
             let corner = (b8 >> 1) * 8 + (b8 & 1) * 2
-            let blocks = [corner, corner + 1, corner + 4, corner + 5]
             guard mask & (1 << UInt16(corner)) != 0 else { continue }
-            let uniform = blocks.allSatisfy { same(d[$0], d[corner]) }
-            for b in (uniform ? [corner] : blocks) {
+            let c = d[corner]
+            let s1 = same(d[corner + 1], c), s4 = same(d[corner + 4], c), s5 = same(d[corner + 5], c)
+            let uniform = s1 && s4 && s5
+            for n in 0 ..< (uniform ? 1 : 4) {
+                let b = corner + (n & 1) + (n >> 1) * 4
                 let m = d[b]
                 let x = blkX(b), y = blkY(b), size = uniform ? 8 : 4
-                var r0: RefPicture?, r1: RefPicture?
                 for l in 0 ..< 2 {
                     let r = l == 0 ? m.refIdx.0 : m.refIdx.1
                     guard r >= 0 else { continue }
                     guard r < refs[l].count, let ref = refs[l][r] else { throw ParseFailure(offset: 0, rule: "direct", reason: .invalid("no reference \(r)")) }
-                    if l == 0 { r0 = ref } else { r1 = ref }
                     let mv = l == 0 ? m.mv0 : m.mv1
                     setMotion(mb, x: x, y: y, w: size, h: size, list: l, refIdx: r, mvx: mv.0, mvy: mv.1, ref: ref)
                 }
-                _ = r0; _ = r1
                 addPart(mb, x: x, y: y, w: size, h: size)
             }
         }

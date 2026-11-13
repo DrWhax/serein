@@ -65,9 +65,16 @@ struct VideoStream {
         })
     }
 
+    /// Reconstruction workers: the cores less one for parsing the next picture (which runs
+    /// alongside) and one for the rest of the service; 6 on an 8-core Mac.
+    static let decodeThreads = max(2, min(16, ProcessInfo.processInfo.activeProcessorCount - 2))
+
     static func makeDecoder(_ c: AVCDecoderConfiguration) throws -> H264Decoder {
         do {
-            return try H264Decoder(sequenceParameterSets: c.sequenceParameterSets.map { $0.copyBytes() }, pictureParameterSets: c.pictureParameterSets.map { $0.copyBytes() })
+            var limits = H264Decoder.Limits()
+            limits.threads = decodeThreads
+            return try H264Decoder(sequenceParameterSets: c.sequenceParameterSets.map { $0.copyBytes() }, pictureParameterSets: c.pictureParameterSets.map { $0.copyBytes() },
+                                   limits: limits)
         } catch {
             throw MediaProcessingError.undecodable("\(error)")
         }
@@ -159,9 +166,28 @@ struct VideoStream {
                 flushed = true
             }
         }
+        readAhead()
         let out = Array(pending.prefix(count))
         pending.removeFirst(out.count)
         return out
+    }
+
+    /// Frames decoded ahead of the caller (memory: a frame each).
+    static let readAheadFrames = 6
+
+    /// Keeps the H.264 decoder's pictures in flight between requests: samples are submitted
+    /// while it has room (each costs only its headers here; the pictures decode in the
+    /// background while these frames travel), up to `readAheadFrames` waiting.
+    mutating func readAhead() {
+        guard case .avc(var d, let c) = backend else { return }
+        while !flushed, next < track.samples.count, pending.count < Self.readAheadFrames, d.picturesInFlight < H264Decoder.maxPicturesInFlight - 1 {
+            let s = track.samples[next]
+            next += 1
+            guard s.offset >= 0, s.size >= 0, s.offset + s.size <= bytes.count else { continue }
+            let out = d.decode(sample: ByteSlice(Array(bytes[s.offset ..< s.offset + s.size])), nalLengthSize: c.nalLengthSize, pts: s.compositionTime)
+            pending += out.map { DecodedVideoFrame(picture: $0.picture, pts: $0.pts, fullRange: $0.fullRange, matrix: $0.matrixCoefficients, transfer: 1) }
+        }
+        backend = .avc(d, c)
     }
 
     func seconds(_ pts: Int64?) -> Double {

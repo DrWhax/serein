@@ -23,7 +23,10 @@ def png(w, h):
     chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
-work = tempfile.mkdtemp(prefix="signalsafe-mock-")
+# The app is sandboxed: it reads the server's details and writes the QR URL only inside its
+# container (macOS creates it at the first sandboxed launch).
+container_tmp = os.path.expanduser("~/Library/Containers/org.signalsafe.SignalSafe/Data/tmp")
+work = tempfile.mkdtemp(prefix="signalsafe-mock-", dir=container_tmp if os.path.isdir(container_tmp) else None)
 ready_path = os.path.join(work, "ready.json")
 harness = subprocess.Popen(["node", "harness.mjs"], cwd=os.path.join(root, "Tests/MockServer"), stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, text=True, bufsize=1)

@@ -3,6 +3,9 @@
 // (motion for direct prediction). Everything is flat arrays indexed by macroblock, 4x4
 // block (16 per MB, raster within the MB) or 8x8 block (4 per MB).
 
+import Dispatch
+import Synchronization
+
 /// An 8-bit 4:2:0 picture, planes without padding (stride = width).
 public struct YUVPicture: Sendable, Equatable {
     public var width: Int, height: Int
@@ -52,7 +55,12 @@ struct MBKind: OptionSet, Sendable {
     static let p8x8 = MBKind(rawValue: 256)
     static let decoded = MBKind(rawValue: 512)
 
-    var isIntra: Bool { !isDisjoint(with: [.intra4x4, .intra8x8, .intra16x16, .pcm]) }
+    var isIntra: Bool { !isDisjoint(with: Self.anyIntra) }
+
+    static let anyIntra: MBKind = [.intra4x4, .intra8x8, .intra16x16, .pcm]
+    static let pSkipped: MBKind = [.inter, .skip, .decoded]
+    static let bSkipped: MBKind = [.inter, .skip, .direct16x16, .decoded]
+    static let pcmDecoded: MBKind = [.pcm, .decoded]
 }
 
 /// The motion of a decoded picture, kept with it while it is a reference (for temporal and
@@ -84,10 +92,35 @@ struct PictureMotion: Sendable {
     }
 }
 
+/// A picture's samples, filled in when its reconstruction finishes. Reconstruction runs while
+/// the next picture is parsed (parsing needs only a reference's motion), so reading the samples
+/// waits for it.
+final class PictureSamples: Sendable {
+    private let finished = DispatchGroup()
+    private let value = Mutex<YUVPicture?>(nil)
+
+    init() { finished.enter() }
+
+    /// Called once, by the reconstruction.
+    func fulfil(_ picture: YUVPicture) {
+        value.withLock { $0 = picture }
+        finished.leave()
+    }
+
+    var isReady: Bool { finished.wait(timeout: .now()) == .success }
+
+    func waitUntilReady() { finished.wait() }
+
+    var picture: YUVPicture {
+        finished.wait()
+        return value.withLock { $0 ?? YUVPicture(width: 0, height: 0) }
+    }
+}
+
 /// A picture in the decoded picture buffer.
 struct DecodedPicture: Sendable {
-    var picture: YUVPicture
-    var motion: PictureMotion
+    var samples: PictureSamples
+    var motion: MotionPromise
     var poc: Int
     var frameNum: Int
     var frameNumWrap = 0
@@ -129,8 +162,28 @@ struct MBState: Sendable {
     /// Per MB (`levelStride` entries): luma levels (16 × 4x4 raster, or 4 × 8x8 raster),
     /// chroma AC (2 × 4 × 16), luma DC (16, raster of block positions), chroma DC (2 × 4);
     /// for I_PCM the 384 samples. Only the coded parts are meaningful.
+    /// Sparse: a pool of `levelStride` blocks, block 0 all zeros and never written; a
+    /// macroblock gets a zeroed block of its own at its first write (`levelBase`). Most
+    /// macroblocks of a P or B picture have no levels, and a block per macroblock was most of
+    /// a picture's memory (and zeroing it, of its set-up).
     var levels: [Int32]
+    /// The block per macroblock (0: none yet, all zeros).
+    var levelIndex: [Int32]
     static let levelStride = 408
+
+    /// The macroblock's levels for writing (allocated, zeroed, at the first call).
+    mutating func levelBase(_ mb: Int) -> Int {
+        var i = Int(levelIndex[mb])
+        if i == 0 {
+            i = levels.count / Self.levelStride
+            levels.append(contentsOf: repeatElement(0, count: Self.levelStride))
+            levelIndex[mb] = Int32(i)
+        }
+        return i * Self.levelStride
+    }
+
+    /// The macroblock's levels for reading (the zero block when it has none).
+    @inline(__always) func levelReadBase(_ mb: Int) -> Int { Int(levelIndex[mb]) * Self.levelStride }
     /// Inter partitions per MB: up to 16, packed x/4 | y/4 << 2 | wCode << 4 | hCode << 6.
     var parts: [UInt8]
     var partCount: [UInt8]
@@ -154,7 +207,8 @@ struct MBState: Sendable {
         directSub = Array(repeating: 0, count: n * 4)
         motion = PictureMotion(mbs: n)
         i16Mode = Array(repeating: 0, count: n)
-        levels = Array(repeating: 0, count: n * MBState.levelStride)
+        levels = Array(repeating: 0, count: MBState.levelStride)
+        levelIndex = Array(repeating: 0, count: n)
         parts = Array(repeating: 0, count: n * 16)
         partCount = Array(repeating: 0, count: n)
     }
