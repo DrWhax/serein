@@ -461,6 +461,41 @@ final class PlaceholderTextView: NSTextView {
         pasteAsPlainText(sender)
     }
 
+    // Files and images dropped on the composer are attached as pasted ones are, not inserted as
+    // text: files, file promises (a browser's image, Photos), PNG or JPEG data.
+
+    static func isAttachmentDrag(_ pb: NSPasteboard) -> Bool {
+        pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+            || pb.canReadObject(forClasses: [NSFilePromiseReceiver.self], options: nil)
+            || pb.availableType(from: [.png, NSPasteboard.PasteboardType("public.jpeg")]) != nil
+    }
+
+    func takesDrag(_ sender: NSDraggingInfo) -> Bool { pasteAttachments != nil && Self.isAttachmentDrag(sender.draggingPasteboard) }
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        let extra = [NSPasteboard.PasteboardType.fileURL, .png, NSPasteboard.PasteboardType("public.jpeg")]
+            + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+        let types = super.acceptableDragTypes
+        return types + extra.filter { !types.contains($0) }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        takesDrag(sender) ? .copy : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        takesDrag(sender) ? .copy : super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        takesDrag(sender) || super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if takesDrag(sender), let pasteAttachments { return pasteAttachments(sender.draggingPasteboard) }
+        return super.performDragOperation(sender)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard string.isEmpty else { return }

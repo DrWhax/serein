@@ -73,6 +73,23 @@ import Testing
         #expect(tv.string.hasPrefix("@Bob hi") && font(at: 1) == base && font(at: 4) == base)
     }
 
+    /// Files, promises and image data dropped on the composer are taken as attachments (when the
+    /// app handles them), not inserted as text.
+    @Test func attachmentDragsAreTaken() {
+        let (_, tv) = make("")
+        let types = tv.acceptableDragTypes
+        #expect(types.contains(.fileURL) && types.contains(.png))
+        #expect(NSFilePromiseReceiver.readableDraggedTypes.allSatisfy { types.contains(NSPasteboard.PasteboardType($0)) })
+        let pb = NSPasteboard(name: NSPasteboard.Name("composer-drag-\(UUID().uuidString)"))
+        defer { pb.releaseGlobally() }
+        pb.clearContents()
+        pb.setString("hello", forType: .string)
+        #expect(!PlaceholderTextView.isAttachmentDrag(pb))
+        pb.clearContents()
+        pb.setData(Data([0x89, 0x50, 0x4E, 0x47]), forType: .png)
+        #expect(PlaceholderTextView.isAttachmentDrag(pb))
+    }
+
     @Test func deletingIntoAPillRemovesIt() {
         let (c, tv) = make("@a")
         tv.setSelectedRange(NSRange(location: 2, length: 0))

@@ -26,12 +26,9 @@ struct ConversationPane: View {
 
     var conversationView: some View {
         conversationContent
-            // Files dropped on the chat are staged as attachments (upstream's drop zone).
-            .dropDestination(for: URL.self) { urls, _ in
-                let files = urls.filter(\.isFileURL)
-                for url in files { session.stage(url) }
-                return !files.isEmpty
-            }
+            // Files dropped on the chat are staged as attachments (upstream's drop zone): a
+            // file, or one a browser or Photos promises (AttachmentDrops.swift).
+            .onDrop(of: [.fileURL, .image, .audiovisualContent, .data], isTargeted: nil) { _ in session.stageDropped() }
     }
 
     var conversationContent: some View {

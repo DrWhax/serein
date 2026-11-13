@@ -1042,7 +1042,7 @@ import SignalUI
     var composerHighQuality: Bool?
     var sendsHighQuality: Bool { composerHighQuality ?? (accountSettings.sentMediaQuality == .high) }
     /// Upstream's outgoing limit (getMaximumOutgoingAttachmentSize default, 100 MiB).
-    static let maxAttachmentBytes = 100 * 1024 * 1024
+    nonisolated static let maxAttachmentBytes = 100 * 1024 * 1024
 
     /// The 📎 menu: an open panel for photos and videos, or any file.
     func pickAttachments(mediaOnly: Bool) {
@@ -1055,20 +1055,26 @@ import SignalUI
     }
 
     /// Reads a chosen file; images get a preview decoded by the media service (never here).
-    func stage(_ url: URL) {
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= Self.maxAttachmentBytes,
-              let data = try? Data(contentsOf: url) else { return Self.trace("attach: file unreadable or too large") }
-        let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        stage(data, contentType: type, fileName: url.lastPathComponent)
+    @discardableResult
+    func stage(_ url: URL) -> Bool {
+        guard let file = Self.readDropped(url) else {
+            Self.trace("attach: file unreadable or too large")
+            return false
+        }
+        stage(file.data, contentType: file.contentType, fileName: file.fileName)
+        return true
     }
 
-    /// ⌘V in the composer (`handlePaste`): files on the pasteboard, or an image (PNG or JPEG
+    /// ⌘V in the composer (`handlePaste`), or a drop on it: files on the pasteboard, files
+    /// promised by the drag's source (a browser's image, Photos), or an image (PNG or JPEG
     /// bytes; other image types would need ImageIO, so they are left alone).
     func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls { stage(url) }
+            // A promise's placeholder URL is not a file yet: then the promise is taken instead.
+            if !urls.map({ stage($0) }).contains(true) { _ = receivePromisedFiles(pasteboard) }
             return true
         }
+        if receivePromisedFiles(pasteboard) { return true }
         for (type, mime, ext) in [(NSPasteboard.PasteboardType.png, "image/png", "png"), (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "jpg")] {
             if let data = pasteboard.data(forType: type), data.count <= Self.maxAttachmentBytes {
                 stage(data, contentType: mime, fileName: "image.\(ext)")
