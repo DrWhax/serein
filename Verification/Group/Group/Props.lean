@@ -22,17 +22,26 @@ def holdersRecorded (_s : S) (_e : Ev) (s' : S) : Bool :=
   s'.holders.all fun (a, d, g) => g != s'.epoch || s'.distributed.contains (a, d)
 
 /-- **Rotation after a removal**: once a send has planned, every device recorded as having our
-current key belongs to one of its targets — members at that moment. A removed member's devices
-force a new key before anything is encrypted for the others. -/
+current key belongs to one of its targets — members at that moment. Submission safety is
+checked separately by `contentKeySafe`, because other sends may distribute between these steps. -/
 def rotated (s : S) (e : Ev) (s' : S) : Bool :=
   match e with
   | .plan k => match s.jobs[k]?, s'.jobs[k]? with
-    | some _, some ⟨_, _, some (targets, _, _)⟩ => s'.distributed.all fun d => targets.contains d.1 && s.members.contains d.1
+    | some _, some ⟨_, _, some (targets, _, _), _, _⟩ => s'.distributed.all fun d => targets.contains d.1 && s.members.contains d.1
     | _, _ => true
   | _ => true
 
+/-- At content submission no non-member holds the generation used for encryption. -/
+def contentKeySafe (s : S) (e : Ev) (s' : S) : Bool :=
+  !(newOut s s').any (fun x => x.2 == "content") ||
+    match e with
+    | .submit k => match s.jobs[k]? with
+      | some j => !s.stale && s.holders.all (fun h => h.2.2 != j.generation || s.members.contains h.1)
+      | none => false
+    | _ => false
+
 def stepChecks : List (String × (S → Ev → S → Bool)) :=
   [("keys-to-members", keysToMembers), ("content-to-members", contentToMembers), ("holders-recorded", holdersRecorded),
-   ("rotated", rotated)]
+   ("rotated", rotated), ("content-key-safe", contentKeySafe)]
 
 end Group

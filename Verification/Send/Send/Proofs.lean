@@ -104,7 +104,7 @@ theorem retractionGoes_holds (p : P) (e : Ev) : retractionGoes p e (step p e) = 
       · cases ha : authorized { p.s with msgs := fun _ => .live } t c ids
         · simp
         · have : authorized p.s t c ids = true := by rw [← retraction_ignores_messages p.s hr (fun _ => .live)]; exact ha
-          simp [stepCore, hj, this]
+          simp [step, stepCore, hj, this]
     · rfl
 
 theorem recipients_mem (s : S) : q ∈ recipients s g ↔ q ∈ s.members g ∧ s.blocked q = false := by

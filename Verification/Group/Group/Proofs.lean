@@ -33,13 +33,13 @@ theorem out_step (s : S) (e : Ev) :
       split
       · rename_i targets outside _
         split
-        · rename_i hm; exact Or.inr (Or.inr ⟨targets, outside, j.update, hm, by simp⟩)
+        · rename_i hm; exact Or.inr (Or.inr ⟨targets, outside, j.update, (by simp only [Bool.and_eq_true] at hm; exact hm.1.1.1), by simp⟩)
         · exact Or.inl rfl
       · exact Or.inl rfl
     · exact Or.inl rfl
   | plan k =>
     left; simp only [step, stepCore]; split
-    · simp only [planJob]; split <;> rfl
+    · simp only [Group.planJob]; split <;> rfl
     · rfl
   | _ => exact Or.inl rfl
 
@@ -67,76 +67,107 @@ theorem contentToMembers_holds (s : S) (e : Ev) : contentToMembers s e (step s e
 
 -- ## The rotation invariant
 
+def JobOK (s : S) (j : Job) : Prop :=
+  j.generation ≤ s.epoch ∧ (j.generation = s.epoch → ∀ d ∈ j.reserved, d ∈ s.distributed)
+
 structure Inv (s : S) : Prop where
   recorded : ∀ h ∈ s.holders, h.2.2 = s.epoch → (h.1, h.2.1) ∈ s.distributed
   past : ∀ h ∈ s.holders, h.2.2 ≤ s.epoch
+  jobs : ∀ j ∈ s.jobs, JobOK s j
 
-theorem Inv.init : Inv (S.init m d) := ⟨fun _ h => by simp [S.init] at h, fun _ h => by simp [S.init] at h⟩
+theorem Inv.init : Inv (S.init m d) := by
+  constructor <;> simp [S.init]
 
-/-- `distributed` only grows (between resets), `holders` and `epoch` unchanged. -/
-theorem Inv.grow (h : Inv s) (hd : ∀ x ∈ s.distributed, x ∈ s'.distributed) (hh : s'.holders = s.holders) (he : s'.epoch = s.epoch) :
-    Inv s' :=
-  ⟨fun x hx hg => hd _ (h.recorded x (hh ▸ hx) (he ▸ hg)), fun x hx => he ▸ h.past x (hh ▸ hx)⟩
+theorem Inv.setJob (h : Inv s) (hj : JobOK s j) : Inv { s with jobs := s.jobs.set k j } := by
+  refine ⟨h.recorded, h.past, ?_⟩
+  intro x hx
+  rcases List.mem_or_eq_of_mem_set hx with hx | rfl
+  · exact h.jobs x hx
+  · exact hj
 
-/-- A plan keeps the record of holders, and either keeps the key and its record or starts a new
-key that nobody has. -/
-theorem planJob_effect (s : S) (k : Nat) (j : Job) :
-    (planJob s k j).holders = s.holders ∧
-    (((planJob s k j).epoch = s.epoch ∧ (planJob s k j).distributed = s.distributed) ∨
-     ((planJob s k j).epoch = s.epoch + 1 ∧ (planJob s k j).distributed = [])) := by
-  simp only [planJob]
+theorem Inv.unplan (h : Inv s) (hj : j ∈ s.jobs) : Inv (unplan s k j) :=
+  h.setJob (h.jobs j hj)
+
+theorem mem_union (d : Nat × Nat) (ds xs : List (Nat × Nat)) :
+    d ∈ ds ++ xs.filter (!ds.contains ·) ↔ d ∈ ds ∨ d ∈ xs := by
+  simp only [List.mem_append, List.mem_filter, Bool.not_eq_true']
+  by_cases hd : d ∈ ds <;> simp [hd]
+
+theorem Inv.planJob (h : Inv s) (k : Nat) (j : Job) : Inv (Group.planJob s k j) := by
+  simp only [Group.planJob]
   split
-  · exact ⟨rfl, Or.inr ⟨rfl, rfl⟩⟩
-  · exact ⟨rfl, Or.inl ⟨rfl, rfl⟩⟩
+  · -- A reset retires every old holder and reservation.
+    refine ⟨?_, ?_, ?_⟩
+    · intro x hx hg; have := h.past x hx; dsimp at hg; omega
+    · intro x hx; have := h.past x hx; dsimp; omega
+    · intro x hx
+      rcases List.mem_or_eq_of_mem_set hx with hx | rfl
+      · have hh := h.jobs x hx
+        refine ⟨by dsimp [JobOK] at hh ⊢; omega, ?_⟩
+        intro he; have := hh.1; dsimp at he; omega
+      · exact ⟨Nat.le_refl _, fun _ d hd => by simpa using hd⟩
+  · -- Without reset, union with persisted reservations, never a local snapshot.
+    refine ⟨?_, h.past, ?_⟩
+    · intro x hx hg; exact List.mem_append_left _ (h.recorded x hx hg)
+    · intro x hx
+      rcases List.mem_or_eq_of_mem_set hx with hx | rfl
+      · have hh := h.jobs x hx
+        exact ⟨hh.1, fun he d hd => List.mem_append_left _ (hh.2 he d hd)⟩
+      · exact ⟨Nat.le_refl _, fun _ d hd => (mem_union d _ _).mpr (Or.inr hd)⟩
 
 theorem Inv.step (h : Inv s) (e : Ev) : Inv (step s e) := by
   cases e with
   | plan k =>
-    simp only [Group.step, stepCore]
-    split
-    · rename_i j _
-      obtain ⟨hh, he⟩ := planJob_effect s k j
-      rcases he with ⟨he, hd⟩ | ⟨he, hd⟩
-      · exact h.grow (fun x hx => hd ▸ hx) hh he
-      · refine ⟨fun x hx hg => ?_, fun x hx => ?_⟩
-        · rw [hh] at hx; have := h.past x hx; rw [he] at hg; omega
-        · rw [hh] at hx; have := h.past x hx; rw [he]; omega
+    simp only [Group.step, stepCore]; split
+    · exact h.planJob _ _
     · exact h
   | distribute k =>
     simp only [Group.step, stepCore]
     split
-    · split
+    · rename_i j hj
+      have hjmem : j ∈ s.jobs := List.mem_of_getElem? hj
+      have hjok := h.jobs j hjmem
+      split
       · split
-        · rename_i a rest _ _
-          refine ⟨fun x hx hg => ?_, fun x hx => ?_⟩
-          · simp only [List.mem_append, List.mem_map] at hx
+        · refine ⟨?_, ?_, ?_⟩
+          · intro x hx hg
+            simp only [List.mem_append, List.mem_map] at hx
             rcases hx with hx | ⟨d, hd, rfl⟩
-            · exact List.mem_append_left _ (h.recorded x hx hg)
-            · show d ∈ s.distributed ++ ((s.devices a).map (a, ·)).filter (!s.distributed.contains ·)
-              by_cases hin : d ∈ s.distributed
-              · exact List.mem_append_left _ hin
-              · exact List.mem_append_right _ (List.mem_filter.mpr ⟨List.mem_map.mpr hd, by simpa using hin⟩)
-          · simp only [List.mem_append, List.mem_map] at hx
-            rcases hx with hx | ⟨d, -, rfl⟩
+            · exact h.recorded x hx hg
+            · exact hjok.2 hg d (List.mem_filter.mp hd).1
+          · intro x hx
+            simp only [List.mem_append, List.mem_map] at hx
+            rcases hx with hx | ⟨d, hd, rfl⟩
             · exact h.past x hx
-            · exact Nat.le_refl _
-        · exact ⟨h.recorded, h.past⟩
+            · exact hjok.1
+          · intro x hx
+            rcases List.mem_or_eq_of_mem_set hx with hx | rfl
+            · exact h.jobs x hx
+            · exact hjok
+        · exact h.unplan hjmem
       · exact h
     · exact h
   | submit k =>
     simp only [Group.step, stepCore]
     split
-    · split
+    · rename_i j hj
+      split
       · split
-        · exact h.grow (fun _ hx => List.mem_append_left _ hx) rfl rfl
-        · exact h.grow (fun _ hx => List.mem_append_left _ hx) rfl rfl
+        · exact ⟨h.recorded, h.past, fun x hx => h.jobs x (List.mem_of_mem_eraseIdx hx)⟩
+        · exact h.unplan (List.mem_of_getElem? hj)
       · exact h
     · exact h
-  | add a => exact ⟨h.recorded, h.past⟩
-  | remove a => exact ⟨h.recorded, h.past⟩
-  | refresh a ds => exact ⟨h.recorded, h.past⟩
-  | expire => exact ⟨h.recorded, h.past⟩
-  | queue rs u => exact ⟨h.recorded, h.past⟩
+  | queue rs u =>
+    refine ⟨h.recorded, h.past, ?_⟩
+    intro x hx
+    simp only [Group.step, stepCore, List.mem_append, List.mem_singleton] at hx
+    rcases hx with hx | rfl
+    · exact h.jobs x hx
+    · exact ⟨Nat.zero_le _, by simp⟩
+  | add a => exact ⟨h.recorded, h.past, h.jobs⟩
+  | remove a => exact ⟨h.recorded, h.past, h.jobs⟩
+  | refresh a ds => exact ⟨h.recorded, h.past, h.jobs⟩
+  | expire => exact ⟨h.recorded, h.past, h.jobs⟩
 
 theorem Inv.reach (hr : Reach s) : Inv s := by
   induction hr with
@@ -163,21 +194,6 @@ theorem rotation_targets (dist current : List (Nat × Nat)) (targets : List Nat)
   · exact hc d (by simpa using hcur)
   · have := hr d hd; simp_all
 
-/-- Where a plan leaves the job and the record. -/
-theorem planJob_at (s : S) (k : Nat) (j : Job) (hlen : k < s.jobs.length) :
-    ∃ outside pend, (planJob s k j).jobs[k]? =
-        some { j with plan := some ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty), outside, pend) } ∧
-      ((planJob s k j).distributed = [] ∨
-       ((rotation s.distributed (devs s ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)))
-          ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty))).1 = false ∧
-        (planJob s k j).distributed = s.distributed)) := by
-  simp only [planJob]
-  split
-  · exact ⟨_, _, by rw [List.getElem?_set_self hlen], Or.inl rfl⟩
-  · rename_i hreset
-    simp only [Bool.or_eq_true, not_or, Bool.not_eq_true] at hreset
-    exact ⟨_, _, by rw [List.getElem?_set_self hlen], Or.inr ⟨hreset.1, rfl⟩⟩
-
 theorem rotated_holds (s : S) (e : Ev) : rotated s e (step s e) = true := by
   cases e <;> simp only [rotated]
   case plan k =>
@@ -185,23 +201,66 @@ theorem rotated_holds (s : S) (e : Ev) : rotated s e (step s e) = true := by
     | none => rfl
     | some j =>
       have hlen : k < s.jobs.length := (List.getElem?_eq_some_iff.mp hj).1
-      have hst : step s (.plan k) = planJob s k j := by simp [step, stepCore, hj]
-      rw [hst]
       have htm : ∀ a ∈ (planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty), s.members.contains a = true := by
-        intro a ha
-        simp only [planOf, List.mem_filter] at ha
-        exact ha.1.2
+        intro a ha; exact (List.mem_filter.mp (List.mem_filter.mp ha).1).2
       have hcur : ∀ d ∈ devs s ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)),
           ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)).contains d.1 = true := by
         intro d hd; simp only [devs, List.mem_flatMap, List.mem_map] at hd
         obtain ⟨a, ha, x, -, rfl⟩ := hd; simpa using ha
-      obtain ⟨outside, pend, hjob, hd⟩ := planJob_at s k j hlen
-      simp only [hjob]
-      rcases hd with hd | ⟨hrot, hd⟩
-      · simp [hd]
-      · have := rotation_targets s.distributed _ _ hcur hrot
-        simp only [hd, List.all_eq_true, Bool.and_eq_true]
-        intro d hdd
-        exact ⟨this d hdd, htm d.1 (by simpa using this d hdd)⟩
+      by_cases hr : ((rotation s.distributed (devs s ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)))
+          ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty))).1 || s.stale) = true
+      · simp only [step, stepCore, hj, Group.planJob, hr, ite_true, List.getElem?_set_self hlen]
+        simp only [List.nil_append, List.contains_nil, Bool.not_false, List.all_eq_true, Bool.and_eq_true]
+        intro d hd; have hd := (List.mem_filter.mp hd).1; exact ⟨hcur d hd, htm _ (by simpa using hcur d hd)⟩
+      · have hn := hr
+        have hrot : (rotation s.distributed (devs s ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)))
+          ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty))).1 = false := by
+          simp only [Bool.or_eq_true, not_or, Bool.not_eq_true] at hn
+          exact hn.1
+        have hd := rotation_targets s.distributed _ _ hcur hrot
+        simp only [step, stepCore, hj, Group.planJob, hr, Bool.false_eq_true, ite_false, List.getElem?_set_self hlen, List.all_eq_true, Bool.and_eq_true]
+        intro d hm
+        have ht : ((planOf s.members j.rs j.update).1.filter (fun a => !(s.devices a).isEmpty)).contains d.1 = true := by
+          rcases (mem_union d _ _).mp hm with hm | hm
+          · exact hd d hm
+          · exact hcur d hm
+        exact ⟨ht, htm _ (by simpa using ht)⟩
+
+theorem contentKeySafe_holds (hr : Reach s) (e : Ev) : contentKeySafe s e (step s e) = true := by
+  have h := Inv.reach hr
+  cases e <;> simp only [step, stepCore, contentKeySafe, newOut]
+  all_goals try { simp; done }
+  case plan k =>
+    split
+    · simp only [Group.planJob]; split <;> simp
+    · simp
+  case distribute k =>
+    split
+    · split
+      · split <;> simp [unplan]
+      · simp
+    · simp
+  case submit k =>
+    split
+    · rename_i j hj
+      split
+      · split
+        · rename_i hm
+          simp only [Bool.and_eq_true] at hm
+          simp only [Bool.or_eq_true]; right
+          simp only [hj, Bool.and_eq_true]
+          refine ⟨hm.1.2, ?_⟩
+          have he := hm.1.1.2
+          simp only [beq_iff_eq] at he
+          rw [he]
+          have hm := hm.2
+          simp only [List.all_eq_true] at hm ⊢
+          intro x hx
+          by_cases he : x.2.2 = s.epoch
+          · simpa [he] using hm (x.1, x.2.1) (h.recorded x hx he)
+          · simp [he]
+        · simp [unplan]
+      · simp
+    · simp
 
 end Group

@@ -28,3 +28,7 @@ statements and their axioms (only `propext`, `Classical.choice`, `Quot.sound`) a
 `audit-expected.txt`; diffs the random explorer's verdicts; runs the Swift tests; applies each
 mutant and requires the tests to fail. `SKIP_MUTANTS=1` and `SKIP_SWIFT=1` skip the slow steps;
 `UPDATE_EXPECTED=1` rewrites the expected files (review the diff). Lean 4.35.0, core only.
+
+`python3 Tools/test-verification-runners.py` tests the runner failure paths with stub oracles:
+malformed regression input and explorer failures before or after valid-looking output must fail
+the verification command. Oracle exit status is checked before output is filtered.

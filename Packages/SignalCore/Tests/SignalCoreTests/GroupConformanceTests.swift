@@ -173,3 +173,183 @@ struct GroupConformanceTests {
         compare(lines, model: try GroupOracle.call("auth", lines), swift: swift)
     }
 }
+
+/// Exercises the database operations used around network awaits, rather than just the union helper.
+@Suite(.serialized)
+struct GroupReservationTests {
+    private struct Rig {
+        let db: SignalDatabase
+        let group: GroupSender
+        let keys: GroupKeys
+        let conversation: String
+        let members: [String]
+
+        init() async throws {
+            let (db, _) = try LinkedClient.temporaryDatabase()
+            let ours = UUID().uuidString.lowercased()
+            let members = (0..<3).map { _ in UUID().uuidString.lowercased() }
+            let account = Account(aci: ours, pni: nil, number: "+14155550100", deviceId: 2, password: "pw", deviceName: "rig",
+                                  aciIdentity: .generate(), pniIdentity: nil, aciRegistrationId: 1, pniRegistrationId: nil, profileKey: nil,
+                                  masterKey: nil, accountEntropyPool: nil, readReceipts: false)
+            let socket = SocketManager(net: Net(env: .staging, userAgent: "SignalSafe-Tests", buildVariant: .production))
+            let sender = MessageSender(account: account, database: db, socket: socket, trustRoots: [])
+            let keys = try GroupKeys(masterKey: Data(repeating: 8, count: 32))
+            let conversation = try await db.pool.write { db in
+                let id = try GroupStore.conversation(db, keys: keys).conversationId
+                var state = GroupV2State()
+                state.membersV2 = (members + [ours]).map { GroupMember(aci: $0, role: 1, joinedAtVersion: 0) }
+                try GroupStore.save(db, conversationId: id, state: state, ourAci: ours)
+                return id
+            }
+            self.db = db
+            self.group = GroupSender(account: account, database: db, socket: socket, sender: sender)
+            self.keys = keys
+            self.conversation = conversation
+            self.members = members
+        }
+
+        func device(_ member: Int, _ id: UInt32 = 1) -> SenderKeyInfo.Device {
+            .init(id: id, serviceId: members[member], registrationId: 7)
+        }
+
+        func prepare(_ devices: Set<SenderKeyInfo.Device>) async throws -> SenderKeyInfo {
+            try await db.pool.write { db in
+                try group.prepareSenderKey(db, conversationId: conversation, groupId: keys.groupId, current: devices, targets: Set(devices.map(\.serviceId))).0
+            }
+        }
+
+        func delivered(_ info: SenderKeyInfo, _ devices: Set<SenderKeyInfo.Device>) async throws {
+            let generation = try #require(info.generation)
+            try await db.pool.write { db in
+                try GroupSender.recordSenderKeyDelivery(db, conversationId: conversation, generation: generation, devices: devices)
+            }
+        }
+
+        func authorization(_ info: SenderKeyInfo, recipients: [String]) throws -> @Sendable () throws -> Void {
+            let generation = try #require(info.generation)
+            return group.sender.authorization(to: nil, groupId: keys.groupId, messageIds: [], recipients: recipients,
+                senderKey: .init(conversationId: conversation, generation: generation))
+        }
+
+        func authorize(_ info: SenderKeyInfo, recipients: [String]) throws {
+            try authorization(info, recipients: recipients)()
+        }
+    }
+
+    private actor Gate {
+        private var arrivals = 0
+        private var blocked: [CheckedContinuation<Void, Never>] = []
+        private var ready: CheckedContinuation<Void, Never>?
+        func arrive() async {
+            arrivals += 1
+            await withCheckedContinuation { continuation in
+                blocked.append(continuation)
+                if arrivals == 2 { ready?.resume(); ready = nil }
+            }
+        }
+        func waitForBoth() async {
+            if arrivals == 2 { return }
+            await withCheckedContinuation { ready = $0 }
+        }
+        func release() { for c in blocked { c.resume() }; blocked = [] }
+    }
+
+    @Test func overlappingReservationsPersistBeforeDelivery() async throws {
+        let r = try await Rig()
+        let gate = Gate()
+        let a = Set([r.device(0), r.device(1)])
+        let b = Set([r.device(0, 2), r.device(1, 2)])
+        // Both sends remain suspended before delivery. Their reservations must already be durable.
+        func pending(_ devices: Set<SenderKeyInfo.Device>) async throws -> SenderKeyInfo {
+            let info: SenderKeyInfo
+            do { info = try await r.prepare(devices) } catch { await gate.arrive(); throw error }
+            await gate.arrive()
+            try await r.delivered(info, devices)
+            return info
+        }
+        let first = Task { try await pending(a) }
+        let second = Task { try await pending(b) }
+        await gate.waitForBoth()
+        let stored = try await r.db.pool.read { try GroupSender.storedInfo($0, r.conversation) }
+        await gate.release()
+        let (x, y) = try await (first.value, second.value)
+        #expect(x.generation == y.generation)
+        #expect(Set(stored?.memberDevices ?? []) == a.union(b), "persisted reservations lost a concurrent send")
+        #expect(stored?.deliveredDevices?.isEmpty == true)
+        let completed = try await r.db.pool.read { try GroupSender.storedInfo($0, r.conversation) }
+        #expect(Set(completed?.deliveredDevices ?? []) == a.union(b), "delivery completion lost a concurrent send")
+        try r.authorize(x, recipients: r.members)
+        try r.authorize(y, recipients: r.members)
+    }
+
+    @Test func removalInvalidatesEncryptionAndSubmission() async throws {
+        let r = try await Rig()
+        let info = try await r.prepare(Set([r.device(0), r.device(1), r.device(2)]))
+        let authorize = try r.authorization(info, recipients: Array(r.members.dropFirst()))
+        try authorize()
+        try await r.db.pool.write { db in
+            var state = GroupV2State()
+            state.membersV2 = (Array(r.members.dropFirst()) + [r.group.account.aci]).map {
+                GroupMember(aci: $0, role: 1, joinedAtVersion: 0)
+            }
+            try GroupStore.save(db, conversationId: r.conversation, state: state, ourAci: r.group.account.aci)
+        }
+        // All addressed recipients remain members, but another holder of the key was removed.
+        #expect(throws: SendError.notAMember(r.members[0])) {
+            try authorize()
+        }
+        let generation = try #require(info.generation)
+        #expect(throws: SendError.notAMember(r.members[0])) {
+            try r.db.pool.read { db in
+                try GroupSender.authorizeSenderKey(db, conversationId: r.conversation, generation: generation, groupId: r.keys.groupId)
+            }
+        }
+    }
+
+    @Test func resetRejectsOldGenerationAndRetiresReservations() async throws {
+        let r = try await Rig()
+        let old = try await r.prepare(Set([r.device(0)]))
+        let fresh = try await r.db.pool.write { db in
+            try r.group.resetSenderKey(db, conversationId: r.conversation, previous: old)
+        }
+        #expect(old.distributionId == fresh.distributionId)
+        #expect(old.generation != fresh.generation)
+        #expect(fresh.memberDevices.isEmpty)
+        #expect(throws: SendError.notAMember("sender key changed")) { try r.authorize(old, recipients: r.members) }
+        do {
+            try await r.delivered(old, Set([r.device(0)]))
+            Issue.record("stale delivery restored a retired generation")
+        } catch SendError.notAMember {} catch { throw error }
+        let next = try await r.prepare(Set([r.device(1)]))
+        #expect(next.generation == fresh.generation)
+        #expect(next.memberDevices == [r.device(1)], "old send restored retired reservations")
+        try r.authorize(next, recipients: r.members)
+    }
+    @Test func interruptedReservationStillDistributesOnRetry() async throws {
+        let r = try await Rig()
+        let devices = Set([r.device(0), r.device(1)])
+        let first = try await r.prepare(devices)
+        let (retry, give) = try await r.db.pool.write { db in
+            try r.group.prepareSenderKey(db, conversationId: r.conversation, groupId: r.keys.groupId, current: devices, targets: Set(devices.map(\.serviceId)))
+        }
+        #expect(retry.generation == first.generation)
+        #expect(give == devices, "reservation incorrectly counted as completed delivery")
+        try await r.delivered(retry, devices)
+        let (_, remaining) = try await r.db.pool.write { db in
+            try r.group.prepareSenderKey(db, conversationId: r.conversation, groupId: r.keys.groupId, current: devices, targets: Set(devices.map(\.serviceId)))
+        }
+        #expect(remaining.isEmpty)
+    }
+
+    @Test func legacyStateGetsAFreshGeneration() async throws {
+        let r = try await Rig()
+        let legacy = SenderKeyInfo(createdAtDate: MessageStore.now(), distributionId: UUID().uuidString.lowercased(), memberDevices: [r.device(0)])
+        try await r.db.pool.write { try GroupSender.saveInfo($0, r.conversation, legacy) }
+        let info = try await r.prepare(Set([r.device(1)]))
+        #expect(info.generation != nil)
+        #expect(info.distributionId == legacy.distributionId)
+        #expect(info.memberDevices == [r.device(1)])
+        #expect(info.deliveredDevices == [])
+    }
+
+}

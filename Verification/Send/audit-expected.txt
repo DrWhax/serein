@@ -133,7 +133,7 @@ fun p _e p' =>
   | some o => !o.content.carries || o.ids.all fun m => p.s.msgs m == Msg.live
   | none => true
 def Send.retractionGoes : P → Ev → P → Bool :=
-fun p e _p' =>
+fun p e p' =>
   match e with
   | Ev.submit j =>
     match p.jobs[j]? with
@@ -144,7 +144,7 @@ fun p e _p' =>
               { blockedIds := __src.blockedIds, blockedNums := __src.blockedNums, blockedGroups := __src.blockedGroups,
                 msgs := fun x => Msg.live, members := __src.members })
               t c ids ||
-        (stepCore p e).out.length == p.out.length + 1
+        p'.out.length == p.out.length + 1
     | x => true
   | x => true
 def Send.groupRecipients : P → Ev → P → Bool :=
@@ -308,7 +308,7 @@ Send.instReprContent.repr.match_1 2150735452 1839073649
 Send.instReprEv.repr.match_1 1440336087 1023753369
 Send.instReprTarget.repr.match_1 1825975017 4098646864
 Send.recipients 170382723 379370199
-Send.retractionGoes 1547618333 2745329522
+Send.retractionGoes 1547618333 159168918
 Send.retractionGoes._sparseCasesOn_1 2334663261 1385501301
 Send.retractionGoes._sparseCasesOn_2 1104515651 3678663907
 Send.retractionGoes._sparseCasesOn_5 2737979030 3579411623

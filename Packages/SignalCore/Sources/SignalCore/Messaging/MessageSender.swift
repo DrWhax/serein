@@ -134,13 +134,18 @@ public final class MessageSender: Sendable {
         return try number.map { try BlockedList.numbers.blockedAt(db, $0).blocked } ?? false
     }
 
+    struct SenderKeyAuthorization: Sendable {
+        let conversationId: String
+        let generation: String
+    }
+
     /// Re-evaluated after connection setup, immediately before transport submission.
     /// Blocking a contact does not block shared group conversations; those have their own block state.
     /// `messageIds` must still exist, unerased, unless the payload only retracts them. A group
     /// payload goes only to current members (`serviceId`, or every one of `recipients` for a
     /// multi-recipient send), unless it is a group update, which also reaches those it removes.
     func authorization(to serviceId: String?, groupId: Data, messageIds: [String], retracting: Bool = false, groupUpdate: Bool = false,
-                       recipients: [String] = []) -> @Sendable () throws -> Void {
+                       recipients: [String] = [], senderKey: SenderKeyAuthorization? = nil) -> @Sendable () throws -> Void {
         { [database, account] in
             try database.pool.read { db in
                 if !groupId.isEmpty {
@@ -155,6 +160,10 @@ public final class MessageSender: Sendable {
                     }
                 } else if let serviceId, serviceId != account.aci {
                     if try Self.isBlocked(db, serviceId: serviceId) { throw JobError.permanent("recipient blocked") }
+                }
+                if let senderKey {
+                    try GroupSender.authorizeSenderKey(db, conversationId: senderKey.conversationId,
+                                                       generation: senderKey.generation, groupId: groupId)
                 }
                 for id in messageIds where !retracting {
                     guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [id]),

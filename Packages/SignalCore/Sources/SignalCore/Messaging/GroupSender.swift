@@ -15,6 +15,10 @@ struct SenderKeyInfo: Codable, Equatable {
     var createdAtDate: Int64
     var distributionId: String
     var memberDevices: [Device]
+    /// Changes on every reset, even though the protocol distribution id is stable.
+    var generation: String? = nil
+    /// Confirmed deliveries, distinct from reservations: an interrupted send must redistribute.
+    var deliveredDevices: [Device]? = nil
     /// Set when a member's identity key changed: the key is replaced before the next send.
     var needsReset: Bool?
 }
@@ -57,9 +61,8 @@ extension SenderKeyInfo {
         return (reset, reset ? current : current.subtracting(Set(distributed)))
     }
 
-    /// The devices recorded as having our key, after `devices` got it: added to what was
-    /// recorded (until the next reset), never replaced, so a device with the key always counts
-    /// for the next rotation, even when a send stops part-way or another send ran meanwhile.
+    /// Merge reservations or delivery completions with the latest persisted record. Neither
+    /// set shrinks within a generation, including when sends overlap or stop part-way.
     static func recording(_ distributed: [Device], adding devices: some Sequence<Device>) -> [Device] {
         Array(Set(distributed).union(devices)).sorted { ($0.serviceId, $0.id) < ($1.serviceId, $1.id) }
     }
@@ -161,16 +164,51 @@ public struct GroupSender: Sendable {
                                blocked: blocked, notMembers: dropped)
     }
 
-    /// The conversation's sender-key state. A key that has expired, or that was marked for
-    /// reset (a member's identity key changed), is replaced first.
-    func loadInfo(_ conversationId: String) async throws -> SenderKeyInfo {
-        let now = MessageStore.now()
-        return try await database.pool.write { db in
-            let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE id = ?", arguments: [conversationId]).map(MessageStore.jsonObject) ?? [:]
-            let stored = json["senderKeyInfo"].flatMap { try? JSONSerialization.data(withJSONObject: $0) }
-                .flatMap { try? JSONDecoder().decode(SenderKeyInfo.self, from: $0) }
-            if let stored, stored.needsReset != true, now - stored.createdAtDate < Self.senderKeyExpiry { return stored }
-            return try self.resetSenderKey(db, conversationId: conversationId, previous: stored)
+    static func storedInfo(_ db: Database, _ conversationId: String) throws -> SenderKeyInfo? {
+        let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE id = ?", arguments: [conversationId]).map(MessageStore.jsonObject) ?? [:]
+        return try json["senderKeyInfo"].map { try JSONDecoder().decode(SenderKeyInfo.self, from: JSONSerialization.data(withJSONObject: $0)) }
+    }
+
+    /// Plan and reserve potential holders in one writer transaction, before network delivery.
+    /// Failed deliveries may overcount holders; undercounting would make rotation unsound.
+    func prepareSenderKey(_ db: Database, conversationId: String, groupId: Data, current: Set<SenderKeyInfo.Device>,
+                          targets: Set<String>) throws -> (SenderKeyInfo, Set<SenderKeyInfo.Device>) {
+        let members = try MessageSender.currentMembers(db, groupId: groupId)
+        for target in targets where !members.contains(target) { throw SendError.notAMember(target) }
+        let stored = try Self.storedInfo(db, conversationId)
+        var info: SenderKeyInfo
+        if let stored, stored.generation != nil, stored.needsReset != true,
+           MessageStore.now() - stored.createdAtDate < Self.senderKeyExpiry {
+            info = stored
+        } else {
+            info = try resetSenderKey(db, conversationId: conversationId, previous: stored)
+        }
+        let rotation = SenderKeyInfo.rotation(distributed: info.memberDevices, current: current, targets: targets)
+        if rotation.reset { info = try resetSenderKey(db, conversationId: conversationId, previous: info) }
+        info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: current)
+        try Self.saveInfo(db, conversationId, info)
+        return (info, current.subtracting(Set(info.deliveredDevices ?? [])))
+    }
+
+    /// A completion can add only to its own generation, and merges with the latest database row.
+    static func recordSenderKeyDelivery(_ db: Database, conversationId: String, generation: String,
+                                        devices: Set<SenderKeyInfo.Device>) throws {
+        guard var info = try storedInfo(db, conversationId), info.generation == generation else {
+            throw SendError.notAMember("sender key changed")
+        }
+        info.deliveredDevices = SenderKeyInfo.recording(info.deliveredDevices ?? [], adding: devices)
+        try saveInfo(db, conversationId, info)
+    }
+
+    /// Check the key actually used, not merely this send's addressed recipients. Called in the
+    /// encryption transaction and again by the transport immediately before submission.
+    static func authorizeSenderKey(_ db: Database, conversationId: String, generation: String, groupId: Data) throws {
+        guard let info = try storedInfo(db, conversationId), info.generation == generation, info.needsReset != true else {
+            throw SendError.notAMember("sender key changed")
+        }
+        let members = try MessageSender.currentMembers(db, groupId: groupId)
+        for device in info.memberDevices where !members.contains(device.serviceId) {
+            throw SendError.notAMember(device.serviceId)
         }
     }
 
@@ -180,7 +218,7 @@ public struct GroupSender: Sendable {
     @discardableResult
     func resetSenderKey(_ db: Database, conversationId: String, previous: SenderKeyInfo?) throws -> SenderKeyInfo {
         let fresh = SenderKeyInfo(createdAtDate: MessageStore.now(), distributionId: previous?.distributionId ?? UUID().uuidString.lowercased(),
-                                  memberDevices: [])
+                                  memberDevices: [], generation: UUID().uuidString.lowercased(), deliveredDevices: [])
         if let previous, let id = UUID(uuidString: previous.distributionId) {
             try sender.store.removeSenderKey(db, from: try ProtocolAddress(name: account.aci, deviceId: account.deviceId), distributionId: id)
         }
@@ -195,7 +233,6 @@ public struct GroupSender: Sendable {
 
     func sendViaSenderKey(_ payload: OutgoingPayload, keys: GroupKeys, conversationId: String, devices: [(String, [UInt32])],
                           endorsements: GroupSendEndorsements.State, messageIds: [String]) async throws -> ([String], [String]) {
-        var info = try await loadInfo(conversationId)
         let current = try await database.pool.read { db -> Set<SenderKeyInfo.Device> in
             let ctx = DatabaseStoreContext(db)
             var out = Set<SenderKeyInfo.Device>()
@@ -207,36 +244,32 @@ public struct GroupSender: Sendable {
             }
             return out
         }
-        // A device of someone no longer in the send's targets (members only) saw our key: start a
-        // new one; the key then goes only to target devices that lack it.
-        let rotation = SenderKeyInfo.rotation(distributed: info.memberDevices, current: current, targets: Set(devices.map(\.0)))
-        if rotation.reset {
-            let previous = info
-            info = try await database.pool.write { db in try self.resetSenderKey(db, conversationId: conversationId, previous: previous) }
+        let (info, newDevices, skdm) = try await database.pool.write { db in
+            let (info, newDevices) = try prepareSenderKey(db, conversationId: conversationId, groupId: keys.groupId, current: current,
+                                                       targets: Set(devices.map(\.0)))
+            guard let distributionId = UUID(uuidString: info.distributionId) else { throw SendError.invalidKeysResponse("distribution id") }
+            let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)
+            let skdm = try SenderKeyDistributionMessage(from: local, distributionId: distributionId, store: sender.store,
+                                                        context: DatabaseStoreContext(db)).serialize()
+            return (info, newDevices, skdm)
         }
-        guard let distributionId = UUID(uuidString: info.distributionId) else { throw SendError.invalidKeysResponse("distribution id") }
+        guard let distributionId = UUID(uuidString: info.distributionId), let generation = info.generation else {
+            throw SendError.invalidKeysResponse("sender key generation")
+        }
         let local = try ProtocolAddress(name: account.aci, deviceId: account.deviceId)
-        let newDevices = rotation.distribute
         if !newDevices.isEmpty {
-            let skdm = try await database.pool.write { db in
-                try SenderKeyDistributionMessage(from: local, distributionId: distributionId, store: sender.store, context: DatabaseStoreContext(db))
-                    .serialize()
-            }
             var content = Signalservice_Content()
             content.senderKeyDistributionMessage = skdm
             var distribution = OutgoingPayload(content: content, timestamp: payload.timestamp, contentHint: .resendable, urgent: payload.urgent)
             distribution.groupId = keys.groupId
             for id in Set(newDevices.map(\.serviceId)).sorted() {
                 _ = try await sender.send(distribution, to: id)
-                // Recorded as it goes: these devices have the key from now on.
-                info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: newDevices.filter { $0.serviceId == id })
-                let saved = info
-                try await database.pool.write { db in try Self.saveInfo(db, conversationId, saved) }
+                try await database.pool.write { db in
+                    try Self.recordSenderKeyDelivery(db, conversationId: conversationId, generation: generation,
+                                                     devices: Set(newDevices.filter { $0.serviceId == id }))
+                }
             }
         }
-        info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: current)
-        let saved = info
-        try await database.pool.write { db in try Self.saveInfo(db, conversationId, saved) }
 
         let recipients = Set(devices.map(\.0))
         let token = try endorsements.token(for: recipients, ourAci: account.aci, keys: keys)
@@ -245,14 +278,17 @@ public struct GroupSender: Sendable {
         let padded = MessageSender.pad(proto)
         let addresses = try devices.flatMap { id, ds in try ds.map { try ProtocolAddress(name: id, deviceId: $0) } }
         let multi = try await database.pool.write { db in
+            try Self.authorizeSenderKey(db, conversationId: conversationId, generation: generation, groupId: keys.groupId)
             let ctx = DatabaseStoreContext(db)
             let message = try groupEncrypt(padded, from: local, distributionId: distributionId, store: sender.store, context: ctx)
             let usmc = try UnidentifiedSenderMessageContent(message, from: certificate, contentHint: payload.contentHint, groupId: keys.groupId)
             return try sealedSenderMultiRecipientEncrypt(usmc, for: addresses, identityStore: sender.store, sessionStore: sender.store, context: ctx)
         }
+        let authorize = sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds,
+                                             retracting: payload.onlyRetracts, recipients: devices.map(\.0),
+                                             senderKey: .init(conversationId: conversationId, generation: generation))
         let gone = try await socket.sendMultiRecipient(multi, timestamp: payload.timestamp, token: token, online: payload.online, urgent: payload.urgent,
-                                                       authorize: sender.authorization(to: nil, groupId: keys.groupId, messageIds: messageIds,
-                                                                                       retracting: payload.onlyRetracts, recipients: devices.map(\.0)))
+                                                       authorize: authorize)
             .map { $0.serviceIdString.lowercased() }
         let delivered = devices.filter { !gone.contains($0.0) }
         try await database.pool.write { db in

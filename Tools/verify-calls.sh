@@ -60,7 +60,8 @@ echo "$total theorems; axioms used: propext, Classical.choice, Quot.sound; $(gre
 
 echo "== 4. explorer verdicts (40000 random traces of 80 events per schedule, seed 2026)"
 for m in any ui drained drained-fifo; do
-  ./.lake/build/bin/oracle explore 2026 40000 80 "$m" | grep -E '^(OK|FAIL)' | sed -E "s/^(OK|FAIL) ([A-Za-z0-9-]+).*/$m \2 \1/"
+  ./.lake/build/bin/oracle explore 2026 40000 80 "$m" > "$tmp/explore-raw"
+  grep -E '^(OK|FAIL)' "$tmp/explore-raw" | sed -E "s/^(OK|FAIL) ([A-Za-z0-9-]+).*/$m \2 \1/"
 done > "$tmp/explore"
 if [ "${UPDATE_EXPECTED:-}" = 1 ]; then cp "$tmp/explore" explore-expected.txt; fi
 if ! diff -u explore-expected.txt "$tmp/explore"; then

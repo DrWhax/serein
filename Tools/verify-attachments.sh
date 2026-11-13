@@ -59,7 +59,8 @@ fi
 echo "$total theorems; axioms used: propext, Classical.choice, Quot.sound; $(grep -m1 ' definitions$' "$tmp/audit") in the audited closure"
 
 echo "== 4. explorer verdicts (40000 random runs of 60 events, seed 2026)"
-./.lake/build/bin/oracle explore 2026 40000 60 | grep -E '^(OK|FAIL)' | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
+./.lake/build/bin/oracle explore 2026 40000 60 > "$tmp/explore-raw"
+grep -E '^(OK|FAIL)' "$tmp/explore-raw" | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
 if [ "${UPDATE_EXPECTED:-}" = 1 ]; then cp "$tmp/explore" explore-expected.txt; fi
 if ! diff -u explore-expected.txt "$tmp/explore"; then
   echo "error: a property's verdict changed (review, then UPDATE_EXPECTED=1)" >&2; exit 1

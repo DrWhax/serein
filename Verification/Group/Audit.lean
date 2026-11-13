@@ -15,6 +15,7 @@ open Group
 #print keysToMembers
 #print contentToMembers
 #print holdersRecorded
+#print contentKeySafe
 #print rotated
 #print Inv
 #print boundary
@@ -58,7 +59,7 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure out_step keysToMembers_holds contentToMembers_holds Inv.reach holdersRecorded_holds rotation_targets rotated_holds
+#audit_closure out_step keysToMembers_holds contentToMembers_holds Inv.reach holdersRecorded_holds rotation_targets rotated_holds contentKeySafe_holds
 
 #check @out_step
 #check @keysToMembers_holds
@@ -67,6 +68,7 @@ elab "#audit_closure " roots:ident* : command => do
 #check @holdersRecorded_holds
 #check @rotation_targets
 #check @rotated_holds
+#check @contentKeySafe_holds
 
 open Lean Elab Command in
 /-- `collectAxioms` for each theorem, on one line each. -/
@@ -77,4 +79,4 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms out_step keysToMembers_holds contentToMembers_holds Inv.reach holdersRecorded_holds rotation_targets rotated_holds
+#audit_axioms out_step keysToMembers_holds contentToMembers_holds Inv.reach holdersRecorded_holds rotation_targets rotated_holds contentKeySafe_holds

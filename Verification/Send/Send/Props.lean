@@ -26,12 +26,12 @@ def contentNeedsSource (p : P) (_e : Ev) (p' : P) : Bool :=
 
 /-- **A retraction is not refused for its removed source**: a started send that only retracts,
 to a target that is not blocked, is submitted whatever happened to the messages it names. -/
-def retractionGoes (p : P) (e : Ev) (_p' : P) : Bool :=
+def retractionGoes (p : P) (e : Ev) (p' : P) : Bool :=
   match e with
   | .submit j => match p.jobs[j]? with
     | some ⟨t, c, ids, .started _⟩ =>
       !c.onlyRetracts || !authorized { p.s with msgs := fun _ => .live } t c ids ||
-        (stepCore p e).out.length == p.out.length + 1
+        p'.out.length == p.out.length + 1
     | _ => true
   | _ => true
 

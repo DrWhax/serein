@@ -58,7 +58,8 @@ fi
 echo "$total theorems; axioms used: propext, Classical.choice, Quot.sound; $(grep -m1 ' definitions$' "$tmp/audit") in the audited closure"
 
 echo "== 4. explorer verdicts (40000 random runs of 60 events, seed 2026)"
-./.lake/build/bin/oracle explore 2026 40000 60 | grep -E '^(OK|FAIL)' | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
+./.lake/build/bin/oracle explore 2026 40000 60 > "$tmp/explore-raw"
+grep -E '^(OK|FAIL)' "$tmp/explore-raw" | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
 if [ "${UPDATE_EXPECTED:-}" = 1 ]; then cp "$tmp/explore" explore-expected.txt; fi
 if ! diff -u explore-expected.txt "$tmp/explore"; then
   echo "error: a property's verdict changed (review, then UPDATE_EXPECTED=1)" >&2; exit 1
@@ -72,7 +73,7 @@ cd "$root/Packages/SignalCore"
 echo "== 5. Swift: decisions against the oracle"
 status=0
 SEREIN_GROUP_ORACLE="$oracle" SEREIN_GROUP_CASES="${SEREIN_GROUP_CASES:-5000}" \
-  swift test --filter 'GroupConformanceTests' > "$tmp/swift" 2>&1 || status=$?
+  swift test --filter 'GroupConformanceTests|GroupReservationTests' > "$tmp/swift" 2>&1 || status=$?
 grep -E 'Test run|passed after|failed after|disagree|model |trace:' "$tmp/swift" | tail -40
 [ "$status" -eq 0 ] || exit "$status"
 
@@ -86,7 +87,7 @@ mutant() {
   perl -0pi -e "$expr" "$file"
   if cmp -s "$file" "$backup"; then echo "error: mutant '$name' did not apply" >&2; exit 1; fi
   SEREIN_GROUP_ORACLE="$oracle" SEREIN_GROUP_CASES=2000 \
-    swift test --filter 'GroupConformanceTests' > "$tmp/mutant" 2>&1 && survived=1 || survived=0
+    swift test --filter 'GroupConformanceTests|GroupReservationTests' > "$tmp/mutant" 2>&1 && survived=1 || survived=0
   restore
   if [ "$survived" = 1 ]; then echo "error: mutant '$name' survived the conformance tests" >&2; exit 1; fi
   if ! grep -qE "$expect" "$tmp/mutant"; then
@@ -112,4 +113,12 @@ mutant "a group update with content counts as an update" "$sender" \
   's/        bare\.groupV2 = m\.groupV2\n        return bare == m/        bare.groupV2 = m.groupV2\n        return bare.hasGroupV2/'
 mutant "a sender-key message counts as a group update" "$sender" \
   's/guard case \.dataMessage\(let m\)\? = content\.content, m\.hasGroupV2 else \{ return false \}/guard case .dataMessage(let m)? = content.content, m.hasGroupV2 else { return !content.senderKeyDistributionMessage.isEmpty }/'
-echo "8 mutants killed"
+mutant "reservations count as completed deliveries" "$group" \
+  's/info.memberDevices = SenderKeyInfo.recording\(info.memberDevices, adding: current\)/info.memberDevices = SenderKeyInfo.recording(info.memberDevices, adding: current)\n        info.deliveredDevices = info.memberDevices/' 'reservation incorrectly counted as completed delivery'
+mutant "delivery completion replaces concurrent deliveries" "$group" \
+  's/SenderKeyInfo.recording\(info.deliveredDevices \?\? \[\], adding: devices\)/Array(devices)/' 'delivery completion lost a concurrent send'
+mutant "sender key generation is not checked" "$group" \
+  's/info.generation == generation, info.needsReset/info.generation != nil, info.needsReset/' 'Test resetRejectsOldGenerationAndRetiresReservations\(\) (recorded an issue|failed)'
+mutant "removed holders do not block content submission" "$group" \
+  's/for device in info.memberDevices where !members.contains\(device.serviceId\) \{/for device in info.memberDevices where !members.contains(device.serviceId) \&\& device.id == UInt32.max {/' 'Test removalInvalidatesEncryptionAndSubmission\(\) (recorded an issue|failed)'
+echo "12 mutants killed"

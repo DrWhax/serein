@@ -60,10 +60,12 @@ fi
 echo "$total theorems; axioms used: propext, Classical.choice, Quot.sound; $(grep -m1 ' definitions$' "$tmp/audit") in the audited closure"
 
 echo "== 4. explorer verdicts (40000 random traces of 50 events, seed 2026), regression traces"
-if ./.lake/build/bin/oracle check < traces/regressions.txt | grep -v 'fails=\[\]'; then
+./.lake/build/bin/oracle check < traces/regressions.txt > "$tmp/regressions"
+if grep -v 'fails=\[\]' "$tmp/regressions"; then
   echo "error: a regression trace falsifies a property (above)" >&2; exit 1
 fi
-./.lake/build/bin/oracle explore 2026 40000 50 | grep -E '^(OK|FAIL)' | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
+./.lake/build/bin/oracle explore 2026 40000 50 > "$tmp/explore-raw"
+grep -E '^(OK|FAIL)' "$tmp/explore-raw" | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
 if [ "${UPDATE_EXPECTED:-}" = 1 ]; then cp "$tmp/explore" explore-expected.txt; fi
 if ! diff -u explore-expected.txt "$tmp/explore"; then
   echo "error: a property's verdict changed (review, then UPDATE_EXPECTED=1)" >&2; exit 1
@@ -120,9 +122,9 @@ mutant "a group send goes to members we blocked" Packages/SignalCore/Sources/Sig
   's/try serviceIds\.filter \{ try !MessageSender\.isBlocked\(db, serviceId: \$0\) \}/_ = db\n        return serviceIds/'
 socket=Packages/SignalCore/Sources/SignalCore/Net/SocketManager.swift
 mutant "the authenticated transport skips the check" "$socket" \
-  's/(guard let chat = authenticated else \{ throw ChatRequestError\.notConnected \}\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n/$1        _ = authorize\n/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
+  's/(let response = try await withAuthenticated \{ chat in\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n/$1            _ = authorize\n/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
 mutant "the unauthenticated transport skips the check" "$socket" \
-  's/(let chat = try await unauthenticatedConnection\(\)\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n(\s*let response = try await chat\.send)/$1        _ = authorize\n$2/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
+  's/(let response = try await withUnauthenticated \{ chat in\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n(\s*return try await chat\.send\()/$1            _ = authorize\n$2/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
 mutant "the multi-recipient transport skips the check" "$socket" \
-  's/(let chat = try await unauthenticatedConnection\(\)\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n(\s*let response = try await chat\.sendMultiRecipientMessage)/$1        _ = authorize\n$2/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
+  's/(let response = try await withUnauthenticated \{ chat in\n\s*try Task\.checkCancellation\(\)\n)\s*try authorize\(\)\n(\s*return try await chat\.sendMultiRecipientMessage)/$1            _ = authorize\n$2/' 'Test transportRefusesAtTheBoundary\(\) (recorded an issue|failed)'
 echo "12 mutants killed"

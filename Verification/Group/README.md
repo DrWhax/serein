@@ -36,8 +36,9 @@ before the commit is not recalled.
 |---|---|
 | `keysToMembers_holds` | **Removed members get no new sender key**: a key distribution goes only to an account that is a member at that submission. |
 | `contentToMembers_holds` | **Removed members get no newly authorized content**: content goes only to members at that submission. |
-| `Inv.reach`, `holdersRecorded_holds` | Every device holding our current key is recorded as having it — also when a send stops part-way and when sends interleave. |
-| `rotation_targets`, `rotated_holds` | **Rotation after a removal**: once a send has planned, every device recorded as having our current key belongs to one of its targets, members at that moment. With the invariant: no non-member holds the key the next content is encrypted with. |
+| `Inv.reach`, `holdersRecorded_holds` | Every device holding our current key is reserved in its generation, including deliveries completed after a reset and sends that stop part-way. |
+| `contentKeySafe_holds` | When content submits, every holder of the send's captured key generation is a current member, and the key is not marked stale. |
+| `rotation_targets`, `rotated_holds` | **Rotation after a removal**: once a send has planned, every device recorded as having our current key belongs to one of its targets, members at that moment. This is a planning postcondition; `contentKeySafe_holds` separately checks the key at submission. |
 | `out_step` | What a step can add to the output (the basis of the first two). |
 
 `keysToMembers` and `contentToMembers` follow from the model checking at each submission; what
@@ -61,12 +62,18 @@ distributions).
 sender-key path to members before and after, so a removed member could be handed a new key; now the
 non-members it reaches get it one by one.
 
-**G3: the record of who has our key is added to as the key goes out, never replaced.** It was saved
-once after the distribution loop, and replaced by that send's targets: a send that stopped part-way
-(a refusal, a failure) or another send running meanwhile (group call messages do not go through the
-job queue) could leave a device holding the key unrecorded, and then a later removal of its account
-would not rotate the key. Now each account's devices are recorded as soon as they get the key
-(`SenderKeyInfo.recording`, a union until the next reset).
+**G3: reservations and delivery completions are separate.** Planning, rotation, reservation and
+construction of the key distribution message share one database transaction. Reservations merge
+with persisted state before network delivery, so concurrent sends cannot lose a potential holder.
+Confirmed deliveries merge in a later transaction under the captured generation; failed sends
+still distribute on retry. A completion for a retired generation cannot restore its old snapshot.
+
+**G4: encryption and submission check the captured generation and all reserved holders.**
+Every reset creates a fresh local generation identifier (the protocol distribution id stays the
+same). The encryption transaction checks that identifier, the reset flag and current membership
+of every reserved holder. The transport repeats the check in its authorization read immediately
+before submission. A failure replans through the existing bounded retry path. Existing persisted
+state without a generation is reset on first use.
 
 ## 4. What is only tested against Swift
 
@@ -77,10 +84,19 @@ payload on a real database (a group in `GroupStore` with random members; random 
 without a group context and content, and key distribution messages; one-by-one and multi-recipient),
 together with `isGroupUpdateOnly`.
 
+`GroupReservationTests` exercises production database operations: two sends held before delivery
+must persist the union of their reservations and later completions; removal of an unaddressed
+holder invalidates an already-created authorization closure; a reset rejects stale generations
+and late completions; interrupted reservations still distribute on retry; legacy state migrates.
+`Group/Regression.lean` kernel-checks the adversarial interleavings and a fabricated bad output
+that the strengthened property must reject.
+
 Mutants (step 6): content plans include non-members; a group update no longer reaches those it
 removes; a removed account does not rotate our key; the key record replaced, not added to; the
 submission check skips membership; a one-recipient group send not checked; a group update with
-content counts as an update; a sender-key message counts as a group update.
+content counts as an update; a sender-key message counts as a group update; reservations count as completed delivery;
+completion replaces concurrent deliveries; generation checks are omitted; removed holders no
+longer block submission. All 12 must be killed.
 
 ## 5. Assumptions and limitations
 
@@ -89,7 +105,12 @@ content counts as an update; a sender-key message counts as a group update.
   is made of.
 - Endorsements are not modelled: members without one get one-by-one sends, which are content to
   members and checked the same way.
-- When two sends interleave and one replaces the key after the other planned, the other may submit
-  under the new key to targets it did not give it to: they cannot decrypt (availability, not
-  secrecy); it is not modelled as a failure.
+- When another send replaces the key, an older send is refused at encryption or submission and
+  replans. A late distribution of the old key remains an old-generation delivery; its completion
+  cannot modify the new generation. Reservations may overcount deliveries, causing conservative
+  rotation. Network failure and device-list refresh can affect delivery availability; the holder
+  secrecy boundary is membership of the account, while the model snapshots its device list.
+- The gated database tests exercise the actual preparation/completion and authorization methods,
+  not the full endorsed network send. SQLite transaction isolation and transport invocation of
+  the authorization closure remain assumptions covered by their existing boundary tests.
 - The membership is the local group state; what the server or other members believe is outside.
