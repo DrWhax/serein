@@ -211,7 +211,14 @@ public actor SignalClient {
                           preKeys: PreKeyMaintenance(account: account, database: database, socket: socket), maintenance: maintenance)
         // Files nothing refers to any more, while nothing is writing new ones yet.
         if let removed = try? await maintenance.cleanOrphans(), removed > 0 { Self.diagnose("orphaned attachment files removed: \(removed)") }
-        try await socket.connect(listener: receiver)
+        do {
+            try await socket.connect(listener: receiver)
+        } catch {
+            // Linking needs the connection now. A stored account starts anyway (offline, the
+            // server unreachable): sends queue, and SocketManager keeps reconnecting.
+            if linker != nil { throw error }
+            Self.diagnose("chat connection failed, reconnecting in the background: \(String(describing: error).prefix(120))")
+        }
         // Disappearing messages are deleted when their time is up (upstream
         // expiringMessagesDeletionService), expired pins unpinned, and once a week the
         // key-transparency self check runs.

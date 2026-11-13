@@ -25,8 +25,15 @@ public enum ChatRequestError: Error, Equatable {
     }
 }
 
-final class NoopUnauthenticatedListener: ConnectionEventsListener {
-    func connectionWasInterrupted(_ service: UnauthenticatedChatConnection, error: Error?) {}
+/// Tells the manager when its unauthenticated connection closes, so the next request opens a
+/// new one (upstream SocketManager drops its unauthenticated socket on close). Before, a dropped
+/// connection stayed cached and every sealed-sender and group send failed until a restart.
+final class UnauthenticatedInterruptionListener: ConnectionEventsListener, Sendable {
+    weak let manager: SocketManager?
+    init(manager: SocketManager) { self.manager = manager }
+    func connectionWasInterrupted(_ service: UnauthenticatedChatConnection, error: Error?) {
+        manager?.unauthenticatedInterrupted(service)
+    }
 }
 
 public actor SocketManager {
@@ -50,9 +57,42 @@ public actor SocketManager {
     func unauthenticatedConnection() async throws -> UnauthenticatedChatConnection {
         if let c = unauthenticated { return c }
         let c = try await net.connectUnauthenticatedChat()
-        c.start(listener: NoopUnauthenticatedListener())
+        c.start(listener: UnauthenticatedInterruptionListener(manager: self))
         unauthenticated = c
         return c
+    }
+
+    nonisolated func unauthenticatedInterrupted(_ c: UnauthenticatedChatConnection) {
+        Task { await self.dropUnauthenticated(c) }
+    }
+
+    func dropUnauthenticated(_ c: UnauthenticatedChatConnection) {
+        if unauthenticated === c { unauthenticated = nil }
+    }
+
+    /// `body` on the unauthenticated connection. One found closed (its interruption not handled
+    /// yet) is replaced and `body` runs once more: the request never left.
+    func withUnauthenticated<T: Sendable>(_ body: (UnauthenticatedChatConnection) async throws -> T) async throws -> T {
+        let chat = try await unauthenticatedConnection()
+        do {
+            return try await body(chat)
+        } catch SignalError.chatServiceInactive {
+            dropUnauthenticated(chat)
+            return try await body(try await unauthenticatedConnection())
+        }
+    }
+
+    /// `body` on the authenticated connection. One found closed without its interruption having
+    /// reached us is replaced as an interruption would (reconnect with backoff); the request
+    /// fails as not connected, and the job that sent it retries.
+    func withAuthenticated<T: Sendable>(_ body: (AuthenticatedChatConnection) async throws -> T) async throws -> T {
+        guard let chat = authenticated else { throw ChatRequestError.notConnected }
+        do {
+            return try await body(chat)
+        } catch SignalError.chatServiceInactive {
+            if authenticated === chat { scheduleReconnect() }
+            throw ChatRequestError.notConnected
+        }
     }
 
     /// REST request over the unauthenticated chat socket (optionally with explicit
@@ -62,20 +102,29 @@ public actor SocketManager {
         var headers = extra
         if json != nil { headers["content-type"] = "application/json" }
         if let (u, p) = basicAuth { headers["authorization"] = "Basic " + Data("\(u):\(p)".utf8).base64EncodedString() }
-        let chat = try await unauthenticatedConnection()
-        try Task.checkCancellation()
-        try authorize()
-        let response = try await chat.send(ChatRequest(method: method, pathAndQuery: path, headers: headers, body: json, timeout: 30))
+        let response = try await withUnauthenticated { chat in
+            try Task.checkCancellation()
+            try authorize()
+            return try await chat.send(ChatRequest(method: method, pathAndQuery: path, headers: headers, body: json, timeout: 30))
+        }
         return try Self.check(response)
     }
 
     // MARK: authenticated
 
     /// Connects (or returns) the authenticated socket; incoming envelopes go to `listener`.
+    /// A failure (offline at launch, the server unreachable) leaves the manager reconnecting in
+    /// the background, as after an interruption; before, nothing retried until a restart.
     public func connect(listener: any ChatConnectionListener & Sendable) async throws {
         self.listener = listener
         stopped = false
-        if authenticated == nil { try await connectAuthenticated() }
+        guard authenticated == nil else { return }
+        do {
+            try await connectAuthenticated()
+        } catch {
+            scheduleReconnect()
+            throw error
+        }
     }
 
     func connectAuthenticated() async throws {
@@ -110,30 +159,31 @@ public actor SocketManager {
 
 
     public func authenticatedRequest(_ method: String, _ path: String, json: Data? = nil, authorize: @Sendable () throws -> Void = {}) async throws -> Data {
-        guard let chat = authenticated else { throw ChatRequestError.notConnected }
-        try Task.checkCancellation()
-        try authorize()
-        let response = try await chat.send(ChatRequest(method: method, pathAndQuery: path,
-                                                       headers: json == nil ? [:] : ["content-type": "application/json"],
-                                                       body: json, timeout: 30))
+        let response = try await withAuthenticated { chat in
+            try Task.checkCancellation()
+            try authorize()
+            return try await chat.send(ChatRequest(method: method, pathAndQuery: path,
+                                                   headers: json == nil ? [:] : ["content-type": "application/json"],
+                                                   body: json, timeout: 30))
+        }
         return try Self.check(response)
     }
 
     /// `getAttachmentUploadForm` (libsignal's typed Attachments/GetUploadForm).
     public func uploadForm(size: Int) async throws -> UploadForm {
-        guard let chat = authenticated else { throw ChatRequestError.notConnected }
-        return try await chat.getUploadForm(uploadSize: UInt64(size))
+        try await withAuthenticated { chat in try await chat.getUploadForm(uploadSize: UInt64(size)) }
     }
 
     /// `sendMulti` (MessagesAnonymous/SendMultiRecipientMessage): a sealed-sender multi-recipient
     /// payload authorised by a group send token.
     public func sendMultiRecipient(_ payload: Data, timestamp: UInt64, token: Data, online: Bool, urgent: Bool,
                                    authorize: @Sendable () throws -> Void = {}) async throws -> [ServiceId] {
-        let chat = try await unauthenticatedConnection()
-        try Task.checkCancellation()
-        try authorize()
-        let response = try await chat.sendMultiRecipientMessage(
-            payload, timestamp: timestamp, auth: .groupSend(try GroupSendFullToken(contents: token)), onlineOnly: online, urgent: urgent)
+        let response = try await withUnauthenticated { chat in
+            try Task.checkCancellation()
+            try authorize()
+            return try await chat.sendMultiRecipientMessage(
+                payload, timestamp: timestamp, auth: .groupSend(try GroupSendFullToken(contents: token)), onlineOnly: online, urgent: urgent)
+        }
         return response.unregisteredIds
     }
 
@@ -141,10 +191,10 @@ public actor SocketManager {
     public func authenticatedResponse(_ method: String, _ path: String, headers: [String: String] = [:], json: Data? = nil) async throws
         -> ChatResponse
     {
-        guard let chat = authenticated else { throw ChatRequestError.notConnected }
         var h = headers
         if json != nil { h["content-type"] = "application/json" }
-        return try await chat.send(ChatRequest(method: method, pathAndQuery: path, headers: h, body: json, timeout: 30))
+        let request = ChatRequest(method: method, pathAndQuery: path, headers: h, body: json, timeout: 30)
+        return try await withAuthenticated { chat in try await chat.send(request) }
     }
 
     public func disconnect() async {

@@ -175,8 +175,11 @@ public actor JobQueue {
             finish(job)
             sink.yield(.succeeded(job))
         } catch {
-            // Cancellation does not consume retry attempts or discard persisted work.
-            if Task.isCancelled || error is CancellationError { return }
+            // The queue stopping (its task cancelled) does not consume an attempt or discard the
+            // job. A cancellation error from the work itself (a request whose native future was
+            // cancelled) is a failure like any other: it used to re-run the job at once, forever,
+            // ahead of every later job.
+            if Task.isCancelled { return }
             let n = (attempts[job.id] ?? 0) + 1
             attempts[job.id] = n
             let permanent = (error as? JobError) != nil

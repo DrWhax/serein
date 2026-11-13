@@ -100,7 +100,7 @@ mutant "stopAndWait does not wait for the loop" "$queue" \
 mutant "the loop restarts after a stop" "$queue" \
   's/            if wantsRunning \{ start\(\) \}/            start()/'
 mutant "a cancelled handler's job is discarded" "$queue" \
-  's/if Task\.isCancelled \|\| error is CancellationError \{ return \}/if Task.isCancelled || error is CancellationError { finish(job); return }/'
+  's/if Task\.isCancelled \{ return \}/if Task.isCancelled { finish(job); return }/'
 mutant "a permanent failure is retried" "$queue" \
   's/let permanent = \(error as\? JobError\) != nil/let permanent = (error as? JobError) != nil \&\& job.id.isEmpty/'
 echo "5 mutants killed"
