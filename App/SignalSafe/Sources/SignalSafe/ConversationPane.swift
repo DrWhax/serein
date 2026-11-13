@@ -464,11 +464,8 @@ struct ConversationPane: View {
         if !viewOnce, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 != 0, AttachmentPolicy.isVideo(first.contentType) {
             p.gifPlayer = session.gifPlayer(for: first)
         }
-        if !viewOnce, m.attachments.count == 1, let first = m.attachments.first?.attachment, (first.flags ?? 0) & 8 == 0,
-           AttachmentPolicy.isVideo(first.contentType), first.isDownloaded {
-            if let v = session.inlineVideo, v.messageId == m.id { p.inlineVideoPlayer = v.player }
-            p.playVideoInline = { [session] in session.playVideoInline(m) }
-        }
+        // A video opens in the Lightbox from anywhere on it, its play button included (upstream
+        // Message showLightbox); only GIF-flagged videos play in the bubble.
         if let st = m.sticker {
             // The sticker's own file (ours, or downloaded), else the installed pack's copy.
             p.isSticker = true
