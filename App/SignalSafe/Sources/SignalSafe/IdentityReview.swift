@@ -49,6 +49,7 @@ import SwiftUI
             identityReview = open
             return
         }
+        await prepareKeyTransparency(serviceIds)
         var numbers: [String: SignalUI.SafetyNumber] = [:]
         var identities: [ReviewedIdentity] = []
         for id in serviceIds {
@@ -113,7 +114,10 @@ struct IdentityReviewDialog: View {
                                      onCancel: { session.cancelIdentityReview() },
                                      onConfirm: { session.confirmIdentityReview() }) { contactId, onClose in
                 SafetyNumberViewer(contactTitle: review.contacts.first { $0.id == contactId }?.title ?? contactId, isVerified: false,
-                                   safetyNumber: review.numbers[contactId], verificationDisabled: true, isKeyTransparencyEnabled: false, onClose: onClose)
+                                   safetyNumber: review.numbers[contactId], verificationDisabled: true,
+                                   keyTransparencyStatus: session.keyTransparencyStatus[contactId] ?? .unavailable,
+                                   isKeyTransparencyEnabled: session.keyTransparencyEnabled,
+                                   checkKeyTransparency: { session.checkKeyTransparency(contactId) }, onClose: onClose)
             }
         }
     }
@@ -134,11 +138,38 @@ struct SafetyNumberSheet {
         guard let serviceId, let session = signalSession else { return }
         let title = contactTitle(serviceId)
         Task {
+            await prepareKeyTransparency([serviceId])
             let number = try? await session.messenger.safetyNumber(with: serviceId)
             let verified = (try? await session.messenger.verifiedStatus(serviceId)) == .verified
             safetyNumberSheet = SafetyNumberSheet(serviceId: serviceId, title: title,
                                                   number: number.map { SignalUI.SafetyNumber(numberBlocks: $0.numberBlocks, qrData: Array($0.qrData)) },
                                                   isVerified: verified, identity: number?.identity)
+        }
+    }
+
+    /// `isKeyTransparencyEnabled` and `isKeyTransparencyAvailable` (we have their number) before
+    /// a safety number is shown: each contact's check starts idle, or unavailable.
+    func prepareKeyTransparency(_ serviceIds: [String]) async {
+        guard let session = signalSession else { return }
+        keyTransparencyEnabled = (try? await session.keyTransparency.isAvailable()) ?? false
+        for id in serviceIds where keyTransparencyStatus[id] != .running {
+            keyTransparencyStatus[id] = (try? await session.keyTransparency.isCheckable(contact: id)) == true ? .idle : .unavailable
+        }
+    }
+
+    /// `checkKeyTransparency` ("Verify automatically"): their ACI, key and number against the log.
+    func checkKeyTransparency(_ serviceId: String) {
+        guard keyTransparencyEnabled, let status = keyTransparencyStatus[serviceId], status != .unavailable, status != .running,
+              let session = signalSession else { return }
+        keyTransparencyStatus[serviceId] = .running
+        Task {
+            do {
+                try await session.keyTransparency.check(contact: serviceId)
+                keyTransparencyStatus[serviceId] = .ok
+            } catch {
+                Self.trace("key transparency check failed: \(error)")
+                keyTransparencyStatus[serviceId] = .fail
+            }
         }
     }
 
@@ -173,8 +204,9 @@ struct SafetyNumberSheetDialog: View {
                 AxoDialog.Body(maxHeight: 560) {
                     SafetyNumberViewer(contactTitle: sheet.title, isVerified: sheet.isVerified, safetyNumber: sheet.number,
                                        verificationDisabled: sheet.number == nil,
-                                       // The key transparency check (Identity.keyTransparencyCheck) is not offered here yet.
-                                       isKeyTransparencyEnabled: false, toggleVerified: { session.toggleVerified() },
+                                       keyTransparencyStatus: session.keyTransparencyStatus[sheet.serviceId] ?? .unavailable,
+                                       isKeyTransparencyEnabled: session.keyTransparencyEnabled, toggleVerified: { session.toggleVerified() },
+                                       checkKeyTransparency: { session.checkKeyTransparency(sheet.serviceId) },
                                        onClose: { session.safetyNumberSheet = nil })
                 }
             }

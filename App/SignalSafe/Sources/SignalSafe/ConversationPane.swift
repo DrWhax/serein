@@ -71,7 +71,7 @@ struct ConversationPane: View {
             }
             .environment(\.messageTextSelectable, true)
             // A signal.link/call URL opens the call link's lobby instead of the browser.
-            .environment(\.openURL, OpenURLAction { url in session.openCallLinkURL(url) ? .handled : .systemAction })
+            .environment(\.openURL, OpenURLAction { url in session.openInAppLink(url) ? .handled : .systemAction })
             .environment(\.textSelectionCenter, session.textSelection)
             if let selected = session.selectedMessageIds {
                 SelectModeActions(selectedCount: selected.count,
@@ -114,6 +114,8 @@ struct ConversationPane: View {
             CompositionArea(text: $session.draft, model: composerModel, actions: {
                 var a = CompositionAreaActions()
                 a.onCloseQuote = { session.quotedMessageId = nil }
+                a.onToggleViewOnce = { session.draftViewOnce.toggle() }
+                a.openShareContactDialog = { session.openShareContactDialog() }
                 // A join request still waiting for an admin, withdrawn (`cancelJoinRequest`).
                 a.cancelJoinRequest = { session.leaveGroup() }
                 // AnnouncementsOnlyGroupBanner's admins: their 1:1 chat.
@@ -204,6 +206,8 @@ struct ConversationPane: View {
         a.messageEmojis = m.reactions.map(\.emoji).filter { seen.insert($0).inserted }
         a.skinTone = session.emojiSkinTone
         a.setSkinTone = { session.emojiSkinTone = $0 }
+        a.recentEmojis = session.recentEmojis
+        a.useEmoji = { session.recordEmojiUse($0) }
         if !m.isDeleted && !m.body.isEmpty { a.copy = { session.copyText(id) } }
         a.select = { session.toggleSelect(id, selected: true) }
         if session.canEdit(m, noteToSelf: isNoteToSelf) { a.edit = { session.startEdit(id) } }
@@ -372,10 +376,11 @@ struct ConversationPane: View {
                                                                  color: session.contactColor(a.aci), image: session.avatarImage(session.contacts[a.aci]?.avatar)),
                        isMe: a.aci == me)
         }
-        // Not offered: sharing a contact (behind upstream's remote config, and not sent by
-        // SignalCore) and sending view-once media (not sent by SignalCore yet).
-        m.isShareContactEnabled = false
-        m.isViewOnceSendEnabled = false
+        // Sharing a contact: behind upstream's remote config (`desktop.shareContact.prod`).
+        m.isShareContactEnabled = session.shareContactEnabled
+        // View-once: the toggle on a lone photo or video (`isViewOnceEligible`, checked again at send).
+        m.isViewOnceSendEnabled = true
+        m.isViewOnce = session.draftViewOnce
         m.quote = composerQuote
         m.quotedMessageId = session.quotedMessageId
         m.isEditingMessage = session.editingMessageId != nil
@@ -479,11 +484,17 @@ struct ConversationPane: View {
             a.pending = file?.pending ?? false
             p.attachments = [a]
         }
+        if let c = m.contact, !m.isDeleted {
+            // A shared contact: the card opens its details; "Message" when they are on Signal.
+            p.contact = session.sharedContactCard(c)
+            p.openContactDetails = { [session] in session.openSharedContact(m) }
+            p.startConversationWithSharedContact = { [session] in session.messageSharedContact(c) }
+        }
         p.previews = m.previews.map(linkPreview)
         // A preview opens its (https) link in the browser.
         p.openLink = { [session] href in
             guard LinkPreviewRules.shouldPreviewHref(href), let url = URL(string: href) else { return }
-            if !session.openCallLinkURL(url) { NSWorkspace.shared.open(url) }
+            if !session.openInAppLink(url) { NSWorkspace.shared.open(url) }
         }
         if !viewOnce { p.showLightbox = { [session] i in session.openLightbox(m, index: i) } }
         if m.attachments.contains(where: { !$0.attachment.isDownloaded }) { p.kickOffAttachmentDownload = { [session] in session.downloadAttachments(m) } }
@@ -602,7 +613,11 @@ struct ComposerFunPicker: View {
             FunPanelStickers(packs: session.stickerPacks.map { p in
                 FunStickerPack(id: p.id, title: p.title, cover: session.stickerImage(packId: p.id, stickerId: p.coverStickerId),
                                stickers: p.stickers.map { FunStickerItem(id: $0.id, packId: p.id, image: session.stickerImage(packId: p.id, stickerId: $0.id), emoji: $0.emoji) })
-            }, favorites: [], recents: [], onSelectSticker: { s in session.sendSticker(packId: s.packId, stickerId: s.id); close() })
+            }, favorites: session.stickerState?.favorites.map(session.funSticker) ?? [], recents: session.stickerState?.recents.map(session.funSticker) ?? [],
+               isFavoriteStickersEnabled: session.favoriteStickersEnabled, showAddStickerPackButton: true,
+               onSelectSticker: { s in session.sendSticker(packId: s.packId, stickerId: s.id); close() },
+               onAddStickerPack: { close(); session.pushPanel("StickerManager") },
+               onMarkStickerAsFavorite: { s, favorite in session.setStickerFavorite(packId: s.packId, stickerId: s.id, favorite) })
         } gifs: {
             FunPanelGifs(recentGifs: [], source: session.gifSource, storedSearchInput: $gifSearch,
                          onSelectGif: { g in session.sendGif(g.gif.attachmentMedia.url); close() }, onClose: { close() })

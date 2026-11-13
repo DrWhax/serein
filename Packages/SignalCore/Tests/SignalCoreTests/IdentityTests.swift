@@ -68,6 +68,16 @@ import Testing
         try await LinkedClient.with { c in
             let kt = KeyTransparencyService(account: c.account, database: c.database, socket: c.socket)
             #expect(try await kt.isAvailable() == false)   // not enabled by remote config
+            // Version-gated, as upstream: on from the prod value's version; the account setting turns it off.
+            try await c.database.pool.write { db in
+                try Items.set(db, "remoteConfig", ["desktop.keyTransparency.prod": RemoteConfig.Value(name: "desktop.keyTransparency.prod", enabled: true, value: "8.0.0")])
+            }
+            #expect(try await kt.isAvailable())
+            #expect(try await kt.isAvailable(version: "7.99.0") == false)
+            try await c.database.pool.write { db in try Items.set(db, "hasKeyTransparencyDisabled", true) }
+            #expect(try await kt.isAvailable() == false)
+            try await c.database.pool.write { db in try Items.set(db, "hasKeyTransparencyDisabled", false) }
+            #expect(try await kt.isCheckable(contact: "00000000-0000-4000-8000-000000000000") == false)   // no number for them
             // The store round-trips (the client keeps opaque data there).
             let aci = try Aci.parseFrom(serviceIdString: c.aliceAci)
             await kt.store.setAccountData(Data([1, 2, 3]), for: aci)

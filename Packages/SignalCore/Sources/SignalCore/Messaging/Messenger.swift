@@ -83,9 +83,11 @@ public final class Messenger: Sendable {
     /// and blurhash from the media service for images) and uploaded by the send job.
     @discardableResult
     public func sendMessage(_ body: String, attachments outgoing: [OutgoingAttachment], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                            bodyRanges: [MessageBodyRange] = [], to serviceId: String, timestamp: UInt64? = nil, highQuality: Bool = false) async throws
+                            bodyRanges: [MessageBodyRange] = [], to serviceId: String, timestamp: UInt64? = nil, highQuality: Bool = false,
+                            viewOnce: Bool = false, contact: SharedContactInfo? = nil, contactAvatar: OutgoingAttachment? = nil) async throws
         -> (messageId: String, timestamp: UInt64)
     {
+        let (body, bodyRanges, preview) = try Self.viewOnceDraft(viewOnce, body: body, bodyRanges: bodyRanges, preview: preview, quoting: quoting, attachments: outgoing)
         let sentAt = timestamp ?? UInt64(MessageStore.now())
         var preparing: [MessageAttachment] = []
         if !outgoing.isEmpty {
@@ -97,6 +99,8 @@ public final class Messenger: Sendable {
             for o in outgoing { preparing.append(try await services.prepare(o, level: level)) }
         }
         let prepared = preparing
+        if let contact, !contact.canBeShared { throw SharedContactError.needsNameAndAciOrNumber }
+        let avatar = try await prepareContactAvatar(contactAvatar)
         let previewImage = try await preparePreviewImage(preview)
         let quoteThumbnail = await prepareQuoteThumbnail(quoting)
         let id = try await database.pool.write { db -> String in
@@ -111,9 +115,10 @@ public final class Messenger: Sendable {
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: conversationId, type: "outgoing", body: body, sentAt: sentAt, source: self.account.aci,
                 sourceDevice: self.account.deviceId, serverGuid: nil, serverTimestamp: nil, unidentified: false,
-                extra: try Self.outgoingExtra(db, Self.withBodyRanges(["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]],
-                                                                      bodyRanges, body: body),
+                extra: try Self.outgoingExtra(db, Self.withContact(contact, hasAvatar: avatar != nil, Self.withViewOnce(viewOnce, Self.withBodyRanges(
+                    ["sendStateByConversationId": [conversationId: ["status": "Pending", "updatedAt": MessageStore.now()]]], bodyRanges, body: body))),
                                               quoting: quoting, ourAci: self.account.aci)))
+            try Self.storeContactAvatar(db, avatar, messageId: messageId, conversationId: conversationId, sentAt: Int64(sentAt))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
                 for (i, a) in prepared.enumerated() {
@@ -130,6 +135,75 @@ public final class Messenger: Sendable {
         }
         jobs.poke()
         return (id, sentAt)
+    }
+
+    /// A view-once send (`enqueueMessageForSend` with isViewOnce, `isViewOnceEligible`): exactly
+    /// one image or video and no quote. Its text, ranges and link preview are dropped, as
+    /// upstream's composer drops them.
+    static func viewOnceDraft(_ viewOnce: Bool, body: String, bodyRanges: [MessageBodyRange], preview: LinkPreviewDraft?, quoting: String?,
+                              attachments: [OutgoingAttachment]) throws -> (String, [MessageBodyRange], LinkPreviewDraft?) {
+        guard viewOnce else { return (body, bodyRanges, preview) }
+        guard attachments.count == 1, attachments[0].contentType.hasPrefix("image/") || attachments[0].contentType.hasPrefix("video/"), quoting == nil
+        else { throw ViewOnceSendError.ineligible }
+        return ("", [], nil)
+    }
+
+    /// `enqueueSharedContactForSend`: the contact in the message's `contact`.
+    static func withContact(_ contact: SharedContactInfo?, hasAvatar: Bool, _ extra: [String: Any]) -> [String: Any] {
+        guard let contact else { return extra }
+        var out = extra
+        out["contact"] = [SharedContacts.json(contact, hasAvatar: hasAvatar)]
+        return out
+    }
+
+    /// `copyAvatarForMessage`: the contact's avatar, encrypted at rest like an attachment (already
+    /// a small image, so not transcoded).
+    func prepareContactAvatar(_ avatar: OutgoingAttachment?) async throws -> MessageAttachment? {
+        guard let avatar, let services = attachments else { return nil }
+        return try await services.prepare(avatar, transcode: false)
+    }
+
+    static func storeContactAvatar(_ db: Database, _ avatar: MessageAttachment?, messageId: String, conversationId: String, sentAt: Int64) throws {
+        guard let avatar else { return }
+        let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
+        try MessageAttachments.upsert(db, .init(messageId: messageId, type: .contact, order: 0), conversationId: conversationId, sentAt: sentAt,
+                                      receivedAt: receivedAt, messageType: "outgoing", avatar)
+    }
+
+    /// The stored shared contact's proto, its avatar uploaded (`toContactProto`).
+    func contactProto(messageId: String) async throws -> Signalservice_DataMessage.Contact? {
+        let raw = try await database.pool.read { db in try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [messageId]) }
+        guard let raw, let json = (try MessageStore.jsonObject(raw)["contact"] as? [[String: Any]])?.first else { return nil }
+        let avatar = try await uploadAttachments(messageId: messageId, type: .contact).first
+        return SharedContacts.proto(json, avatar: avatar)
+    }
+
+    static func withViewOnce(_ viewOnce: Bool, _ extra: [String: Any]) -> [String: Any] {
+        guard viewOnce else { return extra }
+        var out = extra
+        out["isViewOnce"] = true
+        return out
+    }
+
+    /// Whether a stored outgoing message is view-once.
+    func isViewOnce(_ messageId: String) async throws -> Bool {
+        try await database.pool.read { db in
+            guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [messageId]) else { return false }
+            return try MessageStore.jsonObject(json)["isViewOnce"] as? Bool == true
+        }
+    }
+
+    /// `eraseMessageContents(message, 'view-once-sent')`: once every recipient has a view-once
+    /// message, our copy is erased (before that, a retry still needs its media).
+    func eraseSentViewOnce(_ messageId: String) async throws {
+        try await database.pool.write { db in
+            guard let json = try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [messageId]) else { return }
+            let o = try MessageStore.jsonObject(json)
+            guard o["isViewOnce"] as? Bool == true, o["isErased"] as? Bool != true else { return }
+            let states = (o["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]).values.compactMap { $0["status"] as? String }
+            guard !states.contains(where: { $0 == SendStatus.pending.rawValue || $0 == SendStatus.failed.rawValue }) else { return }
+            try MessageModifiers.erase(db, messageId)
+        }
     }
 
     /// The new message's stored fields plus its body ranges (only those inside the body).
@@ -250,9 +324,11 @@ public final class Messenger: Sendable {
     /// Queues a message to a Groups v2 conversation (members from the stored group state).
     @discardableResult
     public func sendGroupMessage(_ body: String, attachments outgoing: [OutgoingAttachment] = [], preview: LinkPreviewDraft? = nil, quoting: String? = nil,
-                                 bodyRanges: [MessageBodyRange] = [], masterKey: Data, timestamp: UInt64? = nil, highQuality: Bool = false)
+                                 bodyRanges: [MessageBodyRange] = [], masterKey: Data, timestamp: UInt64? = nil, highQuality: Bool = false,
+                                 viewOnce: Bool = false, contact: SharedContactInfo? = nil, contactAvatar: OutgoingAttachment? = nil)
         async throws -> (messageId: String, timestamp: UInt64)
     {
+        let (body, bodyRanges, preview) = try Self.viewOnceDraft(viewOnce, body: body, bodyRanges: bodyRanges, preview: preview, quoting: quoting, attachments: outgoing)
         let sentAt = timestamp ?? UInt64(MessageStore.now())
         var preparing: [MessageAttachment] = []
         if !outgoing.isEmpty {
@@ -264,6 +340,8 @@ public final class Messenger: Sendable {
             for o in outgoing { preparing.append(try await services.prepare(o, level: level)) }
         }
         let prepared = preparing
+        if let contact, !contact.canBeShared { throw SharedContactError.needsNameAndAciOrNumber }
+        let avatar = try await prepareContactAvatar(contactAvatar)
         let previewImage = try await preparePreviewImage(preview)
         let quoteThumbnail = await prepareQuoteThumbnail(quoting)
         let keys = try GroupKeys(masterKey: masterKey)
@@ -278,7 +356,10 @@ public final class Messenger: Sendable {
             let messageId = try MessageStore.insert(db, .init(
                 conversationId: group.conversationId, type: "outgoing", body: body, sentAt: sentAt, source: ourAci, sourceDevice: self.account.deviceId,
                 serverGuid: nil, serverTimestamp: nil, unidentified: false,
-                extra: try Self.outgoingExtra(db, Self.withBodyRanges(["sendStateByConversationId": states], bodyRanges, body: body), quoting: quoting, ourAci: ourAci)))
+                extra: try Self.outgoingExtra(db, Self.withContact(contact, hasAvatar: avatar != nil,
+                                                                   Self.withViewOnce(viewOnce, Self.withBodyRanges(["sendStateByConversationId": states], bodyRanges, body: body))),
+                                              quoting: quoting, ourAci: ourAci)))
+            try Self.storeContactAvatar(db, avatar, messageId: messageId, conversationId: group.conversationId, sentAt: Int64(sentAt))
             if !prepared.isEmpty {
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [messageId]) ?? MessageStore.now()
                 for (i, a) in prepared.enumerated() {
@@ -321,6 +402,9 @@ public final class Messenger: Sendable {
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }
         if let quote = try await quoteProto(messageId: messageId) { data.quote = quote }
+        let viewOnce = try await isViewOnce(messageId)
+        if viewOnce { data.isViewOnce = true }
+        if let contact = try await contactProto(messageId: messageId) { data.contact = [contact] }
         try await stampTimer(&data, messageId: messageId)
         var content = Signalservice_Content()
         content.dataMessage = data
@@ -357,6 +441,7 @@ public final class Messenger: Sendable {
         } catch {
             SignalClient.diagnose("group sync transcript failed: \(String(describing: error).prefix(120))")
         }
+        if viewOnce { try await eraseSentViewOnce(messageId) }
     }
 
     /// SyncMessage.Sent for a group message: no destination, one status per recipient.
@@ -395,6 +480,9 @@ public final class Messenger: Sendable {
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }
         if let quote = try await quoteProto(messageId: messageId) { data.quote = quote }
+        let viewOnce = try await isViewOnce(messageId)
+        if viewOnce { data.isViewOnce = true }
+        if let contact = try await contactProto(messageId: messageId) { data.contact = [contact] }
         try await stampTimer(&data, messageId: messageId)
         var content = Signalservice_Content()
         content.dataMessage = data
@@ -416,6 +504,7 @@ public final class Messenger: Sendable {
         } catch {
             SignalClient.diagnose("sync transcript failed: \(String(describing: error).prefix(120))")
         }
+        if viewOnce { try await eraseSentViewOnce(messageId) }
     }
 
     /// `uploadAttachment` for every attachment of an outgoing message that has no usable CDN
@@ -732,4 +821,15 @@ extension UUID {
         let u = uuid
         return Data([u.0, u.1, u.2, u.3, u.4, u.5, u.6, u.7, u.8, u.9, u.10, u.11, u.12, u.13, u.14, u.15])
     }
+}
+
+/// A view-once send that is not eligible (`isViewOnceEligible`).
+public enum ViewOnceSendError: Error, Equatable {
+    /// Not exactly one image or video, or a reply.
+    case ineligible
+}
+
+/// A contact that cannot be shared (`canShareContact`).
+public enum SharedContactError: Error, Equatable {
+    case needsNameAndAciOrNumber
 }

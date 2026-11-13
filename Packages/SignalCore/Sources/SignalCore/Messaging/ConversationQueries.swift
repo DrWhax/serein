@@ -114,6 +114,8 @@ public struct TimelineMessage: Sendable, Equatable, Identifiable {
     public var isErased = false
     /// A poll (`poll`): its question, options and votes.
     public var poll: TimelinePoll?
+    /// A shared contact (`contact`, the first), its avatar the `contact` attachment.
+    public var contact: SharedContactInfo?
     /// `bodyRanges`: mentions and styles of the body.
     public var bodyRanges: [MessageBodyRange] = []
     /// `editHistory`: every version, newest first (the current one included); empty if never edited.
@@ -377,6 +379,10 @@ public enum ConversationQueries {
                 for k in m.reactions.indices { m.reactions[k].fromId = try serviceId(m.reactions[k].fromId) }
                 if m.sticker != nil { m.sticker?.attachment = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .sticker, order: 0)) }
                 for k in m.previews.indices { m.previews[k].image = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .preview, order: k)) }
+                if let c = m.contact {
+                    m.contact?.avatar = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .contact, order: 0))
+                    m.contact?.resolution = try SharedContacts.resolve(db, c)
+                }
                 guard m.hasAttachments else { return m }
                 m.attachments = try MessageAttachments.fetch(db, messageId: m.id)
                     .filter { $0.0.type == .attachment && $0.0.editHistoryIndex == -1 }
@@ -472,6 +478,7 @@ public enum ConversationQueries {
             m.poll = TimelinePoll(question: question, options: options, allowMultiple: p["allowMultiple"] as? Bool ?? false,
                                   terminated: p["terminatedAt"] != nil, votes: votes)
         }
+        if let c = (json["contact"] as? [[String: Any]])?.first { m.contact = SharedContacts.info(c) }
         if let s = json["sticker"] as? [String: Any], let packId = s["packId"] as? String, let stickerId = (s["stickerId"] as? NSNumber)?.intValue {
             m.sticker = TimelineSticker(packId: packId, stickerId: stickerId, emoji: s["emoji"] as? String)
         }

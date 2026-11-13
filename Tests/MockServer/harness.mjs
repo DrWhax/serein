@@ -145,11 +145,19 @@ function buildDataMessage(spec, timestamp) {
     attachments: (spec.quote.attachments ?? []).map((a) => ({ contentType: a.contentType ?? null, fileName: a.fileName ?? null, thumbnail: null })),
     bodyRanges: [], type: 0 };
   if (spec.isViewOnce) m.isViewOnce = true;
+  if (spec.contact) m.contact = [{ name: spec.contact.name ?? null, organization: spec.contact.organization ?? null, avatar: null,
+    number: (spec.contact.number ?? []).map((n) => ({ value: n.value, type: n.type ?? 1, label: n.label ?? null })), email: [], address: [],
+    aciBinary: aciBin(spec.contact.aci), note: spec.contact.note ?? null }];
   if (spec.expireTimer != null) { m.expireTimer = spec.expireTimer; m.expireTimerVersion = spec.expireTimerVersion ?? 1; }
   if (spec.flags != null) m.flags = spec.flags;
   return m;
 }
+const contactSummary = (c) => ({ givenName: c.name?.givenName ?? null, familyName: c.name?.familyName ?? null, organization: c.organization ?? null,
+  number: (c.number ?? []).map((n) => ({ value: n.value ?? null, type: n.type ?? null })), note: c.note ?? null,
+  aci: c.aciBinary?.length === 16 ? Buffer.from(c.aciBinary).toString('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5') : null,
+  avatar: c.avatar?.avatar ? { contentType: c.avatar.avatar.contentType ?? null, size: c.avatar.avatar.size ?? null, isProfile: !!c.avatar.isProfile } : null });
 const summarizeData = (d) => ({
+  contact: (d.contact ?? []).map(contactSummary),
   reaction: d.reaction ? { emoji: d.reaction.emoji ?? null, remove: !!d.reaction.remove, targetSentTimestamp: Number(d.reaction.targetSentTimestamp),
     targetAuthor: aciFromBinary(d.reaction.targetAuthorAciBinary) } : null,
   delete: d.delete ? { targetSentTimestamp: Number(d.delete.targetSentTimestamp) } : null,

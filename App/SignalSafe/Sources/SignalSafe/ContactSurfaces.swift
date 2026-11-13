@@ -283,3 +283,21 @@ struct ContactSurfaceDialogs: View {
         }
     }
 }
+
+/// `SmartStickerPreviewModal` (a global modal): the pack being previewed, downloading,
+/// installing or uninstalling it, its link copied.
+struct StickerPackPreviewHost: View {
+    @Bindable var session: SignalSession
+
+    var body: some View {
+        if session.stickerPackPreview != nil {
+            AxoBaseDialog.Host {
+                StickerPreviewModal(pack: session.previewedStickerPack, closeStickerPackPreview: { session.stickerPackPreview = nil },
+                                    downloadStickerPack: { id, key, status in session.downloadStickerPack(id, key: key, status: status) },
+                                    installStickerPack: { id, key in session.installStickerPack(id, key: key) },
+                                    uninstallStickerPack: { id, _ in session.uninstallStickerPack(id) },
+                                    showCopiedLinkToast: { session.toast = .copiedStickerPackLink })
+            }
+        }
+    }
+}

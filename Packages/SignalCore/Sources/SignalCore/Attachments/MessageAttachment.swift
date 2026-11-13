@@ -155,6 +155,12 @@ public enum MessageAttachments {
         public var order: Int
         /// -1: the root message (not an edit-history entry).
         public var editHistoryIndex: Int = -1
+        public init(messageId: String, type: MessageAttachmentType, order: Int, editHistoryIndex: Int = -1) {
+            self.messageId = messageId
+            self.type = type
+            self.order = order
+            self.editHistoryIndex = editHistoryIndex
+        }
     }
 
     static func bool(_ b: Bool?) -> Int? { b.map { $0 ? 1 : 0 } }

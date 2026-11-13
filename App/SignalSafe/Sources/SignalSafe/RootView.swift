@@ -54,6 +54,8 @@ struct RootView: View {
                 }
                 if let id = session.contactModalId { MemberContactModal(session: session, serviceId: id, i18n: i18n) }
                 ContactSurfaceDialogs(session: session, model: model, i18n: i18n)
+                StickerPackPreviewHost(session: session)
+                ShareContactDialogHost(session: session)
                 ChatDialogs(session: session, i18n: i18n)
                 callLinkModal
                 if let e = session.composeError {

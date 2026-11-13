@@ -58,6 +58,35 @@ public enum Stickers {
     static func isBlessed(_ packId: String) -> Bool { blessedPacks.contains { $0.id == packId } }
 
     /// `isPackIdValid`: 32 hex digits.
+    /// A sticker pack link's pack (`signalRoutes` addStickers): `https://signal.art/addstickers/#pack_id=<32 hex>&pack_key=<64 hex>`
+    /// or `sgnl://addstickers/?pack_id=…&pack_key=…`. The key comes back in base64, as the store keeps it.
+    public static func packLink(_ url: URL) -> (packId: String, packKey: String)? {
+        guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        let params: String?
+        if c.scheme == "https", c.host == "signal.art", c.path == "/addstickers" || c.path == "/addstickers/" {
+            params = c.fragment
+        } else if c.scheme == "sgnl", c.host == "addstickers", c.path.isEmpty || c.path == "/" {
+            params = c.query
+        } else {
+            return nil
+        }
+        var values: [String: String] = [:]
+        for pair in (params ?? "").split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            if kv.count == 2 { values[String(kv[0])] = String(kv[1]) }
+        }
+        guard let id = values["pack_id"]?.lowercased(), isPackIdValid(id), let hex = values["pack_key"], hex.count == 64 else { return nil }
+        var key = Data()
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2)
+            guard let b = UInt8(hex[i ..< j], radix: 16) else { return nil }
+            key.append(b)
+            i = j
+        }
+        return (id, key.base64EncodedString())
+    }
+
     public static func isPackIdValid(_ id: String) -> Bool {
         id.count == 32 && id.allSatisfy { $0.isHexDigit }
     }

@@ -323,11 +323,19 @@ public struct KeyTransparencyService: Sendable {
         store = KeyTransparencyStore(database: database)
     }
 
-    /// `isKeyTransparencyAvailable`: not turned off in the AccountRecord, and enabled remotely.
-    public func isAvailable() async throws -> Bool {
+    /// `isKeyTransparencyAvailable`: not turned off in the AccountRecord, and enabled remotely for
+    /// this version (`isFeaturedEnabledNoRedux`: the prod value is a minimum version).
+    public func isAvailable(version: String = SignalClient.desktopVersion) async throws -> Bool {
         try await database.pool.read { db in
             if try Items.get(db, "hasKeyTransparencyDisabled", as: Bool.self) == true { return false }
-            return try RemoteConfig.isEnabled(db, "desktop.keyTransparency.prod") || RemoteConfig.isEnabled(db, "desktop.keyTransparency.beta")
+            return try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.keyTransparency.prod", version: version)
+        }
+    }
+
+    /// `isKeyTransparencyAvailable` for a contact (SmartSafetyNumberViewer): we have their number.
+    public func isCheckable(contact aci: String) async throws -> Bool {
+        try await database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT e164 FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [aci]) != nil
         }
     }
 

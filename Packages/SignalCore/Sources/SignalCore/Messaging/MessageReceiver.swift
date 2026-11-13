@@ -489,6 +489,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         let mentionsMe = ranges.contains { $0["mentionAci"] as? String == account.aci }
         if mentionsMe { extra["mentionsMe"] = true }
         if m.hasQuote, let quote = Self.quoteJSON(m.quote) { extra["quote"] = quote }
+        if let contact = m.contact.first { extra["contact"] = [SharedContacts.json(contact)] }
         let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "incoming", body: m.body, sentAt: m.timestamp,
                                                    source: d.sender, sourceDevice: d.senderDevice, serverGuid: e.serverGuid,
                                                    serverTimestamp: e.serverTimestamp, unidentified: d.sealed, extra: extra))
@@ -502,6 +503,10 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         }
         if m.hasSticker {
             try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp), messageType: "incoming", m.sticker)
+        }
+        if let contact = m.contact.first, contact.hasAvatar, contact.avatar.hasAvatar {
+            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
+                                                      attachments: [contact.avatar.avatar], type: .contact)
         }
         try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp), messageType: "incoming",
                                        body: m.body, m.preview)
@@ -659,13 +664,18 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                                "expirationStartTimestamp": sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp]
                                                            .merging(m.isViewOnce ? ["isViewOnce": true] : [:]) { a, _ in a }
                                                            .merging(m.hasPollCreate ? ["poll": MessageModifiers.pollJSON(m.pollCreate) as Any] : [:]) { a, _ in a }
-                                                           .merging(m.hasQuote ? Self.quoteJSON(m.quote).map { ["quote": $0] } ?? [:] : [:]) { a, _ in a }))
+                                                           .merging(m.hasQuote ? Self.quoteJSON(m.quote).map { ["quote": $0] } ?? [:] : [:]) { a, _ in a }
+                                                           .merging(m.contact.first.map { ["contact": [SharedContacts.json($0)]] } ?? [:]) { a, _ in a }))
             if m.hasSticker {
                 try MessageStore.storeSticker(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing", m.sticker)
             }
             try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing",
                                            body: m.body, m.preview)
             try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), attachments: m.attachments)
+            if let contact = m.contact.first, contact.hasAvatar, contact.avatar.hasAvatar {
+                try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
+                                                          attachments: [contact.avatar.avatar], type: .contact)
+            }
             if m.hasQuote {
                 try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
                                                           attachments: Self.quoteThumbnails(m.quote), type: .quote)

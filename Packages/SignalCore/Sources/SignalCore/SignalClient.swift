@@ -64,7 +64,12 @@ public actor SignalClient {
         public let preKeys: PreKeyMaintenance
         /// Expiring messages and pins, the weekly key-transparency self check.
         public let maintenance: Maintenance
+        /// Key transparency checks of a contact (the safety-number screen's "verify automatically").
+        public let keyTransparency: KeyTransparencyService
     }
+
+    /// The Signal-Desktop version this port presents (its user agent; version-gated remote config).
+    public static let desktopVersion = "8.36.0"
 
     private var preKeyTask: Task<Void, Never>?
 
@@ -204,14 +209,15 @@ public actor SignalClient {
                 Self.diagnose("groups fetched: \(keys.count), failed \(f.count)\(f.isEmpty ? "" : ", first: \(f[0])")")
             }
         })
-        let maintenance = Maintenance(database: database, store: store,
-                                      keyTransparency: KeyTransparencyService(account: account, database: database, socket: socket))
+        let keyTransparency = KeyTransparencyService(account: account, database: database, socket: socket)
+        let maintenance = Maintenance(database: database, store: store, keyTransparency: keyTransparency)
         session = Session(account: account, jobs: jobs, messenger: messenger, receiver: receiver, profiles: profiles, storage: storage,
                           groups: groups, stickers: stickers, downloads: downloads, attachmentStore: store, http: http,
                           discovery: ContactDiscovery(net: net, database: database, socket: socket),
                           usernames: UsernameService(account: account, database: database, socket: socket),
                           profileWriter: ProfileWriter(account: account, database: database, socket: socket, profiles: profiles),
-                          preKeys: PreKeyMaintenance(account: account, database: database, socket: socket), maintenance: maintenance)
+                          preKeys: PreKeyMaintenance(account: account, database: database, socket: socket), maintenance: maintenance,
+                          keyTransparency: keyTransparency)
         // Files nothing refers to any more, while nothing is writing new ones yet.
         if let removed = try? await maintenance.cleanOrphans(), removed > 0 { Self.diagnose("orphaned attachment files removed: \(removed)") }
         do {

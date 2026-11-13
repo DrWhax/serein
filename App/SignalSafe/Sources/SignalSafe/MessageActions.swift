@@ -213,19 +213,98 @@ struct PinMessageRequest {
     /// Inserts an emoji into the draft at the caret (its end without a composer) and remembers it.
     func insertEmoji(_ emoji: String) {
         if !composer.insert(emoji) { draft += emoji }
+        recordEmojiUse(emoji)
+    }
+
+    /// `onUseEmoji`: the emoji goes to the front of the recents.
+    func recordEmojiUse(_ emoji: String) {
         var recent = recentEmojis
         recent.removeAll { $0 == emoji }
         recent.insert(emoji, at: 0)
         recentEmojis = recent
     }
 
-    /// Installed sticker packs, live.
+    /// The sticker manager's state and the composer's remote-config flags (sticker favourites,
+    /// sharing a contact), live.
     func observeStickers() {
         guard stickersTask == nil, let db = clientDatabase else { return }
+        let version = Self.desktopVersion
         stickersTask = Task { [weak self] in
             do {
-                for try await state in db.observe({ try Stickers.managerState($0) }) { self?.stickerPacks = state.installed }
+                for try await o in db.observe({ db in
+                    StickerObservation(state: try Stickers.managerState(db),
+                                       favorites: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.stickerFavorites.prod", version: version),
+                                       shareContact: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.shareContact.prod", version: version))
+                }) {
+                    self?.stickerPacks = o.state.installed
+                    self?.stickerState = o.state
+                    self?.favoriteStickersEnabled = o.favorites
+                    self?.shareContactEnabled = o.shareContact
+                }
             } catch {}
+        }
+    }
+
+    /// A picker item for a sticker (its first frame, loaded on demand).
+    func funSticker(_ s: StickerSummary) -> FunStickerItem {
+        FunStickerItem(id: s.id, packId: s.packId, image: stickerImage(packId: s.packId, stickerId: s.id), emoji: s.emoji)
+    }
+
+    /// A pack as the sticker manager and the preview show it.
+    func uiStickerPack(_ p: StickerPackSummary) -> StickerPack {
+        StickerPack(id: p.id, key: p.key, title: p.title, author: p.author, isBlessed: p.isBlessed,
+                    status: StickerPack.Status(rawValue: p.status.rawValue) ?? .known, cover: stickerImage(packId: p.id, stickerId: p.coverStickerId),
+                    stickerCount: p.stickerCount,
+                    stickers: p.stickers.map { Sticker(id: $0.id, emoji: $0.emoji, image: stickerImage(packId: p.id, stickerId: $0.id)) })
+    }
+
+    /// The previewed pack, once something of it is known here.
+    var previewedStickerPack: StickerPack? {
+        guard let id = stickerPackPreview?.id, let s = stickerState else { return nil }
+        return (s.installed + s.received + s.blessed + s.known).first { $0.id == id }.map(uiStickerPack)
+    }
+
+    /// `markStickerAsFavorite` (storage sync follows in StickerService).
+    func setStickerFavorite(packId: String, stickerId: Int, _ favorite: Bool) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.stickers.setFavorite(packId: packId, stickerId: stickerId, favorite) } catch { Self.trace("sticker favourite failed: \(error)") }
+        }
+    }
+
+    /// `showStickerPackPreview`: a pack not seen before downloads as ephemeral (kept only while
+    /// previewed unless installed).
+    func showStickerPackPreview(packId: String, packKey: String) {
+        stickerPackPreview = (packId, packKey)
+        guard let session = signalSession else { return }
+        let known = stickerState.map { s in (s.installed + s.received + s.blessed + s.known).contains { $0.id == packId && !$0.stickers.isEmpty } } ?? false
+        guard !known else { return }
+        Task {
+            do { try await session.stickers.download(packId: packId, packKey: packKey, finalStatus: .ephemeral, actionSource: .ui) } catch {
+                Self.trace("sticker pack preview failed: \(error)")
+            }
+        }
+    }
+
+    func downloadStickerPack(_ packId: String, key: String, status: StickerPack.Status?) {
+        guard let session = signalSession else { return }
+        let final = status.flatMap { StickerPackStatus(rawValue: $0.rawValue) } ?? .downloaded
+        Task {
+            do { try await session.stickers.download(packId: packId, packKey: key, finalStatus: final, actionSource: .ui) } catch { toast = .stickerPackInstallFailed }
+        }
+    }
+
+    func installStickerPack(_ packId: String, key: String) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.stickers.install(packId: packId, packKey: key, actionSource: .ui) } catch { toast = .stickerPackInstallFailed }
+        }
+    }
+
+    func uninstallStickerPack(_ packId: String) {
+        guard let session = signalSession else { return }
+        Task {
+            do { try await session.stickers.uninstall(packId: packId, actionSource: .ui) } catch { Self.trace("sticker pack uninstall failed: \(error)") }
         }
     }
 
@@ -452,4 +531,11 @@ struct PinMessageRequest {
             }
         }
     }
+}
+
+/// What the sticker observation reports (one value, so it is compared as one).
+struct StickerObservation: Equatable, Sendable {
+    var state: StickerManagerState
+    var favorites: Bool
+    var shareContact: Bool
 }

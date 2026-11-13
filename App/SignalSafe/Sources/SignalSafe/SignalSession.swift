@@ -36,9 +36,12 @@ import SignalUI
 
     /// Upstream getUserAgent: `Signal-Desktop/<version> macOS <release>`. The chat server
     /// gates clients by this string; we report the upstream release this port tracks.
+    /// The Signal-Desktop version this port presents (user agent, version-gated remote config).
+    static let desktopVersion = SignalClient.desktopVersion
+
     static var userAgent: String {
         let v = ProcessInfo.processInfo.operatingSystemVersion
-        return "Signal-Desktop/8.36.0 macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+        return "Signal-Desktop/\(desktopVersion) macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
     }
 
     let environment = SignalSession.environment
@@ -233,6 +236,26 @@ import SignalUI
     var scrollCounter = 0
     /// The Fun picker's installed sticker packs (live) and decoded sticker images.
     var stickerPacks: [StickerPackSummary] = []
+    /// Key transparency in the safety-number screens (SmartSafetyNumberViewer): whether it is
+    /// on (account setting, remote config), and each contact's check.
+    var keyTransparencyEnabled = false
+    var keyTransparencyStatus: [String: KeyTransparencyStatus] = [:]
+    /// The composer's view-once toggle (`isViewOnce`); it applies only while the draft is eligible.
+    var draftViewOnce = false
+    /// The sticker manager's state (installed, received, blessed, known; recents, favourites).
+    var stickerState: StickerManagerState?
+    /// `desktop.stickerFavorites.prod` (isFavoriteStickersEnabled).
+    var favoriteStickersEnabled = false
+    /// The sticker pack preview on screen (`showStickerPackPreview`): its id and key.
+    var stickerPackPreview: (id: String, key: String)?
+    /// `desktop.shareContact.prod` (isShareContactEnabled).
+    var shareContactEnabled = false
+    /// The share-contact dialog's contacts while it is open, and the chat it shares into.
+    var shareContactCandidates: [ShareContactCandidateInfo]?
+    var shareContactRecipient: (id: String, title: String)?
+    @ObservationIgnored var shareContactPicked: String?
+    /// The message whose shared contact the "ContactDetail" panel shows.
+    var sharedContactMessage: TimelineMessage?
     @ObservationIgnored let stickerImages = ObservedCache<RGBAImage>()
     @ObservationIgnored var stickerLoading: Set<String> = []
     /// Looping players of the timeline's GIFs, by attachment path (the newest few kept).
@@ -1419,14 +1442,18 @@ import SignalUI
         // `canSendInHighQuality` (an image among the drafts) and the HD choice.
         let highQuality = sendsHighQuality && staged.contains { AttachmentPolicy.isImage($0.contentType) }
         let coreRanges = Self.coreRanges(bodyRanges)
-        let preview = attachments.isEmpty ? linkPreviewForSend(body) : nil
+        // `isViewOnce`: a lone photo or video, not a reply (SignalCore refuses anything else).
+        let viewOnce = draftViewOnce && Self.isViewOnceEligible(staged.map(\.contentType), quoting: quotedMessageId)
+        let preview = attachments.isEmpty && !viewOnce ? linkPreviewForSend(body) : nil
         resetLinkPreview()
         unreadMarker = nil    // upstream: sending clears the divider
+        // What the draft was, for a cancelled safety-number review (taken before it is cleared).
+        let stagedBefore = staged
         draft = ""
         staged = []
+        draftViewOnce = false
         let quoting = quotedMessageId
         quotedMessageId = nil
-        let stagedBefore = staged
         // Upstream blockSendUntilConversationsAreVerified: a changed safety number is put to
         // the user before anything is queued; cancelling leaves the draft as it was.
         afterIdentityReview(conversationId: c.id, send: { Task {
@@ -1435,19 +1462,19 @@ import SignalUI
                     guard let key = c.masterKey else { return Self.trace("send failed: group has no master key") }
                     do {
                         _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key,
-                                                                         highQuality: highQuality)
+                                                                         highQuality: highQuality, viewOnce: viewOnce)
                     } catch GroupsServiceError.notAMember {
                         // No group state yet (the post-link group fetch is still running) or a stale
                         // one: bring the group up to date now, then send once more.
                         Self.trace("send: group state missing, fetching it")
                         _ = try await session.groups.update(try GroupKeys(masterKey: key))
                         _ = try await session.messenger.sendGroupMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, masterKey: key,
-                                                                         highQuality: highQuality)
+                                                                         highQuality: highQuality, viewOnce: viewOnce)
                     }
                 } else {
                     guard let to = c.serviceId else { return Self.trace("send failed: contact has no service id") }
                     _ = try await session.messenger.sendMessage(body, attachments: attachments, preview: preview, quoting: quoting, bodyRanges: coreRanges, to: to,
-                                                                    highQuality: highQuality)
+                                                                    highQuality: highQuality, viewOnce: viewOnce)
                 }
                 Self.trace("send: queued")
             } catch {
@@ -1459,6 +1486,12 @@ import SignalUI
             self.composer.load(body: body, ranges: bodyRanges)
             self.staged = stagedBefore
             self.quotedMessageId = quoting
+            self.draftViewOnce = viewOnce
         })
+    }
+
+    /// `isViewOnceEligible`: exactly one image or video, and not a reply.
+    static func isViewOnceEligible(_ contentTypes: [String], quoting: String?) -> Bool {
+        contentTypes.count == 1 && (AttachmentPolicy.isImage(contentTypes[0]) || AttachmentPolicy.isVideo(contentTypes[0])) && quoting == nil
     }
 }

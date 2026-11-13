@@ -169,4 +169,23 @@ extension Messenger {
             return id
         }
     }
+
+    /// `lookupOrCreateConversationIdForSharedContact`: the shared contact's chat, created (with
+    /// their shared name) when only their ACI is known; nil when they are not on Signal.
+    public func conversation(forSharedContact c: SharedContactInfo) async throws -> (id: String, serviceId: String?)? {
+        try await database.pool.write { db in
+            switch try SharedContacts.resolve(db, c) {
+            case .notOnSignal: return nil
+            case .existing(let id):
+                return (id, try String.fetchOne(db, sql: "SELECT serviceId FROM conversations WHERE id = ?", arguments: [id]))
+            case .aci(let aci):
+                let id = try MessageStore.privateConversation(db, serviceId: aci)
+                try MessageStore.updateConversationJSON(db, conversationId: id) { json in
+                    if let g = c.givenName, json["sharedGivenName"] == nil { json["sharedGivenName"] = g }
+                    if let f = c.familyName, json["sharedFamilyName"] == nil { json["sharedFamilyName"] = f }
+                }
+                return (id, aci)
+            }
+        }
+    }
 }

@@ -48,6 +48,8 @@ public struct FunPanelStickers: View {
     let showAddStickerPackButton: Bool
     var onSelectSticker: (FunStickerItem) -> Void
     let onAddStickerPack: () -> Void
+    /// `onMarkStickerAsFavorite` (the cell's context menu while favourites are enabled).
+    let onMarkStickerAsFavorite: (FunStickerItem, Bool) -> Void
     /// The media editor's "Featured" section: the analog and digital time stickers.
     var showTimeStickers = false
     var onSelectTimeSticker: (_ analog: Bool) -> Void = { _ in }
@@ -60,7 +62,8 @@ public struct FunPanelStickers: View {
 
     public init(packs: [FunStickerPack], favorites: [FunStickerItem], recents: [FunStickerItem], isFavoriteStickersEnabled: Bool = true,
                 showAddStickerPackButton: Bool = false, onSelectSticker: @escaping (FunStickerItem) -> Void = { _ in },
-                onAddStickerPack: @escaping () -> Void = {}) {
+                onAddStickerPack: @escaping () -> Void = {}, onMarkStickerAsFavorite: @escaping (FunStickerItem, Bool) -> Void = { _, _ in }) {
+        self.onMarkStickerAsFavorite = onMarkStickerAsFavorite
         self.packs = packs
         self.favorites = favorites
         self.recents = recents
@@ -115,6 +118,9 @@ public struct FunPanelStickers: View {
         }
     }
 
+    /// `favoriteStickersSet`.
+    func isFavorite(_ s: FunStickerItem) -> Bool { favorites.contains { $0.packId == s.packId && $0.id == s.id } }
+
     func sectionView(_ s: (id: FunStickersSection, title: String, stickers: [FunStickerItem])) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             FunGridHeader(title: s.title) { EmptyView() }
@@ -127,6 +133,20 @@ public struct FunPanelStickers: View {
                                 if let image = sticker.image { FittedSticker(image: image, box: Self.cell - 4) }
                             }
                             .frame(width: Self.cell, height: Self.cell)
+                            // StickerContextMenu: add or remove the favourite.
+                            .contextMenu {
+                                if isFavoriteStickersEnabled {
+                                    if isFavorite(sticker) {
+                                        SwiftUI.Button(i18n("icu:FunPanelStickers__StickerContextMenu--RemoveFavorite"), systemImage: "star.slash") {
+                                            onMarkStickerAsFavorite(sticker, false)
+                                        }
+                                    } else {
+                                        SwiftUI.Button(i18n("icu:FunPanelStickers__StickerContextMenu--AddFavorite"), systemImage: "star") {
+                                            onMarkStickerAsFavorite(sticker, true)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

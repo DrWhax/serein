@@ -64,4 +64,26 @@ public enum RemoteConfig {
     }
 
     public static func int(_ db: Database, _ name: String) throws -> Int? { try value(db, name).flatMap { Int($0) } }
+
+    /// `isFeaturedEnabledSelector` for a production build (`_isFeatureEnabledInner`): on for an
+    /// internal user, or when the server's `prodKey` value is a version at most `version`. A
+    /// missing or unparsable value is off.
+    public static func isFeatureEnabled(_ db: Database, prodKey: String, version: String) throws -> Bool {
+        if try isEnabled(db, "desktop.internalUser") { return true }
+        guard let ours = Version(version), let minimum = try value(db, prodKey).flatMap(Version.init) else { return false }
+        return ours >= minimum
+    }
+
+    /// A semver `major.minor.patch` (prerelease and build suffixes are not compared: production
+    /// values have none).
+    struct Version: Comparable {
+        let parts: [Int]
+        init?(_ s: String) {
+            let core = s.split(separator: "-", maxSplits: 1).first.map(String.init) ?? s
+            let p = core.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+            guard p.count == 3, p.allSatisfy({ $0 != nil && $0! >= 0 }) else { return nil }
+            parts = p.map { $0! }
+        }
+        static func < (a: Version, b: Version) -> Bool { a.parts.lexicographicallyPrecedes(b.parts) }
+    }
 }

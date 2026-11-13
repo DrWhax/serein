@@ -59,6 +59,8 @@ struct ConversationPanelView: View {
             WhileMutedSettings(isGroup: conversation.kind == .group, notifyWhileMuted: notifyWhileMuted,
                                setNotifyWhileMuted: { session.setNotifyWhileMuted($0, $1) })
         case "AllMedia": allMedia
+        case "StickerManager": ScrollView { stickerManager }
+        case "ContactDetail": ScrollView { SharedContactPanel(session: session) }
         case "GroupLinkManagement":
             ScrollView {
                 GroupLinkManagement(groupLink: session.groupLinkURL, addFromInviteLink: group.flatMap { AccessControl(rawValue: $0.accessControl.addFromInviteLink) },
@@ -86,6 +88,22 @@ struct ConversationPanelView: View {
             }
         default: EmptyView()
         }
+    }
+
+    // MARK: stickers
+
+    /// `SmartStickerManager`: the packs to install (blessed, received) and the installed ones;
+    /// a row opens the pack's preview.
+    var stickerManager: some View {
+        let s = session.stickerState
+        let packs = ((s?.installed ?? []) + (s?.received ?? []) + (s?.blessed ?? []))
+        return StickerManager(blessedPacks: (s?.blessed ?? []).map(session.uiStickerPack), receivedPacks: (s?.received ?? []).map(session.uiStickerPack),
+                              installedPacks: (s?.installed ?? []).map(session.uiStickerPack),
+                              onClickPreview: { id in
+                                  if let p = packs.first(where: { $0.id == id }) { session.showStickerPackPreview(packId: p.id, packKey: p.key) }
+                              },
+                              install: { session.installStickerPack($0.id, key: $0.key) },
+                              uninstall: { session.uninstallStickerPack($0.id) })
     }
 
     // MARK: details

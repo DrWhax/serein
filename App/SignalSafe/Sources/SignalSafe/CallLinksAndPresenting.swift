@@ -108,6 +108,16 @@ enum CallLinkModal: Equatable {
         }
     }
 
+    /// A clicked link Serein opens itself: a sticker pack link its preview, a call link its
+    /// lobby; true when handled.
+    func openInAppLink(_ url: URL) -> Bool {
+        if let pack = Stickers.packLink(url) {
+            showStickerPackPreview(packId: pack.packId, packKey: pack.packKey)
+            return true
+        }
+        return openCallLinkURL(url)
+    }
+
     /// A clicked link: a call link opens its lobby (added first if new); true when handled.
     func openCallLinkURL(_ url: URL) -> Bool {
         guard let key = CallLinkURL.rootKey(from: url) else { return false }
