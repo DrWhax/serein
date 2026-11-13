@@ -25,9 +25,12 @@ public enum ReceiveError: Error, Equatable {
     case unsupported(String)
 }
 
-/// libsignal's ack closure only captures the (thread-safe, Sendable) chat connection
-/// handle and an ack id, so it may be called from the receiver queue.
-struct ServerAck: @unchecked Sendable { let send: () throws -> Void }
+/// Takes exclusive ownership of the callback before crossing queues. Access is serialized.
+final class ServerAck: Sendable {
+    private let callback: Mutex<() throws -> Void>
+    init(send: sending @escaping () throws -> Void) { callback = Mutex(send) }
+    func send() throws { try callback.withLock { try $0() } }
+}
 
 public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable {
     let account: Account
@@ -59,7 +62,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     // MARK: ChatConnectionListener
 
     public func chatConnection(_ chat: AuthenticatedChatConnection, didReceiveIncomingMessage envelope: Data, serverDeliveryTimestamp: UInt64,
-                               sendAck: @escaping () throws -> Void) {
+                               sendAck: sending @escaping () throws -> Void) {
         let ack = ServerAck(send: sendAck)
         queue.async { self.handleIncoming(envelope, serverDeliveryTimestamp: serverDeliveryTimestamp, sendAck: ack.send) }
     }

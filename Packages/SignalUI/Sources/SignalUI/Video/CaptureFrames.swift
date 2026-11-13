@@ -1,9 +1,8 @@
 // The one audited `unsafe` for outgoing call video (approved 2026-11-06; Tools/lint-codecs.sh
 // allows exactly this line): CoreVideo has no safe way to read a pixel buffer, so the planes of
-// a local camera or ScreenCaptureKit frame (NV12, never untrusted input) are copied out whole
-// (bytesPerRow × rows from each plane's base address) while the buffer is locked read-only. Everything after the copy is safe
-// Swift over [UInt8]: each plane's size and stride are checked against the frame before its
-// rows are packed (stride padding dropped) into the tight NV12 layout ringrtc takes.
+// a local camera or ScreenCaptureKit frame (NV12) are copied row by row while locked read-only.
+// Dimensions, plane geometry and strides are checked before any raw read. Only visible bytes
+// are copied, excluding padding; everything after the copy is safe Swift over [UInt8].
 
 import CoreVideo
 
@@ -32,12 +31,26 @@ public enum CaptureFrames {
         guard nv12Formats.contains(CVPixelBufferGetPixelFormatType(buffer)), CVPixelBufferGetPlaneCount(buffer) == 2,
               CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
+        guard w > 0, h > 0, w <= 8192, h <= 8192, w % 2 == 0, h % 2 == 0 else { return nil }
+        // Validate both planes before reading either base address.
+        for i in 0..<2 {
+            guard CVPixelBufferGetWidthOfPlane(buffer, i) == (i == 0 ? w : w / 2),
+                  CVPixelBufferGetHeightOfPlane(buffer, i) == (i == 0 ? h : h / 2),
+                  CVPixelBufferGetBytesPerRowOfPlane(buffer, i) >= w,
+                  CVPixelBufferGetBytesPerRowOfPlane(buffer, i) <= 65536 else { return nil }
+        }
         var planes: [(rows: Int, width: Int, stride: Int, bytes: [UInt8])] = []
         for i in 0..<2 {
             let rows = CVPixelBufferGetHeightOfPlane(buffer, i), stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, i)
             guard rows > 0, rows <= 8192, stride > 0, stride <= 65536 else { return nil }
-            guard let bytes = unsafe CVPixelBufferGetBaseAddressOfPlane(buffer, i).map({ unsafe Array(UnsafeRawBufferPointer(start: $0, count: rows * stride)) }) else { return nil }
-            planes.append((rows, CVPixelBufferGetWidthOfPlane(buffer, i), stride, bytes))
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(rows * w)
+            for row in 0..<rows {
+                guard let rowBytes = unsafe CVPixelBufferGetBaseAddressOfPlane(buffer, i).map({ unsafe Array(UnsafeRawBufferPointer(start: $0.advanced(by: row * stride), count: w)) }) else { return nil }
+                bytes.append(contentsOf: rowBytes)
+            }
+            planes.append((rows, CVPixelBufferGetWidthOfPlane(buffer, i), w, bytes))
         }
         return pack(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer), planes: planes)
     }
@@ -48,7 +61,7 @@ public enum CaptureFrames {
         let y = planes[0], uv = planes[1]
         // Row bytes per plane: Y is w samples of 1 byte, CbCr is w/2 samples of 2 bytes.
         guard y.width == w, y.rows == h, uv.width == w / 2, uv.rows == h / 2,
-              y.stride >= w, uv.stride >= w,
+              y.stride >= w, uv.stride >= w, y.stride <= 65536, uv.stride <= 65536,
               y.bytes.count >= y.stride * (h - 1) + w, uv.bytes.count >= uv.stride * (h / 2 - 1) + w else { return nil }
         var out = [UInt8]()
         out.reserveCapacity(w * h * 3 / 2)

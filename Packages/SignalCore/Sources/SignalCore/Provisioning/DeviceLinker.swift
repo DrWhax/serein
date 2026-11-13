@@ -239,7 +239,7 @@ extension ProtocolStore {
 }
 
 /// Bridges libsignal's provisioning callbacks to an async stream.
-final class ProvisioningEvents: ProvisioningConnectionListener, @unchecked Sendable {
+final class ProvisioningEvents: ProvisioningConnectionListener, Sendable {
     enum Event { case address(String), envelope(Data) }
     let stream: AsyncThrowingStream<Event, Error>
     let continuation: AsyncThrowingStream<Event, Error>.Continuation

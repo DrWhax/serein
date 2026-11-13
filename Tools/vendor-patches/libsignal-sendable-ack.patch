@@ -1,0 +1,50 @@
+diff --git a/swift/Sources/LibSignalClient/ChatListener.swift b/swift/Sources/LibSignalClient/ChatListener.swift
+index 0c6fd43..a3deafd 100644
+--- a/swift/Sources/LibSignalClient/ChatListener.swift
++++ b/swift/Sources/LibSignalClient/ChatListener.swift
+@@ -26,7 +26,7 @@ public protocol ChatConnectionListener: ConnectionEventsListener<AuthenticatedCh
+         _ chat: AuthenticatedChatConnection,
+         didReceiveIncomingMessage envelope: Data,
+         serverDeliveryTimestamp: UInt64,
+-        sendAck: @escaping () throws -> Void
++        sendAck: sending @escaping () throws -> Void
+     )
+ 
+     /// Called when the server indicates that there are no further messages in the message queue.
+@@ -74,6 +74,12 @@ internal class ChatListenerBridge {
+         }
+     }
+ 
++    /// Constructs the exclusively owned callback outside the listener's isolation region.
++    private static func makeAck(_ handle: sending SignalMutPointerServerMessageAck) -> sending () throws -> Void {
++        let owner = AckHandleOwner(owned: NonNull(handle)!)
++        return { _ = owner.withNativeHandle { signal_server_message_ack_send($0.const()) } }
++    }
++
+     internal weak var chatConnection: AuthenticatedChatConnection?
+     private let chatListener: any ChatConnectionListener
+ 
+@@ -113,7 +119,10 @@ internal class ChatListenerBridge {
+             let bridge = Unmanaged<ChatListenerBridge>.fromOpaque(rawCtx!).takeUnretainedValue()
+ 
+             let envelopeData = Data(consuming: envelope)
+-            let ackHandleOwner = AckHandleOwner(owned: NonNull(ackHandle)!)
++            // FFI transfers exclusive ownership of this handle to this callback.
++            // C cannot express `sending`; assert that transfer only at the FFI boundary.
++            nonisolated(unsafe) let ownedAck = ackHandle
++            let sendAck = ChatListenerBridge.makeAck(ownedAck)
+             guard let chatConnection = bridge.chatConnection else {
+                 // The client no longer listening is not an error.
+                 return 0
+@@ -122,8 +131,9 @@ internal class ChatListenerBridge {
+             bridge.chatListener.chatConnection(
+                 chatConnection,
+                 didReceiveIncomingMessage: envelopeData,
+-                serverDeliveryTimestamp: timestamp
+-            ) { _ = ackHandleOwner.withNativeHandle { ackHandle in signal_server_message_ack_send(ackHandle.const()) } }
++                serverDeliveryTimestamp: timestamp,
++                sendAck: sendAck
++            )
+             return 0
+         }
+ 

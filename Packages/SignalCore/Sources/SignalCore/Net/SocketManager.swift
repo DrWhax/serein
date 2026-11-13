@@ -34,7 +34,7 @@ public actor SocketManager {
     var credentials: ChatCredentials?
     var unauthenticated: UnauthenticatedChatConnection?
     var authenticated: AuthenticatedChatConnection?
-    weak var listener: (any ChatConnectionListener)?
+    weak var listener: (any ChatConnectionListener & Sendable)?
     var reconnectTask: Task<Void, Never>?
     var stopped = false
 
@@ -72,7 +72,7 @@ public actor SocketManager {
     // MARK: authenticated
 
     /// Connects (or returns) the authenticated socket; incoming envelopes go to `listener`.
-    public func connect(listener: any ChatConnectionListener) async throws {
+    public func connect(listener: any ChatConnectionListener & Sendable) async throws {
         self.listener = listener
         stopped = false
         if authenticated == nil { try await connectAuthenticated() }
@@ -164,15 +164,15 @@ public actor SocketManager {
 }
 
 /// Forwards events and triggers reconnection when the socket drops.
-final class ReconnectingListener: ChatConnectionListener, @unchecked Sendable {
-    let inner: any ChatConnectionListener
+final class ReconnectingListener: ChatConnectionListener, Sendable {
+    let inner: any ChatConnectionListener & Sendable
     let manager: SocketManager
-    init(inner: any ChatConnectionListener, manager: SocketManager) {
+    init(inner: any ChatConnectionListener & Sendable, manager: SocketManager) {
         self.inner = inner
         self.manager = manager
     }
     func chatConnection(_ chat: AuthenticatedChatConnection, didReceiveIncomingMessage envelope: Data, serverDeliveryTimestamp: UInt64,
-                        sendAck: @escaping () throws -> Void) {
+                        sendAck: sending @escaping () throws -> Void) {
         inner.chatConnection(chat, didReceiveIncomingMessage: envelope, serverDeliveryTimestamp: serverDeliveryTimestamp, sendAck: sendAck)
     }
     func chatConnectionDidReceiveQueueEmpty(_ chat: AuthenticatedChatConnection) { inner.chatConnectionDidReceiveQueueEmpty(chat) }

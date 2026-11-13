@@ -20,6 +20,11 @@ import Testing
         #expect(CaptureFrames.pack(width: w, height: h, planes: [(h, w, ys, Array(y.prefix(9))), (1, 2, uvs, uv)]) == nil) // short plane
         #expect(CaptureFrames.pack(width: w, height: h, planes: [(h, w, ys, y)]) == nil)                           // one plane
         #expect(CaptureFrames.pack(width: w, height: h, planes: [(h, w, ys, y), (2, 2, uvs, uv)]) == nil)           // chroma rows
+        // Reject oversized strides before computing offsets (including integer overflow).
+        #expect(CaptureFrames.pack(width: w, height: h, planes: [(h, w, Int.max, y), (1, 2, uvs, uv)]) == nil)
+        // Last-row padding is not required: only visible bytes are read.
+        let tightTail = try #require(CaptureFrames.pack(width: w, height: h, planes: [(h, w, ys, Array(y.prefix(12))), (1, 2, uvs, Array(uv.prefix(4)))]))
+        #expect(tightTail == f)
         #expect(CapturedFrame(width: 4, height: 2, nv12: [UInt8](repeating: 0, count: 11)) == nil)
     }
 
