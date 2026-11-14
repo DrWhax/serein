@@ -7,7 +7,8 @@
 //      the real SignalLinkPreviewParser.xpc, which refuses HTML from the host itself;
 //   4. the real SignalGifSearch.xpc lists trending GIFs through Signal's content proxy;
 //   5. the real SignalMessageParser.xpc parses a message into a tree (in a child process of the
-//      session's own), and serves new sessions (new children) without waiting.
+//      session's own), inflates and parses a streamed backup there, and serves new sessions (new
+//      children) without waiting.
 // With --refused it only checks that the services turn it away (a copy signed otherwise).
 // Prints a line per check; exits non-zero when any check fails.
 // Arguments: probe service names, then "--", then media files (by extension).
@@ -24,7 +25,7 @@ func probe(_ name: String) async -> String {
 }
 
 /// Mirrors of MessageParsing's request and tree (the wire format goes by field names and types).
-enum MessageParseKind: String, Codable { case content, contactDetails, stickerManifest }
+enum MessageParseKind: String, Codable { case content, contactDetails, stickerManifest, backupData, backupEnd }
 struct MessageParseRequest: Codable { var kind: MessageParseKind; var bytes: Data }
 struct ProtoTree: Codable {
     enum Kind: UInt8, Codable { case message = 0, varint, fixed32, fixed64, bytes }
@@ -34,9 +35,15 @@ struct ProtoTree: Codable {
 let messageParserName = "org.signalsafe.SignalMessageParser"
 /// Content { dataMessage { body: "hi" } }, parsed by the service on `channel`.
 func parseMessage(_ channel: XPCChannel) async throws -> [ProtoTree] {
-    let request = try Wire.encode(MessageParseRequest(kind: .content, bytes: Data([0x0A, 0x04, 0x0A, 0x02, 0x68, 0x69])))
+    try await parse(channel, .content, Data([0x0A, 0x04, 0x0A, 0x02, 0x68, 0x69]))
+}
+func parse(_ channel: XPCChannel, _ kind: MessageParseKind, _ bytes: Data) async throws -> [ProtoTree] {
+    let request = try Wire.encode(MessageParseRequest(kind: kind, bytes: bytes))
     return try Wire.decode([ProtoTree].self, try await channel.send(request, maxReply: 1 << 20), maxBytes: 1 << 20)
 }
+/// gzip(BackupInfo { version: 1 }, Frame { chat { id: 7 } }), delimited (Python's gzip, mtime 0).
+let backupGzip = Data([0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xFF, 0x63, 0xE2, 0x60, 0x64, 0x91, 0x62, 0xE2, 0x60, 0x07, 0x00,
+                       0x28, 0x9F, 0xA9, 0x40, 0x08, 0x00, 0x00, 0x00])
 
 var failed = false
 @MainActor func check(_ what: String, _ body: () async throws -> String) async {
@@ -164,6 +171,21 @@ await check("message parser") {
     let trees = try await parseMessage(parserChannel)
     guard trees.count == 1, trees[0].nodes == expected else { throw MediaProcessingError.invalidResult }
     return "\(trees[0].nodes.count) nodes"
+}
+// A link-and-sync backup, in two pieces: the child inflates it as it comes (its gzip under the
+// service's profile), the records come back once complete, and the end is checked.
+await check("message parser backup") {
+    let channel = XPCChannel(.service(messageParserName), peer: nil, timeout: .seconds(10))
+    defer { channel.reset() }
+    var trees = try await parse(channel, .backupData, backupGzip.prefix(13))
+    trees += try await parse(channel, .backupData, backupGzip.dropFirst(13))
+    trees += try await parse(channel, .backupData, Data())
+    let info = [ProtoTree.Node(p: 0, f: 0, k: .message, v: 0, d: Data()), ProtoTree.Node(p: 0, f: 1, k: .varint, v: 1, d: Data())]
+    let frame = [ProtoTree.Node(p: 0, f: 0, k: .message, v: 0, d: Data()), ProtoTree.Node(p: 0, f: 3, k: .message, v: 0, d: Data()),
+                 ProtoTree.Node(p: 1, f: 1, k: .varint, v: 7, d: Data())]
+    guard trees.map(\.nodes) == [info, frame] else { throw MediaProcessingError.undecodable("backup trees \(trees.map(\.nodes))") }
+    guard try await parse(channel, .backupEnd, Data()).isEmpty else { throw MediaProcessingError.invalidResult }
+    return "2 records"
 }
 // A session ends with each source; the next gets a child of its own straight away (launchd
 // would make a new service process wait ten seconds).

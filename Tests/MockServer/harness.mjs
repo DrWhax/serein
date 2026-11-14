@@ -13,6 +13,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -185,6 +186,46 @@ const needDesktop = () => {
 
 // Link and sync: what the phone's next provisioning offers (setLinkAndSync).
 let pendingTransferArchive = null;
+
+// The phone backs `plaintext` up to the paid media tier as a primary does: its backup id and key
+// registered, the attachment uploaded to the transit tier, then copied to the media tier (the
+// mock re-encrypts it there under the media root key's layer) and the transit copy removed.
+async function backupMediaForPhone(plaintext) {
+  const { AccountEntropyPool, BackupKey } = mockRequire('@signalapp/libsignal-client/dist/AccountKeys.js');
+  const zk = mockRequire('@signalapp/libsignal-client/zkgroup');
+  const aci = libsignal.Aci.parseFromServiceIdString(phone.device.aci);
+  const backupKey = AccountEntropyPool.deriveBackupKey(phone.accountEntropyPool);
+  const context = zk.BackupAuthCredentialRequestContext.create(backupKey.serialize(), phone.device.aci);
+  const request = context.getRequest().serialize();
+  await server.setBackupId(phone.device, { messagesBackupAuthCredentialRequest: request, mediaBackupAuthCredentialRequest: request });
+  const day = Math.floor(Date.now() / 86_400_000) * 86_400;
+  const { media } = await server.getBackupCredentials(phone.device, { from: day, to: day });
+  const params = new zk.GenericServerPublicParams(Buffer.from(certs.backupServerPublicParams, 'base64'));
+  const credential = context.receive(new zk.BackupAuthCredentialResponse(Buffer.from(media[0].credential, 'base64')), media[0].redemptionTime, params);
+  const presentation = credential.present(params).serialize();
+  const signing = backupKey.deriveEcKey(aci);
+  const signed = { presentation, presentationSignature: signing.sign(presentation) };
+  await server.setBackupKey(signed, { backupIdPublicKey: signing.getPublicKey().serialize() });
+  // The attachment as sent (transit tier).
+  const keys = crypto.randomBytes(64), iv = crypto.randomBytes(16);
+  const padded = Buffer.concat([plaintext, Buffer.alloc(logPadSize(plaintext.length) - plaintext.length)]);
+  const cipher = crypto.createCipheriv('aes-256-cbc', keys.subarray(0, 32), iv);
+  const body = Buffer.concat([iv, cipher.update(padded), cipher.final()]);
+  const blob = Buffer.concat([body, crypto.createHmac('sha256', keys.subarray(32)).update(body).digest()]);
+  const cdnKey = crypto.randomUUID();
+  await server.storeAttachmentOnCdn(3, cdnKey, blob);
+  // Its media id and layer keys, from the media root key (upstream deriveBackupMediaKeyMaterial).
+  const plaintextHash = crypto.createHash('sha256').update(plaintext).digest();
+  const root = new BackupKey(Buffer.from(phone.mediaRootBackupKey));
+  const mediaId = root.deriveMediaId(Buffer.concat([plaintextHash, keys]).toString('hex'));
+  const material = root.deriveMediaEncryptionKey(mediaId);
+  const [result] = (await server.backupMediaBatch(signed, { items: [{ sourceAttachment: { cdn: 3, key: cdnKey }, objectLength: blob.length,
+    mediaId: Buffer.from(mediaId).toString('base64url'), hmacKey: Buffer.from(material.subarray(0, 32)),
+    encryptionKey: Buffer.from(material.subarray(32, 64)) }] })).responses;
+  if (typeof result.result !== 'object') throw new Error(`backupMediaBatch: ${JSON.stringify(result)}`);
+  rmSync(join(cdn3Path, 'attachments', cdnKey), { force: true });
+  return { key: keys, plaintextHash };
+}
 
 const commands = {
   async provision({ url }) {
@@ -406,6 +447,56 @@ const commands = {
     phone.ephemeralBackupKey = ephemeralBackupKey ? Buffer.from(ephemeralBackupKey, 'base64') : undefined;
     pendingTransferArchive = archive;
     return {};
+  },
+  // Link and sync with a generated history: Alice's chat with `messages` incoming messages,
+  // encrypted as a primary does (libsignal's MessageBackupKey for the phone's ACI), on CDN 3.
+  async linkAndSyncHistory({ messages = 1000, mediaPhotos = [] }) {
+    const { BackupKey } = mockRequire('@signalapp/libsignal-client/dist/AccountKeys.js');
+    const { MessageBackupKey } = mockRequire('@signalapp/libsignal-client/dist/MessageBackup.js');
+    const varint = (n) => { const b = []; let v = BigInt(n); do { let x = Number(v & 0x7Fn); v >>= 7n; if (v) x |= 0x80; b.push(x); } while (v); return Buffer.from(b); };
+    const field = (no, value) => typeof value === 'number' || typeof value === 'bigint'
+      ? Buffer.concat([varint(no << 3), varint(value)])
+      : Buffer.concat([varint((no << 3) | 2), varint(value.length), value]);
+    const msg = (...parts) => Buffer.concat(parts);
+    const uuid = (s) => Buffer.from(s.replace(/-/g, ''), 'hex');
+    const records = [];
+    const now = Date.now();
+    records.push(msg(field(1, 1), field(2, now), field(3, Buffer.from(phone.mediaRootBackupKey))));   // BackupInfo
+    records.push(field(1, msg(field(1, crypto.randomBytes(32)), field(4, Buffer.from('Phone')),
+      field(9, field(21, 200)))));                                                              // account (paid tier)
+    records.push(field(2, msg(field(1, 1), field(5, Buffer.alloc(0)))));                          // recipient 1: self
+    records.push(field(2, msg(field(1, 2), field(2, msg(field(1, uuid(alice.device.aci)), field(7, Buffer.alloc(0)),
+      field(10, 1), field(11, Buffer.from('Alice')))))));                                           // recipient 2: Alice
+    records.push(field(3, msg(field(1, 1), field(2, 2))));                                        // chat 1 with Alice
+    for (let k = 0; k < messages; k += 1) {
+      const at = now - (messages - k) * 60_000;
+      const body = `History message ${k + 1} of ${messages}: ` + crypto.randomBytes(24).toString('base64');
+      records.push(field(4, msg(field(1, 1), field(2, 2), field(3, at), field(8, msg(field(1, at + 1000), field(3, 1))),
+        field(11, field(2, field(1, Buffer.from(body)))))));
+    }
+    // Photos only on the media tier (no transit copy): backed up by the phone first.
+    for (const [k, b64] of mediaPhotos.entries()) {
+      const plaintext = Buffer.from(b64, 'base64');
+      const { key, plaintextHash } = await backupMediaForPhone(plaintext);
+      const at = now - 1000 + k;
+      const pointer = msg(field(4, Buffer.from('image/png')), field(13, msg(field(1, key), field(10, plaintextHash), field(3, plaintext.length),
+        field(7, 3))));
+      records.push(field(4, msg(field(1, 1), field(2, 2), field(3, at), field(8, msg(field(1, at + 500), field(3, 1))),
+        field(11, field(3, field(1, pointer))))));
+    }
+    const plain = Buffer.concat(records.flatMap((r) => [varint(r.length), r]));
+    const ephemeral = crypto.randomBytes(32);
+    const backupKey = new BackupKey(ephemeral);
+    const aci = libsignal.Aci.parseFromServiceIdString(phone.device.aci);
+    const keys = new MessageBackupKey({ backupKey, backupId: backupKey.deriveBackupId(aci) });
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(keys.aesKey), iv);
+    const body = Buffer.concat([iv, cipher.update(zlib.gzipSync(plain)), cipher.final()]);
+    const archive = Buffer.concat([body, crypto.createHmac('sha256', Buffer.from(keys.hmacKey)).update(body).digest()]);
+    await server.storeAttachmentOnCdn(3, 'transfer-archive', archive);
+    phone.ephemeralBackupKey = ephemeral;
+    pendingTransferArchive = { cdn: 3, key: 'transfer-archive' };
+    return { bytes: archive.length, plaintextBytes: plain.length };
   },
   // Arbitrary bytes on CDN 3 (forged or oversized blobs for the attachment rig).
   async putCdnBlob({ cdnKey, data }) {
@@ -761,7 +852,9 @@ out({
   serverTrustRoots: certs.serverTrustRoots,
   serverPublicParams: certs.serverPublicParams,
   genericServerPublicParams: certs.genericServerPublicParams,
-  phone: { aci: phone.device.aci, pni: phone.device.pni ?? null, number: phone.device.number ?? null },
+  backupServerPublicParams: certs.backupServerPublicParams,
+  phone: { aci: phone.device.aci, pni: phone.device.pni ?? null, number: phone.device.number ?? null,
+    mediaRootBackupKey: Buffer.from(phone.mediaRootBackupKey).toString('base64') },
   alice: { aci: alice.device.aci, number: alice.device.number ?? null },
 });
 

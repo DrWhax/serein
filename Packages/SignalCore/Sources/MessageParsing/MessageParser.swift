@@ -23,11 +23,12 @@ public enum MessageParseKind: String, Codable, Sendable {
     case contactDetails
     /// A decrypted sticker pack manifest (`StickerPack`).
     case stickerManifest
-    /// A link-and-sync backup, decrypted (still gzip): the service inflates it and keeps its
-    /// frames for the session; the reply is its `BackupInfo` and how many runs of frames it has.
-    case backupArchive
-    /// A run of the session's backup frames, by index (4 bytes, big-endian): its `Frame`s.
-    case backupFrames
+    /// The next piece of a link-and-sync backup, decrypted (still gzip; empty: read on): the
+    /// session's parser inflates as it goes and replies with the records completed so far, about
+    /// a megabyte of them at most, its `BackupInfo` first and then `Frame`s (BackupStreaming.swift).
+    case backupData
+    /// The backup's last piece was sent: the gzip member and the last record must be complete.
+    case backupEnd
 }
 
 public struct MessageParseRequest: Codable, Sendable {
@@ -42,24 +43,25 @@ public struct MessageParseRequest: Codable, Sendable {
 public enum MessageParserLimits {
     /// The largest input: a contact-sync blob (ContactSync's download limit).
     public static let maxInputBytes = 64 << 20
-    /// The largest backup archive (gzip), and what it may inflate to.
-    public static let maxArchiveBytes = 512 << 20
-    public static let maxBackupBytes = 2 << 30
-    /// Frames are handed out in runs of about this many bytes.
+    /// Backup records are handed out in runs of about this many bytes.
     public static let backupRunBytes = 1 << 20
-    public static let maxRequestBytes = maxArchiveBytes + 4096
-    public static func maxInput(_ kind: MessageParseKind) -> Int { kind == .backupArchive ? maxArchiveBytes : maxInputBytes }
+    public static let maxRequestBytes = maxInputBytes + 4096
+    public static func maxInput(_ kind: MessageParseKind) -> Int { kind == .backupData ? maxBackupPieceBytes : maxInputBytes }
     /// A reply: the trees take more room than the protobuf they came from.
     public static let maxReplyBytes = 256 << 20
     public static let maxContacts = 50_000
-    /// Backup frames per request (the app sends runs of about a megabyte).
+    /// Backup frames per reply (the parser hands out runs of about a megabyte).
     public static let maxFrames = 100_000
+    /// Records in a whole backup: bounds the work a stream of tiny records can make (records of
+    /// no bytes are refused outright). A long history has millions of messages; this is far above.
+    public static let maxBackupRecords = 1 << 26
+    /// The largest record of a backup.
+    public static let maxBackupRecordBytes = maxInputBytes
     /// Parsing a message takes microseconds and a contact sync blob a second or so; one still
     /// being parsed after this ends the process, and counts as malformed (it made the parser hang).
     public static func budget(_ kind: MessageParseKind) -> Duration {
         switch kind {
-        case .backupArchive: .seconds(60)
-        case .contactDetails, .backupFrames: .seconds(20)
+        case .contactDetails, .backupData, .backupEnd: .seconds(20)
         case .content, .stickerManifest: .seconds(3)
         }
     }
@@ -80,19 +82,35 @@ public enum MessageParserError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// Same wire shape as [ProtoTree], with aggregate limits enforced during decoding.
+struct MessageParseReply: Decodable {
+    let trees: [ProtoTree]
+    init(from decoder: any Swift.Decoder) throws {
+        var input = try decoder.unkeyedContainer()
+        var trees: [ProtoTree] = []
+        var budget = ProtoTree.Budget()
+        while !input.isAtEnd {
+            guard trees.count < MessageParserLimits.maxFrames else { throw ProtoTree.TreeError.tooLarge }
+            let tree = try input.decode(ProtoTree.self)
+            try budget.consume(tree)
+            trees.append(tree)
+        }
+        self.trees = trees
+    }
+}
+
 // MARK: - the service's side
 
 public final class MessageParserXPCHandler: XPCMessageHandler, Sendable {
     let gate: RequestGate
-    /// gunzip for link-and-sync archives (the service's, CodecCore); nil: refused.
-    let inflate: (@Sendable (Data) throws -> Data)?
-    /// The session's backup: its inflated records and the runs of frames.
-    struct Backup: Sendable { let bytes: Data; let runs: [[Range<Int>]] }
-    let backup = Mutex<Backup?>(nil)
+    /// Streaming gunzip for link-and-sync backups (the child's, CodecCore); nil: refused.
+    let inflater: (@Sendable () -> any BackupInflater)?
+    /// The session's backup, as far as it has come.
+    let backup = Mutex<BackupRecordStream?>(nil)
 
-    public init(gate: RequestGate = RequestGate(), inflate: (@Sendable (Data) throws -> Data)? = nil) {
+    public init(gate: RequestGate = RequestGate(), inflater: (@Sendable () -> any BackupInflater)? = nil) {
         self.gate = gate
-        self.inflate = inflate
+        self.inflater = inflater
     }
 
     public var maxRequestBytes: Int { MessageParserLimits.maxRequestBytes }
@@ -105,8 +123,17 @@ public final class MessageParserXPCHandler: XPCMessageHandler, Sendable {
     /// The trees for one request (what the service does).
     public func parse(_ r: MessageParseRequest) throws -> [ProtoTree] {
         switch r.kind {
-        case .backupArchive: return try openBackup(r.bytes)
-        case .backupFrames: return try backupRun(r.bytes)
+        case .backupData:
+            guard let inflater else { throw MessageParserError.malformed("no backup support") }
+            return try backup.withLock { b in
+                if b == nil { b = BackupRecordStream(inflater()) }
+                return try b!.data(r.bytes)
+            }
+        case .backupEnd:
+            return try backup.withLock { b in
+                guard b != nil else { throw MessageParserError.malformed("no backup open") }
+                return try b!.end()
+            }
         default: return try Self.parse(r)
         }
     }
@@ -120,10 +147,21 @@ public final class MessageParserXPCHandler: XPCMessageHandler, Sendable {
         case .stickerManifest:
             return [try ProtoTree(Signalservice_StickerPack(serializedBytes: r.bytes, options: options))]
         case .contactDetails:
-            return try ContactStream.records(r.bytes).map { try ProtoTree(Signalservice_ContactDetails(serializedBytes: $0, options: options)) }
-        case .backupArchive, .backupFrames:
+            return try recordTrees(ContactStream.records(r.bytes), as: Signalservice_ContactDetails.self)
+        case .backupData, .backupEnd:
             throw MessageParserError.malformed("a backup needs a session")
         }
+    }
+
+    static func recordTrees<M: SwiftProtobuf.Message>(_ records: [Data], as type: M.Type) throws -> [ProtoTree] {
+        var out: [ProtoTree] = []
+        var budget = ProtoTree.Budget()
+        for record in records {
+            let tree = try ProtoTree(M(serializedBytes: record, options: options))
+            try budget.consume(tree)
+            out.append(tree)
+        }
+        return out
     }
 
     static var options: BinaryDecodingOptions {
@@ -131,58 +169,26 @@ public final class MessageParserXPCHandler: XPCMessageHandler, Sendable {
         o.messageDepthLimit = ProtoTree.Limits.maxDepth
         return o
     }
-
-    func openBackup(_ gzip: Data) throws -> [ProtoTree] {
-        guard let inflate else { throw MessageParserError.malformed("no backup support") }
-        guard gzip.count <= MessageParserLimits.maxArchiveBytes else { throw MessageParserError.malformed("archive too large") }
-        let plain: Data
-        do { plain = try inflate(gzip) } catch { throw MessageParserError.malformed("gzip: \(error)") }
-        let ranges = try BackupStream.ranges(plain)
-        guard let first = ranges.first else { throw MessageParserError.malformed("empty backup") }
-        let info = try BackupProto_BackupInfo(serializedBytes: plain[first], options: Self.options)
-        var runs: [[Range<Int>]] = []
-        var run: [Range<Int>] = [], size = 0
-        for r in ranges.dropFirst() {
-            run.append(r)
-            size += r.count
-            if size >= MessageParserLimits.backupRunBytes || run.count >= MessageParserLimits.maxFrames {
-                runs.append(run)
-                run = []
-                size = 0
-            }
-        }
-        if !run.isEmpty { runs.append(run) }
-        backup.withLock { $0 = Backup(bytes: plain, runs: runs) }
-        return [try ProtoTree(info), try ProtoTree(Google_Protobuf_UInt64Value(UInt64(runs.count)))]
-    }
-
-    func backupRun(_ index: Data) throws -> [ProtoTree] {
-        guard index.count == 4 else { throw MessageParserError.malformed("run index") }
-        let i = index.reduce(0) { $0 << 8 | Int($1) }
-        guard let b = backup.withLock({ $0 }) else { throw MessageParserError.malformed("no backup open") }
-        guard i < b.runs.count else { return [] }
-        return try b.runs[i].map { try ProtoTree(BackupProto_Frame(serializedBytes: b.bytes[$0], options: Self.options)) }
-    }
 }
 
 /// The contact-sync blob's framing (upstream ContactsParser): a varint length, that many bytes
 /// of `ContactDetails`, then the avatar's `length` bytes (skipped).
 public enum ContactStream {
     public static func records(_ data: Data) throws -> [Data] {
-        let bytes = [UInt8](data)
+        guard data.count <= MessageParserLimits.maxInputBytes else { throw MessageParserError.malformed("contacts too large") }
         var offset = 0
         var out: [Data] = []
-        while offset < bytes.count {
+        while offset < data.count {
             guard out.count < MessageParserLimits.maxContacts else { throw MessageParserError.malformed("too many contacts") }
-            let length = try varint32(bytes, &offset)
-            guard length <= bytes.count - offset else { throw MessageParserError.malformed("truncated at \(offset)") }
-            let record = Data(bytes[offset..<(offset + length)])
+            let length = try varint32(data, &offset)
+            guard length <= data.count - offset else { throw MessageParserError.malformed("truncated at \(offset)") }
+            let record = data[(data.startIndex + offset)..<(data.startIndex + offset + length)]
             offset += length
             // The avatar's length is in the record; the trees carry it, but the framing needs it now.
-            let details = try Signalservice_ContactDetails(serializedBytes: record)
+            let details = try Signalservice_ContactDetails(serializedBytes: record, options: MessageParserXPCHandler.options)
             if details.hasAvatar, details.avatar.hasLength {
                 let avatar = Int(details.avatar.length)
-                guard avatar <= bytes.count - offset else { throw MessageParserError.malformed("truncated at \(offset)") }
+                guard avatar <= data.count - offset else { throw MessageParserError.malformed("truncated at \(offset)") }
                 offset += avatar
             }
             out.append(record)
@@ -191,11 +197,11 @@ public enum ContactStream {
     }
 
     /// Protobuf base-128 varint, at most 5 bytes, value < 2^32.
-    static func varint32(_ bytes: [UInt8], _ offset: inout Int) throws -> Int {
+    static func varint32<C: RandomAccessCollection>(_ bytes: C, _ offset: inout Int) throws -> Int where C.Element == UInt8, C.Index == Int {
         var value: UInt64 = 0
         for i in 0..<5 {
             guard offset < bytes.count else { throw MessageParserError.malformed("truncated at \(offset)") }
-            let b = bytes[offset]
+            let b = bytes[bytes.startIndex + offset]
             offset += 1
             value |= UInt64(b & 0x7F) << (7 * UInt64(i))
             if b & 0x80 == 0 {
@@ -204,23 +210,6 @@ public enum ContactStream {
             }
         }
         throw MessageParserError.malformed("varint too long at \(offset)")
-    }
-}
-
-/// A message backup's framing (protobuf encodeDelimited): a varint length, then the record.
-public enum BackupStream {
-    /// The records' byte ranges, in order.
-    public static func ranges(_ data: Data) throws -> [Range<Int>] {
-        let bytes = [UInt8](data)
-        var offset = 0
-        var out: [Range<Int>] = []
-        while offset < bytes.count {
-            let length = try ContactStream.varint32(bytes, &offset)
-            guard length <= bytes.count - offset else { throw MessageParserError.malformed("truncated at \(offset)") }
-            out.append((data.startIndex + offset)..<(data.startIndex + offset + length))
-            offset += length
-        }
-        return out
     }
 }
 
@@ -242,29 +231,10 @@ extension StructuredMessageParser {
         try Self.one(try trees(.stickerManifest, bytes, source: source))
     }
 
-    /// Opens a link-and-sync backup (decrypted gzip) in the parser: its BackupInfo and how
-    /// many runs of frames `backupRun` hands out.
-    public func backupArchive(_ gzip: Data, source: String) throws -> (info: BackupProto_BackupInfo, runs: Int) {
-        let trees = try trees(.backupArchive, gzip, source: source)
-        guard trees.count == 2 else { throw MessageParserError.malformed("expected info and count, got \(trees.count)") }
-        let info: BackupProto_BackupInfo = try Self.decode(trees[0])
-        let count: Google_Protobuf_UInt64Value = try Self.decode(trees[1])
-        guard count.value <= UInt64(Int32.max) else { throw MessageParserError.malformed("run count") }
-        return (info, Int(count.value))
-    }
-
-    /// Run `index` of the open backup's frames.
-    public func backupRun(_ index: Int, source: String) throws -> [BackupProto_Frame] {
-        guard index >= 0, index <= Int(Int32.max) else { throw MessageParserError.malformed("run index") }
-        let bytes = Data([UInt8(index >> 24 & 0xFF), UInt8(index >> 16 & 0xFF), UInt8(index >> 8 & 0xFF), UInt8(index & 0xFF)])
-        let trees = try trees(.backupFrames, bytes, source: source)
-        guard trees.count <= MessageParserLimits.maxFrames else { throw MessageParserError.malformed("too many frames") }
-        return try trees.map { try Self.decode($0) }
-    }
-
     public func contactDetails(_ stream: Data, source: String) throws -> [Signalservice_ContactDetails] {
         let trees = try trees(.contactDetails, stream, source: source)
         guard trees.count <= MessageParserLimits.maxContacts else { throw MessageParserError.malformed("too many contacts") }
+        try ProtoTree.validateBudget(trees)
         return try trees.map { try Self.decode($0) }
     }
 
@@ -284,8 +254,8 @@ extension StructuredMessageParser {
 /// back as the app reads them (tests; and what the service runs).
 public struct InProcessMessageParser: StructuredMessageParser {
     let handler: MessageParserXPCHandler
-    /// `inflate`: gunzip for backups (as the service's); without it, backups are refused.
-    public init(inflate: (@Sendable (Data) throws -> Data)? = nil) { handler = MessageParserXPCHandler(inflate: inflate) }
+    /// `inflater`: streaming gunzip for backups (as the child's); without it, backups are refused.
+    public init(inflater: (@Sendable () -> any BackupInflater)? = nil) { handler = MessageParserXPCHandler(inflater: inflater) }
     public func trees(_ kind: MessageParseKind, _ bytes: Data, source: String) throws -> [ProtoTree] {
         let trees: [ProtoTree]
         do { trees = try handler.parse(MessageParseRequest(kind: kind, bytes: bytes)) } catch let e as MessageParserError {
@@ -293,7 +263,7 @@ public struct InProcessMessageParser: StructuredMessageParser {
         } catch {
             throw MessageParserError.malformed(String(describing: error))
         }
-        return try Wire.decode([ProtoTree].self, try Wire.encode(trees), maxBytes: MessageParserLimits.maxReplyBytes)
+        return try Wire.decode(MessageParseReply.self, try Wire.encode(trees), maxBytes: MessageParserLimits.maxReplyBytes).trees
     }
 }
 
@@ -330,7 +300,7 @@ public final class XPCMessageParser: StructuredMessageParser {
                 if attempt > 0 { Thread.sleep(forTimeInterval: 0.01 * Double(1 << attempt)) }
                 do {
                     let reply = try channel.sendSync(request, timeout: MessageParserLimits.budget(kind) + .seconds(1), maxReply: MessageParserLimits.maxReplyBytes)
-                    do { return try Wire.decode([ProtoTree].self, reply, maxBytes: MessageParserLimits.maxReplyBytes) } catch {
+                    do { return try Wire.decode(MessageParseReply.self, reply, maxBytes: MessageParserLimits.maxReplyBytes).trees } catch {
                         throw MessageParserError.malformed("reply: \(error)")
                     }
                 } catch let e as MediaProcessingError {

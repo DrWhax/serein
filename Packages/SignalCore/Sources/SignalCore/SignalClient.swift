@@ -19,17 +19,22 @@ public actor SignalClient {
         public var trustRoots: [PublicKey]
         public var serverPublicParams: Data
         public var genericServerPublicParams: Data
-        public init(net: Net, endpoints: ServiceEndpoints, trustRoots: [PublicKey], serverPublicParams: Data, genericServerPublicParams: Data) {
+        /// Backup credentials' (the paid media tier); nil: no media tier.
+        public var backupServerPublicParams: Data?
+        public init(net: Net, endpoints: ServiceEndpoints, trustRoots: [PublicKey], serverPublicParams: Data, genericServerPublicParams: Data,
+                    backupServerPublicParams: Data? = nil) {
             self.net = net
             self.endpoints = endpoints
             self.trustRoots = trustRoots
             self.serverPublicParams = serverPublicParams
             self.genericServerPublicParams = genericServerPublicParams
+            self.backupServerPublicParams = backupServerPublicParams
         }
 
         public static func signal(_ env: SignalEnvironment, userAgent: String) throws -> Config {
             Config(net: env.net(userAgent: userAgent), endpoints: env.endpoints, trustRoots: try env.serverTrustRoots(),
-                   serverPublicParams: env.serverPublicParams, genericServerPublicParams: env.genericServerPublicParams)
+                   serverPublicParams: env.serverPublicParams, genericServerPublicParams: env.genericServerPublicParams,
+                   backupServerPublicParams: env.backupServerPublicParams)
         }
     }
 
@@ -107,9 +112,12 @@ public actor SignalClient {
 
     /// Links as a new device: `onURL` gets the `sgnl://linkdevice` URL to show as a QR code.
     /// The device offers link and sync (`backup5`): when the primary sends history, it is
-    /// imported before the session starts, `onSync` reporting how far it is.
+    /// imported before the session starts, `onSync` reporting how far it is and `control`
+    /// taking the user's cancel or retry. Throws `LinkAndSyncError.canceled` or
+    /// `.relinkRequested` when the device is to be unlinked (and its data deleted).
     public func link(deviceName: String, onURL: @escaping @Sendable (String) -> Void,
-                     onSync: @escaping @Sendable (LinkAndSyncProgress) -> Void = { _ in }) async throws -> Account {
+                     onSync: @escaping @Sendable (LinkAndSyncProgress) -> Void = { _ in },
+                     control: LinkAndSyncControl = LinkAndSyncControl()) async throws -> Account {
         let linker = DeviceLinker(net: net, socket: socket, database: database)
         let account = try await linker.link(LinkOptions(deviceName: deviceName), onURL: onURL)
         guard try await hasLinkAndSync() else {
@@ -119,7 +127,7 @@ public actor SignalClient {
         // As upstream: the keys go up at link time, the history comes down before the session.
         try await socket.connect(listener: HoldingListener())
         try await linker.uploadOneTimePreKeys(for: account)
-        try await linkAndSync(account, progress: onSync)
+        try await linkAndSync(account, control: control, progress: onSync)
         try await start(account, uploadOneTimeKeys: nil)
         return account
     }
@@ -166,14 +174,23 @@ public actor SignalClient {
         await preKeys?.value
     }
 
-    /// Starts the stored account's session.
+    /// Starts the stored account's session. A link and sync the app quit during goes on first
+    /// (as `link`'s: `onSync`, `control`, the same errors).
     @discardableResult
-    public func resume() async throws -> Session? {
+    public func resume(onSync: @escaping @Sendable (LinkAndSyncProgress) -> Void = { _ in },
+                       control: LinkAndSyncControl = LinkAndSyncControl()) async throws -> Session? {
         guard let account = try await storedAccount() else { return nil }
         await socket.setCredentials(account.credentials)
+        if try await hasLinkAndSync() {
+            try await socket.connect(listener: HoldingListener())
+            try await linkAndSync(account, control: control, progress: onSync)
+        }
         try await start(account, uploadOneTimeKeys: nil)
         return session
     }
+
+    /// Whether a link and sync is still to finish (the app shows its install screen first).
+    public func isLinkAndSyncPending() async -> Bool { (try? await hasLinkAndSync()) ?? false }
 
     func start(_ account: Account, uploadOneTimeKeys linker: DeviceLinker?) async throws {
         // One session's workers at a time: a running session's are drained first. Two job
@@ -187,7 +204,10 @@ public actor SignalClient {
         let store = try AttachmentStore(root: directory.appendingPathComponent("attachments"))
         let services = AttachmentServices(store: store, uploader: AttachmentUploader(http: http, forms: socket), media: media)
         let messenger = Messenger(account: account, database: database, socket: socket, trustRoots: trustRoots, jobs: jobs, attachments: services)
-        let downloads = AttachmentDownloadManager(db: database.pool, http: http, endpoints: endpoints, store: store, media: media)
+        let mediaTier = config.backupServerPublicParams.map {
+            BackupMediaTier(database: database, socket: socket, http: http, endpoints: endpoints, aci: account.aci, backupServerPublicParams: $0)
+        }
+        let downloads = AttachmentDownloadManager(db: database.pool, http: http, endpoints: endpoints, store: store, media: media, mediaTier: mediaTier)
         let credentials = GroupCredentials(account: account, socket: socket, db: database.pool, serverPublicParams: config.serverPublicParams,
                                            genericServerPublicParams: config.genericServerPublicParams)
         let groups = GroupsService(account: account, database: database, api: GroupsAPI(http: http, endpoints: endpoints, credentials: credentials),

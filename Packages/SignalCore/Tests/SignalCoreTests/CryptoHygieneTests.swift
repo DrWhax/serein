@@ -32,12 +32,14 @@ import Testing
     @Test func cbcDecryptOnlyBehindAReviewedMAC() throws {
         let code = try code()
         #expect(files(using: "aes256CBCDecrypt(", in: code) == ["Crypto.swift", "ProvisioningCipher.swift", "AttachmentCipher.swift", "LinkAndSync.swift"])
+        // CBC of whole blocks (pieces of a longer ciphertext) only where the whole is MAC-checked.
+        #expect(files(using: "aes256CBCDecryptBlocks(", in: code) == ["Crypto.swift", "LinkAndSync.swift"])
         for file in ["ProvisioningCipher.swift", "AttachmentCipher.swift", "LinkAndSync.swift"] {
             let text = try #require(code[file])
             // In every function, the comparison comes before the decryption.
-            for body in text.components(separatedBy: "func ").dropFirst() where body.contains("aes256CBCDecrypt(") {
+            for body in text.components(separatedBy: "func ").dropFirst() where body.contains("aes256CBCDecrypt") {
                 let mac = try #require(body.range(of: "constantTimeEqual("), "\(file): CBC decrypt without a MAC check")
-                let decrypt = try #require(body.range(of: "aes256CBCDecrypt("))
+                let decrypt = try #require(body.range(of: "aes256CBCDecrypt"))
                 #expect(mac.lowerBound < decrypt.lowerBound, "\(file): decrypts before checking the MAC")
             }
         }

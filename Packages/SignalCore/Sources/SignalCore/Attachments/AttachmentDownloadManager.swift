@@ -124,6 +124,8 @@ public actor AttachmentDownloadManager {
     let endpoints: ServiceEndpoints
     let store: AttachmentStore
     let media: (any MediaProcessing)?
+    /// The paid media tier, for attachments the primary backed up (link and sync).
+    let mediaTier: BackupMediaTier?
     var active: [String: Task<Void, Never>] = [:]
     var visibleMessages: [String] = []
     var running = false
@@ -141,11 +143,16 @@ public actor AttachmentDownloadManager {
     func setBeforePublication(_ hook: (@Sendable () async -> Void)?) { beforePublication = hook }
 
     public init(db: DatabaseWriter, http: HTTPClient, endpoints: ServiceEndpoints, store: AttachmentStore, media: (any MediaProcessing)?) {
+        self.init(db: db, http: http, endpoints: endpoints, store: store, media: media, mediaTier: nil)
+    }
+
+    init(db: DatabaseWriter, http: HTTPClient, endpoints: ServiceEndpoints, store: AttachmentStore, media: (any MediaProcessing)?, mediaTier: BackupMediaTier?) {
         self.db = db
         self.http = http
         self.endpoints = endpoints
         self.store = store
         self.media = media
+        self.mediaTier = mediaTier
     }
 
     /// Called with a message id whenever one of its attachments changes.
@@ -354,13 +361,10 @@ public actor AttachmentDownloadManager {
     /// `downloadAttachment` + `decryptAndReencryptLocally` (+ a thumbnail for images, a screenshot for videos).
     func download(_ job: AttachmentDownloadJob) async throws -> MessageAttachment {
         var a = job.attachment
-        guard let cdnKey = a.cdnKey, let keyB64 = a.key, let keys = Data(base64Encoded: keyB64) else { throw AttachmentDownloadError.missingPointer }
+        guard let keyB64 = a.key, let keys = Data(base64Encoded: keyB64) else { throw AttachmentDownloadError.missingPointer }
         let maxSize = try await db.read { try AttachmentPolicy.maximumIncomingSize($0) }
         guard a.size <= maxSize else { throw AttachmentDownloadError.tooBig(a.size) }
-        let base = endpoints.cdnURLs[a.cdnNumber ?? 0] ?? endpoints.cdnURLs[0]!
-        var client = http
-        client.maxResponseBytes = job.ciphertextSize + 64 << 10
-        let blob = try await client.send("GET", try base.cdnAttachment(cdnKey)).body
+        let blob = try await fetch(a, maxBytes: job.ciphertextSize + 64 << 10)
         let integrity: AttachmentIntegrity
         if let d = a.digest.flatMap({ Data(base64Encoded: $0) }) { integrity = .encrypted(digest: d) }
         else if let h = a.plaintextHash.flatMap(Data.init(hex:)) { integrity = .plaintext(hash: h) }
@@ -390,6 +394,29 @@ public actor AttachmentDownloadManager {
             try await VideoAttachments.addScreenshot(&a, data: plaintext, media: media, store: store)
         }
         return a
+    }
+}
+
+extension AttachmentDownloadManager {
+    /// upstream downloadAttachment: from the media tier when the account has it and the
+    /// attachment is there, else (or when that fails) from the transit tier. Either way the
+    /// bytes are the attachment as sent, checked by the caller.
+    func fetch(_ a: MessageAttachment, maxBytes: Int) async throws -> Data {
+        if let mediaTier, BackupMediaTier.canDownload(a), (try? await db.read({ try BackupMediaTier.isEnabled($0) })) == true {
+            do {
+                return try await mediaTier.download(a, maxBytes: maxBytes)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard a.cdnKey != nil else { throw error }
+                SignalClient.diagnose("attachment not on the media tier, trying the transit tier: \(String(describing: error).prefix(80))")
+            }
+        }
+        guard let cdnKey = a.cdnKey else { throw AttachmentDownloadError.missingPointer }
+        let base = endpoints.cdnURLs[a.cdnNumber ?? 0] ?? endpoints.cdnURLs[0]!
+        var client = http
+        client.maxResponseBytes = maxBytes
+        return try await client.send("GET", try base.cdnAttachment(cdnKey)).body
     }
 }
 

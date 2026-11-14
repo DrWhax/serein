@@ -59,6 +59,28 @@ public enum SignalCrypto {
         return try Aes256Cbc.decrypt(ciphertext, key: key, iv: iv)
     }
 
+    /// AES-256-CBC of whole blocks without padding: a piece of a longer ciphertext (the next
+    /// piece's IV is this one's last block). libsignal's decryptor always removes PKCS#7
+    /// padding, so the piece gets one more block, E(16×0x10 ⊕ C_last): what CBC-encrypting a
+    /// block of sixteen 0x10 after C_last gives. It decrypts to exactly that padding block.
+    public static func aes256CBCDecryptBlocks(key: Data, iv: Data, _ ciphertext: Data) throws -> Data {
+        try checkLengths(key: key, iv: iv)
+        guard !ciphertext.isEmpty, ciphertext.count % 16 == 0 else { throw SignalCryptoError.badLength("CBC blocks \(ciphertext.count)") }
+        let last = Data(ciphertext.suffix(16))
+        let padding = try Aes256Cbc.encrypt(Data(repeating: 16, count: 16), key: key, iv: last).prefix(16)
+        let plain = try Aes256Cbc.decrypt(ciphertext + padding, key: key, iv: iv)
+        guard plain.count == ciphertext.count else { throw SignalCryptoError.badLength("CBC blocks") }
+        return plain
+    }
+
+    /// HMAC-SHA256 over data given in pieces.
+    public struct StreamingHMAC: Sendable {
+        var hmac: HMAC<SHA256>
+        public init(key: Data) { hmac = HMAC<SHA256>(key: SymmetricKey(data: key)) }
+        public mutating func update(_ data: Data) { hmac.update(data: data) }
+        public func finalize() -> Data { Data(hmac.finalize()) }
+    }
+
     /// AES-256-CTR: 96-bit nonce ‖ 32-bit big-endian counter taken from `iv`
     /// (identical to a 128-bit counter for messages under 2^32 blocks, which is all Signal uses).
     public static func aes256CTR(key: Data, iv: Data, _ data: Data) throws -> Data {

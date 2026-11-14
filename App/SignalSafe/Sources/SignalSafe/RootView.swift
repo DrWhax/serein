@@ -108,8 +108,9 @@ struct RootView: View {
             InstallScreenQrCodeNotScannedStep(provisioningUrl: url, isStaging: session.isStaging, retryGetQrCode: { session.link() })
         case .linkError(let error):
             InstallScreenErrorStep(error: error, quit: { NSApp.terminate(nil) }, tryAgain: { session.link() })
-        case .syncing(let step):
-            InstallScreenBackupImportStep(step: step)
+        case .syncing(let step, let error):
+            InstallScreenBackupImportStep(step: step, error: error, onCancel: { session.cancelSync() }, onRetry: { session.retrySync() },
+                                          openURL: { NSWorkspace.shared.open($0) })
         case .failed(let reason):
             Text(reason).font(.system(size: 13)).foregroundStyle(.secondary).padding(40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(AxoColor.surfacePrimary)

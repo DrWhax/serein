@@ -134,6 +134,68 @@ public struct HTTPClient: Sendable {
         return (http.statusCode, data, out)
     }
 
+    /// A GET written to `file` as it arrives (nothing held in memory but a megabyte), at most
+    /// `maxBytes` in all. What the file holds already is kept and the rest asked for (a Range
+    /// request), unless the server answers with the whole body, which then replaces it.
+    /// `progress`: bytes in the file, and the whole size when the server says it.
+    public func download(_ url: URL, to file: URL, maxBytes: Int64, progress: @Sendable (Int64, Int64?) -> Void = { _, _ in }) async throws {
+        guard url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
+        if !FileManager.default.fileExists(atPath: file.path) {
+            guard FileManager.default.createFile(atPath: file.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+        }
+        let handle = try FileHandle(forUpdating: file)
+        defer { try? handle.close() }
+        var offset = Int64(try handle.seekToEnd())
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
+        let (bytes, response) = try await session.bytes(for: request)
+        do {
+            guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }
+            var total: Int64? = response.expectedContentLength >= 0 ? response.expectedContentLength : nil
+            switch http.statusCode {
+            case 206 where offset > 0:
+                // "bytes <first>-<last>/<size>": it must go on from where the file ends.
+                let range = (http.value(forHTTPHeaderField: "Content-Range") ?? "").split(whereSeparator: { " -/".contains($0) })
+                guard range.count == 4, range[0] == "bytes", Int64(range[1]) == offset else { throw HTTPError.invalidResponse }
+                total = Int64(range[3])
+            case 200..<300:
+                offset = 0
+            case 416:
+                // Nothing past what the file holds: it is not the file the server has. Start over.
+                try handle.truncate(atOffset: 0)
+                throw HTTPError.status(416, body: Data())
+            default:
+                throw HTTPError.status(http.statusCode, body: Data())
+            }
+            if let t = total, t > maxBytes { throw HTTPError.tooLarge(Int(clamping: t)) }
+            try handle.truncate(atOffset: UInt64(offset))
+            try handle.seek(toOffset: UInt64(offset))
+            progress(offset, total)
+            var buffer = Data()
+            buffer.reserveCapacity(1 << 20)
+            for try await b in bytes {
+                buffer.append(b)
+                if buffer.count == 1 << 20 {
+                    guard offset + Int64(buffer.count) <= maxBytes else { throw HTTPError.tooLarge(Int(clamping: offset + Int64(buffer.count))) }
+                    try handle.write(contentsOf: buffer)
+                    offset += Int64(buffer.count)
+                    buffer.removeAll(keepingCapacity: true)
+                    progress(offset, total)
+                }
+            }
+            guard offset + Int64(buffer.count) <= maxBytes else { throw HTTPError.tooLarge(Int(clamping: offset + Int64(buffer.count))) }
+            try handle.write(contentsOf: buffer)
+            offset += Int64(buffer.count)
+            if let t = total, offset != t { throw HTTPError.invalidResponse }
+            try handle.synchronize()
+            progress(offset, offset)
+        } catch {
+            bytes.task.cancel()
+            throw error
+        }
+    }
+
     /// Performs a request; non-2xx statuses other than those in `accept` throw `HTTPError.status`.
     public func send(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                      accept: Set<Int> = []) async throws -> (status: Int, body: Data) {

@@ -21,12 +21,32 @@ import Testing
                                    theme: theme)
     }
 
-    /// Link and sync while the primary prepares its archive (the Waiting story). The
-    /// Download/Process stories add a Cancel button this port does not have.
+    /// Link and sync: waiting for the primary, downloading (bytes, done), importing,
+    /// cancelling, and the error dialogs over the screen (portals: the whole 1200 × 900 viewport).
     @Test(arguments: ["light", "dark"])
-    func backupImportWaiting(theme: String) throws {
-        try Snapshot.assertMatches(Self.stage(InstallScreenBackupImportStep(step: .waitForBackup)),
-                                   story: "components-installscreen-installscreenbackupimportstep--waiting", theme: theme)
+    func backupImport(theme: String) throws {
+        let half = (Int64(500 * 1024), Int64(1024 * 1024))
+        let screens: [(String, InstallScreenBackupImportStep)] = [
+            ("waiting", .init(step: .waitForBackup)),
+            // Captured before its first timer: still waiting.
+            ("full-flow", .init(step: .waitForBackup)),
+            ("bytes", .init(step: .download(currentBytes: half.0, totalBytes: half.1))),
+            ("full", .init(step: .download(currentBytes: 1024, totalBytes: 1024))),
+            ("processing", .init(step: .process(currentBytes: half.0, totalBytes: half.1))),
+            ("canceled", .init(step: .process(currentBytes: half.0, totalBytes: half.1), error: .canceled)),
+        ]
+        for (name, view) in screens {
+            try Snapshot.assertMatches(Self.stage(view), story: "components-installscreen-installscreenbackupimportstep--\(name)", theme: theme)
+        }
+        let dialogs: [(String, InstallScreenBackupImportStep)] = [
+            ("error", .init(step: .download(currentBytes: half.0, totalBytes: half.1), error: .retriable)),
+            ("fatal-error", .init(step: .process(currentBytes: half.0, totalBytes: half.1), error: .fatal)),
+            ("unsupported-version", .init(step: .process(currentBytes: 1, totalBytes: half.1), error: .unsupportedVersion)),
+        ]
+        for (name, view) in dialogs {
+            try Snapshot.assertMatches(Self.portalStage(view, width: 1168), story: "components-installscreen-installscreenbackupimportstep--\(name)",
+                                       theme: theme)
+        }
     }
 
     @Test(arguments: ["light", "dark"])

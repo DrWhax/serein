@@ -29,6 +29,9 @@ public struct MessageAttachment: Codable, Sendable, Equatable {
     public var incrementalMac: String?
     public var chunkSize: Int?
     public var uploadTimestamp: UInt64?
+    /// The paid media tier's CDN, for an attachment the primary backed up (upstream's
+    /// backupCdnNumber; with `key` and `plaintextHash` it names the object there).
+    public var backupCdnNumber: Int?
     // Metadata.
     public var fileName: String?
     public var flags: Int?
@@ -197,18 +200,19 @@ public enum MessageAttachments {
         try db.execute(sql: """
             INSERT INTO message_attachments (messageId, editHistoryIndex, attachmentType, orderInMessage, conversationId, sentAt, clientUuid,
                 size, contentType, path, plaintextHash, localKey, caption, fileName, blurHash, height, width, digest, key, version,
-                incrementalMac, incrementalMacChunkSize, transitCdnKey, transitCdnNumber, transitCdnUploadTimestamp,
+                incrementalMac, incrementalMacChunkSize, transitCdnKey, transitCdnNumber, transitCdnUploadTimestamp, backupCdnNumber,
                 thumbnailPath, thumbnailSize, thumbnailContentType, thumbnailLocalKey, thumbnailVersion,
                 screenshotPath, screenshotSize, screenshotContentType, screenshotLocalKey, screenshotVersion, duration,
                 flags, error, wasTooBig, pending, messageType, receivedAt, receivedAtMs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (messageId, editHistoryIndex, attachmentType, orderInMessage) DO UPDATE SET
                 clientUuid = excluded.clientUuid, size = excluded.size, contentType = excluded.contentType, path = excluded.path,
                 plaintextHash = excluded.plaintextHash, localKey = excluded.localKey, caption = excluded.caption, fileName = excluded.fileName,
                 blurHash = excluded.blurHash, height = excluded.height, width = excluded.width, digest = excluded.digest, key = excluded.key,
                 version = excluded.version, incrementalMac = excluded.incrementalMac, incrementalMacChunkSize = excluded.incrementalMacChunkSize,
                 transitCdnKey = excluded.transitCdnKey, transitCdnNumber = excluded.transitCdnNumber,
-                transitCdnUploadTimestamp = excluded.transitCdnUploadTimestamp, thumbnailPath = excluded.thumbnailPath,
+                transitCdnUploadTimestamp = excluded.transitCdnUploadTimestamp, backupCdnNumber = excluded.backupCdnNumber,
+                thumbnailPath = excluded.thumbnailPath,
                 thumbnailSize = excluded.thumbnailSize, thumbnailContentType = excluded.thumbnailContentType,
                 thumbnailLocalKey = excluded.thumbnailLocalKey, thumbnailVersion = excluded.thumbnailVersion,
                 screenshotPath = excluded.screenshotPath, screenshotSize = excluded.screenshotSize,
@@ -218,7 +222,7 @@ public enum MessageAttachments {
             """, arguments: [
                 loc.messageId, loc.editHistoryIndex, loc.type.rawValue, loc.order, conversationId, sentAt, a.clientUuid,
                 a.size, a.contentType, a.path, a.plaintextHash, a.localKey, a.caption, a.fileName, a.blurHash, a.height, a.width, a.digest, a.key,
-                a.version, a.incrementalMac, a.chunkSize, a.cdnKey, a.cdnNumber, a.uploadTimestamp.map { Int64($0) },
+                a.version, a.incrementalMac, a.chunkSize, a.cdnKey, a.cdnNumber, a.uploadTimestamp.map { Int64($0) }, a.backupCdnNumber,
                 a.thumbnail?.path, a.thumbnail?.size, a.thumbnail?.contentType, a.thumbnail?.localKey, a.thumbnail?.version,
                 a.screenshot?.path, a.screenshot?.size, a.screenshot?.contentType, a.screenshot?.localKey, a.screenshot?.version, a.duration,
                 a.flags, bool(a.error), bool(a.wasTooBig), bool(a.pending), messageType, receivedAt, receivedAt,
@@ -248,6 +252,7 @@ public enum MessageAttachments {
         a.digest = row["digest"]; a.key = row["key"]; a.version = row["version"]; a.incrementalMac = row["incrementalMac"]
         a.chunkSize = row["incrementalMacChunkSize"]; a.cdnKey = row["transitCdnKey"]; a.cdnNumber = row["transitCdnNumber"]
         a.uploadTimestamp = (row["transitCdnUploadTimestamp"] as Int64?).map { UInt64($0) }; a.flags = row["flags"]
+        a.backupCdnNumber = row["backupCdnNumber"]
         a.error = (row["error"] as Int?).map { $0 != 0 }; a.wasTooBig = (row["wasTooBig"] as Int?).map { $0 != 0 }
         a.pending = (row["pending"] as Int?).map { $0 != 0 }
         if let path: String = row["thumbnailPath"], let key: String = row["thumbnailLocalKey"] {

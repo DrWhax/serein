@@ -45,6 +45,15 @@ struct BackupImporter {
     /// Conversations in progress (written at the end): id → attributes.
     var conversations: [String: [String: Any]] = [:]
     var pinned: [(UInt32, String)] = []
+    /// Custom chat colours by backup id → ours (upstream #customChatColorIdByBackupId).
+    var customColors: [UInt64: Int64] = [:]
+    /// Chats' own bubble colours, written with the conversations.
+    var chatColors: [String: ChatBubbleColor] = [:]
+    /// Call links by recipient id: their room ids, and whether we administer them.
+    var callLinks: [UInt64: (roomId: String, admin: Bool)] = [:]
+    /// Links we administer, and whether the backup had a call of theirs (upstream
+    /// #adminCallLinksToHasCall: one without gets a placeholder in the calls list).
+    var adminCallLinksHaveCall: [String: Bool] = [:]
     var folderPosition: Int64 = 0
     var sawAccount = false
     var result = BackupImportResult()
@@ -88,7 +97,7 @@ struct BackupImporter {
             case .installedStickerPack(let p): try fromStickerPack(p)
             case .notificationProfile(let p): try fromNotificationProfile(p)
             case .chatFolder(let f): try fromChatFolder(f)
-            case .adHocCall: break     // call links are not imported
+            case .adHocCall(let c): try fromAdHocCall(c)
             case .account, nil: break
             }
         } catch {
@@ -103,6 +112,11 @@ struct BackupImporter {
             try Self.writeConversation(db, attrs)
         }
         result.conversations = conversations.count
+        for (id, color) in chatColors { try ChatColors.setConversationColor(db, conversationId: id, color) }
+        // Links we administer that had no call yet still show in the calls list.
+        for (roomId, hadCall) in adminCallLinksHaveCall.sorted(by: { $0.key < $1.key }) where !hadCall {
+            try CallHistoryStore.save(db, CallLinkStore.placeholderHistory(roomId: roomId, now: now))
+        }
         let order = pinned.sorted { $0.0 < $1.0 }.map(\.1)
         if !order.isEmpty { try Items.set(db, "pinnedConversationIds", order) }
     }
@@ -166,7 +180,88 @@ struct BackupImporter {
         try Items.set(db, "phoneNumberSharingMode", s.phoneNumberSharingMode == .everybody ? "Everybody" : "Nobody")
         try Items.set(db, "phoneNumberDiscoverability", s.notDiscoverableByPhoneNumber ? "NotDiscoverable" : "Discoverable")
         try Items.set(db, "sent-media-quality", s.defaultSentMediaQuality == .high ? "high" : "standard")
+        // Free (200: paid, with media backed up); upstream backupTier.
+        if s.hasBackupTier { try Items.set(db, "backupTier", s.backupTier) }
+        // Custom colours before the default style, which may refer to one (upstream's order).
+        try fromCustomChatColors(s.customChatColors)
+        if s.hasDefaultChatStyle, let color = bubbleColor(s.defaultChatStyle) { try ChatColors.setDefaultColor(db, color) }
         conversations[ourId] = me
+    }
+
+    // MARK: chat colours (upstream #fromCustomChatColors / #fromChatStyle). Wallpapers are
+    // imported only in upstream's test builds ("not synced in storage service"): not here.
+
+    mutating func fromCustomChatColors(_ colors: [BackupProto_ChatStyle.CustomChatColor]) throws {
+        for c in colors {
+            let id: Int64
+            switch c.color {
+            case .solid(let argb):
+                id = try ChatColors.addCustomColor(db, solid: argb, gradient: nil)
+            case .gradient(let g):
+                guard let start = g.colors.first, let end = g.colors.last else { result.frameErrors += 1; continue }
+                // Desktop's angles turn the other way and start 90° on.
+                let angle = ((270 - Int64(g.angle)) % 360 + 360) % 360
+                id = try ChatColors.addCustomColor(db, solid: nil, gradient: (start, end, Int(angle)))
+            case nil:
+                result.frameErrors += 1
+                continue
+            }
+            customColors[c.id] = id
+        }
+    }
+
+    /// upstream WALLPAPER_TO_BUBBLE_COLOR: an automatic bubble colour follows a preset wallpaper.
+    static let wallpaperBubbleColors: [BackupProto_ChatStyle.WallpaperPreset: String] = [
+        .solidBlush: "crimson", .solidCopper: "vermilion", .solidDust: "burlap", .solidCeladon: "forest", .solidRainforest: "wintergreen",
+        .solidPacific: "teal", .solidFrost: "blue", .solidNavy: "indigo", .solidLilac: "violet", .solidPink: "plum", .solidEggplant: "taupe",
+        .solidSilver: "steel", .gradientSunset: "ember", .gradientNoir: "midnight", .gradientHeatmap: "infrared", .gradientAqua: "lagoon",
+        .gradientIridescent: "fluorescent", .gradientMonstera: "basil", .gradientBliss: "sublime", .gradientSky: "sea", .gradientPeach: "tangerine",
+    ]
+
+    static func presetName(_ p: BackupProto_ChatStyle.BubbleColorPreset) -> String {
+        switch p {
+        case .solidCrimson: "crimson"
+        case .solidVermilion: "vermilion"
+        case .solidBurlap: "burlap"
+        case .solidForest: "forest"
+        case .solidWintergreen: "wintergreen"
+        case .solidTeal: "teal"
+        case .solidBlue: "blue"
+        case .solidIndigo: "indigo"
+        case .solidViolet: "violet"
+        case .solidPlum: "plum"
+        case .solidTaupe: "taupe"
+        case .solidSteel: "steel"
+        case .gradientEmber: "ember"
+        case .gradientMidnight: "midnight"
+        case .gradientInfrared: "infrared"
+        case .gradientLagoon: "lagoon"
+        case .gradientFluorescent: "fluorescent"
+        case .gradientBasil: "basil"
+        case .gradientSublime: "sublime"
+        case .gradientSea: "sea"
+        case .gradientTangerine: "tangerine"
+        case .solidUltramarine, .unknownBubbleColorPreset, .UNRECOGNIZED: "ultramarine"
+        }
+    }
+
+    /// A style's bubble colour (nil: automatic, the default).
+    mutating func bubbleColor(_ style: BackupProto_ChatStyle) -> ChatBubbleColor? {
+        var wallpaper: BackupProto_ChatStyle.WallpaperPreset?
+        if case .wallpaperPreset(let w) = style.wallpaper { wallpaper = w }
+        switch style.bubbleColor {
+        case .autoBubbleColor:
+            return wallpaper.flatMap { Self.wallpaperBubbleColors[$0] }.map { .preset($0) }
+        case .bubbleColorPreset(let p):
+            return .preset(Self.presetName(p))
+        case .customColorID(let backupId):
+            if let id = customColors[backupId] { return .custom(id) }
+            result.frameErrors += 1   // a custom colour the backup did not have
+            return nil
+        case nil:
+            result.frameErrors += 1
+            return nil
+        }
     }
 
     // MARK: recipients
@@ -189,9 +284,42 @@ struct BackupImporter {
             releaseNotesRecipient = r.id
         case .distributionList(let d):
             try fromDistributionList(d)
-        case .callLink, nil:
+        case .callLink(let l):
+            try fromCallLink(r.id, l)
+        case nil:
             break
         }
+    }
+
+    // MARK: call links (upstream #fromCallLink / #fromAdHocCall)
+
+    mutating func fromCallLink(_ recipientId: UInt64, _ l: BackupProto_CallLink) throws {
+        try Self.check(!l.rootKey.isEmpty, "call link without a root key")
+        try Self.check(!l.name.isEmpty, "call link without a name")
+        let roomId = try CallLinkStore.roomId(rootKey: l.rootKey)
+        let restrictions = switch l.restrictions {
+        case .none: 0
+        case .adminApproval: 1
+        case .unknown, .UNRECOGNIZED: 2
+        }
+        let adminKey = l.hasAdminKey && !l.adminKey.isEmpty ? l.adminKey : nil
+        // As from a sync: no storage write-back (the primary has the record).
+        try CallLinkStore.insertOrUpdateFromSync(db, CallLinkRecord(roomId: roomId, rootKey: l.rootKey, adminKey: adminKey, name: l.name,
+                                                                    restrictions: restrictions, expiration: Self.ms(l.expirationMs)))
+        callLinks[recipientId] = (roomId, adminKey != nil)
+        if adminKey != nil, adminCallLinksHaveCall[roomId] == nil { adminCallLinksHaveCall[roomId] = false }
+    }
+
+    mutating func fromAdHocCall(_ c: BackupProto_AdHocCall) throws {
+        guard let timestamp = Self.ms(c.callTimestamp) else { throw Failure(description: "ad hoc call without a timestamp") }
+        // A call of a link the backup does not have is dropped (upstream logs and returns).
+        guard let link = callLinks[c.recipientID] else { return }
+        let callId = c.callID != 0 ? String(c.callID) : UUID().uuidString.lowercased()
+        let status: CallStatus = c.state == .generic ? .genericAdhocCall : .unknown
+        try CallHistoryStore.save(db, CallHistoryDetails(details: CallDetails(callId: callId, peerId: link.roomId, ringerId: nil, startedById: nil,
+                                                                               mode: .adhoc, type: .adhoc, direction: .unknown, timestamp: timestamp),
+                                                         status: status))
+        if link.admin { adminCallLinksHaveCall[link.roomId] = true }
     }
 
     /// Upstream's color names (AvatarColorType) by BackupProto_AvatarColor.
@@ -356,6 +484,7 @@ struct BackupImporter {
         else if c.dontNotifyForMentionsIfMuted { attrs["notifyForMentionsIfMuted"] = false }
         if c.hasNotifyForRepliesIfMuted { attrs["notifyForRepliesIfMuted"] = c.notifyForRepliesIfMuted }
         if c.hasShowUnreadReminders { attrs["showUnreadReminders"] = c.showUnreadReminders }
+        if c.hasStyle, let color = bubbleColor(c.style) { chatColors[r.conversationId] = color }
         conversations[r.conversationId] = attrs
         if c.hasPinnedOrder, c.pinnedOrder != 0 { pinned.append((c.pinnedOrder, r.conversationId)) }
     }
@@ -377,7 +506,11 @@ struct BackupImporter {
         let author = recipients[item.authorID]
         let expireTimer = item.hasExpiresInMs && item.expiresInMs > 0 ? Int(item.expiresInMs / 1000) : nil
         let expireStart = item.hasExpireStartDate ? Self.ms(item.expireStartDate) : nil
-        if let expireTimer, let expireStart, expireStart + Int64(expireTimer) * 1000 < now { return }   // expired
+        if let expireTimer, let expireStart {
+            // Expired already (a timer too long to compute in milliseconds never is).
+            let (span, overflow) = Int64(expireTimer).multipliedReportingOverflow(by: 1000)
+            if !overflow, now - expireStart > span { return }
+        }
         var conv = conversations[conversationId] ?? [:]
         var json: [String: Any] = ["conversationId": conversationId, "sent_at": timestamp, "timestamp": timestamp, "schemaVersion": 14,
                                    "attachments": [] as [Any]]
@@ -572,6 +705,8 @@ struct BackupImporter {
         if !l.key.isEmpty { a.key = l.key.base64EncodedString() }
         if !l.plaintextHash.isEmpty { a.plaintextHash = l.plaintextHash.hexString }
         if !l.encryptedDigest.isEmpty { a.digest = l.encryptedDigest.base64EncodedString() }
+        // On the media tier too (upstream: only with a media name, from the key and hash).
+        if l.hasMediaTierCdnNumber, !l.key.isEmpty, !l.plaintextHash.isEmpty { a.backupCdnNumber = Int(l.mediaTierCdnNumber) }
         if !l.transitCdnKey.isEmpty {
             a.cdnKey = l.transitCdnKey
             a.cdnNumber = Int(l.transitCdnNumber)
@@ -883,7 +1018,7 @@ struct BackupImporter {
               scheduleStartTime, scheduleEndTime, scheduleDaysEnabledJson, storageNeedsSync)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(id) DO NOTHING
-            """, arguments: [p.id.hexString, p.name, p.hasEmoji ? p.emoji : nil, Int64(p.color), Int64(p.createdAtMs), p.allowAllCalls ? 1 : 0,
+            """, arguments: [p.id.hexString, p.name, p.hasEmoji ? p.emoji : nil, Int64(p.color), Self.ms(p.createdAtMs) ?? 0, p.allowAllCalls ? 1 : 0,
                              p.allowAllMentions ? 1 : 0, allowed, p.scheduleEnabled ? 1 : 0, Int(p.scheduleStartTime), Int(p.scheduleEndTime),
                              try MessageStore.jsonString(days)])
     }

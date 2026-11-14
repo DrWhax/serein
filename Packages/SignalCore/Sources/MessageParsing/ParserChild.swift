@@ -26,7 +26,7 @@ public enum ParserPipeError: Error, Equatable {
 
 public enum ParserPipe {
     public static func write(_ frame: Data, to h: FileHandle) throws(ParserPipeError) {
-        let n = UInt32(frame.count)
+        guard let n = UInt32(exactly: frame.count) else { throw .tooLarge(frame.count) }
         var out = Data([UInt8(n & 0xFF), UInt8(n >> 8 & 0xFF), UInt8(n >> 16 & 0xFF), UInt8(n >> 24)])
         out.append(frame)
         do { try h.write(contentsOf: out) } catch { throw .io(String(describing: error)) }
@@ -157,42 +157,57 @@ final class ProcessHolder: Sendable {
 /// at once (and another is started for the next).
 public final class ParserChildPool: Sendable {
     let spawn: @Sendable () throws -> ParserChildProcess
-    let spare = Mutex<ParserChildProcess?>(nil)
+    struct State {
+        var spare: ParserChildProcess?
+        var generation: UInt64 = 0
+        var refilling = false
+    }
+    let state = Mutex(State())
 
     public init(spawn: @escaping @Sendable () throws -> ParserChildProcess) { self.spawn = spawn }
 
-    /// A child that has parsed nothing: the spare if it is alive, else a new one. Another spare
-    /// is started meanwhile.
     public func take() throws -> ParserChildProcess {
-        let ready = spare.withLock { s -> ParserChildProcess? in
-            defer { s = nil }
-            return s
-        }
+        let spare = state.withLock { s in let c = s.spare; s.spare = nil; return c }
+        let child: ParserChildProcess
+        if let spare, spare.isAlive { child = spare }
+        else { spare?.end(); child = try spawn() }
         refill()
-        if let ready, ready.isAlive { return ready }
-        ready?.end()
-        return try spawn()
+        return child
     }
 
     func refill() {
+        let generation = state.withLock { s -> UInt64? in
+            guard s.spare == nil, !s.refilling else { return nil }
+            s.refilling = true
+            return s.generation
+        }
+        guard let generation else { return }
         Task(name: "parser spare") { [self] in
-            guard spare.withLock({ $0 == nil }), let c = try? spawn() else { return }
-            // Two refills at once: the second spare is not needed.
-            let extra = spare.withLock { s -> ParserChildProcess? in
-                if s == nil { s = c; return nil }
-                return c
+            guard state.withLock({ $0.generation == generation }) else { return }
+            let child = try? spawn()
+            let extra = state.withLock { s -> ParserChildProcess? in
+                // Drain can race both scheduling and process creation. Never install a spare
+                // from a retired generation, or clear a newer refill's ownership.
+                guard s.generation == generation else { return child }
+                s.refilling = false
+                if s.spare == nil { s.spare = child; return nil }
+                return child
             }
             extra?.end()
         }
     }
 
-    /// The spare ended (the service has no sessions left).
     public func drain() {
-        spare.withLock { s in
-            s?.end()
-            s = nil
+        let spare = state.withLock { s in
+            s.generation &+= 1
+            s.refilling = false
+            let c = s.spare
+            s.spare = nil
+            return c
         }
+        spare?.end()
     }
+
 }
 
 /// The service's side of one session: its child (from the pool when it starts), each request
@@ -211,7 +226,7 @@ public final class ParserChildSession: XPCMessageHandler {
     let limit: Duration
     let onEnd: @Sendable () -> Void
 
-    public init(child first: ParserChildProcess, limit: Duration = MessageParserLimits.budget(.backupArchive) + .seconds(5),
+    public init(child first: ParserChildProcess, limit: Duration = MessageParserLimits.budget(.backupData) + .seconds(5),
                 start: @escaping @Sendable () throws -> ParserChildProcess, onEnd: @escaping @Sendable () -> Void = {}) {
         child = Mutex(first)
         self.start = start

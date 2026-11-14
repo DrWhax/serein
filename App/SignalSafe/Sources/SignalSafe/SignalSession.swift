@@ -21,8 +21,9 @@ import SignalUI
         /// Install screen: the QR code (or its loading/error state).
         case linking(InstallScreenProvisioningURL)
         case linkError(InstallScreenError)
-        /// Link and sync: the primary's message history being prepared and imported.
-        case syncing(InstallScreenBackupStep)
+        /// Link and sync: the primary's message history being prepared, downloaded and
+        /// imported (and an error or a cancel on the way).
+        case syncing(InstallScreenBackupStep, InstallScreenBackupError?)
         /// The database could not be opened (upstream: the database-error dialog).
         case failed(String)
         case ready
@@ -399,6 +400,13 @@ import SignalUI
     /// The open safety-number viewer for one contact.
     var safetyNumberSheet: SafetyNumberSheet?
     private var linkTask: Task<Void, Never>?
+    /// The running link and sync's cancel / retry (upstream's installer actions).
+    private var syncControl = LinkAndSyncControl()
+    /// A link and sync is running in SignalCore (it takes cancel / retry through `syncControl`
+    /// and throws when cancelled); otherwise a failure before it began (no connection) is shown.
+    private var syncRunning = false
+    /// The running one waits for the user's choice after a failure.
+    private var syncAwaitsChoice = false
     /// The database key's store (the Keychain, or a mock's in-memory key), for "Delete all data".
     @ObservationIgnored private var databaseKeys: (any DatabaseKeyStore)?
 
@@ -415,6 +423,7 @@ import SignalUI
         var serverTrustRoots: [String]
         var serverPublicParams: String
         var genericServerPublicParams: String
+        var backupServerPublicParams: String?
     }
 
     struct EphemeralKeyStore: DatabaseKeyStore {
@@ -434,7 +443,8 @@ import SignalUI
         }
         let config = SignalClient.Config(net: Net.localTestServer(userAgent: userAgent, chatPort: ready.port, rootCertificateDer: ca),
                                          endpoints: .mockServer(port: Int(ready.port), rootCertificateDER: ca), trustRoots: roots,
-                                         serverPublicParams: spp, genericServerPublicParams: gspp)
+                                         serverPublicParams: spp, genericServerPublicParams: gspp,
+                                         backupServerPublicParams: ready.backupServerPublicParams.flatMap { Data(base64Encoded: $0) })
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SignalSafe-mock-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return try SignalClient(config: config, directory: folder, keyStore: keys, media: media, parser: XPCMessageParser())
@@ -477,8 +487,13 @@ import SignalUI
 
     private func resumeOrLink() async {
         guard let client else { return }
+        let pendingSync = await client.isLinkAndSyncPending()
+        if pendingSync { phase = .syncing(.waitForBackup, nil) }
+        syncControl = LinkAndSyncControl()
+        syncRunning = pendingSync
+        defer { syncRunning = false }
         do {
-            if let session = try await client.resume() {
+            if let session = try await client.resume(onSync: syncProgress(), control: syncControl) {
                 Self.trace("resumed stored account, device \(session.account.deviceId)")
                 becameReady(session, client: client)
                 // The primary never answered the link-time sync request: ask again.
@@ -492,12 +507,78 @@ import SignalUI
                 }
                 return
             }
+        } catch LinkAndSyncError.canceled, LinkAndSyncError.relinkRequested {
+            // Cancelled, or given up after an error (upstream: unlink and delete all data).
+            Self.trace("link and sync: unlinking")
+            deleteAllData()
+            return
         } catch {
+            // History still to come but no connection: the retriable error (Retry runs this again).
+            if pendingSync {
+                Self.trace("link and sync could not go on: \(error)")
+                syncAwaitsChoice = false
+                if case .syncing(let step, _) = phase { phase = .syncing(step, .retriable) } else { phase = .syncing(.waitForBackup, .retriable) }
+                return
+            }
             // Stored account but no connection (offline, deregistered): keep the account and
             // show the inbox; SocketManager keeps reconnecting.
             if (try? await client.storedAccount()) != nil { phase = .ready; return }
         }
         link()
+    }
+
+    /// The install screen's link-and-sync progress, from SignalCore's (counts only: what the
+    /// history holds never goes to the log).
+    private func syncProgress() -> @Sendable (LinkAndSyncProgress) -> Void {
+        { progress in
+            Task { @MainActor in
+                var (step, error): (InstallScreenBackupStep, InstallScreenBackupError?) = (.waitForBackup, nil)
+                if case .syncing(let s, let e) = self.phase { (step, error) = (s, e) }
+                switch progress {
+                case .waiting: (step, error) = (.waitForBackup, nil)
+                case .downloading(let done, let total): (step, error) = (.download(currentBytes: done, totalBytes: total), nil)
+                case .importing(let done, let total): (step, error) = (.process(currentBytes: done, totalBytes: total), nil)
+                case .finished(let r):
+                    Self.trace("link and sync: \(r.messages) messages, \(r.frameErrors) frame errors")
+                    return
+                case .skipped:
+                    Self.trace("link and sync: the primary sent no history")
+                    return
+                case .failed(let failure):
+                    Self.trace("link and sync failed (\(failure))")
+                    self.syncAwaitsChoice = true
+                    error = switch failure {
+                    case .retriable: .retriable
+                    case .fatal: .fatal
+                    case .unsupportedVersion: .unsupportedVersion
+                    }
+                case .canceled: error = .canceled
+                }
+                // A cancel already shown stays (the transfer may still report a last step).
+                if case .syncing(_, .canceled) = self.phase, error != .canceled { error = .canceled }
+                self.phase = .syncing(step, error)
+            }
+        }
+    }
+
+    /// The install screen's Cancel (confirmed) and Retry.
+    func cancelSync() {
+        guard case .syncing(let step, _) = phase else { return }
+        phase = .syncing(step, .canceled)
+        // A running transfer throws once cancelled, and the device is unlinked then; one that
+        // failed before it began has nothing to throw.
+        if syncRunning { syncControl.cancel() } else { deleteAllData() }
+    }
+
+    func retrySync() {
+        guard case .syncing(let step, _) = phase else { return }
+        phase = .syncing(step, nil)
+        if syncAwaitsChoice {
+            syncAwaitsChoice = false
+            syncControl.retry()
+        } else {
+            Task { await resumeOrLink() }
+        }
     }
 
     /// Settings → General → "Delete all data" (`doDeleteAllData`, upstream deleteAllData for a
@@ -524,26 +605,18 @@ import SignalUI
         linkTask?.cancel()
         phase = .linking(.loading)
         let name = Host.current().localizedName ?? "Mac"
+        syncControl = LinkAndSyncControl()
+        let control = syncControl
+        syncRunning = true
         linkTask = Task {
+            defer { syncRunning = false }
             do {
                 Self.trace("link: requesting provisioning URL")
                 _ = try await client.link(deviceName: name, onURL: { url in
                     Self.trace("link: QR code shown")
                     if let path = Self.mockReadyPath { try? Data(url.utf8).write(to: URL(fileURLWithPath: path + ".url")) }
                     Task { @MainActor in self.phase = .linking(.loaded(url)) }
-                }, onSync: { progress in
-                    // Counts only: what the history holds never goes to the log.
-                    let step: InstallScreenBackupStep?
-                    switch progress {
-                    case .waiting: step = .waitForBackup
-                    case .downloading: step = .download
-                    case .importing(let done, let total): step = .process(current: done, total: total)
-                    case .finished(let r): Self.trace("link and sync: \(r.messages) messages, \(r.frameErrors) frame errors"); step = nil
-                    case .skipped: Self.trace("link and sync: the primary sent no history"); step = nil
-                    case .failed: Self.trace("link and sync failed; continuing without history"); step = nil
-                    }
-                    if let step { Task { @MainActor in self.phase = .syncing(step) } }
-                })
+                }, onSync: syncProgress(), control: control)
                 guard let session = await client.session else { throw InstallError() }
                 Self.trace("link: linked as device \(session.account.deviceId)")
                 becameReady(session, client: client)
@@ -557,9 +630,10 @@ import SignalUI
                     Self.trace("sync request failed: \(error)")
                 }
             } catch is CancellationError {
-            } catch LinkAndSyncError.relinkRequested {
-                // Upstream RelinkRequestedError: the device is unlinked and starts over.
-                Self.trace("link and sync: the primary asked to link again")
+            } catch let e as LinkAndSyncError where e == .relinkRequested || e == .canceled {
+                // Upstream: cancelled, given up after an error, or the primary asked to link
+                // again (RelinkRequestedError): the device is unlinked and starts over.
+                Self.trace("link and sync: unlinking (\(e))")
                 deleteAllData()
             } catch {
                 Self.trace("link failed: \(error)")    // errors carry no message content

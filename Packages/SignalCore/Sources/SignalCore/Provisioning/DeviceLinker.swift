@@ -112,6 +112,11 @@ public final class DeviceLinker: Sendable {
             if m.hasEphemeralBackupKey, m.ephemeralBackupKey.count == 32 {
                 try Items.set(db, LinkAndSync.ephemeralKeyItem, m.ephemeralBackupKey.base64EncodedString())
             }
+            // The media tier's root key (upstream backupMediaRootKey): a link-and-sync backup
+            // must carry the same one.
+            if m.hasMediaRootBackupKey, m.mediaRootBackupKey.count == 32 {
+                try Items.set(db, "backupMediaRootKey", m.mediaRootBackupKey.base64EncodedString())
+            }
             try aciKeys.store(into: account.aciStore(), db)
             if let pniKeys, let store = account.pniStore() { try pniKeys.store(into: store, db) }
         }

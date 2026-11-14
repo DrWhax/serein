@@ -10,7 +10,7 @@ struct HarnessError: Error, CustomStringConvertible {
 }
 
 struct MockServerReady: Decodable, Sendable {
-    struct Account: Decodable, Sendable { var aci: String; var pni: String?; var number: String? }
+    struct Account: Decodable, Sendable { var aci: String; var pni: String?; var number: String?; var mediaRootBackupKey: String? }
     struct MockServerInfo: Decodable, Sendable { var version: String; var path: String; var libsignal: String }
     var port: Int
     var mockServer: MockServerInfo
@@ -18,6 +18,7 @@ struct MockServerReady: Decodable, Sendable {
     var serverTrustRoots: [String]
     var serverPublicParams: String
     var genericServerPublicParams: String
+    var backupServerPublicParams: String
     var phone: Account
     var alice: Account
 

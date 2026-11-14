@@ -15,6 +15,7 @@ parser.add_argument("--seconds", type=float, default=20)
 parser.add_argument("--screenshot")
 parser.add_argument("--video", help="an MP4 Alice also sends; the app opens it in the Lightbox")
 parser.add_argument("--photos", action="store_true", help="Alice also sends one message with two photos; the app opens the first in the Lightbox")
+parser.add_argument("--history", type=int, default=0, help="link and sync: the phone sends a history of this many messages, imported before the session")
 parser.add_argument("--key-change", action="store_true", help="Alice then re-installs and writes again: the chat shows the safety number notice")
 args = parser.parse_args()
 
@@ -75,6 +76,10 @@ try:
         sys.exit("app never showed a QR code; log: " + log.name)
     url = open(url_path).read()
     print("QR:", url[:60] + "…")
+    if args.history:
+        # A photo of the history is only on the paid media tier (no transit copy).
+        h = call("linkAndSyncHistory", messages=args.history, mediaPhotos=[base64.b64encode(png(400, 300, 90)).decode()])
+        print(f"history: {args.history} messages, archive {h['bytes']} bytes ({h['plaintextBytes']} before gzip)")
     call("provision", url=url)
     print("linked")
     time.sleep(3)
