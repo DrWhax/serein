@@ -603,8 +603,20 @@ import SignalUI
                     break
                 }
             }
-            // SIGNALSAFE_MOCK_LIGHTBOX=1: open the newest downloaded video in the Lightbox.
-            guard ProcessInfo.processInfo.environment["SIGNALSAFE_MOCK_LIGHTBOX"] == "1" else { return }
+            // SIGNALSAFE_MOCK_LIGHTBOX=1: open the newest downloaded video in the Lightbox; =photos:
+            // the first of the newest message with two or more downloaded photos.
+            let mockLightbox = ProcessInfo.processInfo.environment["SIGNALSAFE_MOCK_LIGHTBOX"]
+            if mockLightbox == "photos" {
+                for _ in 0..<40 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if let m = messages.last(where: { $0.attachments.filter { AttachmentPolicy.isImage($0.attachment.contentType) && $0.attachment.isDownloaded }.count >= 2 }) {
+                        openLightbox(m, index: 0)
+                        return
+                    }
+                }
+                return Self.trace("lightbox: no downloaded album")
+            }
+            guard mockLightbox == "1" else { return }
             for _ in 0..<40 {
                 try? await Task.sleep(for: .milliseconds(250))
                 if let m = messages.last(where: { $0.attachments.contains { AttachmentPolicy.isVideo($0.attachment.contentType) && $0.attachment.isDownloaded } }),

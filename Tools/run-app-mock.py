@@ -14,12 +14,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--seconds", type=float, default=20)
 parser.add_argument("--screenshot")
 parser.add_argument("--video", help="an MP4 Alice also sends; the app opens it in the Lightbox")
+parser.add_argument("--photos", action="store_true", help="Alice also sends one message with two photos; the app opens the first in the Lightbox")
 parser.add_argument("--key-change", action="store_true", help="Alice then re-installs and writes again: the chat shows the safety number notice")
 args = parser.parse_args()
 
-def png(w, h):
+def png(w, h, blue=200):
     # A diagonal gradient, so scaling and orientation are visible.
-    raw = b"".join(b"\0" + b"".join(bytes((x * 255 // w, y * 255 // h, 200)) for x in range(w)) for y in range(h))
+    raw = b"".join(b"\0" + b"".join(bytes((x * 255 // w, y * 255 // h, blue)) for x in range(w)) for y in range(h))
     chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
@@ -60,7 +61,7 @@ def capture(path):
 app_bin = os.path.join(root, "App/SignalSafe/.build/Serein.app/Contents/MacOS/Serein")
 log = open(os.path.join(work, "app.log"), "w")
 reply = "Reply from SignalSafe ✅"
-extra = {"SIGNALSAFE_MOCK_LIGHTBOX": "1"} if args.video else {}
+extra = {"SIGNALSAFE_MOCK_LIGHTBOX": "photos" if args.photos else "1"} if args.video or args.photos else {}
 second = "Is this really you?"
 if args.key_change: extra["SIGNALSAFE_MOCK_KEYCHANGE_REPLY"] = second
 app = subprocess.Popen([app_bin], env={**os.environ, "SIGNALSAFE_MOCK_READY": ready_path, "SIGNALSAFE_MOCK_REPLY": reply, **extra},
@@ -84,7 +85,11 @@ try:
     if args.video:
         call("sendAttachment", **{"from": "alice", "data": base64.b64encode(open(args.video, "rb").read()).decode(), "contentType": "video/mp4",
                                   "timestamp": now + 2})
-    print("alice sent a text and a PNG" + (" and a video" if args.video else ""))
+    if args.photos:
+        call("sendAttachments", **{"from": "alice", "timestamp": now + 3, "items": [
+            {"data": base64.b64encode(png(480, 320, 40)).decode(), "contentType": "image/png"},
+            {"data": base64.b64encode(png(320, 480, 240)).decode(), "contentType": "image/png"}]})
+    print("alice sent a text and a PNG" + (" and a video" if args.video else "") + (" and two photos in one message" if args.photos else ""))
     # Accepting the message request first sends Alice an empty profile-key update.
     for _ in range(3):
         got = call("waitForMessage", account="alice", timeout=20000)

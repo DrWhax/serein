@@ -203,6 +203,37 @@ extension SignalSession {
                          animated: Self.mayAnimate(a.contentType)) { store in try store.plaintext(of: a) }
     }
 
+    /// An attachment's small image for the Lightbox's thumbnail strip, as upstream's
+    /// `attachment.thumbnail`: the thumbnail stored at download or send, else (an attachment
+    /// stored without one) the timeline's decode of the image.
+    func thumbnailImage(for a: SignalCore.MessageAttachment, of messageId: String? = nil) -> RGBAImage? {
+        if let t = a.thumbnail {
+            let key = "thumb:" + t.path
+            if let hit = images[key] { return hit }
+            let file = LocalFile(path: t.path, localKey: t.localKey, size: t.size)
+            if let shown = loadImage(key: key, path: t.path, messageId: messageId, maxDimension: MediaConstants.thumbnailSize,
+                                     plaintext: { store in try store.plaintext(of: file) }) {
+                return shown
+            }
+        }
+        return AttachmentPolicy.isImage(a.contentType) ? image(for: a) : nil
+    }
+
+    /// What the Lightbox shows of each attachment: the large decode (or a video's player) and
+    /// the thumbnail for the strip under it.
+    func lightboxItems(_ l: LightboxState) -> [LightboxMediaItem] {
+        l.attachments.enumerated().map { i, a -> LightboxMediaItem in
+            if AttachmentPolicy.isVideo(a.contentType) {
+                var item = LightboxMediaItem(kind: .video, thumbnail: thumbnailImage(for: a, of: l.messageId) ?? posterImage(for: a),
+                                             player: l.players[i], isGIF: (a.flags ?? 0) & 8 != 0)
+                item.duration = l.durations[i] ?? a.duration
+                return item
+            }
+            return LightboxMediaItem(kind: .image, image: largeImage(for: a, of: l.messageId) ?? image(for: a),
+                                     thumbnail: thumbnailImage(for: a, of: l.messageId))
+        }
+    }
+
     /// A video's poster frame (the screenshot stored at download).
     func posterImage(for a: SignalCore.MessageAttachment) -> RGBAImage? {
         guard let s = a.screenshot else { return nil }
@@ -219,16 +250,7 @@ struct MediaLightbox: View {
 
     var body: some View {
         if let l = session.lightbox {
-            let items = l.attachments.enumerated().map { i, a -> LightboxMediaItem in
-                if AttachmentPolicy.isVideo(a.contentType) {
-                    var item = LightboxMediaItem(kind: .video, thumbnail: session.posterImage(for: a), player: l.players[i],
-                                                 isGIF: (a.flags ?? 0) & 8 != 0)
-                    item.duration = l.durations[i] ?? a.duration
-                    return item
-                }
-                return LightboxMediaItem(kind: .image, image: session.largeImage(for: a, of: l.messageId) ?? session.image(for: a))
-            }
-            Lightbox(media: items, selectedIndex: l.index,
+            Lightbox(media: session.lightboxItems(l), selectedIndex: l.index,
                      header: LightboxHeaderInfo(title: l.authorTitle ?? i18n("icu:you"), color: l.authorColor,
                                                 timestamp: l.timestamp.formatted(date: .abbreviated, time: .shortened)),
                      closeLightbox: { session.closeLightbox() }, onForward: { session.closeLightbox(); session.forward([l.messageId]) },

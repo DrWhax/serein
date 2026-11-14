@@ -376,19 +376,28 @@ const commands = {
     return { digits: f.displayableFingerprint().toString(), scannable: b64(f.scannableFingerprint().toBuffer()) };
   },
   async sendAttachment({ from, data, contentType, timestamp, fileName = null }) {
-    const plaintext = Buffer.from(data, 'base64');
-    const keys = crypto.randomBytes(64), iv = crypto.randomBytes(16);
-    const padded = Buffer.concat([plaintext, Buffer.alloc(logPadSize(plaintext.length) - plaintext.length)]);
-    const cipher = crypto.createCipheriv('aes-256-cbc', keys.subarray(0, 32), iv);
-    const body = Buffer.concat([iv, cipher.update(padded), cipher.final()]);
-    const blob = Buffer.concat([body, crypto.createHmac('sha256', keys.subarray(32)).update(body).digest()]);
-    const digest = crypto.createHash('sha256').update(blob).digest();
-    const cdnKey = crypto.randomUUID();
-    await server.storeAttachmentOnCdn(3, cdnKey, blob);
-    const message = { ...dataMessage('', timestamp),
-      attachments: [{ attachmentIdentifier: { cdnKey }, cdnNumber: 3, contentType, key: keys, digest, size: plaintext.length, fileName }] };
+    const [sent] = await commands.sendAttachments({ from, timestamp, items: [{ data, contentType, fileName }] });
+    return sent;
+  },
+  // One message with several attachments (an album): items [{ data (base64), contentType, fileName }].
+  async sendAttachments({ from, items, timestamp }) {
+    const pointers = [], sent = [];
+    for (const { data, contentType, fileName = null } of items) {
+      const plaintext = Buffer.from(data, 'base64');
+      const keys = crypto.randomBytes(64), iv = crypto.randomBytes(16);
+      const padded = Buffer.concat([plaintext, Buffer.alloc(logPadSize(plaintext.length) - plaintext.length)]);
+      const cipher = crypto.createCipheriv('aes-256-cbc', keys.subarray(0, 32), iv);
+      const body = Buffer.concat([iv, cipher.update(padded), cipher.final()]);
+      const blob = Buffer.concat([body, crypto.createHmac('sha256', keys.subarray(32)).update(body).digest()]);
+      const digest = crypto.createHash('sha256').update(blob).digest();
+      const cdnKey = crypto.randomUUID();
+      await server.storeAttachmentOnCdn(3, cdnKey, blob);
+      pointers.push({ attachmentIdentifier: { cdnKey }, cdnNumber: 3, contentType, key: keys, digest, size: plaintext.length, fileName });
+      sent.push({ cdnKey, digest: digest.toString('base64') });
+    }
+    const message = { ...dataMessage('', timestamp), attachments: pointers };
     await account(from).sendRaw(needDesktop(), wrap({ dataMessage: message }), { timestamp });
-    return { cdnKey, digest: digest.toString('base64') };
+    return sent;
   },
   // Link and sync: the phone sends `ephemeralBackupKey` (base64) in its provision message, and
   // once the device is linked answers its transfer_archive request with `archive`
