@@ -387,22 +387,37 @@ final class HEVCInterContext {
         }
     }
 
-    /// One row of an n-tap filter: dst[d + i] = (Σ c[t]·src[s + t·step + i]) >> shift, taps
-    /// outer and pixels inner (the loops the optimiser vectorises).
+    /// One row of an n-tap filter: dst[d + i] = (Σ c[t]·src[s + t·step + i]) >> shift. Eight
+    /// pixels at a time in SIMD lanes (read from the spans after one bounds check each, which
+    /// the compiler turns into vector loads), the rest one by one: the same integer operations
+    /// in the same order, so the same result.
     @inline(__always)
     static func filter(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: Span<Int32>, _ s: Int, step: Int, _ c: Span<Int32>, _ n: Int, _ w: Int,
                        _ shift: Int32) {
-        let c0 = c[0]
         var i = 0
+        let shifts = SIMD8<Int32>(repeating: shift)
+        while i + 8 <= w {
+            var acc = SIMD8(repeating: c[0]) &* HEVCLanes.load8(src, s + i)
+            var t = 1
+            while t < n {
+                acc &+= SIMD8(repeating: c[t]) &* HEVCLanes.load8(src, s + t * step + i)
+                t += 1
+            }
+            HEVCLanes.store8(&dst, d + i, acc &>> shifts)
+            i += 8
+        }
+        guard i < w else { return }
+        let from = i
+        let c0 = c[0]
         while i < w { dst[d + i] = c0 &* src[s + i]; i += 1 }
         var t = 1
         while t < n {
             let ct = c[t], b = s + t * step
-            i = 0
+            i = from
             while i < w { dst[d + i] &+= ct &* src[b + i]; i += 1 }
             t += 1
         }
-        i = 0
+        i = from
         while i < w { dst[d + i] >>= shift; i += 1 }
     }
 
@@ -531,4 +546,18 @@ struct HEVCMCShared: Sendable {
     var lumaLog2Denom: Int, chromaLog2Denom: Int
     var comps: Int, subW: Int, subH: Int
     var bitDepthLuma: Int, bitDepthChroma: Int
+}
+
+/// Eight Int32 lanes from a span after one bounds check (vector loads and stores).
+enum HEVCLanes {
+    @inline(__always) static func load8(_ s: borrowing Span<Int32>, _ i: Int) -> SIMD8<Int32> {
+        _ = s[i + 7]
+        return SIMD8<Int32>(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5], s[i + 6], s[i + 7])
+    }
+
+    @inline(__always) static func store8(_ d: inout MutableSpan<Int32>, _ i: Int, _ v: SIMD8<Int32>) {
+        _ = d[i + 7]
+        d[i] = v[0]; d[i + 1] = v[1]; d[i + 2] = v[2]; d[i + 3] = v[3]
+        d[i + 4] = v[4]; d[i + 5] = v[5]; d[i + 6] = v[6]; d[i + 7] = v[7]
+    }
 }

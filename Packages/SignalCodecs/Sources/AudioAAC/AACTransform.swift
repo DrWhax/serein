@@ -67,6 +67,9 @@ struct DCT4: Sendable {
     /// no allocation.
     func transform(_ x: Span<Float>, into y: inout [Float], re: inout [Float], im: inout [Float]) {
         let half = m / 2
+        // Every index below is under these sizes: said once, the loops need no checks of their own.
+        precondition(x.count >= m && y.count >= m && re.count >= half && im.count >= half && preCos.count >= half && preSin.count >= half
+                     && postCos.count >= half && postSin.count >= half && bitrev.count >= half && twiddleCos.count >= half - 1 && twiddleSin.count >= half - 1)
         var r = re.mutableSpan, i = im.mutableSpan
         do {
             let pc = preCos.span, ps = preSin.span, br = bitrev.span
@@ -77,29 +80,63 @@ struct DCT4: Sendable {
                 i[j] = a * s + b * c
             }
         }
-        // Stages of 2 and 4 points: twiddles 1 and −i, no multiplications.
+        // Stages of 2 and 4 points (twiddles 1 and −i, no multiplications), in one pass when
+        // there are both, with the same operations in the same order as two.
         var p = 0
-        while p < half {
-            let ar = r[p], ai = i[p], br = r[p + 1], bi = i[p + 1]
-            r[p] = ar + br; i[p] = ai + bi
-            r[p + 1] = ar - br; i[p + 1] = ai - bi
-            p += 2
-        }
         if half >= 4 {
-            p = 0
             while p < half {
-                let ar = r[p], ai = i[p], cr = r[p + 2], ci = i[p + 2]
+                let x0r = r[p], x0i = i[p], x1r = r[p + 1], x1i = i[p + 1], x2r = r[p + 2], x2i = i[p + 2], x3r = r[p + 3], x3i = i[p + 3]
+                let ar = x0r + x1r, ai = x0i + x1i, br = x0r - x1r, bi = x0i - x1i
+                let cr = x2r + x3r, ci = x2i + x3i, er = x2r - x3r, ei = x2i - x3i
                 r[p] = ar + cr; i[p] = ai + ci
                 r[p + 2] = ar - cr; i[p + 2] = ai - ci
                 // × −i: (re, im) → (im, −re).
-                let br = r[p + 1], bi = i[p + 1], dr = i[p + 3], di = -r[p + 3]
+                let dr = ei, di = -er
                 r[p + 1] = br + dr; i[p + 1] = bi + di
                 r[p + 3] = br - dr; i[p + 3] = bi - di
                 p += 4
             }
+        } else {
+            while p < half {
+                let ar = r[p], ai = i[p], br = r[p + 1], bi = i[p + 1]
+                r[p] = ar + br; i[p] = ai + bi
+                r[p + 1] = ar - br; i[p + 1] = ai - bi
+                p += 2
+            }
         }
         let wc = twiddleCos.span, ws = twiddleSin.span
         var size = 8, tw = 3   // stages 2 and 4 used twiddles 0 and 1…2
+        // Stages in pairs (size, then 2·size): one pass over each block of 2·size does both, the
+        // same operations in the same order as two radix-2 passes (the second stage's twiddles
+        // from its own table, not derived), with half the loads and stores.
+        while size * 2 <= half {
+            let h = size / 2, tw2 = tw + h
+            var start = 0
+            while start < half {
+                for t in 0..<h {
+                    let w1r = wc[tw + t], w1i = ws[tw + t]
+                    let w2r = wc[tw2 + t], w2i = ws[tw2 + t]
+                    let w3r = wc[tw2 + t + h], w3i = ws[tw2 + t + h]
+                    let i0 = start + t, i1 = i0 + h, i2 = i0 + size, i3 = i2 + h
+                    let x0r = r[i0], x0i = i[i0], x1r = r[i1], x1i = i[i1], x2r = r[i2], x2i = i[i2], x3r = r[i3], x3i = i[i3]
+                    var tr = x1r * w1r - x1i * w1i, ti = x1r * w1i + x1i * w1r
+                    let a1r = x0r - tr, a1i = x0i - ti, a0r = x0r + tr, a0i = x0i + ti
+                    tr = x3r * w1r - x3i * w1i
+                    ti = x3r * w1i + x3i * w1r
+                    let a3r = x2r - tr, a3i = x2i - ti, a2r = x2r + tr, a2i = x2i + ti
+                    tr = a2r * w2r - a2i * w2i
+                    ti = a2r * w2i + a2i * w2r
+                    r[i2] = a0r - tr; i[i2] = a0i - ti; r[i0] = a0r + tr; i[i0] = a0i + ti
+                    tr = a3r * w3r - a3i * w3i
+                    ti = a3r * w3i + a3i * w3r
+                    r[i3] = a1r - tr; i[i3] = a1i - ti; r[i1] = a1r + tr; i[i1] = a1i + ti
+                }
+                start += 2 * size
+            }
+            tw += h + size
+            size <<= 2
+        }
+        // The last stage when their number is odd.
         while size <= half {
             let h = size / 2
             var start = 0

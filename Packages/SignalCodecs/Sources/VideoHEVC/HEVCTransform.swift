@@ -143,6 +143,10 @@ enum HEVCTransform {
             }
             return
         }
+        if n >= 8 {
+            inverseLanes(d, &r, &e, n: n, lastRow: lastRow, lastCol: lastCol, round: round, bdShift: bdShift)
+            return
+        }
         var col = InlineArray<32, Int32>(repeating: 0), v = InlineArray<32, Int32>(repeating: 0), out = InlineArray<32, Int32>(repeating: 0)
         // Vertical pass, column by column (only columns up to lastCol hold coefficients).
         var x = 0
@@ -190,6 +194,83 @@ enum HEVCTransform {
                     let ci = stride * (2 * i + 1)
                     if ci > last || i >= half { break }
                     o &+= m32[(2 * i + 1) * rowStep * 32 + k] &* a[ci]
+                    i += 1
+                }
+                out[k] = v[k] &+ o
+                out[m - 1 - k] = v[k] &- o
+                k += 1
+            }
+            m <<= 1
+        }
+    }
+
+    /// The two passes eight columns (then eight rows) at a time, one transform per SIMD lane:
+    /// the same integer operations as `butterfly`, so the same residual.
+    static func inverseLanes(_ d: Span<Int32>, _ r: inout MutableSpan<Int32>, _ e: inout MutableSpan<Int32>, n: Int, lastRow: Int, lastCol: Int,
+                             round: Int32, bdShift: Int32) {
+        typealias L = SIMD8<Int32>
+        var col = InlineArray<32, L>(repeating: .zero), v = InlineArray<32, L>(repeating: .zero), out = InlineArray<32, L>(repeating: .zero)
+        let lo = L(repeating: -32768), hi = L(repeating: 32767), r64 = L(repeating: 64), seven = L(repeating: 7)
+        // Vertical: lanes are columns x…x+7 (columns past lastCol hold no coefficients).
+        var x = 0
+        while x <= lastCol {
+            var j = 0
+            while j < n { col[j] = j <= lastRow ? HEVCLanes.load8(d, x + j * n) : .zero; j += 1 }
+            butterflyLanes(&col, n: n, last: lastRow, v: &v, out: &out)
+            var yy = 0
+            while yy < n { HEVCLanes.store8(&e, x + yy * n, ((out[yy] &+ r64) &>> seven).clamped(lowerBound: lo, upperBound: hi)); yy += 1 }
+            x += 8
+        }
+        // Horizontal: lanes are rows y…y+7, read across e (columns up to lastCol).
+        let rounds = L(repeating: round), shifts = L(repeating: bdShift)
+        var y = 0
+        while y < n {
+            var j = 0
+            while j < n {
+                if j <= lastCol {
+                    let b = j + y * n
+                    col[j] = L(e[b], e[b + n], e[b + 2 * n], e[b + 3 * n], e[b + 4 * n], e[b + 5 * n], e[b + 6 * n], e[b + 7 * n])
+                } else {
+                    col[j] = .zero
+                }
+                j += 1
+            }
+            butterflyLanes(&col, n: n, last: lastCol, v: &v, out: &out)
+            var xx = 0
+            while xx < n {
+                let o = (out[xx] &+ rounds) &>> shifts
+                let b = xx + y * n
+                r[b] = o[0]; r[b + n] = o[1]; r[b + 2 * n] = o[2]; r[b + 3 * n] = o[3]
+                r[b + 4 * n] = o[4]; r[b + 5 * n] = o[5]; r[b + 6 * n] = o[6]; r[b + 7 * n] = o[7]
+                xx += 1
+            }
+            y += 8
+        }
+    }
+
+    /// `butterfly` with a transform in each of eight lanes.
+    @inline(__always) static func butterflyLanes(_ a: inout InlineArray<32, SIMD8<Int32>>, n: Int, last: Int, v: inout InlineArray<32, SIMD8<Int32>>,
+                                                  out: inout InlineArray<32, SIMD8<Int32>>) {
+        typealias L = SIMD8<Int32>
+        let m32 = matrix32.span
+        let q = n / 4
+        let a0 = a[0], a1 = q <= last ? a[q] : .zero, a2 = 2 * q <= last ? a[2 * q] : .zero, a3 = 3 * q <= last ? a[3 * q] : .zero
+        let o0 = L(repeating: 83) &* a1 &+ L(repeating: 36) &* a3, o1 = L(repeating: 36) &* a1 &- L(repeating: 83) &* a3
+        let e0 = L(repeating: 64) &* (a0 &+ a2), e1 = L(repeating: 64) &* (a0 &- a2)
+        out[0] = e0 &+ o0; out[1] = e1 &+ o1; out[2] = e1 &- o1; out[3] = e0 &- o0
+        var m = 8
+        while m <= n {
+            let stride = n / m, rowStep = 32 / m, half = m / 2
+            var k = 0
+            while k < half { v[k] = out[k]; k += 1 }
+            k = 0
+            while k < half {
+                var o = L.zero
+                var i = 0
+                while true {
+                    let ci = stride * (2 * i + 1)
+                    if ci > last || i >= half { break }
+                    o &+= L(repeating: m32[(2 * i + 1) * rowStep * 32 + k]) &* a[ci]
                     i += 1
                 }
                 out[k] = v[k] &+ o

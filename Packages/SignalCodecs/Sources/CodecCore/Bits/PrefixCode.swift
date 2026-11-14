@@ -59,6 +59,23 @@ public struct PrefixCodeTable: Sendable {
         self.maxLength = maxLen
     }
 
+    /// Decodes one symbol from bits already buffered (the caller made sure `r.buffered >=
+    /// maxLength`); bits that match no code are an error.
+    @inlinable @inline(__always)
+    public func decodeBuffered(_ r: inout MSBBitReader, _ rule: String) throws(ParseFailure) -> Int {
+        var e = entries[Int(r.peekBuffered(rootBits))]
+        if e.length < 0 {
+            let bits = -Int(e.length)
+            let w = r.peekBuffered(rootBits + bits) & ((1 << UInt32(bits)) - 1)
+            e = entries[Int(e.value) + Int(w)]
+        }
+        guard e.length > 0 else {
+            throw ParseFailure(offset: r.bitPosition / 8, rule: rule, reason: .invalid("no prefix code matches"))
+        }
+        r.drop(Int(e.length))
+        return Int(e.value)
+    }
+
     /// Decodes one symbol; bits that match no code are an error.
     @inlinable
     public func decode<R: MSBBitSource>(_ r: inout R, _ rule: String) throws(ParseFailure) -> Int {

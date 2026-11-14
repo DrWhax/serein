@@ -69,6 +69,27 @@ public struct MSBBitReader: Sendable {
     @inlinable
     public mutating func skip(_ n: Int, _ rule: String) throws(ParseFailure) { _ = try bits(n, rule) }
 
+    // MARK: buffered reads (hot loops: fill once, then take what is known to be there)
+
+    /// Bits buffered now (after `fill`, at least 57 unless the input is nearly used up).
+    @inlinable public var buffered: Int { @inline(__always) get { count } }
+
+    /// Tops the buffer up from the input.
+    @inlinable @inline(__always)
+    public mutating func fill() { if count <= 56 { refill() } }
+
+    /// The next `n` (1...32) bits, of the `buffered` ones (the caller checked `n <= buffered`).
+    @inlinable @inline(__always)
+    public func peekBuffered(_ n: Int) -> UInt32 { UInt32(truncatingIfNeeded: buffer >> UInt64(64 - n)) }
+
+    /// Consumes `n` (≤ `buffered`) bits.
+    @inlinable @inline(__always)
+    public mutating func drop(_ n: Int) {
+        precondition(n <= count)
+        buffer <<= UInt64(n)
+        count -= n
+    }
+
     /// Discards bits to the next byte boundary.
     public mutating func alignToByte() {
         let drop = count % 8

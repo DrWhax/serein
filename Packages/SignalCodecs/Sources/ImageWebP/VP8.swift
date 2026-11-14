@@ -98,13 +98,16 @@ public enum VP8Decoder {
     static let zigzag = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15]
     static let cat3456: [[Int]] = [[173, 148, 140], [176, 155, 140, 135], [180, 157, 141, 134, 130],
                                    [254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129]]
+    static let cat3456Flat: [Int] = cat3456.flatMap { $0 }
+    static let cat3456Start: [Int] = [0] + cat3456.reduce(into: [Int]()) { $0.append(($0.last ?? 0) + $1.count) }
     static let scan: [Int] = (0..<16).map { ($0 & 3) * 4 + ($0 >> 2) * 4 * 32 }
 
     struct Segment { var useSegment = false, updateMap = false, absoluteDelta = true; var quantizer = [0, 0, 0, 0], filterStrength = [0, 0, 0, 0] }
     struct Filter { var simple = false, level = 0, sharpness = 0, useLfDelta = false; var refDelta = [0, 0, 0, 0], modeDelta = [0, 0, 0, 0] }
     struct Quant { var y1 = [0, 0], y2 = [0, 0], uv = [0, 0] }
-    struct FInfo { var limit = 0, ilevel = 0, inner = false, hevThresh = 0 }
-    struct MBData {
+    struct FInfo: Sendable { var limit = 0, ilevel = 0, inner = false, hevThresh = 0 }
+    static let placeholderMB = MBData()
+    struct MBData: Sendable {
         var coeffs = [Int16](repeating: 0, count: 384)
         var isI4x4 = false
         var imodes = [Int](repeating: 0, count: 16)
@@ -244,25 +247,21 @@ public enum VP8Decoder {
             }
         }
 
-        // Decode macroblocks.
-        var frame = VP8Frame(width: width, height: height, mbW: mbW, mbH: mbH,
-                             y: [UInt8](repeating: 0, count: mbW * 16 * mbH * 16),
-                             u: [UInt8](repeating: 0, count: mbW * 8 * mbH * 8),
-                             v: [UInt8](repeating: 0, count: mbW * 8 * mbH * 8))
+        // Decode macroblocks: this thread parses each row (modes from partition 0, residuals from
+        // its token partition) and hands it over, by value, to a second one that reconstructs and
+        // loop-filters it a row behind (the split libwebp's threaded decoding makes).
+        let pipeline = VP8RowPipeline(width: width, height: height, mbW: mbW, mbH: mbH, filter: filterType)
         var intraT = [Int](repeating: 0, count: 4 * mbW)
         var nzTop = [UInt32](repeating: 0, count: mbW), nzDcTop = [Int](repeating: 0, count: mbW)
-        var topY = [[UInt8]](repeating: [UInt8](repeating: 0, count: 16), count: mbW)
-        var topU = [[UInt8]](repeating: [UInt8](repeating: 0, count: 8), count: mbW)
-        var topV = topU
-        var finfo = [FInfo](repeating: FInfo(), count: mbW * mbH)
-        var ws = [UInt8](repeating: 0, count: 32 * 17 + 32 * 9)
-        var row = [MBData](repeating: MBData(), count: mbW)
-
+        do throws(ParseFailure) {
         for mbY in 0..<mbH {
+            var row = pipeline.freshRow()
+            var finfo = [FInfo](repeating: FInfo(), count: filterType > 0 ? mbW : 0)
             // Intra modes for the whole row (partition 0).
             var intraL = [0, 0, 0, 0]
             for mbX in 0..<mbW {
                 var b = row[mbX]
+                row[mbX] = Self.placeholderMB   // so that `b`'s arrays are its own: written in place
                 b.segment = seg.updateMap ? (br.bit(segProbs[0]) == 0 ? br.bit(segProbs[1]) : br.bit(segProbs[2]) + 2) : 0
                 b.skip = useSkip ? br.bit(skipP) == 1 : false
                 b.isI4x4 = br.bit(145) == 0
@@ -293,12 +292,13 @@ public enum VP8Decoder {
             guard !br.eof else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("premature end of partition 0")) }
 
             // Residuals.
+            let probaSpan = proba.span
             var nzLeft: UInt32 = 0, nzDcLeft = 0
             let pi = mbY & (numParts - 1)
             for mbX in 0..<mbW {
                 var skip = row[mbX].skip
                 if !skip {
-                    skip = parseResiduals(&parts[pi], &row[mbX], quant[row[mbX].segment], proba, &nzTop[mbX], &nzLeft, &nzDcTop[mbX], &nzDcLeft)
+                    skip = parseResiduals(&parts[pi], &row[mbX], quant[row[mbX].segment], probaSpan, &nzTop[mbX], &nzLeft, &nzDcTop[mbX], &nzDcLeft)
                 } else {
                     nzLeft = 0; nzTop[mbX] = 0
                     if !row[mbX].isI4x4 { nzDcLeft = 0; nzDcTop[mbX] = 0 }
@@ -307,33 +307,37 @@ public enum VP8Decoder {
                 if filterType > 0 {
                     var f = fstr[row[mbX].segment][row[mbX].isI4x4 ? 1 : 0]
                     f.inner = f.inner || !skip
-                    finfo[mbY * mbW + mbX] = f
+                    finfo[mbX] = f
                 }
                 guard !parts[pi].eof else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("premature end of token partition")) }
             }
 
-            reconstructRow(mbY, &row, &ws, &frame, &topY, &topU, &topV)
+            pipeline.send(mbY, row, finfo)
         }
-
-        if filterType > 0 { loopFilter(&frame, finfo, simple: filterType == 1) }
-        return frame
+        } catch {
+            pipeline.cancel()
+            throw error
+        }
+        return pipeline.finish()
     }
 
     // MARK: residuals (vp8_dec.c ParseResiduals / GetCoeffs)
 
-    static func getCoeffs(_ br: inout VP8BoolDecoder, _ proba: [Int], _ type: Int, _ ctx: Int, _ dq: [Int], _ first: Int,
-                          _ out: inout [Int16], _ base: Int) -> Int {
+    static func getCoeffs(_ br: inout VP8BoolDecoder, _ proba: Span<Int>, _ type: Int, _ ctx: Int, _ dq: (Int, Int), _ first: Int,
+                          _ out: inout MutableSpan<Int16>, _ base: Int) -> Int {
         @inline(__always) func p(_ band: Int, _ c: Int, _ k: Int) -> Int { proba[((type * 8 + band) * 3 + c) * 11 + k] }
+        let bandsTable = VP8Tables.bands, zigzagTable = zigzag
+        let bands = bandsTable.span, zz = zigzagTable.span
         var n = first
-        var band = Int(VP8Tables.bands[n]), c = ctx
+        var band = Int(bands[n]), c = ctx
         while n < 16 {
             if br.bit(p(band, c, 0)) == 0 { return n }
             while br.bit(p(band, c, 1)) == 0 {
                 n += 1
                 if n == 16 { return 16 }
-                band = Int(VP8Tables.bands[n]); c = 0
+                band = Int(bands[n]); c = 0
             }
-            let nextBand = Int(VP8Tables.bands[n + 1])
+            let nextBand = Int(bands[n + 1])
             var v: Int
             if br.bit(p(band, c, 2)) == 0 {
                 v = 1
@@ -350,12 +354,13 @@ public enum VP8Decoder {
                     let b0 = br.bit(p(band, c, 9 + b1))
                     let cat = 2 * b1 + b0
                     v = 0
-                    for t in cat3456[cat] { v += v + br.bit(t) }
+                    let flat = cat3456Flat
+                    for t in cat3456Start[cat]..<cat3456Start[cat + 1] { v += v + br.bit(flat[t]) }
                     v += 3 + (8 << cat)
                 }
                 c = 2
             }
-            out[base + zigzag[n]] = Int16(truncatingIfNeeded: br.signed(v) * dq[n > 0 ? 1 : 0])
+            out[base + zz[n]] = Int16(truncatingIfNeeded: br.signed(v) * (n > 0 ? dq.1 : dq.0))
             band = nextBand
             n += 1
         }
@@ -367,21 +372,28 @@ public enum VP8Decoder {
     }
 
     /// Returns true if the macroblock has no non-zero coefficient.
-    static func parseResiduals(_ br: inout VP8BoolDecoder, _ b: inout MBData, _ q: Quant, _ proba: [Int],
+    static func parseResiduals(_ br: inout VP8BoolDecoder, _ b: inout MBData, _ q: Quant, _ proba: Span<Int>,
                                _ mbNz: inout UInt32, _ leftNz: inout UInt32, _ mbNzDc: inout Int, _ leftNzDc: inout Int) -> Bool {
-        for i in 0..<384 { b.coeffs[i] = 0 }
+        var coeffs = b.coeffs
+        b.coeffs = []
+        defer { b.coeffs = coeffs }
+        var out = coeffs.mutableSpan
+        for i in 0..<384 { out[i] = 0 }
         var first = 0, acType = 3
         if !b.isI4x4 {
-            var dc = [Int16](repeating: 0, count: 16)
-            let ctx = mbNzDc + leftNzDc
-            let nz = getCoeffs(&br, proba, 1, ctx, q.y2, 0, &dc, 0)
+            var dc = InlineArray<16, Int16>(repeating: 0)
+            let nz: Int
+            do {
+                var dcOut = dc.mutableSpan
+                nz = getCoeffs(&br, proba, 1, mbNzDc + leftNzDc, (q.y2[0], q.y2[1]), 0, &dcOut, 0)
+            }
             mbNzDc = nz > 0 ? 1 : 0
             leftNzDc = mbNzDc
             if nz > 1 {
-                transformWHT(dc, &b.coeffs)
+                transformWHT(dc, &out)
             } else {
                 let dc0 = Int16(truncatingIfNeeded: (Int(dc[0]) + 3) >> 3)
-                for i in stride(from: 0, to: 256, by: 16) { b.coeffs[i] = dc0 }
+                for i in stride(from: 0, to: 256, by: 16) { out[i] = dc0 }
             }
             first = 1
             acType = 0
@@ -394,10 +406,10 @@ public enum VP8Decoder {
             var nzc: UInt32 = 0
             for _ in 0..<4 {
                 let ctx = Int(l + (tnz & 1))
-                let nz = getCoeffs(&br, proba, acType, ctx, q.y1, first, &b.coeffs, dst)
+                let nz = getCoeffs(&br, proba, acType, ctx, (q.y1[0], q.y1[1]), first, &out, dst)
                 l = nz > first ? 1 : 0
                 tnz = (tnz >> 1) | (l << 7)
-                nzc = nzCode(nzc, nz, b.coeffs[dst] != 0)
+                nzc = nzCode(nzc, nz, out[dst] != 0)
                 dst += 16
             }
             tnz >>= 4
@@ -414,10 +426,10 @@ public enum VP8Decoder {
                 var l = lnz & 1
                 for _ in 0..<2 {
                     let ctx = Int(l + (tnz & 1))
-                    let nz = getCoeffs(&br, proba, 2, ctx, q.uv, 0, &b.coeffs, dst)
+                    let nz = getCoeffs(&br, proba, 2, ctx, (q.uv[0], q.uv[1]), 0, &out, dst)
                     l = nz > 0 ? 1 : 0
                     tnz = (tnz >> 1) | (l << 3)
-                    nzc = nzCode(nzc, nz, b.coeffs[dst] != 0)
+                    nzc = nzCode(nzc, nz, out[dst] != 0)
                     dst += 16
                 }
                 tnz >>= 2
@@ -441,8 +453,8 @@ public enum VP8Decoder {
     @inline(__always) static func clip8(_ v: Int) -> UInt8 { v & ~0xFF == 0 ? UInt8(v) : v < 0 ? 0 : 255 }
     @inline(__always) static func store(_ ws: inout [UInt8], _ i: Int, _ v: Int) { ws[i] = clip8(Int(ws[i]) + (v >> 3)) }
 
-    static func transformWHT(_ input: [Int16], _ out: inout [Int16]) {
-        var tmp = [Int](repeating: 0, count: 16)
+    static func transformWHT(_ input: borrowing InlineArray<16, Int16>, _ out: inout MutableSpan<Int16>) {
+        var tmp = InlineArray<16, Int>(repeating: 0)
         for i in 0..<4 {
             let a0 = Int(input[0 + i]) + Int(input[12 + i]), a1 = Int(input[4 + i]) + Int(input[8 + i])
             let a2 = Int(input[4 + i]) - Int(input[8 + i]), a3 = Int(input[0 + i]) - Int(input[12 + i])
@@ -462,7 +474,7 @@ public enum VP8Decoder {
     }
 
     static func transformOne(_ c: [Int16], _ ci: Int, _ ws: inout [UInt8], _ dst: Int) {
-        var t = [Int](repeating: 0, count: 16)
+        var t = InlineArray<16, Int>(repeating: 0)
         for i in 0..<4 {
             let i0 = Int(c[ci + i]), i4 = Int(c[ci + 4 + i]), i8 = Int(c[ci + 8 + i]), i12 = Int(c[ci + 12 + i])
             let a = i0 + i8, b = i0 - i8
@@ -645,8 +657,9 @@ public enum VP8Decoder {
 
     // MARK: reconstruction (frame_dec.c ReconstructRow)
 
-    static func reconstructRow(_ mbY: Int, _ row: inout [MBData], _ ws: inout [UInt8], _ f: inout VP8Frame,
-                               _ topY: inout [[UInt8]], _ topU: inout [[UInt8]], _ topV: inout [[UInt8]]) {
+    /// One row of macroblocks into the window's band (rows 4… of `w`).
+    static func reconstructRow(_ mbY: Int, _ row: [MBData], _ ws: inout [UInt8], _ f: inout VP8Window,
+                               _ topY: inout [UInt8], _ topU: inout [UInt8], _ topV: inout [UInt8]) {
         let y0 = yOff, u0 = uOff, v0 = vOff
         for j in 0..<16 { ws[y0 + j * BPS - 1] = 129 }
         for j in 0..<8 { ws[u0 + j * BPS - 1] = 129; ws[v0 + j * BPS - 1] = 129 }
@@ -668,15 +681,15 @@ public enum VP8Decoder {
                 }
             }
             if mbY > 0 {
-                for i in 0..<16 { ws[y0 - BPS + i] = topY[mbX][i] }
-                for i in 0..<8 { ws[u0 - BPS + i] = topU[mbX][i]; ws[v0 - BPS + i] = topV[mbX][i] }
+                for i in 0..<16 { ws[y0 - BPS + i] = topY[mbX * 16 + i] }
+                for i in 0..<8 { ws[u0 - BPS + i] = topU[mbX * 8 + i]; ws[v0 - BPS + i] = topV[mbX * 8 + i] }
             }
             var bits = b.nonZeroY
             if b.isI4x4 {
                 let tr = y0 - BPS + 16
                 if mbY > 0 {
-                    if mbX >= f.mbW - 1 { for k in 0..<4 { ws[tr + k] = topY[mbX][15] } }
-                    else { for k in 0..<4 { ws[tr + k] = topY[mbX + 1][k] } }
+                    if mbX >= f.mbW - 1 { for k in 0..<4 { ws[tr + k] = topY[mbX * 16 + 15] } }
+                    else { for k in 0..<4 { ws[tr + k] = topY[(mbX + 1) * 16 + k] } }
                 }
                 for r in 1...3 { for k in 0..<4 { ws[tr + r * 4 * BPS + k] = ws[tr + k] } }
                 for n in 0..<16 {
@@ -696,15 +709,15 @@ public enum VP8Decoder {
             doUVTransform(b.nonZeroUV, b.coeffs, 256, &ws, u0)
             doUVTransform(b.nonZeroUV >> 8, b.coeffs, 320, &ws, v0)
             if mbY < f.mbH - 1 {
-                for i in 0..<16 { topY[mbX][i] = ws[y0 + 15 * BPS + i] }
-                for i in 0..<8 { topU[mbX][i] = ws[u0 + 7 * BPS + i]; topV[mbX][i] = ws[v0 + 7 * BPS + i] }
+                for i in 0..<16 { topY[mbX * 16 + i] = ws[y0 + 15 * BPS + i] }
+                for i in 0..<8 { topU[mbX * 8 + i] = ws[u0 + 7 * BPS + i]; topV[mbX * 8 + i] = ws[v0 + 7 * BPS + i] }
             }
             let ys = f.yStride, uvs = f.uvStride
-            for j in 0..<16 { for i in 0..<16 { f.y[(mbY * 16 + j) * ys + mbX * 16 + i] = ws[y0 + j * BPS + i] } }
+            for j in 0..<16 { for i in 0..<16 { f.y[(4 + j) * ys + mbX * 16 + i] = ws[y0 + j * BPS + i] } }
             for j in 0..<8 {
                 for i in 0..<8 {
-                    f.u[(mbY * 8 + j) * uvs + mbX * 8 + i] = ws[u0 + j * BPS + i]
-                    f.v[(mbY * 8 + j) * uvs + mbX * 8 + i] = ws[v0 + j * BPS + i]
+                    f.u[(4 + j) * uvs + mbX * 8 + i] = ws[u0 + j * BPS + i]
+                    f.v[(4 + j) * uvs + mbX * 8 + i] = ws[v0 + j * BPS + i]
                 }
             }
         }
@@ -774,21 +787,23 @@ public enum VP8Decoder {
         }
     }
 
-    static func loopFilter(_ f: inout VP8Frame, _ info: [FInfo], simple: Bool) {
+    /// Filters macroblock row `mbY`, whose band is rows 4… of the window (its top edge reaches
+    /// into rows 0…3, the row above's last).
+    static func filterRow(_ f: inout VP8Window, _ mbY: Int, _ info: [FInfo], simple: Bool) {
         let ys = f.yStride, uvs = f.uvStride
-        for mbY in 0..<f.mbH {
+        do {
             for mbX in 0..<f.mbW {
-                let fi = info[mbY * f.mbW + mbX]
+                let fi = info[mbX]
                 let limit = fi.limit
                 guard limit != 0 else { continue }
-                let y = (mbY * 16) * ys + mbX * 16
+                let y = 4 * ys + mbX * 16
                 if simple {
                     if mbX > 0 { simpleFilter(&f.y, y, 1, ys, limit + 4) }
                     if fi.inner { for k in 1...3 { simpleFilter(&f.y, y + 4 * k, 1, ys, limit) } }
                     if mbY > 0 { simpleFilter(&f.y, y, ys, 1, limit + 4) }
                     if fi.inner { for k in 1...3 { simpleFilter(&f.y, y + 4 * k * ys, ys, 1, limit) } }
                 } else {
-                    let uv = (mbY * 8) * uvs + mbX * 8
+                    let uv = 4 * uvs + mbX * 8
                     let il = fi.ilevel, ht = fi.hevThresh
                     if mbX > 0 {
                         filterLoop(&f.y, y, 1, ys, 16, limit + 4, il, ht, six: true)

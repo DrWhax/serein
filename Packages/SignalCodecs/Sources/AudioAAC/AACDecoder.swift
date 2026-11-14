@@ -281,36 +281,52 @@ public struct AACDecoder: Sendable {
     mutating func readBand(_ r: inout MSBBitReader, codebook cb: Int, into q: inout [Int32], at base: Int, count: Int) throws(ParseFailure) {
         let table = AACHuffman.spectral[cb - 1]
         let unsigned = Self.unsignedBook[cb]
+        let n = cb <= 4 ? 4 : 2
+        let unpackedTable = AACHuffman.unpacked[cb - 1]
+        let unpacked = unpackedTable.span
+        // Fast when a codeword (≤ 19 bits) and its sign bits (≤ 4) are buffered.
+        let fastBits = table.maxLength + n
+        var out = q.mutableSpan
         var k = 0
         while k < count {
-            let idx = try table.decode(&r, "spectral_data")
+            guard k + n <= count else { throw fail(r, "spectral_data", "past the band") }
+            r.fill()
+            let fast = r.buffered >= fastBits
+            let idx = fast ? try table.decodeBuffered(&r, "spectral_data") : try table.decode(&r, "spectral_data")
+            guard idx * 4 + 3 < unpacked.count else { throw fail(r, "spectral_data", "symbol \(idx)") }
             var values = InlineArray<4, Int32>(repeating: 0)
-            let n: Int
-            switch cb {
-            case 1, 2: values[0] = Int32(idx / 27 - 1); values[1] = Int32(idx / 9 % 3 - 1); values[2] = Int32(idx / 3 % 3 - 1); values[3] = Int32(idx % 3 - 1); n = 4
-            case 3, 4: values[0] = Int32(idx / 27); values[1] = Int32(idx / 9 % 3); values[2] = Int32(idx / 3 % 3); values[3] = Int32(idx % 3); n = 4
-            case 5, 6: values[0] = Int32(idx / 9 - 4); values[1] = Int32(idx % 9 - 4); n = 2
-            case 7, 8: values[0] = Int32(idx / 8); values[1] = Int32(idx % 8); n = 2
-            case 9, 10: values[0] = Int32(idx / 13); values[1] = Int32(idx % 13); n = 2
-            default: values[0] = Int32(idx / 17); values[1] = Int32(idx % 17); n = 2
-            }
+            for i in 0..<n { values[i] = unpacked[idx * 4 + i] }
             if unsigned {
-                for i in 0..<n where values[i] != 0 { if try r.bit("sign_bits") == 1 { values[i] = -values[i] } }
+                if fast {
+                    // All the sign bits at once, the first value's first.
+                    var nz = 0
+                    for i in 0..<n where values[i] != 0 { nz += 1 }
+                    if nz > 0 {
+                        var signs = r.peekBuffered(nz)
+                        r.drop(nz)
+                        for i in (0..<n).reversed() where values[i] != 0 {
+                            if signs & 1 == 1 { values[i] = -values[i] }
+                            signs >>= 1
+                        }
+                    }
+                } else {
+                    for i in 0..<n where values[i] != 0 { if try r.bit("sign_bits") == 1 { values[i] = -values[i] } }
+                }
             }
             if cb == 11 {
                 for i in 0..<n where values[i].magnitude == 16 {
                     statistics.escapes += 1
-                    var n = 0
+                    var e = 0
                     while try r.bit("escape_prefix") == 1 {
-                        n += 1
-                        guard n <= 8 else { throw fail(r, "escape", "prefix too long") }
+                        e += 1
+                        guard e <= 8 else { throw fail(r, "escape", "prefix too long") }
                     }
-                    let v = Int32((1 << (n + 4)) + Int(try r.bits(n + 4, "escape_word")))
+                    let v = Int32((1 << (e + 4)) + Int(try r.bits(e + 4, "escape_word")))
                     values[i] = values[i] < 0 ? -v : v
                 }
             }
-            guard k + n <= count else { throw fail(r, "spectral_data", "past the band") }
-            for i in 0..<n { q[base + k] = values[i]; k += 1 }
+            for i in 0..<n { out[base + k + i] = values[i] }
+            k += n
         }
     }
 

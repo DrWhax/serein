@@ -3,13 +3,14 @@
 // rows depend only on read-only inputs (colour conversion, upsampling, transforms of
 // independent block rows).
 
-import Dispatch
-import Synchronization
+public import Dispatch
+public import Synchronization
 
 public enum ParallelRows {
     /// `rows` rows of `rowLength` elements: `fill(range, &chunk)` writes rows `range` into
     /// `chunk` (range.count · rowLength elements, initially `zero`). Chunks are about
     /// `chunk` rows; a single chunk runs on the calling thread.
+    @inlinable
     public static func build<T: Sendable>(rows: Int, rowLength: Int, chunk: Int, zero: T,
                                           _ fill: (Range<Int>, inout [T]) -> Void) -> [T] {
         guard rows > 0, rowLength > 0 else { return [] }
