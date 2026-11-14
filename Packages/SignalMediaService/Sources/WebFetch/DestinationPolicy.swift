@@ -7,7 +7,12 @@
 //
 // Each hop's host is resolved here, and refused if it has no address or any address that is
 // not public. URLSession then resolves the name again for its own connection, so a DNS answer
-// that changes in between (rebinding) is not caught by this check.
+// that changes in between (rebinding) could send it elsewhere: the response is therefore also
+// refused unless every connection it used reached a public address (URLSession's metrics; none
+// reported counts as not public). And only https's own port is fetched (stricter than upstream).
+// So a rebound name can at most open a TLS handshake to port 443 of a local machine, which
+// cannot prove the link's hostname (certificates are checked against it): no request reaches
+// it, and nothing it might answer is used.
 
 import Foundation
 import Network
@@ -68,11 +73,16 @@ public struct PublicDestinationTransport: WebTransport {
     }
 
     public func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> WebResponse {
-        guard let host = url.host(percentEncoded: false), !host.isEmpty else { throw WebError.forbiddenDestination }
+        guard let host = url.host(percentEncoded: false), !host.isEmpty, url.port == nil || url.port == 443 else { throw WebError.forbiddenDestination }
         let literal = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
         let addresses = IPv4Address(literal) != nil || IPv6Address(literal) != nil ? [literal] : await resolve(host)
         guard !addresses.isEmpty, addresses.allSatisfy(PublicAddress.isPublic) else { throw WebError.forbiddenDestination }
-        return try await base.request(method, url, headers: headers, limit: limit)
+        let response = try await base.request(method, url, headers: headers, limit: limit)
+        // Where the connections really went (the name may have been resolved differently since).
+        guard let reached = response.remoteAddresses, !reached.isEmpty, reached.allSatisfy(PublicAddress.isPublic) else {
+            throw WebError.forbiddenDestination
+        }
+        return response
     }
 
     /// Every address the system resolver has for `host` (NSHost, which no longer caches),

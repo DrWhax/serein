@@ -2,10 +2,12 @@
 // request at a time, never following redirects (callers check every hop), the body read up
 // to a limit, ephemeral (no cookies, cache or credentials), optionally through an HTTP CONNECT
 // proxy (Signal's content proxy for Giphy; the test harness's stand-in), with the system's
-// trust or (tests) pinned roots.
+// trust or (tests) pinned roots. Each response says which addresses its connections reached
+// (URLSession's task metrics), so a destination policy can check where it really went.
 
 import Foundation
 import Security
+import Synchronization
 
 public struct WebResponse: Sendable {
     public var status: Int
@@ -14,12 +16,16 @@ public struct WebResponse: Sendable {
     /// At most `limit + 1` bytes (one more than allowed means "too large").
     public var body: Data
     public var url: URL
+    /// The remote addresses of the connections the request used (nil: not known; an empty
+    /// string for a connection whose address was not reported).
+    public var remoteAddresses: [String]?
 
-    public init(status: Int, headers: [String: String], body: Data, url: URL) {
+    public init(status: Int, headers: [String: String], body: Data, url: URL, remoteAddresses: [String]? = nil) {
         self.status = status
         self.headers = headers
         self.body = body
         self.url = url
+        self.remoteAddresses = remoteAddresses
     }
 }
 
@@ -57,10 +63,57 @@ public enum WebError: Error, Equatable {
     case forbiddenDestination
 }
 
-/// The session's only delegate: no redirects, server trust from the system or the pinned roots.
+/// The session's only delegate: no redirects, server trust from the system or the pinned roots,
+/// and each task's remote addresses once its metrics are in.
 final class WebSessionDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     let rootsDER: [Data]
     init(rootsDER: [Data]) { self.rootsDER = rootsDER }
+
+    enum Metrics {
+        case reported([String])
+        case awaited(CheckedContinuation<[String], Never>)
+    }
+    let metrics = Mutex<[Int: Metrics]>([:])
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        deliver(task.taskIdentifier, metrics.transactionMetrics.map { $0.remoteAddress ?? "" })
+    }
+
+    /// The addresses for task `id`, given at most once (later deliveries are dropped).
+    func deliver(_ id: Int, _ addresses: [String]) {
+        let waiter = self.metrics.withLock { m -> CheckedContinuation<[String], Never>? in
+            switch m[id] {
+            case .awaited(let k)?:
+                m[id] = nil
+                return k
+            case .reported?: return nil   // already given: this one is dropped
+            case nil:
+                m[id] = .reported(addresses)
+                return nil
+            }
+        }
+        waiter?.resume(returning: addresses)
+    }
+
+    /// Task `id`'s addresses, once its metrics are in (none after `timeout`).
+    func addresses(_ id: Int, timeout: Duration) async -> [String] {
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            if !Task.isCancelled { deliver(id, []) }   // the metrics came first: nothing to do
+        }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { k in
+            let ready = self.metrics.withLock { m -> [String]? in
+                if case .reported(let a)? = m[id] {
+                    m[id] = nil
+                    return a
+                }
+                m[id] = .awaited(k)
+                return nil
+            }
+            if let ready { k.resume(returning: ready) }
+        }
+    }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? { nil }
@@ -88,6 +141,7 @@ final class WebSessionDelegate: NSObject, URLSessionTaskDelegate, Sendable {
 
 public struct URLSessionWebTransport: WebTransport {
     let session: URLSession
+    let delegate: WebSessionDelegate
 
     public init(proxy: ContentProxy, rootCertificatesDER: [Data] = [], timeout: TimeInterval = 60) {
         let config = URLSessionConfiguration.ephemeral
@@ -98,7 +152,8 @@ public struct URLSessionWebTransport: WebTransport {
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = timeout
         config.connectionProxyDictionary = proxy.dictionary
-        session = URLSession(configuration: config, delegate: WebSessionDelegate(rootsDER: rootCertificatesDER), delegateQueue: nil)
+        delegate = WebSessionDelegate(rootsDER: rootCertificatesDER)
+        session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     public func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> WebResponse {
@@ -116,8 +171,10 @@ public struct URLSessionWebTransport: WebTransport {
             }
         }
         bytes.task.cancel()
+        // Metrics come once the task has ended (cancelled here, if it had more to send).
+        let reached = await delegate.addresses(bytes.task.taskIdentifier, timeout: .seconds(5))
         var out: [String: String] = [:]
         for (k, v) in http.allHeaderFields { if let k = k as? String, let v = v as? String { out[k.lowercased()] = v } }
-        return WebResponse(status: http.statusCode, headers: out, body: body, url: http.url ?? url)
+        return WebResponse(status: http.statusCode, headers: out, body: body, url: http.url ?? url, remoteAddresses: reached)
     }
 }
