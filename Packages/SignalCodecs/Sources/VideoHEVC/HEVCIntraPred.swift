@@ -4,12 +4,17 @@
 // top[1 + x] = p[x][−1]; each 2·nTbS + 1 long, already substituted (8.4.4.2.2).
 
 enum HEVCIntraPred {
+    /// References (2·nTbS + 1 ≤ 65) and the predicted block (≤ 32 × 32) inline: no heap
+    /// allocation (and no generic metadata lookup) per transform block.
+    typealias Refs = InlineArray<65, Int32>
+    typealias Block = InlineArray<1024, Int32>
+
     static let angle: [Int] = [0, 0, 32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2,
                                0, 2, 5, 9, 13, 17, 21, 26, 32]
     static let invAngle: [Int] = [-4096, -1638, -910, -630, -482, -390, -315, -256, -315, -390, -482, -630, -910, -1638, -4096]   // modes 11…25
 
     /// 8.4.4.2.3: [1 2 1] or strong (bilinear) filtering of the references, when the mode asks.
-    static func filter(left: inout [Int32], top: inout [Int32], log2Size: Int, mode: Int, isLuma: Bool, strongSmoothing: Bool, bitDepth: Int) {
+    static func filter(left: inout Refs, top: inout Refs, log2Size: Int, mode: Int, isLuma: Bool, strongSmoothing: Bool, bitDepth: Int) {
         let n = 1 << log2Size
         guard isLuma, mode != 1, n != 4 else { return }
         let minDist = min(abs(mode - 26), abs(mode - 10))
@@ -34,10 +39,9 @@ enum HEVCIntraPred {
     }
 
     /// The predicted block (raster, x + y·n).
-    static func predict(left: [Int32], top: [Int32], log2Size: Int, mode: Int, isLuma: Bool, bitDepth: Int,
-                        disableBoundaryFilter: Bool = false) -> [Int32] {
+    static func predict(left: Refs, top: Refs, log2Size: Int, mode: Int, isLuma: Bool, bitDepth: Int,
+                        disableBoundaryFilter: Bool = false, into p: inout Block) {
         let n = 1 << log2Size
-        var p = [Int32](repeating: 0, count: n * n)
         let maxV = (Int32(1) << bitDepth) - 1
         @inline(__always) func clip(_ v: Int32) -> Int32 { max(0, min(maxV, v)) }
         switch mode {
@@ -62,7 +66,7 @@ enum HEVCIntraPred {
             }
         default:
             let a = angle[mode]
-            var ref = [Int32](repeating: 0, count: 3 * n + 2)
+            var ref = InlineArray<98, Int32>(repeating: 0)
             let base = n    // ref[x] stored at ref[base + x], x from −n
             let vertical = mode >= 18
             let main = vertical ? top : left, side = vertical ? left : top
@@ -90,6 +94,5 @@ enum HEVCIntraPred {
                 if mode == 10 { for x in 0..<n { p[x] = clip(left[1] + ((top[1 + x] - top[0]) >> 1)) } }
             }
         }
-        return p
     }
 }

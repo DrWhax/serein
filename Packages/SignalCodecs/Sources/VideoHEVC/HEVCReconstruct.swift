@@ -221,8 +221,9 @@ extension HEVCPictureState {
         let xL = x * sw, yL = y * sh
         let constrained = pps.constrainedIntraPred
         // Order of 8.4.4.2.2: p[−1][2n−1] … p[−1][−1], then p[0][−1] … p[2n−1][−1].
-        var samples = [Int32](repeating: 0, count: 4 * n + 1)
-        var avail = [Bool](repeating: false, count: 4 * n + 1)
+        let count = 4 * n + 1
+        var samples = InlineArray<129, Int32>(repeating: 0)
+        var avail = InlineArray<129, Bool>(repeating: false)
         var any = false
         do {
             let src = planes[cIdx].samples
@@ -243,12 +244,16 @@ extension HEVCPictureState {
             }
         }
         if !any {
-            for k in 0..<samples.count { samples[k] = Int32(1 << (bitDepth - 1)) }
+            for k in 0..<count { samples[k] = Int32(1 << (bitDepth - 1)) }
         } else {
-            if !avail[0], let first = avail.firstIndex(of: true) { samples[0] = samples[first] }
-            for k in 1..<samples.count where !avail[k] { samples[k] = samples[k - 1] }
+            if !avail[0] {
+                var first = 1
+                while first < count && !avail[first] { first += 1 }
+                if first < count { samples[0] = samples[first] }
+            }
+            for k in 1..<count where !avail[k] { samples[k] = samples[k - 1] }
         }
-        var left = [Int32](repeating: 0, count: 2 * n + 1), top = [Int32](repeating: 0, count: 2 * n + 1)
+        var left = HEVCIntraPred.Refs(repeating: 0), top = HEVCIntraPred.Refs(repeating: 0)
         left[0] = samples[2 * n]
         top[0] = samples[2 * n]
         for i in 0..<(2 * n) {
@@ -260,15 +265,15 @@ extension HEVCPictureState {
             HEVCIntraPred.filter(left: &left, top: &top, log2Size: log2Size, mode: mode, isLuma: true, strongSmoothing: sps.strongIntraSmoothing && cIdx == 0,
                                  bitDepth: bitDepth)
         }
-        let pred = HEVCIntraPred.predict(left: left, top: top, log2Size: log2Size, mode: mode, isLuma: cIdx == 0, bitDepth: bitDepth)
+        var pred = HEVCIntraPred.Block(repeating: 0)
+        HEVCIntraPred.predict(left: left, top: top, log2Size: log2Size, mode: mode, isLuma: cIdx == 0, bitDepth: bitDepth, into: &pred)
         let w = min(n, pw - x), h = min(n, ph - y)
         var dst = take(cIdx)
         do {
             var d = dst.mutableSpan
-            let ps = pred.span
             for j in 0..<h {
                 let row = x + (y + j) * pw
-                for i in 0..<w { d[row + i] = UInt16(ps[i + j * n]) }
+                for i in 0..<w { d[row + i] = UInt16(pred[i + j * n]) }
             }
         }
         restore(cIdx, dst)

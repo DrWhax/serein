@@ -20,6 +20,8 @@ struct HEVCSliceDecoder {
     let pic: HEVCPicture
     let geom: HEVCGeometry
     var cabac: HEVCCABAC
+    /// Scaling factors by (log2Size − 2) · 6 + matrixId, built when first used.
+    var scalingCache = [[Int32]](repeating: [], count: 24)
     let sliceQp: Int
     let initType: Int
     /// SliceAddrRs: the first CTB of the slice (the independent segment) this segment belongs to.
@@ -567,6 +569,9 @@ struct HEVCSliceDecoder {
         intraSteps.append(.predict(cIdx: cIdx, x: x, y: y, log2Size: log2Size, mode: mode, ctbRs: ctbAddrRs, ctbTs: ctbAddrTs))
     }
 
+    /// Table 8-10: QpC for qPi 30 … 43 (4:2:0).
+    static let qpcTable = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37]
+
     /// The residual in `coeff` as a job: added now (I slices), or recorded.
     mutating func addResidual(transformSkip: Bool, cIdx: Int, x: Int, y: Int, log2Size: Int, intraDST: Bool) {
         let n = 1 << log2Size
@@ -577,14 +582,19 @@ struct HEVCSliceDecoder {
             let qpi = max(-qpBdOffsetC, min(57, qpY + off))
             let qpc: Int
             if sps.chromaArrayType == 1 {
-                if qpi < 30 { qpc = qpi } else if qpi > 43 { qpc = qpi - 6 } else { qpc = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37][qpi - 30] }
+                if qpi < 30 { qpc = qpi } else if qpi > 43 { qpc = qpi - 6 } else { qpc = Self.qpcTable[qpi - 30] }
             } else { qpc = min(qpi, 51) }
             qp = qpc + qpBdOffsetC
         }
         var factors: [Int32]?
         if !cuBypass && sps.scalingListEnabled && !(transformSkip && n > 4) {
-            let list = pps.scalingList ?? sps.scalingList ?? .default
-            factors = HEVCTransform.scalingFactors(list, log2Size: log2Size, matrixId: (cuIntra ? 0 : 3) + cIdx)
+            // The list is the slice's (PPS or SPS): each size and matrix built once.
+            let matrixId = (cuIntra ? 0 : 3) + cIdx, key = (log2Size - 2) * 6 + matrixId
+            if scalingCache[key].isEmpty {
+                let list = pps.scalingList ?? sps.scalingList ?? .default
+                scalingCache[key] = HEVCTransform.scalingFactors(list, log2Size: log2Size, matrixId: matrixId)
+            }
+            factors = scalingCache[key]
         }
         let job = HEVCResidualJob(cIdx: cIdx, x: x, y: y, log2Size: log2Size, start: Int32(coeffStart), count: Int32(coeffPool.count - coeffStart), qp: qp, bitDepth: bitDepth,
                                   transformSkip: transformSkip, bypass: cuBypass, dst: intraDST && cIdx == 0, factors: factors)

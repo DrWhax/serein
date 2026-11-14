@@ -9,10 +9,11 @@ enum HEVCLoopFilter {
     static let tcTable: [Int] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
                                  5, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 22, 24]
 
+    static let chromaQpTable: [Int] = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37]
     static func chromaQp(_ qpi: Int) -> Int {
         if qpi < 30 { return qpi }
         if qpi > 43 { return qpi - 6 }
-        return [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37][qpi - 30]
+        return chromaQpTable[qpi - 30]
     }
 
     static func apply(_ pic: inout HEVCPictureState, geometry: HEVCGeometry, pps: HEVCPPS) {
@@ -32,10 +33,25 @@ enum HEVCLoopFilter {
     // MARK: boundary strength (8.7.2.3, 8.7.2.4)
 
     /// bS per 4x4 unit for the edge on its left (vertical) or top (horizontal) side; 0 off-grid.
+    /// Bands of 4x4 rows in parallel (each unit reads only the picture's parse results).
     static func boundaryStrengths(_ pic: HEVCPictureState, geometry g: HEVCGeometry, pps: HEVCPPS, vertical: Bool) -> [UInt8] {
+        let rowsPerBand = 8
+        let bands = Array(stride(from: 0, to: pic.h4, by: rowsPerBand))
+        let parts = hevcParallel(bands, state: { () }) { _, y0 in
+            boundaryStrengths(pic, geometry: g, pps: pps, vertical: vertical, rows: y0 ..< min(pic.h4, y0 + rowsPerBand))
+        }
+        var bs: [UInt8] = []
+        bs.reserveCapacity(pic.w4 * pic.h4)
+        for part in parts { bs += part }
+        return bs
+    }
+
+    /// bS for 4x4 rows `rows` (their units only, row-major).
+    static func boundaryStrengths(_ pic: HEVCPictureState, geometry g: HEVCGeometry, pps: HEVCPPS, vertical: Bool, rows: Range<Int>) -> [UInt8] {
         let sps = pic.sps
-        var bs = [UInt8](repeating: 0, count: pic.w4 * pic.h4)
-        for y4 in 0..<pic.h4 {
+        var bs = [UInt8](repeating: 0, count: pic.w4 * rows.count)
+        let base = rows.lowerBound * pic.w4
+        for y4 in rows {
             for x4 in 0..<pic.w4 {
                 let x = x4 << 2, y = y4 << 2
                 // 8x8 grid only, inside the picture.
@@ -58,36 +74,54 @@ enum HEVCLoopFilter {
                 else if tu && (pic.nonZeroCoeff[p] || pic.nonZeroCoeff[q]) { v = 1 }
                 else if motionDiffers(pic, p, q, ctbP: ctbP, ctbQ: ctbQ) { v = 1 }
                 _ = sps
-                bs[q] = v
+                bs[q - base] = v
             }
         }
         return bs
     }
 
+    /// One side's prediction for 8.7.2.4: how many vectors, and each one's reference picture
+    /// and value, in list order (as plain values: this runs for every edge of the picture).
+    struct Side {
+        var n = 0
+        var poc0 = 0, x0 = 0, y0 = 0
+        var poc1 = 0, x1 = 0, y1 = 0
+    }
+
+    @inline(__always) static func side(_ pic: HEVCPictureState, _ i: Int, _ ctb: Int) -> Side {
+        let m = pic.motion[i]
+        let slice = Int(pic.ctbSliceIndex[ctb])
+        var s = Side()
+        guard pic.sliceRefPocs.indices.contains(slice) else { return s }
+        if m.refIdx.0 >= 0 {
+            s.poc0 = pic.sliceRefPocs[slice][0][Int(m.refIdx.0)]
+            s.x0 = Int(m.mv.0); s.y0 = Int(m.mv.1)
+            s.n = 1
+        }
+        if m.refIdx.1 >= 0 {
+            let poc = pic.sliceRefPocs[slice][1][Int(m.refIdx.1)], x = Int(m.mv.2), y = Int(m.mv.3)
+            if s.n == 0 { s.poc0 = poc; s.x0 = x; s.y0 = y } else { s.poc1 = poc; s.x1 = x; s.y1 = y }
+            s.n += 1
+        }
+        return s
+    }
+
     /// 8.7.2.4: different reference pictures, number of vectors, or vectors 4 quarter-samples apart.
     static func motionDiffers(_ pic: HEVCPictureState, _ p: Int, _ q: Int, ctbP: Int, ctbQ: Int) -> Bool {
-        let mp = pic.motion[p], mq = pic.motion[q]
-        func refs(_ m: HEVCMotion, _ ctb: Int) -> [(poc: Int, mv: (Int, Int))] {
-            let slice = Int(pic.ctbSliceIndex[ctb])
-            var out: [(Int, (Int, Int))] = []
-            if m.refIdx.0 >= 0, pic.sliceRefPocs.indices.contains(slice) { out.append((pic.sliceRefPocs[slice][0][Int(m.refIdx.0)], (Int(m.mv.0), Int(m.mv.1)))) }
-            if m.refIdx.1 >= 0, pic.sliceRefPocs.indices.contains(slice) { out.append((pic.sliceRefPocs[slice][1][Int(m.refIdx.1)], (Int(m.mv.2), Int(m.mv.3)))) }
-            return out
-        }
-        let a = refs(mp, ctbP), b = refs(mq, ctbQ)
-        guard a.count == b.count else { return true }
-        func far(_ u: (Int, Int), _ v: (Int, Int)) -> Bool { abs(u.0 - v.0) >= 4 || abs(u.1 - v.1) >= 4 }
-        if a.count == 1 { return a[0].poc != b[0].poc || far(a[0].mv, b[0].mv) }
-        if a.count == 2 {
-            let sa = Set([a[0].poc, a[1].poc]), sb = Set([b[0].poc, b[1].poc])
-            guard sa == sb else { return true }
-            if a[0].poc != a[1].poc {
+        let a = side(pic, p, ctbP), b = side(pic, q, ctbQ)
+        guard a.n == b.n else { return true }
+        @inline(__always) func far(_ ux: Int, _ uy: Int, _ vx: Int, _ vy: Int) -> Bool { abs(ux - vx) >= 4 || abs(uy - vy) >= 4 }
+        if a.n == 1 { return a.poc0 != b.poc0 || far(a.x0, a.y0, b.x0, b.y0) }
+        if a.n == 2 {
+            // The same set of reference pictures on both sides.
+            guard (a.poc0 == b.poc0 && a.poc1 == b.poc1) || (a.poc0 == b.poc1 && a.poc1 == b.poc0) else { return true }
+            if a.poc0 != a.poc1 {
                 // Two different references: compare the vectors that point at the same picture.
-                let bFor0 = b[0].poc == a[0].poc ? b[0].mv : b[1].mv, bFor1 = b[0].poc == a[1].poc ? b[0].mv : b[1].mv
-                return far(a[0].mv, bFor0) || far(a[1].mv, bFor1)
+                let b0 = b.poc0 == a.poc0, b1 = b.poc0 == a.poc1
+                return far(a.x0, a.y0, b0 ? b.x0 : b.x1, b0 ? b.y0 : b.y1) || far(a.x1, a.y1, b1 ? b.x0 : b.x1, b1 ? b.y0 : b.y1)
             }
             // Both vectors of each side point at the same picture.
-            return (far(a[0].mv, b[0].mv) || far(a[1].mv, b[1].mv)) && (far(a[0].mv, b[1].mv) || far(a[1].mv, b[0].mv))
+            return (far(a.x0, a.y0, b.x0, b.y0) || far(a.x1, a.y1, b.x1, b.y1)) && (far(a.x0, a.y0, b.x1, b.y1) || far(a.x1, a.y1, b.x0, b.y0))
         }
         return false
     }
@@ -258,66 +292,101 @@ enum HEVCLoopFilter {
 
     // MARK: SAO (8.7.3)
 
+    static let eoOffsets: [(Int, Int, Int, Int)] = [(-1, 0, 1, 0), (0, -1, 0, 1), (-1, -1, 1, 1), (1, -1, -1, 1)]
+
+    /// 8.7.3, a CTB row per worker: each reads the deblocked picture and writes only its rows.
     static func applySAO(_ pic: inout HEVCPictureState, geometry g: HEVCGeometry, pps: HEVCPPS) {
         let sps = pic.sps
-        let deblocked = pic.planes
         let comps = sps.chromaArrayType != 0 ? 3 : 1
+        let state = pic.withoutSamples()
+        let anyBypass = pic.bypass.contains(true)
         for c in 0..<comps {
-            let src = deblocked[c].samples
-            var dst = src
-            let w = deblocked[c].width, h = deblocked[c].height
+            let src = pic.planes[c].samples
+            let w = pic.planes[c].width, h = pic.planes[c].height
             let sw = c == 0 ? 1 : sps.subWidthC, sh = c == 0 ? 1 : sps.subHeightC
             let ctbW = sps.ctbSize / sw, ctbH = sps.ctbSize / sh
-            let bitDepth = c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma
-            let maxV = (1 << bitDepth) - 1
-            for ctb in 0..<sps.picSizeInCtbs {
-                let sao = pic.sao[c][ctb]
-                guard sao.type != 0 else { continue }
-                let x0 = (ctb % g.widthCtbs) * ctbW, y0 = (ctb / g.widthCtbs) * ctbH
-                let x1 = min(w, x0 + ctbW), y1 = min(h, y0 + ctbH)
-                if sao.type == 1 {
-                    var table = [Int](repeating: 0, count: 32)
-                    for k in 0..<4 { table[(k + sao.bandPosition) & 31] = k + 1 }
-                    let shift = bitDepth - 5
-                    for y in y0..<y1 {
-                        for x in x0..<x1 {
-                            if pic.bypass[pic.i4(x * sw, y * sh)] { continue }
-                            let v = Int(src[x + y * w])
-                            let band = table[v >> shift]
-                            if band > 0 { dst[x + y * w] = UInt16(max(0, min(maxV, v + Int(sao.offsets[band - 1])))) }
-                        }
+            let rows = (h + ctbH - 1) / ctbH
+            let bands = hevcParallel(Array(0..<rows), state: { () }) { _, r -> [UInt16] in
+                let y0 = r * ctbH, y1 = min(h, y0 + ctbH)
+                var out = Array(src[(y0 * w)..<(y1 * w)])
+                saoRow(state, src: src, into: &out, c: c, row: r, w: w, h: h, sw: sw, sh: sh, ctbW: ctbW, ctbH: ctbH, anyBypass: anyBypass, pps: pps, geometry: g)
+                return out
+            }
+            var dst: [UInt16] = []
+            dst.reserveCapacity(w * h)
+            for b in bands { dst += b }
+            pic.planes[c].samples = dst
+        }
+    }
+
+    /// One CTB row of component `c`: `out` holds its rows of the deblocked picture `src`.
+    static func saoRow(_ pic: HEVCPictureState, src: [UInt16], into out: inout [UInt16], c: Int, row r: Int, w: Int, h: Int, sw: Int, sh: Int,
+                       ctbW: Int, ctbH: Int, anyBypass: Bool, pps: HEVCPPS, geometry g: HEVCGeometry) {
+        let sps = pic.sps
+        let bitDepth = c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma
+        let maxV = (1 << bitDepth) - 1
+        let sp = src.span
+        var o = out.mutableSpan
+        let rowBase = r * ctbH * w
+        for cx in 0..<g.widthCtbs {
+            let ctb = cx + r * g.widthCtbs
+            let sao = pic.sao[c][ctb]
+            guard sao.type != 0 else { continue }
+            let x0 = cx * ctbW, y0 = r * ctbH
+            let x1 = min(w, x0 + ctbW), y1 = min(h, y0 + ctbH)
+            let off0 = Int(sao.offsets[0]), off1 = Int(sao.offsets[1]), off2 = Int(sao.offsets[2]), off3 = Int(sao.offsets[3])
+            if sao.type == 1 {
+                let shift = bitDepth - 5
+                for y in y0..<y1 {
+                    for x in x0..<x1 {
+                        if anyBypass && pic.bypass[pic.i4(x * sw, y * sh)] { continue }
+                        let v = Int(sp[x + y * w])
+                        let k = ((v >> shift) - sao.bandPosition) & 31
+                        guard k < 4 else { continue }
+                        let off = k == 0 ? off0 : k == 1 ? off1 : k == 2 ? off2 : off3
+                        o[x + y * w - rowBase] = UInt16(max(0, min(maxV, v + off)))
                     }
-                } else {
-                    let (dx0, dy0, dx1, dy1): (Int, Int, Int, Int) = [(-1, 0, 1, 0), (0, -1, 0, 1), (-1, -1, 1, 1), (1, -1, -1, 1)][sao.eoClass]
-                    let sliceAcross = pic.ctbFilterAcrossSlices
-                    for y in y0..<y1 {
-                        for x in x0..<x1 {
-                            let xa = x + dx0, ya = y + dy0, xb = x + dx1, yb = y + dy1
-                            guard xa >= 0, ya >= 0, xb >= 0, yb >= 0, xa < w, ya < h, xb < w, yb < h else { continue }
-                            let lx = x * sw, ly = y * sh
-                            if pic.bypass[pic.i4(lx, ly)] { continue }
-                            let ctbC = g.ctbAddrRs(lx, ly)
-                            var skip = false
-                            for (nx, ny) in [(xa, ya), (xb, yb)] {
-                                let ctbN = g.ctbAddrRs(nx * sw, ny * sh)
-                                guard ctbN != ctbC else { continue }
-                                if pic.ctbSliceAddr[ctbN] != pic.ctbSliceAddr[ctbC] {
-                                    let neighbourFirst = g.zOrder(nx * sw, ny * sh) < g.zOrder(lx, ly)
-                                    if (neighbourFirst && !sliceAcross[ctbC]) || (!neighbourFirst && !sliceAcross[ctbN]) { skip = true }
-                                }
-                                if !pps.loopFilterAcrossTiles && g.tileId[g.rsToTs[ctbN]] != g.tileId[g.rsToTs[ctbC]] { skip = true }
-                            }
-                            if skip { continue }
-                            let v = Int(src[x + y * w])
-                            func sign(_ d: Int) -> Int { d > 0 ? 1 : d < 0 ? -1 : 0 }
-                            var e = 2 + sign(v - Int(src[xa + ya * w])) + sign(v - Int(src[xb + yb * w]))
-                            if e <= 2 { e = e == 2 ? 0 : e + 1 }
-                            if e > 0 { dst[x + y * w] = UInt16(max(0, min(maxV, v + Int(sao.offsets[e - 1])))) }
+                }
+            } else {
+                let (dx0, dy0, dx1, dy1) = eoOffsets[sao.eoClass]
+                // Whether each neighbouring CTB (by direction, [dy + 1][dx + 1]) may be read: a
+                // slice edge without filtering across (the later slice decides), or a tile edge.
+                let ctbC = ctb
+                let lumaX0 = x0 * sw, lumaY0 = y0 * sh
+                var allowed = InlineArray<9, Bool>(repeating: true)
+                for ny in -1...1 {
+                    for nx in -1...1 where nx != 0 || ny != 0 {
+                        let ncx = cx + nx, ncy = r + ny
+                        guard ncx >= 0, ncy >= 0, ncx < g.widthCtbs, ncy < g.heightCtbs else { continue }
+                        let ctbN = ncx + ncy * g.widthCtbs
+                        var ok = true
+                        if pic.ctbSliceAddr[ctbN] != pic.ctbSliceAddr[ctbC] {
+                            let neighbourFirst = g.zOrder(ncx << g.log2Ctb, ncy << g.log2Ctb) < g.zOrder(lumaX0, lumaY0)
+                            if (neighbourFirst && !pic.ctbFilterAcrossSlices[ctbC]) || (!neighbourFirst && !pic.ctbFilterAcrossSlices[ctbN]) { ok = false }
                         }
+                        if !pps.loopFilterAcrossTiles && g.tileId[g.rsToTs[ctbN]] != g.tileId[g.rsToTs[ctbC]] { ok = false }
+                        allowed[(ny + 1) * 3 + nx + 1] = ok
+                    }
+                }
+                @inline(__always) func dir(_ v: Int, _ lo: Int, _ hi: Int) -> Int { v < lo ? 0 : v >= hi ? 2 : 1 }
+                for y in y0..<y1 {
+                    let ya = y + dy0, yb = y + dy1
+                    guard ya >= 0, yb >= 0, ya < h, yb < h else { continue }
+                    for x in x0..<x1 {
+                        let xa = x + dx0, xb = x + dx1
+                        guard xa >= 0, xb >= 0, xa < w, xb < w else { continue }
+                        if anyBypass && pic.bypass[pic.i4(x * sw, y * sh)] { continue }
+                        guard allowed[dir(ya, y0, y1) * 3 + dir(xa, x0, x1)], allowed[dir(yb, y0, y1) * 3 + dir(xb, x0, x1)] else { continue }
+                        let v = Int(sp[x + y * w])
+                        let a = Int(sp[xa + ya * w]), b = Int(sp[xb + yb * w])
+                        var e = 2 + (v > a ? 1 : v < a ? -1 : 0) + (v > b ? 1 : v < b ? -1 : 0)
+                        if e <= 2 { e = e == 2 ? 0 : e + 1 }
+                        guard e > 0 else { continue }
+                        let off = e == 1 ? off0 : e == 2 ? off1 : e == 3 ? off2 : off3
+                        o[x + y * w - rowBase] = UInt16(max(0, min(maxV, v + off)))
                     }
                 }
             }
-            pic.planes[c].samples = dst
         }
     }
 }
