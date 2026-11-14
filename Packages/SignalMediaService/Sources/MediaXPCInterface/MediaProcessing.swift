@@ -301,10 +301,18 @@ public protocol MediaProcessing: Sendable {
     func posterFrame(_ bytes: Data) async throws -> VideoPoster
     func openVideo(_ bytes: Data) async throws -> (session: UUID, info: VideoInfo)
     /// The next frames in display order (at most VideoLimits.maxFramesPerRequest); empty at the end.
-    func videoFrames(_ session: UUID, count: Int) async throws -> [VideoFrame]
+    /// With `fit`, a frame larger than it shows is scaled down to the size it is shown at.
+    func videoFrames(_ session: UUID, count: Int, fit: VideoFit?) async throws -> [VideoFrame]
     /// Continues from the sync sample at or before `seconds` (the caller drops earlier frames).
     func seekVideo(_ session: UUID, to seconds: Double) async throws
     func closeVideo(_ session: UUID) async
+}
+
+extension MediaProcessing {
+    /// The next frames as decoded (no fit).
+    public func videoFrames(_ session: UUID, count: Int) async throws -> [VideoFrame] {
+        try await videoFrames(session, count: count, fit: nil)
+    }
 }
 
 extension Data {

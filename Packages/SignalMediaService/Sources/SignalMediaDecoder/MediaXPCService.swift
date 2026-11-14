@@ -49,7 +49,7 @@ public final class MediaXPCHandler: XPCMessageHandler {
         case .openVideo(let b):
             let (session, info) = try await d.openVideo(b)
             return try MediaXPCWire.encode(OpenedVideo(session: session, info: info))
-        case .videoFrames(let id, let count): return MediaXPCWire.encodeFrames(try await d.videoFrames(id, count: count))
+        case .videoFrames(let id, let count, let fit): return MediaXPCWire.encodeFrames(try await d.videoFrames(id, count: count, fit: try fit?.validated()))
         case .seekVideo(let id, let seconds):
             try await d.seekVideo(id, to: seconds)
             return try MediaXPCWire.encode(MediaEmpty())

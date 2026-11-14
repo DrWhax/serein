@@ -18,12 +18,18 @@ public struct VideoPlanes: Sendable, Equatable {
     public var time: Double
     /// 8: a byte per sample; 9–12: two (little-endian), keeping 10-bit HDR's precision.
     public var bitDepth: Int
+    /// The size the video was decoded at (larger than `width` x `height` when the media service
+    /// scaled the frame to the view showing it).
+    public var decodedWidth: Int, decodedHeight: Int
 
-    public init(width: Int, height: Int, y: [UInt8], u: [UInt8], v: [UInt8], fullRange: Bool, matrix: Int, time: Double, transfer: Int = 1, bitDepth: Int = 8) {
+    public init(width: Int, height: Int, y: [UInt8], u: [UInt8], v: [UInt8], fullRange: Bool, matrix: Int, time: Double, transfer: Int = 1, bitDepth: Int = 8,
+                decodedWidth: Int? = nil, decodedHeight: Int? = nil) {
         self.transfer = transfer
         self.bitDepth = bitDepth
         self.width = width
         self.height = height
+        self.decodedWidth = decodedWidth ?? width
+        self.decodedHeight = decodedHeight ?? height
         self.y = y
         self.u = u
         self.v = v
@@ -35,7 +41,7 @@ public struct VideoPlanes: Sendable, Equatable {
     public var isValid: Bool {
         let cw = (width + 1) / 2, ch = (height + 1) / 2, b = bitDepth > 8 ? 2 : 1
         return (8...12).contains(bitDepth) && width > 0 && height > 0 && width <= 8192 && height <= 8192 && y.count == width * height * b
-            && u.count == cw * ch * b && v.count == cw * ch * b
+            && u.count == cw * ch * b && v.count == cw * ch * b && (width...8192).contains(decodedWidth) && (height...8192).contains(decodedHeight)
     }
 }
 
@@ -197,7 +203,8 @@ public final class VideoRenderer {
     /// Encodes the drawing of `frame` into `target` (cleared to `background` first).
     public func draw(_ frame: VideoPlanes, rotation: Int, into target: any MTLTexture, fit: Fit = .contain, mirrored: Bool = false,
                      background: MTLClearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)) -> (any MTLCommandBuffer)? {
-        let colour = Self.colour(matrix: frame.matrix, transfer: frame.transfer, height: frame.height)
+        // An unspecified matrix goes by the video's own size, not by the size it was scaled to.
+        let colour = Self.colour(matrix: frame.matrix, transfer: frame.transfer, height: frame.decodedHeight)
         let deep = frame.bitDepth > 8
         let format: VideoTexture.Format = deep ? .r16 : .r8
         guard frame.isValid,

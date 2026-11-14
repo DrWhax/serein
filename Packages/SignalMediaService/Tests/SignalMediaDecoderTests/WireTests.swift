@@ -15,7 +15,8 @@ import Testing
         .stripMetadata(Data([8]), contentType: "image/png"), .convertHEIC(Data([9])), .audioSummary(Data([10])),
         .decodeAudio(Data([11]), startFrame: 4800, maxFrames: 96000), .startVoiceNote(sampleRate: 48000),
         .appendVoiceNote(id, samples: [0, -1, 0.5, .infinity, -.zero]), .finishVoiceNote(id), .cancelVoiceNote(id),
-        .videoInfo(Data([12])), .posterFrame(Data([13])), .openVideo(Data([14])), .videoFrames(id, count: 8),
+        .videoInfo(Data([12])), .posterFrame(Data([13])), .openVideo(Data([14])), .videoFrames(id, count: 8, fit: nil),
+        .videoFrames(id, count: 4, fit: VideoFit(width: 640, height: 360, cover: true)),
         .seekVideo(id, seconds: 12.5), .closeVideo(id),
     ]
 

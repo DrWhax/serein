@@ -112,24 +112,31 @@ struct VideoServiceTests {
     }
 }
 
-/// Throughput of the service's video sessions (HEVC_SESSION=<mp4>): frames per second.
+/// Throughput of the service's video sessions (HEVC_SESSION=<mp4>, with HEVC_SESSION_FIT=<w>x<h>
+/// frames scaled to that view): frames per second, and the bytes that cross to the app.
 @Suite struct VideoSessionSpeed {
     @Test func throughput() async throws {
         guard let path = ProcessInfo.processInfo.environment["HEVC_SESSION"] else { return }
         let d = MediaDecoder()
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
         let (s, _) = try await d.openVideo(bytes)
+        let fit = ProcessInfo.processInfo.environment["HEVC_SESSION_FIT"].flatMap { spec -> VideoFit? in
+            let p = spec.split(separator: "x").compactMap { Int($0) }
+            return p.count == 2 ? VideoFit(width: p[0], height: p[1]) : nil
+        }
         let start = ContinuousClock.now
-        var n = 0
+        var n = 0, sent = 0
         while n < 120 {
-            let f = try await d.videoFrames(s, count: 8)
+            let f = try await d.videoFrames(s, count: 8, fit: fit)
             if f.isEmpty { break }
             let wire = MediaXPCWire.encodeFrames(f)
+            sent += wire.count
             _ = try MediaXPCWire.decodeFrames(wire, maxFrames: VideoLimits.maxFramesPerRequest).map { try $0.validated() }
             n += f.count
         }
         let t = ContinuousClock.now - start
         await d.closeVideo(s)
-        print("session: \(n) frames in \(t) (\(Double(n) / (Double(t.components.seconds) + Double(t.components.attoseconds) / 1e18)) fps) incl. XPC encoding")
+        print("session: \(n) frames in \(t) (\(Double(n) / (Double(t.components.seconds) + Double(t.components.attoseconds) / 1e18)) fps) incl. XPC encoding, "
+              + "\(sent / max(1, n)) bytes a frame")
     }
 }

@@ -270,8 +270,8 @@ extension MediaDecoder {
         try await Self.videoSessions.open(Array(bytes))
     }
 
-    public func videoFrames(_ session: UUID, count: Int) async throws -> [VideoFrame] {
-        try await Self.videoSessions.frames(session, count: min(max(count, 1), VideoLimits.maxFramesPerRequest))
+    public func videoFrames(_ session: UUID, count: Int, fit: VideoFit?) async throws -> [VideoFrame] {
+        try await Self.videoSessions.frames(session, count: min(max(count, 1), VideoLimits.maxFramesPerRequest), fit: try fit?.validated())
     }
 
     public func seekVideo(_ session: UUID, to seconds: Double) async throws { try await Self.videoSessions.seek(session, to: seconds) }
@@ -291,13 +291,17 @@ actor VideoSessions {
         return (id, s.info)
     }
 
-    func frames(_ id: UUID, count: Int) throws -> [VideoFrame] {
+    /// The next frames, each scaled down to `fit` when larger than it shows.
+    func frames(_ id: UUID, count: Int, fit: VideoFit? = nil) throws -> [VideoFrame] {
         guard var s = sessions[id] else { throw MediaProcessingError.invalidResult }
         let frames = s.frames(count)
         sessions[id] = s
-        return frames.map { f in
-            VideoFrame(time: s.seconds(f.pts), width: f.picture.width, height: f.picture.height, y: Data(f.picture.y), u: Data(f.picture.u), v: Data(f.picture.v),
-                       fullRange: f.fullRange, matrix: f.matrix, transfer: f.transfer, bitDepth: f.bitDepth)
+        let rotation = s.track.rotation
+        return frames.map { decoded in
+            let f = fit.map { decoded.scaled(to: $0, rotation: rotation) } ?? decoded
+            return VideoFrame(time: s.seconds(f.pts), width: f.picture.width, height: f.picture.height, y: Data(f.picture.y), u: Data(f.picture.u),
+                              v: Data(f.picture.v), fullRange: f.fullRange, matrix: f.matrix, transfer: f.transfer, bitDepth: f.bitDepth,
+                              decodedWidth: decoded.picture.width, decodedHeight: decoded.picture.height)
         }
     }
 

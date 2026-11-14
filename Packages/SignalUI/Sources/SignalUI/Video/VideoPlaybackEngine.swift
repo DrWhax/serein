@@ -2,13 +2,42 @@
 // service session — keeps a few queued, and presents the latest frame whose time has come.
 // The clock is the audio engine's play head when the video has sound (A/V sync: late
 // frames are skipped, never the audio), otherwise the host clock. GIF-flag MP4s loop.
+// The view showing the frames says how large it is (setDisplaySize), and the source sends frames
+// no larger than that: a paused frame is fetched again, sharper, when the view grows.
 
 import Foundation
+
+/// How large a view shows a video: backing pixels, in display orientation (after rotation),
+/// contained in it or covering it (the media service's VideoFit).
+public struct VideoDisplaySize: Sendable, Equatable {
+    public var width: Int, height: Int
+    public var cover: Bool
+
+    public init(width: Int, height: Int, cover: Bool = false) {
+        self.width = width
+        self.height = height
+        self.cover = cover
+    }
+
+    /// The frame size the media service sends at this size for a video decoded at `w` x `h`
+    /// with `rotation`: as MediaXPCInterface's VideoFit.frameSize (scaled only to half its size
+    /// or less, else as decoded).
+    public func frameSize(width w: Int, height h: Int, rotation: Int) -> (width: Int, height: Int) {
+        let tw = Double(max(1, rotation % 180 == 0 ? width : height)), th = Double(max(1, rotation % 180 == 0 ? height : width))
+        guard w > 2, h > 2 else { return (w, h) }
+        let s = cover ? max(tw / Double(w), th / Double(h)) : min(tw / Double(w), th / Double(h))
+        guard s <= 0.5 else { return (w, h) }
+        func even(_ v: Double, _ limit: Int) -> Int { min(limit, max(2, Int((v / 2).rounded()) * 2)) }
+        return (even(Double(w) * s, w), even(Double(h) * s, h))
+    }
+}
 
 /// Decoded frames of one video, in display order.
 public protocol VideoFrameSource: Sendable {
     /// Up to `count` next frames; empty at the end.
     func frames(_ count: Int) async throws -> [VideoPlanes]
+    /// Up to `count` next frames, each no larger than it is shown at `size` (nil: as decoded).
+    func frames(_ count: Int, fitting size: VideoDisplaySize?) async throws -> [VideoPlanes]
     /// Restarts at the sync frame at or before `seconds` (earlier frames follow it).
     func seek(to seconds: Double) async throws
     /// Releases the session (the engine no longer reads).
@@ -17,6 +46,8 @@ public protocol VideoFrameSource: Sendable {
 
 extension VideoFrameSource {
     public func close() async {}
+    /// A source that cannot scale sends frames as decoded.
+    public func frames(_ count: Int, fitting size: VideoDisplaySize?) async throws -> [VideoPlanes] { try await frames(count) }
 }
 
 @MainActor
@@ -43,6 +74,11 @@ public final class VideoPlaybackEngine {
     /// Called with every frame to show.
     @ObservationIgnored public var onFrame: ((VideoPlanes) -> Void)?
     @ObservationIgnored public var onEnded: (() -> Void)?
+
+    /// The size of the view showing the frames (nil until one says: frames as decoded).
+    @ObservationIgnored public private(set) var displaySize: VideoDisplaySize?
+    /// A paused frame being fetched again for a larger view.
+    @ObservationIgnored var refresh: Task<Void, Never>?
 
     @ObservationIgnored public let audio: AudioPlaybackEngine?
     @ObservationIgnored let now: @MainActor () -> Double
@@ -119,6 +155,25 @@ public final class VideoPlaybackEngine {
         if autoDrive { startDriver() }
     }
 
+    /// The view showing the frames is now `size`: later frames come at most that large. A paused
+    /// frame smaller than the view now shows it is fetched again (once the size has settled).
+    public func setDisplaySize(_ size: VideoDisplaySize?) {
+        guard size != displaySize else { return }
+        displaySize = size
+        guard !isPlaying, isLoaded, let f = currentFrame, let size else { return }
+        let wanted = size.frameSize(width: f.decodedWidth, height: f.decodedHeight, rotation: rotation)
+        guard wanted.width > f.width || wanted.height > f.height else { return }
+        refresh?.cancel()
+        let gen = generation, intent = playbackEpoch
+        refresh = Task { @MainActor [weak self] in
+            // A window being resized reports every step: only where it stops counts.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self, !Task.isCancelled, gen == self.generation, intent == self.playbackEpoch, !self.isPlaying, self.isLoaded else { return }
+            self.refresh = nil   // seek's stop() must not cancel this task
+            await self.seek(to: self.currentTime)
+        }
+    }
+
     /// Stops and releases the source.
     public func unload() async {
         stop()
@@ -140,6 +195,8 @@ public final class VideoPlaybackEngine {
     }
 
     func stop() {
+        refresh?.cancel()
+        refresh = nil
         playbackEpoch += 1
         isPlaying = false
         driver?.cancel()
@@ -257,7 +314,7 @@ public final class VideoPlaybackEngine {
         fetching = true
         defer { if gen == generation { fetching = false } }
         do {
-            let batch = try await source.frames(Self.batch)
+            let batch = try await source.frames(Self.batch, fitting: displaySize)
             guard gen == generation else { return }
             // Only well-formed frames, in increasing time order, reach the renderer.
             if batch.isEmpty { sourceEnded = true }

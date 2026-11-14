@@ -31,7 +31,8 @@ public enum MediaRequest: Codable, Sendable {
     case videoInfo(Data)
     case posterFrame(Data)
     case openVideo(Data)
-    case videoFrames(UUID, count: Int)
+    /// The next frames, scaled down to `fit` when larger (nil: as decoded).
+    case videoFrames(UUID, count: Int, fit: VideoFit?)
     case seekVideo(UUID, seconds: Double)
     case closeVideo(UUID)
 }
@@ -91,9 +92,9 @@ public struct MediaEmpty: Codable, Sendable { public init() {} }
 
 public enum MediaXPCWire {
     /// Video frames as a flat record (a binary plist hashes every Data it holds, megabytes per
-    /// frame): "SSVF", version 2, a count, then per frame its fields and the three planes.
+    /// frame): "SSVF", version 3, a count, then per frame its fields and the three planes.
     /// Little-endian; the reader checks every length against what is left.
-    static let framesMagic: [UInt8] = [0x53, 0x53, 0x56, 0x46, 2]
+    static let framesMagic: [UInt8] = [0x53, 0x53, 0x56, 0x46, 3]
 
     public static func encodeFrames(_ frames: [VideoFrame]) -> Data {
         var out = Data(capacity: 16 + frames.reduce(0) { $0 + 48 + $1.y.count + $1.u.count + $1.v.count })
@@ -104,6 +105,8 @@ public enum MediaXPCWire {
             u(f.time.bitPattern, 8)
             u(UInt64(f.width), 4)
             u(UInt64(f.height), 4)
+            u(UInt64(f.decodedWidth), 4)
+            u(UInt64(f.decodedHeight), 4)
             u(f.fullRange ? 1 : 0, 1)
             u(UInt64(UInt16(truncatingIfNeeded: f.matrix)), 2)
             u(UInt64(UInt16(truncatingIfNeeded: f.transfer)), 2)
@@ -138,12 +141,13 @@ public enum MediaXPCWire {
         for _ in 0..<count {
             let time = Double(bitPattern: try u(8))
             let width = Int(try u(4)), height = Int(try u(4))
+            let decodedWidth = Int(try u(4)), decodedHeight = Int(try u(4))
             let full = try u(1)
             guard full <= 1 else { throw bad }
             let matrix = Int(try u(2)), transfer = Int(try u(2)), bitDepth = Int(try u(1))
             let y = try take(Int(try u(4))), cb = try take(Int(try u(4))), cr = try take(Int(try u(4)))
             frames.append(VideoFrame(time: time, width: width, height: height, y: y, u: cb, v: cr, fullRange: full == 1, matrix: matrix, transfer: transfer,
-                                     bitDepth: bitDepth))
+                                     bitDepth: bitDepth, decodedWidth: decodedWidth, decodedHeight: decodedHeight))
         }
         guard pos == data.endIndex else { throw bad }
         return frames
@@ -263,8 +267,9 @@ public final class MediaXPCClient: MediaProcessing {
             throw error
         }
     }
-    public func videoFrames(_ session: UUID, count: Int) async throws -> [VideoFrame] {
-        let frames = try MediaXPCWire.decodeFrames(try await callData(.videoFrames(session, count: count)), maxFrames: VideoLimits.maxFramesPerRequest)
+    public func videoFrames(_ session: UUID, count: Int, fit: VideoFit?) async throws -> [VideoFrame] {
+        let frames = try MediaXPCWire.decodeFrames(try await callData(.videoFrames(session, count: count, fit: try fit?.validated())),
+                                                   maxFrames: VideoLimits.maxFramesPerRequest)
         return try frames.map { try $0.validated() }
     }
     public func seekVideo(_ session: UUID, to seconds: Double) async throws { _ = try await call(.seekVideo(session, seconds: seconds), MediaEmpty.self) }

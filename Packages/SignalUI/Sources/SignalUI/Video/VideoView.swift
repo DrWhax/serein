@@ -1,6 +1,7 @@
 // Shows a VideoPlaybackEngine's frames: an NSView backed by a CAMetalLayer, drawn by the
 // shared VideoRenderer (contained, rotated, letterboxed in `background`) whenever the
-// engine presents a frame or the view changes size.
+// engine presents a frame or the view changes size. The view tells the engine its size in
+// pixels, so the media service sends frames no larger than shown.
 
 import AppKit
 import Metal
@@ -21,6 +22,8 @@ public class VideoLayerView: NSView {
     var rotation = 0
     var fit = VideoRenderer.Fit.contain
     var background = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+    /// Called with the drawable's size (backing pixels) whenever it changes.
+    var onDrawableSize: ((CGSize) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -56,7 +59,10 @@ public class VideoLayerView: NSView {
         metalLayer.contentsScale = scale
         let px = convertToBacking(bounds.size)
         let size = CGSize(width: max(1, px.width.rounded()), height: max(1, px.height.rounded()))
-        if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
+        if metalLayer.drawableSize != size {
+            metalLayer.drawableSize = size
+            onDrawableSize?(size)
+        }
     }
 
     func show(_ f: VideoPlanes?) {
@@ -118,7 +124,20 @@ public struct VideoView: NSViewRepresentable {
         v.rotation = engine.rotation
         v.fit = fit
         engine.onFrame = { [weak v] f in v?.show(f) }
+        // The view showing the engine's frames says how large they need to be.
+        let cover = fit == .cover
+        // (A view not laid out yet, or hidden, leaves the last size as it was.)
+        v.onDrawableSize = { [weak engine] size in
+            if let s = Self.displaySize(size, cover: cover) { engine?.setDisplaySize(s) }
+        }
+        if let s = Self.displaySize(v.metalLayer.drawableSize, cover: cover) { engine.setDisplaySize(s) }
         v.show(engine.currentFrame)
+    }
+
+    /// The size frames are wanted at for a drawable of `size` (nil while it is not laid out).
+    static func displaySize(_ size: CGSize, cover: Bool) -> VideoDisplaySize? {
+        guard size.width >= 16, size.height >= 16 else { return nil }
+        return VideoDisplaySize(width: Int(size.width), height: Int(size.height), cover: cover)
     }
 
     public static func dismantleNSView(_ v: VideoLayerView, coordinator: ()) {

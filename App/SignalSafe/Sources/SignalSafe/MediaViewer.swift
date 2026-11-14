@@ -15,10 +15,15 @@ struct XPCVideoSource: VideoFrameSource {
     let media: MediaXPCClient
     let session: UUID
 
-    func frames(_ count: Int) async throws -> [VideoPlanes] {
-        try await media.videoFrames(session, count: count).map {
+    func frames(_ count: Int) async throws -> [VideoPlanes] { try await frames(count, fitting: nil) }
+
+    /// Frames no larger than the view shows them: the service scales them before they cross.
+    func frames(_ count: Int, fitting size: VideoDisplaySize?) async throws -> [VideoPlanes] {
+        let fit = size.map { VideoFit(width: min(max($0.width, 16), 16384), height: min(max($0.height, 16), 16384), cover: $0.cover) }
+        return try await media.videoFrames(session, count: count, fit: fit).map {
             VideoPlanes(width: $0.width, height: $0.height, y: [UInt8]($0.y), u: [UInt8]($0.u), v: [UInt8]($0.v), fullRange: $0.fullRange,
-                        matrix: $0.matrix, time: $0.time, transfer: $0.transfer, bitDepth: $0.bitDepth)
+                        matrix: $0.matrix, time: $0.time, transfer: $0.transfer, bitDepth: $0.bitDepth,
+                        decodedWidth: $0.decodedWidth, decodedHeight: $0.decodedHeight)
         }
     }
 
