@@ -33,6 +33,7 @@ let package = Package(
         .library(name: "SignalProtos", targets: ["SignalProtos"]),
         .library(name: "MessageParsing", targets: ["MessageParsing"]),
         .executable(name: "SignalMessageParserService", targets: ["SignalMessageParserService"]),
+        .executable(name: "SignalMessageParserChild", targets: ["SignalMessageParserChild"]),
     ],
     dependencies: [
         .package(path: "../../vendor/libsignal"),
@@ -49,9 +50,9 @@ let package = Package(
             dependencies: [.product(name: "SwiftProtobuf", package: "swift-protobuf")],
             swiftSettings: [.swiftLanguageMode(.v5)] + memorySafety  // generated code
         ),
-        // The keyless structured-message parser: SignalMessageParser.xpc parses decrypted
-        // content, contact-sync records, sticker manifests and link-and-sync backups (which it
-        // also inflates); SignalCore reads its trees back.
+        // The keyless structured-message parser: SignalMessageParser.xpc's child processes (one
+        // per source) parse decrypted content, contact-sync records, sticker manifests and
+        // link-and-sync backups (which they also inflate); SignalCore reads their trees back.
         .target(
             name: "MessageParsing",
             dependencies: ["SignalProtos", .product(name: "SwiftProtobuf", package: "swift-protobuf"),
@@ -59,8 +60,15 @@ let package = Package(
             swiftSettings: strict
         ),
         // SignalMessageParser.xpc: no keys, no database, no network, no files (Sandbox/SignalMessageParser.sb).
+        // It parses nothing itself: each session gets a SignalMessageParserChild process.
         .executableTarget(
             name: "SignalMessageParserService",
+            dependencies: ["MessageParsing", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
+            swiftSettings: strict
+        ),
+        // One source's parser, in SignalMessageParser.xpc's bundle, under its sandbox.
+        .executableTarget(
+            name: "SignalMessageParserChild",
             dependencies: ["MessageParsing", .product(name: "MediaXPCInterface", package: "SignalMediaService"),
                            // gunzip for link-and-sync archives, here only (the app links no codec code).
                            .product(name: "CodecCore", package: "SignalCodecs")],

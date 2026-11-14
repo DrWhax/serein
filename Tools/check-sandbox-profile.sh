@@ -20,8 +20,9 @@
 #     trending GIFs through Signal's content proxy; the calling service lists the audio
 #     devices and places a video call between two of its endpoints (ICE over this machine's
 #     own addresses), and exits when its host's session ends;
-#     the message parser parses a message into a tree, serves its next session from a fresh
-#     process (one session each), and is gone once its host has exited;
+#     the message parser parses a message into a tree (in a child of the session's own), serves
+#     ten new sessions without waiting, its children end with their sessions, and it is gone
+#     within 45 s of its host exiting;
 #   * the same services refuse a host signed with any other identifier (their peer
 #     requirements, MediaXPCInterface/XPCPeer.swift), and with a signing identity also an ad-hoc
 #     host carrying the app's identifier (no Team ID); the probe services check theirs the same
@@ -175,7 +176,14 @@ $loop"
 # The service ends with its host's session: none of this run's services may be left running.
 sleep 3
 callLeft=$(pgrep -f "$work/[A-Za-z]*CallHost.app/Contents/XPCServices/SignalCalling.xpc" || true)
-parserLeft=$(pgrep -f "$work/ProbeHost.app/Contents/XPCServices/SignalMessageParser.xpc" || true)
+childLeft=$(pgrep -f "$work/ProbeHost.app/Contents/XPCServices/SignalMessageParser.xpc/Contents/MacOS/SignalMessageParserChild" || true)
+# The service itself stays 30 s after its last session (so launchd never delays its next start).
+parserLeft=yes
+for _ in $(seq 45); do
+  parserLeft=$(pgrep -f "$work/ProbeHost.app/Contents/XPCServices/SignalMessageParser.xpc" || true)
+  [ -z "$parserLeft" ] && break
+  sleep 1
+done
 callRefusal=$("$refusedcall/Contents/MacOS/RefusedCallHost" --refused)
 callRefusedStatus=$?
 callAdhocStatus=0
@@ -191,7 +199,8 @@ fail=0
 [ $adhocStatus -eq 0 ] || { echo "check-sandbox-profile: a service served a host without the app's Team ID" >&2; fail=1; }
 [ $callStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service failed a check" >&2; echo "$calls" | grep -v '^ok:' | tail -20 >&2; fail=1; }
 [ -z "$callLeft" ] || { echo "check-sandbox-profile: the calling service outlived its host's session" >&2; fail=1; }
-[ -z "$parserLeft" ] || { echo "check-sandbox-profile: the message parser outlived its session" >&2; fail=1; }
+[ -z "$childLeft" ] || { echo "check-sandbox-profile: a message parser child outlived its session" >&2; fail=1; }
+[ -z "$parserLeft" ] || { echo "check-sandbox-profile: the message parser was still running 45 s after its host" >&2; fail=1; }
 [ $callRefusedStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service served a host not signed as the app" >&2; fail=1; }
 [ $callAdhocStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service served a host without the app's Team ID" >&2; fail=1; }
 # What each profile must allow and may allow; everything else must be denied.
@@ -213,6 +222,7 @@ may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "Sig
        "SignalLinkPreviewFetcher": system | {mach, "send udp", audio}, "SignalGifSearch": system | {mach, "send udp", audio},
        "SignalCalling": system | {mach, hear, "https to the web"},
        "Serein": system | udp | {mach, audio, "open an IOKit device", "tcp to 127.0.0.1", "send udp to 127.0.0.1", "list /Users", "write preferences"}}
+
 seen, bad = {p: {} for p in must}, []
 for line in sys.stdin:
     if not line.startswith("org.signalsafe.sandbox-probe."): continue

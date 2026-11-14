@@ -49,8 +49,8 @@ install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
 #   SignalGifSearch.xpc          Giphy through Signal's content proxy (outgoing network only)
 #   SignalVoiceNoteEncoder.xpc   records voice notes (microphone) and encodes them to MP3 (no network, no files)
 #   SignalCalling.xpc            ringrtc/WebRTC: the calls' media and audio (outgoing network, microphone, no files)
-#   SignalMessageParser.xpc      decrypted messages, contact-sync records, sticker manifests (no keys, network, files;
-#                                one session per process)
+#   SignalMessageParser.xpc      decrypted messages, contact-sync records, sticker manifests, backups (no keys,
+#                                network, files), parsed by a SignalMessageParserChild process per session
 svcpkg="$root/Packages/SignalMediaService"
 sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
 # Who may talk to whom (MediaXPCInterface/XPCPeer.swift): every bundle gets every component's
@@ -129,8 +129,15 @@ service SignalGifSearch SignalGifSearchService '  <key>NSAppTransportSecurity</k
       </dict>
     </dict>
   </dict>'
-# The keyless message parser (SignalCore's package: it reads Signal's protobufs).
+# The keyless message parser (SignalCore's package: it reads Signal's protobufs), and the child
+# it starts for each session, next to it. The child has no entitlements: the kernel gives it the
+# service's sandbox as it starts, and it checks that before reading anything. (App Sandbox's
+# com.apple.security.inherit makes its start-up ask secinitd, a Mach service the inherited rules
+# deny, and it aborts.)
 service SignalMessageParser SignalMessageParserService "" "$root/Packages/SignalCore"
+parserxpc="$app/Contents/XPCServices/SignalMessageParser.xpc"
+(cd "$root/Packages/SignalCore" && swift build -c release --product SignalMessageParserChild)
+cp "$root/Packages/SignalCore/.build/out/Products/Release/SignalMessageParserChild" "$parserxpc/Contents/MacOS/SignalMessageParserChild"
 # ringrtc's dylib inside the calling service, found through its own Frameworks folder.
 service SignalCalling SignalCallingService "" "$root/Packages/SignalRingRTC"
 callxpc="$app/Contents/XPCServices/SignalCalling.xpc"
@@ -164,6 +171,8 @@ codesign --force --sign "$sign" $hardened "$app/Contents/Frameworks/SQLCipher.fr
 codesign --force --sign "$sign" $hardened "$callxpc/Contents/Frameworks/libsignal_ringrtc.dylib"
 "$root/Tools/sbpl-entitlements.sh" "$svcpkg/Sandbox/SignalCalling.sb" "$adhoc_ent" > "$pkg/.build/SignalCalling.entitlements"
 plutil -lint -s "$pkg/.build/SignalCalling.entitlements"
+# The parser's child first (no entitlements): the service's signature seals it.
+codesign --force --sign "$sign" $timestamp --options runtime "$parserxpc/Contents/MacOS/SignalMessageParserChild"
 for name in $services; do
   codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$pkg/.build/$name.entitlements" "$app/Contents/XPCServices/$name.xpc"
 done
@@ -187,13 +196,19 @@ links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/Signa
 # client, no recorder, no SignalCore (keys, database) or libsignal.
 links "$callxpc/Contents/MacOS/SignalCalling" "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient" \
   "decoders, HTML parser, web client, recorder or SignalCore linked into the calling service"
-# The message parser has no keys and no database: no SignalCore, libsignal, GRDB or SQLCipher,
-# and nothing else that reads data.
-links "$app/Contents/XPCServices/SignalMessageParser.xpc/Contents/MacOS/SignalMessageParser" \
-  "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient|4GRDB" \
-  "decoders, web client, recorder, SignalCore, libsignal or the database linked into the message parser"
-if otool -L "$app/Contents/XPCServices/SignalMessageParser.xpc/Contents/MacOS/SignalMessageParser" | grep -qiE 'sqlcipher|signal_ffi|ringrtc'; then
-  echo "error: the message parser loads a native library" >&2; exit 1
+# The message parser and its child have no keys and no database: no SignalCore, libsignal, GRDB
+# or SQLCipher, and nothing else that reads data.
+for pbin in SignalMessageParser SignalMessageParserChild; do
+  links "$parserxpc/Contents/MacOS/$pbin" "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient|4GRDB" \
+    "decoders, web client, recorder, SignalCore, libsignal or the database linked into $pbin"
+  if otool -L "$parserxpc/Contents/MacOS/$pbin" | grep -qiE 'sqlcipher|signal_ffi|ringrtc'; then
+    echo "error: $pbin loads a native library" >&2; exit 1
+  fi
+  links "$parserxpc/Contents/MacOS/$pbin" "13RingRTCNative|11CallService" "ringrtc linked into $pbin"
+done
+# The child carries no entitlements at all (nothing to widen the sandbox it is started in).
+if codesign -d --entitlements - "$parserxpc/Contents/MacOS/SignalMessageParserChild" 2>/dev/null | grep -q "<key>"; then
+  echo "error: the parser child has entitlements" >&2; exit 1
 fi
 # Nothing but the calling service links ringrtc.
 for name in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalMessageParser; do

@@ -6,8 +6,8 @@
 //   3. the real SignalLinkPreviewFetcher.xpc fetches a page (live network) and has it parsed by
 //      the real SignalLinkPreviewParser.xpc, which refuses HTML from the host itself;
 //   4. the real SignalGifSearch.xpc lists trending GIFs through Signal's content proxy;
-//   5. the real SignalMessageParser.xpc parses a message into a tree, and serves a new session
-//      (in a fresh process: one session per process) after the first is ended.
+//   5. the real SignalMessageParser.xpc parses a message into a tree (in a child process of the
+//      session's own), and serves new sessions (new children) without waiting.
 // With --refused it only checks that the services turn it away (a copy signed otherwise).
 // Prints a line per check; exits non-zero when any check fails.
 // Arguments: probe service names, then "--", then media files (by extension).
@@ -17,7 +17,8 @@ import Foundation
 /// One probe service's report (its HTTPS probe alone may take 20 s).
 func probe(_ name: String) async -> String {
     do {
-        let report = try await XPCChannel(.service(name), peer: nil, timeout: .seconds(120)).request(XPCMessage(), maxReply: 1 << 20) { try $0.result() }
+        let report = try await XPCChannel(.service(name), peer: nil, timeout: .seconds(120))
+            .request(XPCMessage(payload: Data(String(getpid()).utf8)), maxReply: 1 << 20) { try $0.result() }
         return String(decoding: report, as: UTF8.self)
     } catch { return "xpc error: \(error)" }
 }
@@ -164,15 +165,18 @@ await check("message parser") {
     guard trees.count == 1, trees[0].nodes == expected else { throw MediaProcessingError.invalidResult }
     return "\(trees[0].nodes.count) nodes"
 }
-// The session ends; the next one is served by a fresh process (the old one refuses a second
-// session and exits), so it may take a retry or two.
+// A session ends with each source; the next gets a child of its own straight away (launchd
+// would make a new service process wait ten seconds).
 await check("message parser fresh session") {
-    parserChannel.reset()
-    for attempt in 0..<8 {
-        try await Task.sleep(for: .milliseconds(20 << attempt))
-        if let trees = try? await parseMessage(parserChannel), trees.count == 1, trees[0].nodes == expected { return "after \(attempt + 1) tries" }
+    var slowest = Duration.zero
+    for _ in 0..<10 {
         parserChannel.reset()
+        let t0 = ContinuousClock.now
+        let trees = try await parseMessage(parserChannel)
+        guard trees.count == 1, trees[0].nodes == expected else { throw MediaProcessingError.invalidResult }
+        slowest = max(slowest, ContinuousClock.now - t0)
     }
-    throw MediaProcessingError.invalidResult
+    guard slowest < .seconds(1) else { throw MediaProcessingError.undecodable("a fresh session took \(slowest)") }
+    return "10 sessions, the slowest in \(slowest)"
 }
 exit(failed ? 1 : 0)

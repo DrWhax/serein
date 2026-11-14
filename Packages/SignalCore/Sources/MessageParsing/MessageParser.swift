@@ -1,14 +1,14 @@
-// The keyless structured-message parser: decrypted message content, contact-sync records and
-// sticker manifests are parsed in SignalMessageParser.xpc, a process with no keys, no database,
-// no network and no files, and come back as ProtoTrees, which the app checks and reads back into
-// typed messages without running a protobuf byte parser (TreeDecoder). Authorization and every
-// database decision stay in the app.
+// The keyless structured-message parser: decrypted message content, contact-sync records,
+// sticker manifests and backups are parsed by SignalMessageParser.xpc's child processes, with no
+// keys, no database, no network and no files, and come back as ProtoTrees, which the app checks
+// and reads back into typed messages without running a protobuf byte parser (TreeDecoder).
+// Authorization and every database decision stay in the app.
 //
 // One process parses for one source only: the app ends the service's session whenever the
 // source changes (another sender of decrypted content, another sticker pack, the contact sync),
-// and a service process serves a single session in its life. A message that took over the
-// parser can then change only what that same source sends, which it could have sent anyway, and
-// it cannot read or rewrite anyone else's.
+// and each session gets a child process of its own, ended with it (ParserChild.swift). A message
+// that took over a parser can then change only what that same source sends, which it could have
+// sent anyway, and it cannot read or rewrite anyone else's.
 
 import Foundation
 import MediaXPCInterface
@@ -297,7 +297,7 @@ public struct InProcessMessageParser: StructuredMessageParser {
     }
 }
 
-/// SignalMessageParser.xpc, one process per source.
+/// SignalMessageParser.xpc: a session, and so a child process, per source.
 public final class XPCMessageParser: StructuredMessageParser {
     public static let serviceName = "org.signalsafe.SignalMessageParser"
 
@@ -318,14 +318,14 @@ public final class XPCMessageParser: StructuredMessageParser {
         guard bytes.count <= MessageParserLimits.maxInput(kind) else { throw MessageParserError.malformed("too large") }
         let request = try Wire.encode(MessageParseRequest(kind: kind, bytes: bytes))
         return try serial.withLock { _ in
-            // Another source: the process that parsed for the last one ends with its session.
+            // Another source: the child that parsed for the last one ends with its session.
             if self.source.withLock({ $0 }) != source {
                 channel.reset()
                 self.source.withLock { $0 = source }
             }
             var lastError = ""
-            // A fresh process may still be starting while the old one exits (the old one refuses
-            // a second session): a few tries, each on a session of its own.
+            // A session the service refused, or one lost on the way (the service restarting): a
+            // few tries, each on a session of its own.
             for attempt in 0..<5 {
                 if attempt > 0 { Thread.sleep(forTimeInterval: 0.01 * Double(1 << attempt)) }
                 do {

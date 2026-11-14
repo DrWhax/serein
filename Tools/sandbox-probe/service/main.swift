@@ -6,7 +6,7 @@ import Foundation
 import IOKit
 import Network
 
-func probes() -> String {
+func probes(host: Int32) -> String {
     var out: [String] = []
     func check(_ what: String, _ f: () throws -> Bool) {
         let ok = (try? f()) ?? false
@@ -20,6 +20,9 @@ func probes() -> String {
     check("list ~/Documents") { try !fm.contentsOfDirectory(atPath: ServiceSandbox.realHome + "/Documents").isEmpty }
     check("write its container") { fm.createFile(atPath: NSTemporaryDirectory() + "probe", contents: Data([1])) }
     check("write /tmp") { fm.createFile(atPath: "/private/tmp/signalsafe-probe", contents: Data([1])) }
+    // A live process other than itself or its children: its host (whose pid the request
+    // carries). Scanning pids proves nothing: kill(pid, 0) succeeds for any zombie.
+    check("signal its host") { host > 1 && kill(host, 0) == 0 }
     check("run /usr/bin/true") {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/true")
@@ -166,8 +169,11 @@ func udp(to host: String) -> Bool {
 }
 
 struct Probe: XPCMessageHandler {
-    var maxRequestBytes: Int { 0 }
-    func reply(to request: XPCMessage) async throws -> XPCMessage { XPCMessage(payload: Data(probes().utf8)) }
+    var maxRequestBytes: Int { 16 }
+    func reply(to request: XPCMessage) async throws -> XPCMessage {
+        let host = request.payload.flatMap { Int32(String(decoding: $0, as: UTF8.self)) } ?? 0
+        return XPCMessage(payload: Data(probes(host: host).utf8))
+    }
 }
 
 // As the real services do: every session is checked against the host's requirement (under the

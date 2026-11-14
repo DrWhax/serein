@@ -67,12 +67,12 @@ for manifest in Packages/*/Package.swift; do
 done
 
 # SignalCore never links a decoder: media goes to the sandboxed service through MediaXPCInterface.
-core=$(find Packages/SignalCore/Sources -name '*.swift' -not -path '*/SignalMessageParserService/*' 2>/dev/null || true)
+core=$(find Packages/SignalCore/Sources -name '*.swift' -not -path '*/SignalMessageParserChild/*' 2>/dev/null || true)
 if [ -n "$core" ] && grep -nE '^\s*(@preconcurrency\s+)?(public\s+|internal\s+)?import\s+(Image[A-Za-z]+|Blurhash|Encode[A-Za-z]+|CodecCore|HTMLMeta|MetadataStrip|Container[A-Za-z0-9]+|Audio[A-Z][A-Za-z0-9]*|Video[A-Z][A-Za-z0-9]*|SignalMediaDecoder|LinkPreviewParser)\b' $core; then
   echo "lint: SignalCore imports a decoder module (only MediaXPCInterface is allowed)" >&2; fail=1
 fi
 # …and the targets the app links (SignalCore, MessageParsing) name no decoder product in their
-# dependency lists. (SignalMessageParserService links CodecCore's gunzip: it is the service.)
+# dependency lists. (SignalMessageParserChild links CodecCore's gunzip: it runs in the service.)
 for t in SignalCore MessageParsing; do
   if awk -v t="$t" '/\.(target|executableTarget|testTarget)\(/ { inside = 0 } $0 ~ "name: \"" t "\"," && prev ~ /\.target\(/ { inside = 1 } inside { print } { prev = $0 }' \
        Packages/SignalCore/Package.swift \

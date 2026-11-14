@@ -389,14 +389,18 @@ public enum XPCServer {
     /// A bundled service's listener: only a peer meeting `requirement` gets a session (the
     /// system checks it before handing over a message). Serves forever; a listener that cannot
     /// be made ends the process.
-    /// With `singleSession`, the process serves the first session only and refuses every later
-    /// one (a reconnecting client gets a fresh process once this one has exited).
-    public static func serve(_ service: String, requirement: XPCPeerRequirement, singleSession: Bool = false, _ handler: some XPCMessageHandler) -> Never {
+    public static func serve(_ service: String, requirement: XPCPeerRequirement, _ handler: some XPCMessageHandler) -> Never {
+        serve(service, requirement: requirement, sessions: { handler })
+    }
+
+    /// As `serve`, with a handler of its own for each session, made when the session starts (a
+    /// session it cannot be made for is refused).
+    public static func serve<H: XPCMessageHandler>(_ service: String, requirement: XPCPeerRequirement,
+                                                   sessions make: @escaping @Sendable () throws -> H) -> Never {
         let listener: XPCListener
-        let served = Atomic<Bool>(false)
         do {
             listener = try XPCListener(service: service, requirement: requirement) { request in
-                if singleSession, served.exchange(true, ordering: .relaxed) { return request.reject(reason: "this process has served its session") }
+                guard let handler = try? make() else { return request.reject(reason: "no session can be served now") }
                 return request.accept { _ in Session(handler: handler) }
             }
         } catch {
@@ -408,10 +412,15 @@ public enum XPCServer {
 
     /// An anonymous listener (its endpoint handed to the one peer that may use it, or tests),
     /// each session restricted to a peer meeting `requirement` when given.
-    public static func anonymous(requirement: XPCPeerRequirement?, singleSession: Bool = false, _ handler: some XPCMessageHandler) -> XPCListener {
-        let served = Atomic<Bool>(false)
-        return XPCListener { request in
-            if singleSession, served.exchange(true, ordering: .relaxed) { return request.reject(reason: "this process has served its session") }
+    public static func anonymous(requirement: XPCPeerRequirement?, _ handler: some XPCMessageHandler) -> XPCListener {
+        anonymous(requirement: requirement, sessions: { handler })
+    }
+
+    /// As `anonymous`, with a handler of its own for each session (one it cannot be made for is
+    /// refused).
+    public static func anonymous<H: XPCMessageHandler>(requirement: XPCPeerRequirement?, sessions make: @escaping @Sendable () throws -> H) -> XPCListener {
+        XPCListener { request in
+            guard let handler = try? make() else { return request.reject(reason: "no session can be served now") }
             return request.accept { session in
                 if let requirement { session.setPeerRequirement(requirement) }
                 return Session(handler: handler)

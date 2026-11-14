@@ -1,7 +1,7 @@
 // The keyless parser (MessageParsing): what the service writes out reads back in the app as the
 // same typed message, minus unknown fields; a tree that is not well formed, or a value of the
-// wrong kind, is refused before or while it is read; and the XPC parser keeps one source per
-// service session.
+// wrong kind, is refused before or while it is read; the XPC parser keeps one source per
+// service session, and the service gives each session a child process of its own.
 
 import Foundation
 import MediaXPCInterface
@@ -176,11 +176,14 @@ import XPC
         }
     }
 
-    /// A service that serves one session refuses the next: the parser gives up as unavailable
-    /// (in the app, a fresh process takes the next session once the old one has exited).
+    /// A service that cannot serve another session refuses it: the parser gives up as
+    /// unavailable (the message stays cached and is tried again).
     @Test func aRefusedSessionIsUnavailable() async throws {
-        let handler = MessageParserXPCHandler()
-        let listener = XPCServer.anonymous(requirement: nil, singleSession: true, handler)
+        let served = Counter()
+        let listener = XPCServer.anonymous(requirement: nil) { () throws -> MessageParserXPCHandler in
+            guard served.next() == 1 else { throw MediaProcessingError.unsupportedFormat }
+            return MessageParserXPCHandler()
+        }
         defer { listener.cancel() }
         let parser = XPCMessageParser(channel: XPCChannel(.endpoint(listener.endpoint), peer: nil, timeout: .seconds(10)))
         let bytes = try Self.richContent().serializedData()
@@ -189,6 +192,153 @@ import XPC
             _ = try parser.content(bytes, source: "content:bob.1")
             Issue.record("a second session was served")
         } catch MessageParserError.unavailable {}
+    }
+
+    // MARK: a child process per session (ParserChild.swift)
+
+    final class Counter: Sendable {
+        let n = Atomic<Int>(0)
+        var value: Int { n.load(ordering: .relaxed) }
+        @discardableResult func next() -> Int { n.add(1, ordering: .relaxed).newValue }
+    }
+
+    /// A child serving in this process over real pipes, on a thread of its own (the service's
+    /// run SignalMessageParserChild). Ending it ends its input; it then closes its output, as a
+    /// killed process's ends close (only ever when no request is in flight, in these tests).
+    static func inProcessChild(_ started: Counter? = nil) -> ParserChildProcess {
+        started?.next()
+        let toChild = Pipe(), fromChild = Pipe()
+        let running = Atomic<Bool>(true)
+        let requests = toChild.fileHandleForWriting
+        let child = ParserChildProcess(requests: requests, replies: fromChild.fileHandleForReading,
+                                       isRunning: { running.load(ordering: .relaxed) },
+                                       stop: { running.store(false, ordering: .relaxed); try? requests.close() })
+        let input = toChild.fileHandleForReading, output = fromChild.fileHandleForWriting
+        Thread.detachNewThread {
+            ParserChild.serve(input: input, output: output, handler: MessageParserXPCHandler())
+            running.store(false, ordering: .relaxed)
+            try? output.close()
+        }
+        return child
+    }
+
+    static func request(_ kind: MessageParseKind, _ bytes: Data) throws -> XPCMessage {
+        XPCMessage(payload: try Wire.encode(MessageParseRequest(kind: kind, bytes: bytes)))
+    }
+
+    /// Fail closed: a child (or the service) whose sandbox is not in force exits before it
+    /// reads a request. This test process is not sandboxed, so the check must end it.
+    @Test func aChildOutsideItsSandboxExits() async {
+        await #expect(processExitsWith: .exitCode(78)) {
+            ServiceSandbox.requireConfinement("SignalMessageParserChild")
+        }
+    }
+
+    @Test func framesCrossThePipe() throws {
+        let pipe = Pipe()
+        // (Less than a pipe holds: nothing reads until all are written.)
+        for frame in [Data("one".utf8), Data(), Data(repeating: 9, count: 30_000)] { try ParserPipe.write(frame, to: pipe.fileHandleForWriting) }
+        try pipe.fileHandleForWriting.close()
+        let r = pipe.fileHandleForReading
+        #expect(try ParserPipe.read(r, maxBytes: 1 << 20) == Data("one".utf8))
+        #expect(try ParserPipe.read(r, maxBytes: 1 << 20) == Data())
+        #expect(try ParserPipe.read(r, maxBytes: 1 << 20)?.count == 30_000)
+        #expect(try ParserPipe.read(r, maxBytes: 1 << 20) == nil)
+        // Too long for the reader, and cut short.
+        let big = Pipe()
+        try ParserPipe.write(Data(count: 100), to: big.fileHandleForWriting)
+        #expect(throws: ParserPipeError.tooLarge(100)) { try ParserPipe.read(big.fileHandleForReading, maxBytes: 99) }
+        let cut = Pipe()
+        try cut.fileHandleForWriting.write(contentsOf: Data([10, 0, 0, 0, 1, 2]))
+        try cut.fileHandleForWriting.close()
+        #expect(throws: ParserPipeError.truncated) { try ParserPipe.read(cut.fileHandleForReading, maxBytes: 99) }
+    }
+
+    @Test func aSessionRelaysToItsChild() async throws {
+        let session = ParserChildSession(child: Self.inProcessChild(), start: { Self.inProcessChild() })
+        defer { session.sessionEnded() }
+        let reply = try await session.reply(to: Self.request(.content, try Self.richContent().serializedData()))
+        let trees = try Wire.decode([ProtoTree].self, try reply.result(), maxBytes: 1 << 20)
+        let content: Signalservice_Content = try trees[0].validated().decode()
+        #expect(content == Self.richContent())
+        // The child's verdict on bad bytes comes back as the reply's reason, as from the service before.
+        let bad = try await session.reply(to: Self.request(.content, Data([0x0A, 0x05, 0x01])))
+        #expect(bad.payload == nil && bad.error != nil)
+    }
+
+    @Test func aChildThatEndsIsReplacedForTheSameSource() async throws {
+        let started = Counter()
+        let first = Self.inProcessChild(started)
+        let session = ParserChildSession(child: first, start: { Self.inProcessChild(started) })
+        let bytes = try Self.richContent().serializedData()
+        _ = try await session.reply(to: Self.request(.content, bytes)).result()
+        // It crashed (or hung and was ended): the next request of this session gets a new child.
+        first.end()
+        _ = try await session.reply(to: Self.request(.content, bytes)).result()
+        #expect(started.value == 2)
+        // The session's end ends its child; nothing more is served on it.
+        session.sessionEnded()
+        await #expect(throws: MediaProcessingError.self) { try await session.reply(to: Self.request(.content, bytes)) }
+        #expect(started.value == 2)
+    }
+
+    @Test func aChildEndedMidRequestFailsThatRequest() async throws {
+        // A child that never answers: past the limit it is ended and the request fails.
+        let toChild = Pipe(), fromChild = Pipe()
+        let mute = ParserChildProcess(requests: toChild.fileHandleForWriting, replies: fromChild.fileHandleForReading, isRunning: { true },
+                                      stop: { try? fromChild.fileHandleForWriting.close() })
+        let session = ParserChildSession(child: mute, limit: .seconds(1), start: { Self.inProcessChild() })
+        defer { session.sessionEnded() }
+        let t0 = ContinuousClock.now
+        await #expect(throws: MediaProcessingError.undecodable("the parser ended")) {
+            try await session.reply(to: Self.request(.content, try Self.richContent().serializedData()))
+        }
+        #expect(ContinuousClock.now - t0 < .seconds(5))
+        _ = toChild
+    }
+
+    @Test func thePoolHandsOutChildrenThatHaveParsedNothing() async throws {
+        let made = Mutex<[ParserChildProcess]>([])
+        let pool = ParserChildPool {
+            let c = Self.inProcessChild()
+            made.withLock { $0.append(c) }
+            return c
+        }
+        let a = try pool.take()
+        await Self.wait { made.withLock { $0.count } == 2 }   // a spare is started meanwhile
+        let b = try pool.take()
+        #expect(a !== b && made.withLock { $0[1] } === b)
+        // A spare that died is not handed out: a new child is.
+        await Self.wait { made.withLock { $0.count } == 3 }
+        made.withLock { $0[2].end() }
+        let c = try pool.take()
+        #expect(c.isAlive && c !== made.withLock { $0[2] })
+        for child in [a, b, c] { child.end() }
+        pool.drain()
+        await Self.wait { made.withLock { $0.allSatisfy { !$0.isAlive } } }
+        #expect(made.withLock { $0.allSatisfy { !$0.isAlive } })
+    }
+
+    /// Over XPC, as the service runs it: each source's session has a child of its own, and the
+    /// last source's child ends when the next source starts.
+    @Test func eachSourceGetsItsOwnChild() async throws {
+        let started = Counter()
+        let children = Mutex<[ParserChildProcess]>([])
+        let listener = XPCServer.anonymous(requirement: nil) { () throws -> ParserChildSession in
+            let c = Self.inProcessChild(started)
+            children.withLock { $0.append(c) }
+            return ParserChildSession(child: c, start: { Self.inProcessChild(started) })
+        }
+        defer { listener.cancel() }
+        let parser = XPCMessageParser(channel: XPCChannel(.endpoint(listener.endpoint), peer: nil, timeout: .seconds(10)))
+        let bytes = try Self.richContent().serializedData()
+        #expect(try parser.content(bytes, source: "content:alice.1") == Self.richContent())
+        #expect(try parser.content(bytes, source: "content:alice.1") == Self.richContent())
+        #expect(started.value == 1)
+        #expect(try parser.content(bytes, source: "content:bob.1") == Self.richContent())
+        #expect(started.value == 2)
+        await Self.wait { !(children.withLock { $0[0].isAlive }) }
+        #expect(children.withLock { !$0[0].isAlive && $0[1].isAlive })
     }
 }
 

@@ -1,23 +1,28 @@
 ; Seatbelt rules for SignalMessageParser.xpc, on top of App Sandbox (the only other
-; entitlement). It parses decrypted messages, contact-sync records and sticker manifests
-; (MessageParsing): it holds no keys, reaches no database, network or file, and serves one
-; session. Tools/build-app.sh puts each rule (one per line; `;` lines are comments) in the
+; entitlement), and so for its SignalMessageParserChild processes, which inherit them. A child
+; per session (one source of messages) parses decrypted messages, contact-sync records, sticker
+; manifests and backups (MessageParsing, ParserChild.swift); the service relays to it. Neither
+; holds keys or reaches a database, network or file. Tools/build-app.sh puts each rule (one per line; `;` lines are comments) in the
 ; service's com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox
 ; profile. App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every
 ; deny here has a filter that matches everything. The service needs none of this: it is handed
-; bytes over its XPC connection (set up before these rules apply) and returns parsed trees.
+; bytes over its XPC connection (set up before these rules apply) and returns parsed trees; a
+; child gets them on its stdin.
 ; Tools/check-sandbox-profile.sh runs a probe service under these rules.
 ;
 ; Files: nothing read (not even system files), written, or ioctl'd.
-; Its own bundle (SignalMessageParser.xpc: the executable, Info.plist with its peers' signing
-; identifiers, the signature) stays readable; nothing else is. Checking peers needs no files:
-; the system checks each session's peer against its requirement (XPCPeer.swift).
-(deny file-read* (require-all (subpath "/") (require-not (regex #"/SignalMessageParser\.xpc(/.*)?$"))))
+; Its own bundle (SignalMessageParser.xpc: the executables, Info.plist with its peers' signing
+; identifiers, the signature) stays readable, and "/" itself (its names only: dyld reads it to
+; start a child, which runs under these rules from its first instruction); nothing else is.
+; Checking peers needs no files: the system checks each session's peer against its requirement
+; (XPCPeer.swift).
+(deny file-read* (require-all (subpath "/") (require-not (literal "/")) (require-not (regex #"/SignalMessageParser\.xpc(/.*)?$"))))
 (deny file-write* (subpath "/"))
 (deny file-ioctl (subpath "/"))
-; No other programs, no children.
-(deny process-exec* (subpath "/"))
-(deny process-fork)
+; No other programs: only its own child executable may be started (posix_spawn needs
+; process-fork, which is therefore allowed; a child could start copies of itself, under these
+; same rules, with no way to reach anything).
+(deny process-exec* (require-all (subpath "/") (require-not (regex #"/SignalMessageParser\.xpc/Contents/MacOS/SignalMessageParserChild$"))))
 ; No Mach services (cfprefsd, pasteboard, launch services, ...), nor registering any. The
 ; peer checks need none either (Tools/check-sandbox-profile.sh: served as the app, refused
 ; otherwise).
@@ -36,6 +41,7 @@
 (deny iokit-open (iokit-user-client-class-regex #".*"))
 (deny ipc-posix-shm* (ipc-posix-name-regex #".*"))
 (deny ipc-posix-sem (ipc-posix-name-regex #".*"))
-; No changing kernel state, no signalling other processes.
+; No changing kernel state. Signals only to itself and its own children: the service ends its
+; children; a child reaches neither the service nor any other child.
 (deny sysctl-write)
-(deny signal (target others))
+(deny signal (require-all (require-not (target self)) (require-not (target children))))
