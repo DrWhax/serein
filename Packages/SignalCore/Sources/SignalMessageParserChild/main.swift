@@ -11,7 +11,7 @@ import MessageParsing
 /// Link-and-sync backups are inflated as they stream in (BackupStreaming.swift).
 extension GzipStream: BackupInflater {}
 
-ServiceSandbox.requireConfinement("SignalMessageParserChild", memoryLimit: 1024 * 1024 * 1024)
+ServiceSandbox.requireConfinement("SignalMessageParserChild")
 let handler = MessageParserXPCHandler(inflater: { GzipStream() })
 ParserChild.serve(input: .standardInput, output: .standardOutput, handler: handler)
 exit(0)

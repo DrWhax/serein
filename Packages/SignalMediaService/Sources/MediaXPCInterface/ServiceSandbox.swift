@@ -33,12 +33,10 @@ public enum ServiceSandbox {
     }
 
     /// Exits (before serving anything) unless confined.
-    public static func requireConfinement(_ service: String, systemFiles: Bool = false,
-                                          memoryLimit: UInt64? = nil) {
+    public static func requireConfinement(_ service: String, systemFiles: Bool = false) {
         guard isConfined(systemFiles: systemFiles) else {
             FileHandle.standardError.write(Data("\(service): sandbox profile not in force, exiting\n".utf8))
             exit(78)
         }
-        if let memoryLimit { ProcessMemoryWatchdog(limit: memoryLimit).start() }
     }
 }

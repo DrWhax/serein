@@ -6,7 +6,7 @@ import Foundation
 import LinkPreviewParser
 import MediaXPCInterface
 
-ServiceSandbox.requireConfinement("SignalLinkPreviewParser", memoryLimit: 1024 * 1024 * 1024)
+ServiceSandbox.requireConfinement("SignalLinkPreviewParser")
 // The app may only ask for the HTML endpoint; HTML comes from the fetcher alone.
 let service = EndpointService(requirement: XPCPeer.required(.fetcher, by: "SignalLinkPreviewParser"), LinkPreviewXPCHandler())
 XPCServer.serve(LinkPreviewParserClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalLinkPreviewParser"), service)

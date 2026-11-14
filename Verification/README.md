@@ -80,20 +80,3 @@ SignalService: 30 bounded timestamp fields and 12 unsigned identifiers/quantitie
 
 These are parser and implementation regressions, not new Lean refinement proofs. The codec
 findings and remaining fuzzing priorities are documented in `Packages/SignalCodecs/README.md`.
-
-### Parser process-memory backstop
-
-Parser startup now opts into a dedicated-thread footprint watchdog: 2 GiB for the media
-service, 1 GiB each for the message service, its children and the HTML parser. Every
-100 ms it queries the kernel's physical-footprint metric, including when idle; exceeding
-the threshold or failing the measurement ends the process with `_exit(70)`. Existing
-connection-loss handling then fails outstanding requests. It does not run in the app.
-These are per-process sampled thresholds, not hard allocation quotas or a machine-wide
-budget: transient overshoot and the sum of multiple child processes remain possible.
-
-`ProcessMemoryWatchdogTests` checks thresholds and failed measurements.
-`sh Tools/check-parser-memory.sh` tests real launchd XPC processes under all three production
-parser sandbox profiles: a normal request must succeed, then a 128 MiB allocation above a
-lower test threshold must lose the connection rather than time out. It is part of
-`Tools/qa.sh app:parser-memory`. The kernel query uses two scoped unsafe C operations on a
-stack buffer; codec code retains its zero-unsafe rule.
