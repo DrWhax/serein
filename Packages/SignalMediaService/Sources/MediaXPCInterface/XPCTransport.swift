@@ -389,10 +389,16 @@ public enum XPCServer {
     /// A bundled service's listener: only a peer meeting `requirement` gets a session (the
     /// system checks it before handing over a message). Serves forever; a listener that cannot
     /// be made ends the process.
-    public static func serve(_ service: String, requirement: XPCPeerRequirement, _ handler: some XPCMessageHandler) -> Never {
+    /// With `singleSession`, the process serves the first session only and refuses every later
+    /// one (a reconnecting client gets a fresh process once this one has exited).
+    public static func serve(_ service: String, requirement: XPCPeerRequirement, singleSession: Bool = false, _ handler: some XPCMessageHandler) -> Never {
         let listener: XPCListener
+        let served = Atomic<Bool>(false)
         do {
-            listener = try XPCListener(service: service, requirement: requirement) { $0.accept { _ in Session(handler: handler) } }
+            listener = try XPCListener(service: service, requirement: requirement) { request in
+                if singleSession, served.exchange(true, ordering: .relaxed) { return request.reject(reason: "this process has served its session") }
+                return request.accept { _ in Session(handler: handler) }
+            }
         } catch {
             FileHandle.standardError.write(Data("\(service): cannot listen: \(error)\n".utf8))
             exit(78)
@@ -402,9 +408,11 @@ public enum XPCServer {
 
     /// An anonymous listener (its endpoint handed to the one peer that may use it, or tests),
     /// each session restricted to a peer meeting `requirement` when given.
-    public static func anonymous(requirement: XPCPeerRequirement?, _ handler: some XPCMessageHandler) -> XPCListener {
-        XPCListener { request in
-            request.accept { session in
+    public static func anonymous(requirement: XPCPeerRequirement?, singleSession: Bool = false, _ handler: some XPCMessageHandler) -> XPCListener {
+        let served = Atomic<Bool>(false)
+        return XPCListener { request in
+            if singleSession, served.exchange(true, ordering: .relaxed) { return request.reject(reason: "this process has served its session") }
+            return request.accept { session in
                 if let requirement { session.setPeerRequirement(requirement) }
                 return Session(handler: handler)
             }

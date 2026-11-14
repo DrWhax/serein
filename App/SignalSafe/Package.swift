@@ -24,6 +24,8 @@ let package = Package(
                 .product(name: "SignalUI", package: "SignalUI"),
                 .product(name: "SignalI18n", package: "SignalI18n"),
                 .product(name: "SignalCore", package: "SignalCore"),
+                // The client of SignalMessageParser.xpc (decrypted messages are parsed there).
+                .product(name: "MessageParsing", package: "SignalCore"),
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
                 // ringrtc's endpoint in SignalCalling.xpc (never RingRTCNative: the app does not load ringrtc).
                 .product(name: "CallXPC", package: "SignalRingRTC"),

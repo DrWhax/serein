@@ -4,6 +4,7 @@
 // The media decoder is injected (the app's XPC client; tests pass the in-process one).
 
 import Foundation
+import MessageParsing
 import Synchronization
 import GRDB
 import LibSignalClient
@@ -38,6 +39,8 @@ public actor SignalClient {
     let net: Net
     public nonisolated let socket: SocketManager
     let media: any MediaProcessing
+    /// Decrypted messages, contact-sync records and sticker manifests (SignalMessageParser.xpc in the app).
+    let parser: any StructuredMessageParser
     let endpoints: ServiceEndpoints
     let trustRoots: [PublicKey]
     public private(set) var session: Session?
@@ -73,7 +76,8 @@ public actor SignalClient {
 
     private var preKeyTask: Task<Void, Never>?
 
-    public init(config: Config, directory: URL, keyStore: any DatabaseKeyStore = KeychainDatabaseKeyStore(), media: any MediaProcessing) throws {
+    public init(config: Config, directory: URL, keyStore: any DatabaseKeyStore = KeychainDatabaseKeyStore(), media: any MediaProcessing,
+                parser: any StructuredMessageParser) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.config = config
         self.directory = directory
@@ -81,6 +85,7 @@ public actor SignalClient {
         net = config.net
         socket = SocketManager(net: net)
         self.media = media
+        self.parser = parser
         endpoints = config.endpoints
         trustRoots = config.trustRoots
     }
@@ -177,15 +182,15 @@ public actor SignalClient {
         let groups = GroupsService(account: account, database: database, api: GroupsAPI(http: http, endpoints: endpoints, credentials: credentials),
                                    store: store)
         let storage = StorageService(account: account, database: database, socket: socket, http: http, endpoints: endpoints)
-        let contactSync = ContactSync(database: database, http: http, endpoints: endpoints)
-        let stickers = StickerService(account: account, database: database, http: http, endpoints: endpoints, store: store, media: media)
+        let contactSync = ContactSync(database: database, http: http, endpoints: endpoints, parser: parser)
+        let stickers = StickerService(account: account, database: database, http: http, endpoints: endpoints, store: store, media: media, parser: parser)
         let profiles = ProfileService(account: account, database: database, socket: socket, http: http, cdn0: endpoints.cdnURLs[0], store: store)
         await messenger.register()
         await stickers.register(on: jobs)
         await storage.register(on: jobs)
         await contactSync.register(on: jobs)
         await jobs.start()
-        let receiver = MessageReceiver(account: account, database: database, trustRoots: trustRoots, jobs: jobs)
+        let receiver = MessageReceiver(account: account, database: database, trustRoots: trustRoots, parser: parser, jobs: jobs)
         let params = config.serverPublicParams
         await groups.configure(credentials: { aci in try await profiles.expiringCredential(aci, serverPublicParams: params) },
                                sender: messenger.groupSender)

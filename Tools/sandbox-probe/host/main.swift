@@ -5,7 +5,9 @@
 //   2. the real SignalMediaDecoder.xpc decodes every kind of media under its profile;
 //   3. the real SignalLinkPreviewFetcher.xpc fetches a page (live network) and has it parsed by
 //      the real SignalLinkPreviewParser.xpc, which refuses HTML from the host itself;
-//   4. the real SignalGifSearch.xpc lists trending GIFs through Signal's content proxy.
+//   4. the real SignalGifSearch.xpc lists trending GIFs through Signal's content proxy;
+//   5. the real SignalMessageParser.xpc parses a message into a tree, and serves a new session
+//      (in a fresh process: one session per process) after the first is ended.
 // With --refused it only checks that the services turn it away (a copy signed otherwise).
 // Prints a line per check; exits non-zero when any check fails.
 // Arguments: probe service names, then "--", then media files (by extension).
@@ -18,6 +20,21 @@ func probe(_ name: String) async -> String {
         let report = try await XPCChannel(.service(name), peer: nil, timeout: .seconds(120)).request(XPCMessage(), maxReply: 1 << 20) { try $0.result() }
         return String(decoding: report, as: UTF8.self)
     } catch { return "xpc error: \(error)" }
+}
+
+/// Mirrors of MessageParsing's request and tree (the wire format goes by field names and types).
+enum MessageParseKind: String, Codable { case content, contactDetails, stickerManifest }
+struct MessageParseRequest: Codable { var kind: MessageParseKind; var bytes: Data }
+struct ProtoTree: Codable {
+    enum Kind: UInt8, Codable { case message = 0, varint, fixed32, fixed64, bytes }
+    struct Node: Codable, Equatable { var p: UInt32; var f: UInt32; var k: Kind; var v: UInt64; var d: Data }
+    var nodes: [Node]
+}
+let messageParserName = "org.signalsafe.SignalMessageParser"
+/// Content { dataMessage { body: "hi" } }, parsed by the service on `channel`.
+func parseMessage(_ channel: XPCChannel) async throws -> [ProtoTree] {
+    let request = try Wire.encode(MessageParseRequest(kind: .content, bytes: Data([0x0A, 0x04, 0x0A, 0x02, 0x68, 0x69])))
+    return try Wire.decode([ProtoTree].self, try await channel.send(request, maxReply: 1 << 20), maxBytes: 1 << 20)
 }
 
 var failed = false
@@ -36,9 +53,10 @@ if args.first == "--refused" {
     let refusedFetcher = (try? await LinkPreviewFetcherClient(timeout: .seconds(10)).page("https://signal.org/")) == nil
     let refusedGifs = (try? await GifSearchClient(timeout: .seconds(10)).trending(limit: 1, offset: nil)) == nil
     let refusedVoice = (try? await MediaXPCClient(timeout: .seconds(10)).startVoiceNote(sampleRate: 48_000)) == nil
+    let refusedParser = (try? await parseMessage(XPCChannel(.service(messageParserName), peer: nil, timeout: .seconds(10)))) == nil
     print("\(refusedDecoder ? "refused" : "SERVED"): decoder; \(refusedFetcher ? "refused" : "SERVED"): fetcher; \(refusedGifs ? "refused" : "SERVED"): gifs; "
-          + "\(refusedVoice ? "refused" : "SERVED"): voice notes")
-    exit(refusedDecoder && refusedFetcher && refusedGifs && refusedVoice ? 0 : 1)
+          + "\(refusedVoice ? "refused" : "SERVED"): voice notes; \(refusedParser ? "refused" : "SERVED"): message parser")
+    exit(refusedDecoder && refusedFetcher && refusedGifs && refusedVoice && refusedParser ? 0 : 1)
 }
 let probes = args.prefix { $0 != "--" }
 let files = args.drop { $0 != "--" }.dropFirst().map { URL(fileURLWithPath: $0) }
@@ -137,5 +155,24 @@ await check("parser refuses html from the app") {
 await check("gif search") {
     let page = try await GifSearchClient(timeout: .seconds(60)).trending(limit: 4, offset: nil)
     return "\(page.gifs.count) gifs"
+}
+let parserChannel = XPCChannel(.service(messageParserName), peer: nil, timeout: .seconds(10))
+let expected = [ProtoTree.Node(p: 0, f: 0, k: .message, v: 0, d: Data()), ProtoTree.Node(p: 0, f: 1, k: .message, v: 0, d: Data()),
+                ProtoTree.Node(p: 1, f: 1, k: .bytes, v: 0, d: Data("hi".utf8))]
+await check("message parser") {
+    let trees = try await parseMessage(parserChannel)
+    guard trees.count == 1, trees[0].nodes == expected else { throw MediaProcessingError.invalidResult }
+    return "\(trees[0].nodes.count) nodes"
+}
+// The session ends; the next one is served by a fresh process (the old one refuses a second
+// session and exits), so it may take a retry or two.
+await check("message parser fresh session") {
+    parserChannel.reset()
+    for attempt in 0..<8 {
+        try await Task.sleep(for: .milliseconds(20 << attempt))
+        if let trees = try? await parseMessage(parserChannel), trees.count == 1, trees[0].nodes == expected { return "after \(attempt + 1) tries" }
+        parserChannel.reset()
+    }
+    throw MediaProcessingError.invalidResult
 }
 exit(failed ? 1 : 0)

@@ -2,6 +2,7 @@
 // resumes the stored account and receives.
 
 import Foundation
+import MessageParsing
 import GRDB
 import LibSignalClient
 import SignalMediaDecoder
@@ -27,7 +28,7 @@ struct FixedKeyStore: DatabaseKeyStore {
                                 trustRoots: server.ready.trustRoots, serverPublicParams: Data(base64Encoded: server.ready.serverPublicParams)!,
                                 genericServerPublicParams: Data(base64Encoded: server.ready.genericServerPublicParams)!)
         }
-        let first = try SignalClient(config: config(), directory: dir, keyStore: keys, media: MediaDecoder())
+        let first = try SignalClient(config: config(), directory: dir, keyStore: keys, media: MediaDecoder(), parser: InProcessMessageParser())
         #expect(try await first.storedAccount() == nil)
         let (urls, sink) = AsyncStream<String>.makeStream()
         let phone = Task { for await url in urls { return try await server.call("provision", ["url": url]) }; throw HarnessError(description: "no url") }
@@ -37,7 +38,7 @@ struct FixedKeyStore: DatabaseKeyStore {
 
         // A new process: same folder and key, no linking.
         await first.shutdown()
-        let second = try SignalClient(config: config(), directory: dir, keyStore: keys, media: MediaDecoder())
+        let second = try SignalClient(config: config(), directory: dir, keyStore: keys, media: MediaDecoder(), parser: InProcessMessageParser())
         let session = try #require(try await second.resume())
         #expect(session.account.aci == account.aci)
         // The resumed session keeps house: expiring messages and pins on a timer, pre-keys on theirs.

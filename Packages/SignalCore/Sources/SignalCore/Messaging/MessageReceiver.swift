@@ -15,6 +15,7 @@ import Foundation
 import Synchronization
 import GRDB
 import LibSignalClient
+import MessageParsing
 import SignalProtos
 
 public enum ReceiveError: Error, Equatable {
@@ -46,9 +47,14 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     let continuation: AsyncStream<ReceiveEvent>.Continuation
     /// How often a resend was requested per sender.device:timestamp (upstream retryRecord).
     let retryRequests = Mutex<[String: Int]>([:])
+    /// Decrypted content is parsed outside this process (SignalMessageParser.xpc in the app).
+    let parser: any StructuredMessageParser
+    /// The wait before cached envelopes are tried again after the parser was unavailable.
+    let parserRetry = Mutex<Double>(0)
 
-    public init(account: Account, database: SignalDatabase, trustRoots: [PublicKey], jobs: JobQueue? = nil) {
+    public init(account: Account, database: SignalDatabase, trustRoots: [PublicKey], parser: any StructuredMessageParser, jobs: JobQueue? = nil) {
         self.account = account
+        self.parser = parser
         self.jobs = jobs
         self.database = database
         self.trustRoots = trustRoots
@@ -114,7 +120,13 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 return events
             }
             jobs?.poke()
+            parserRetry.withLock { $0 = 0 }
             events.forEach(emit)
+        } catch MessageParserError.unavailable(let why) {
+            // Decrypted, but the parser could not be reached: the transaction rolled back, so the
+            // envelope stays cached as it came and is decrypted and parsed again shortly.
+            emit(.failed(serverGuid: envelope.serverGuid, reason: "kept for later: message parser unavailable: \(why)"))
+            retryCachedLater()
         } catch {
             // The transaction rolled back: no session, pre-key or identity change of a failed
             // decryption is kept. What follows is upstream's DecryptionErrorEvent handling.
@@ -263,7 +275,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 throw DecryptionFailure(sender: sender, senderDevice: device, ciphertext: usmc.contents, type: usmc.messageType,
                                         contentHint: usmc.contentHint, groupId: usmc.groupId, toPni: toPni, underlying: error)
             }
-            return Decrypted(sender: sender, senderDevice: device, content: try parseContent(plaintext), sealed: true, groupId: usmc.groupId,
+            return Decrypted(sender: sender, senderDevice: device, content: try parseContent(plaintext, from: from), sealed: true, groupId: usmc.groupId,
                              wasEncrypted: usmc.messageType != .plaintext)
         case .doubleRatchet, .prekeyMessage, .plaintextContent:
             guard let sender = Self.source(e), e.hasSourceDeviceID else { throw ReceiveError.invalidEnvelope("missing source") }
@@ -278,7 +290,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 throw DecryptionFailure(sender: sender, senderDevice: e.sourceDeviceID, ciphertext: e.content, type: type, contentHint: nil,
                                         groupId: nil, toPni: toPni, underlying: error)
             }
-            return Decrypted(sender: sender, senderDevice: e.sourceDeviceID, content: try parseContent(plaintext), sealed: false, groupId: nil,
+            return Decrypted(sender: sender, senderDevice: e.sourceDeviceID, content: try parseContent(plaintext, from: from), sealed: false, groupId: nil,
                              wasEncrypted: type != .plaintext)
         default:
             throw ReceiveError.unsupported("envelope type \(e.type.rawValue)")
@@ -302,8 +314,19 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         }
     }
 
-    func parseContent(_ padded: Data) throws -> Signalservice_Content {
-        try Signalservice_Content(serializedBytes: Self.unpad(padded))
+    /// The decrypted content, parsed by the keyless parser for this sender's device alone.
+    func parseContent(_ padded: Data, from: ProtocolAddress) throws -> Signalservice_Content {
+        try parser.content(try Self.unpad(padded), source: "content:\(from.name).\(from.deviceId)")
+    }
+
+    /// The parser was unavailable: the cached envelopes are tried again after a wait that
+    /// doubles each time (1 s up to a minute) until one gets through.
+    func retryCachedLater() {
+        let wait = parserRetry.withLock { w -> Double in
+            w = min(60, max(1, w * 2))
+            return w
+        }
+        queue.asyncAfter(deadline: .now() + wait) { [weak self] in self?.processCached() }
     }
 
     /// Signal transport padding: plaintext ‖ 0x80 ‖ 0x00*.

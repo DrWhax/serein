@@ -5,6 +5,7 @@ import Foundation
 import GRDB
 import LibSignalClient
 import SignalProtos
+import MessageParsing
 import Testing
 @testable import SignalCore
 
@@ -130,9 +131,9 @@ import Testing
         #expect(try ContactSync.parse(stream).map(\.name) == ["A", String(repeating: "B", count: 200)])
         #expect(try ContactSync.parse(Data()).isEmpty)
         // Truncated body, truncated avatar, over-long varint.
-        #expect(throws: ContactSyncError.self) { try ContactSync.parse(stream.dropLast()) }
-        #expect(throws: ContactSyncError.self) { try ContactSync.parse(try entry("A", avatar: Data(repeating: 1, count: 10)).dropLast(3)) }
-        #expect(throws: ContactSyncError.varintTooLong(offset: 5)) { try ContactSync.parse(Data([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])) }
+        #expect(throws: MessageParserError.self) { try ContactSync.parse(stream.dropLast()) }
+        #expect(throws: MessageParserError.self) { try ContactSync.parse(try entry("A", avatar: Data(repeating: 1, count: 10)).dropLast(3)) }
+        #expect(throws: MessageParserError.malformed("varint too long at 5")) { try ContactSync.parse(Data([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])) }
     }
 
     @Test func attachmentCipher() throws {

@@ -67,15 +67,19 @@ for manifest in Packages/*/Package.swift; do
 done
 
 # SignalCore never links a decoder: media goes to the sandboxed service through MediaXPCInterface.
-core=$(find Packages/SignalCore/Sources -name '*.swift' 2>/dev/null || true)
+core=$(find Packages/SignalCore/Sources -name '*.swift' -not -path '*/SignalMessageParserService/*' 2>/dev/null || true)
 if [ -n "$core" ] && grep -nE '^\s*(@preconcurrency\s+)?(public\s+|internal\s+)?import\s+(Image[A-Za-z]+|Blurhash|Encode[A-Za-z]+|CodecCore|HTMLMeta|MetadataStrip|Container[A-Za-z0-9]+|Audio[A-Z][A-Za-z0-9]*|Video[A-Z][A-Za-z0-9]*|SignalMediaDecoder|LinkPreviewParser)\b' $core; then
   echo "lint: SignalCore imports a decoder module (only MediaXPCInterface is allowed)" >&2; fail=1
 fi
-# …and its library target's dependency list (up to the test target) names no decoder product.
-if sed -n '/name: "SignalCore",/,/testTarget/p' Packages/SignalCore/Package.swift | grep -v testTarget \
-   | grep -nE '"(SignalMediaDecoder|LinkPreviewParser|EncodePNG|EncodeJPEG|CodecCore|HTMLMeta|Blurhash|Image[A-Za-z]+|Container[A-Za-z0-9]+|AudioAAC|AudioMP3|VideoH264|MetadataStrip)"'; then
-  echo "lint: SignalCore's library target depends on a decoder product" >&2; fail=1
-fi
+# …and the targets the app links (SignalCore, MessageParsing) name no decoder product in their
+# dependency lists. (SignalMessageParserService links CodecCore's gunzip: it is the service.)
+for t in SignalCore MessageParsing; do
+  if awk -v t="$t" '/\.(target|executableTarget|testTarget)\(/ { inside = 0 } $0 ~ "name: \"" t "\"," && prev ~ /\.target\(/ { inside = 1 } inside { print } { prev = $0 }' \
+       Packages/SignalCore/Package.swift \
+     | grep -nE '"(SignalMediaDecoder|LinkPreviewParser|EncodePNG|EncodeJPEG|CodecCore|HTMLMeta|Blurhash|Image[A-Za-z]+|Container[A-Za-z0-9]+|AudioAAC|AudioMP3|VideoH264|VideoHEVC|VideoAV1|MetadataStrip)"'; then
+    echo "lint: $t (linked by the app) depends on a decoder product" >&2; fail=1
+  fi
+done
 
 # The two services stay apart: the media decoder has no HTML parser, and the link-preview
 # parser (under its tighter Seatbelt profile) has nothing but HTMLMeta.

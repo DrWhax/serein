@@ -20,6 +20,8 @@
 #     trending GIFs through Signal's content proxy; the calling service lists the audio
 #     devices and places a video call between two of its endpoints (ICE over this machine's
 #     own addresses), and exits when its host's session ends;
+#     the message parser parses a message into a tree, serves its next session from a fresh
+#     process (one session each), and is gone once its host has exited;
 #   * the same services refuse a host signed with any other identifier (their peer
 #     requirements, MediaXPCInterface/XPCPeer.swift), and with a signing identity also an ad-hoc
 #     host carrying the app's identifier (no Team ID); the probe services check theirs the same
@@ -29,7 +31,7 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/App/SignalSafe/.build/Serein.app"
-services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling"
+services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling SignalMessageParser"
 for s in $services; do
   [ -d "$app/Contents/XPCServices/$s.xpc" ] || { echo "error: build the app first (Tools/build-app.sh)" >&2; exit 1; }
 done
@@ -72,7 +74,7 @@ PLIST
 host="$work/ProbeHost.app"
 makehost "$host" org.signalsafe.SignalSafe
 probes=""
-for profile in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling Serein; do
+for profile in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling SignalMessageParser Serein; do
   id="org.signalsafe.sandbox-probe.$profile"
   xpc="$host/Contents/XPCServices/Probe$profile.xpc"
   mkdir -p "$xpc/Contents/MacOS"
@@ -173,6 +175,7 @@ $loop"
 # The service ends with its host's session: none of this run's services may be left running.
 sleep 3
 callLeft=$(pgrep -f "$work/[A-Za-z]*CallHost.app/Contents/XPCServices/SignalCalling.xpc" || true)
+parserLeft=$(pgrep -f "$work/ProbeHost.app/Contents/XPCServices/SignalMessageParser.xpc" || true)
 callRefusal=$("$refusedcall/Contents/MacOS/RefusedCallHost" --refused)
 callRefusedStatus=$?
 callAdhocStatus=0
@@ -188,6 +191,7 @@ fail=0
 [ $adhocStatus -eq 0 ] || { echo "check-sandbox-profile: a service served a host without the app's Team ID" >&2; fail=1; }
 [ $callStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service failed a check" >&2; echo "$calls" | grep -v '^ok:' | tail -20 >&2; fail=1; }
 [ -z "$callLeft" ] || { echo "check-sandbox-profile: the calling service outlived its host's session" >&2; fail=1; }
+[ -z "$parserLeft" ] || { echo "check-sandbox-profile: the message parser outlived its session" >&2; fail=1; }
 [ $callRefusedStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service served a host not signed as the app" >&2; fail=1; }
 [ $callAdhocStatus -eq 0 ] || { echo "check-sandbox-profile: the calling service served a host without the app's Team ID" >&2; fail=1; }
 # What each profile must allow and may allow; everything else must be denied.
@@ -197,7 +201,7 @@ offline = "pass the start-up check without system files"
 online = "pass the start-up check with system files"
 audio, hear = "start the audio input", "hear the microphone"
 udp = {"send udp", "bind a udp port"}
-must = {"SignalMediaDecoder": {offline}, "SignalLinkPreviewParser": {offline}, "SignalVoiceNoteEncoder": {online, audio},
+must = {"SignalMediaDecoder": {offline}, "SignalLinkPreviewParser": {offline}, "SignalMessageParser": {offline}, "SignalVoiceNoteEncoder": {online, audio},
         "SignalLinkPreviewFetcher": {"https to the web", online}, "SignalGifSearch": {"https to the web", online},
         "SignalCalling": {online, audio} | udp,
         "Serein": {"https to the web", "write its container"}}
@@ -205,7 +209,7 @@ system = {"read a system file", "read /etc/hosts"}
 mach = "look up a Mach service"
 # Only the two services with the microphone may hear it (when this terminal may); the web
 # services and the app run the audio input but hear silence.
-may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalVoiceNoteEncoder": system | {mach, hear},
+may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalMessageParser": {online}, "SignalVoiceNoteEncoder": system | {mach, hear},
        "SignalLinkPreviewFetcher": system | {mach, "send udp", audio}, "SignalGifSearch": system | {mach, "send udp", audio},
        "SignalCalling": system | {mach, hear, "https to the web"},
        "Serein": system | udp | {mach, audio, "open an IOKit device", "tcp to 127.0.0.1", "send udp to 127.0.0.1", "list /Users", "write preferences"}}
@@ -229,7 +233,7 @@ sys.exit(1 if bad else 0)
 for line in "calling audio devices" "calling call connects" "calling video frames" "calling hang-up"; do
   echo "$calls" | grep -q "^ok: $line" || { echo "check-sandbox-profile: '$line' did not run under its profile" >&2; fail=1; }
 done
-for line in "voice note" "voice note from the microphone" "decoder refuses voice notes: refused" "link preview fetch" "parser refuses html from the app: refused" "gif search" "hlg10.mp4 play" "av1_svt_gop6.mp4 play" "avifrot.avif displayImage" "heicgrid.heic convertHEIC"; do
+for line in "message parser" "message parser fresh session" "voice note" "voice note from the microphone" "decoder refuses voice notes: refused" "link preview fetch" "parser refuses html from the app: refused" "gif search" "hlg10.mp4 play" "av1_svt_gop6.mp4 play" "avifrot.avif displayImage" "heicgrid.heic convertHEIC"; do
   echo "$out" | grep -q "^ok: $line" || { echo "check-sandbox-profile: '$line' did not run under its profile" >&2; fail=1; }
 done
 [ $fail -eq 0 ] && echo "check-sandbox-profile: ok"

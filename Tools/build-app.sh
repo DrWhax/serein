@@ -49,6 +49,8 @@ install_name_tool -delete_rpath "$ringrtc" "$bin" 2>/dev/null || true
 #   SignalGifSearch.xpc          Giphy through Signal's content proxy (outgoing network only)
 #   SignalVoiceNoteEncoder.xpc   records voice notes (microphone) and encodes them to MP3 (no network, no files)
 #   SignalCalling.xpc            ringrtc/WebRTC: the calls' media and audio (outgoing network, microphone, no files)
+#   SignalMessageParser.xpc      decrypted messages, contact-sync records, sticker manifests (no keys, network, files;
+#                                one session per process)
 svcpkg="$root/Packages/SignalMediaService"
 sign="${SIGNALSAFE_SIGN_IDENTITY:--}"
 # Who may talk to whom (MediaXPCInterface/XPCPeer.swift): every bundle gets every component's
@@ -76,8 +78,9 @@ peers="  <key>SereinXPCPeers</key>
     <key>gifs</key><string>org.signalsafe.SignalGifSearch</string>
     <key>voice</key><string>org.signalsafe.SignalVoiceNoteEncoder</string>
     <key>calling</key><string>org.signalsafe.SignalCalling</string>
+    <key>messages</key><string>org.signalsafe.SignalMessageParser</string>
   </dict>$sameteam"
-services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling"
+services="SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalCalling SignalMessageParser"
 service() {   # name product [extra Info.plist lines] [package directory]
   name=$1 product=$2 extra=${3:-} spkg=${4:-$svcpkg}
   (cd "$spkg" && swift build -c release --product "$product")
@@ -126,6 +129,8 @@ service SignalGifSearch SignalGifSearchService '  <key>NSAppTransportSecurity</k
       </dict>
     </dict>
   </dict>'
+# The keyless message parser (SignalCore's package: it reads Signal's protobufs).
+service SignalMessageParser SignalMessageParserService "" "$root/Packages/SignalCore"
 # ringrtc's dylib inside the calling service, found through its own Frameworks folder.
 service SignalCalling SignalCallingService "" "$root/Packages/SignalRingRTC"
 callxpc="$app/Contents/XPCServices/SignalCalling.xpc"
@@ -182,8 +187,16 @@ links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/Signa
 # client, no recorder, no SignalCore (keys, database) or libsignal.
 links "$callxpc/Contents/MacOS/SignalCalling" "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient" \
   "decoders, HTML parser, web client, recorder or SignalCore linked into the calling service"
+# The message parser has no keys and no database: no SignalCore, libsignal, GRDB or SQLCipher,
+# and nothing else that reads data.
+links "$app/Contents/XPCServices/SignalMessageParser.xpc/Contents/MacOS/SignalMessageParser" \
+  "$decoders|8HTMLMeta|$web|16VoiceNoteService|10SignalCore|15LibSignalClient|4GRDB" \
+  "decoders, web client, recorder, SignalCore, libsignal or the database linked into the message parser"
+if otool -L "$app/Contents/XPCServices/SignalMessageParser.xpc/Contents/MacOS/SignalMessageParser" | grep -qiE 'sqlcipher|signal_ffi|ringrtc'; then
+  echo "error: the message parser loads a native library" >&2; exit 1
+fi
 # Nothing but the calling service links ringrtc.
-for name in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder; do
+for name in SignalMediaDecoder SignalLinkPreviewParser SignalLinkPreviewFetcher SignalGifSearch SignalVoiceNoteEncoder SignalMessageParser; do
   links "$app/Contents/XPCServices/$name.xpc/Contents/MacOS/$name" "13RingRTCNative|11CallService" "ringrtc linked into $name"
 done
 # The app neither decodes nor fetches or parses web content, nor runs ringrtc or the recorder:

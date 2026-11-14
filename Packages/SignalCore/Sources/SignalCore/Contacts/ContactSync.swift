@@ -11,13 +11,11 @@
 import Foundation
 import GRDB
 import LibSignalClient
+import MessageParsing
 import SignalProtos
 import SwiftProtobuf
 
 public enum ContactSyncError: Error, Equatable {
-    case truncated(offset: Int)
-    case varintTooLong(offset: Int)
-    case tooManyContacts
     case noCDN(Int)
 }
 
@@ -28,17 +26,19 @@ public final class ContactSync: Sendable {
         public var complete: Bool
     }
 
-    static let maxContacts = 50_000
     static let maxBlobBytes = 64 << 20
 
     let database: SignalDatabase
     let http: HTTPClient
     let endpoints: ServiceEndpoints
+    /// The blob's records are parsed outside this process (SignalMessageParser.xpc in the app).
+    let parser: any StructuredMessageParser
 
-    public init(database: SignalDatabase, http: HTTPClient, endpoints: ServiceEndpoints) {
+    public init(database: SignalDatabase, http: HTTPClient, endpoints: ServiceEndpoints, parser: any StructuredMessageParser) {
         self.database = database
         self.http = http
         self.endpoints = endpoints
+        self.parser = parser
     }
 
     public func register(on jobs: JobQueue) async {
@@ -54,7 +54,7 @@ public final class ContactSync: Sendable {
         let blob = try await download(pointer)
         let plaintext = try AttachmentCipher.decrypt(blob, key: pointer.key, digest: pointer.hasDigest ? pointer.digest : nil,
                                                      size: pointer.hasSize ? Int(pointer.size) : nil)
-        let contacts = try Self.parse(plaintext)
+        let contacts = try Self.parse(plaintext, parser: parser)
         try await database.pool.write { db in try Self.apply(db, contacts) }
         return contacts.count
     }
@@ -75,41 +75,10 @@ public final class ContactSync: Sendable {
 
     // MARK: grammar
 
-    /// Parses the length-delimited ContactDetails stream (avatars are skipped).
-    public static func parse(_ data: Data) throws -> [Signalservice_ContactDetails] {
-        let bytes = [UInt8](data)
-        var offset = 0
-        var out: [Signalservice_ContactDetails] = []
-        while offset < bytes.count {
-            guard out.count < maxContacts else { throw ContactSyncError.tooManyContacts }
-            let length = try readVarint32(bytes, &offset)
-            guard length <= bytes.count - offset else { throw ContactSyncError.truncated(offset: offset) }
-            let details = try Signalservice_ContactDetails(serializedBytes: Data(bytes[offset..<(offset + length)]))
-            offset += length
-            if details.hasAvatar, details.avatar.hasLength {
-                let avatar = Int(details.avatar.length)
-                guard avatar <= bytes.count - offset else { throw ContactSyncError.truncated(offset: offset) }
-                offset += avatar
-            }
-            out.append(details)
-        }
-        return out
-    }
-
-    /// Protobuf base-128 varint, at most 5 bytes, value < 2^32.
-    static func readVarint32(_ bytes: [UInt8], _ offset: inout Int) throws -> Int {
-        var value: UInt64 = 0
-        for i in 0..<5 {
-            guard offset < bytes.count else { throw ContactSyncError.truncated(offset: offset) }
-            let b = bytes[offset]
-            offset += 1
-            value |= UInt64(b & 0x7F) << (7 * UInt64(i))
-            if b & 0x80 == 0 {
-                guard value <= UInt64(UInt32.max) else { throw ContactSyncError.varintTooLong(offset: offset) }
-                return Int(value)
-            }
-        }
-        throw ContactSyncError.varintTooLong(offset: offset)
+    /// The length-delimited ContactDetails stream (avatars are skipped), parsed by `parser`
+    /// (MessageParsing.ContactStream has the grammar).
+    public static func parse(_ data: Data, parser: any StructuredMessageParser = InProcessMessageParser()) throws -> [Signalservice_ContactDetails] {
+        try parser.contactDetails(data, source: "contact-sync")
     }
 
     // MARK: apply

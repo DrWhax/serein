@@ -4,6 +4,7 @@
 // with the app's id, and "Delete all data".
 
 import Foundation
+import MessageParsing
 import GRDB
 import SignalMediaDecoder
 import Synchronization
@@ -121,7 +122,7 @@ import Testing
     @Test func deleteAllDataRemovesTheFolderAndTheKey() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("delete-all-\(UUID())", isDirectory: true)
         let keys = RecordingKeyStore()
-        let client = try SignalClient(config: try .signal(.staging, userAgent: "SignalSafe-Tests"), directory: folder, keyStore: keys, media: MediaDecoder())
+        let client = try SignalClient(config: try .signal(.staging, userAgent: "SignalSafe-Tests"), directory: folder, keyStore: keys, media: MediaDecoder(), parser: InProcessMessageParser())
         try Data("attachment".utf8).write(to: folder.appendingPathComponent("file.bin"))
         #expect(FileManager.default.fileExists(atPath: folder.path))
         // No stored account: nothing to unlink on the server, the data still goes.

@@ -3,6 +3,7 @@
 // receipts, resends), contact sync and storage-service handlers, profiles.
 
 import Foundation
+import MessageParsing
 import LibSignalClient
 import Synchronization
 import Testing
@@ -63,10 +64,10 @@ struct LinkedClient: Sendable {
     var phoneAci: String { server.ready.phone.aci.lowercased() }
 
     /// Starts a mock server, links a client, runs `body`, and always tears both down.
-    static func with(_ body: (LinkedClient) async throws -> Void) async throws {
+    static func with(parser: any StructuredMessageParser = InProcessMessageParser(), _ body: (LinkedClient) async throws -> Void) async throws {
         let server = try await MockServerHarness.start()
         let client: LinkedClient
-        do { client = try await link(server) } catch {
+        do { client = try await link(server, parser: parser) } catch {
             await server.stop()
             throw error
         }
@@ -82,7 +83,8 @@ struct LinkedClient: Sendable {
         return (try SignalDatabase(url: url, key: SignalCrypto.randomBytes(32)), url)
     }
 
-    static func link(_ server: MockServerHarness, deviceName: String = "SignalSafe tests", oneTimeKeys: Int = 20) async throws -> LinkedClient {
+    static func link(_ server: MockServerHarness, deviceName: String = "SignalSafe tests", oneTimeKeys: Int = 20,
+                     parser: any StructuredMessageParser = InProcessMessageParser()) async throws -> LinkedClient {
         trace("link: start")
         let (database, url) = try temporaryDatabase()
         let net = Net.localTestServer(userAgent: "SignalSafe-Tests", chatPort: UInt16(server.ready.port),
@@ -121,15 +123,15 @@ struct LinkedClient: Sendable {
         let groups = GroupsService(account: account, database: database,
                                    api: GroupsAPI(http: http, endpoints: endpoints, credentials: groupCredentials), store: attachmentStore)
         let storage = StorageService(account: account, database: database, socket: socket, http: http, endpoints: endpoints)
-        let contactSync = ContactSync(database: database, http: http, endpoints: endpoints)
-        let stickers = StickerService(account: account, database: database, http: http, endpoints: endpoints, store: attachmentStore, media: MediaDecoder())
+        let contactSync = ContactSync(database: database, http: http, endpoints: endpoints, parser: parser)
+        let stickers = StickerService(account: account, database: database, http: http, endpoints: endpoints, store: attachmentStore, media: MediaDecoder(), parser: parser)
         await messenger.register()
         await stickers.register(on: jobs)
         await storage.register(on: jobs)
         await contactSync.register(on: jobs)
         await jobs.start()
 
-        let receiver = MessageReceiver(account: account, database: database, trustRoots: server.ready.trustRoots, jobs: jobs)
+        let receiver = MessageReceiver(account: account, database: database, trustRoots: server.ready.trustRoots, parser: parser, jobs: jobs)
         let log = EventLog()
         Task {
             for await e in receiver.events {

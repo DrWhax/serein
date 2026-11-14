@@ -4,7 +4,8 @@
 //   * LibSignalClient (vendor/libsignal, Swift bindings over the Rust FFI) for the
 //     Signal Protocol, sealed sender, zkgroup and libsignal-net chat connections;
 //   * GRDB on SQLCipher (vendor/GRDB.swift with Tools/vendor-patches/grdb-sqlcipher.patch);
-//   * SwiftProtobuf code generated from Signal-Desktop/protos (Sources/SignalProtos).
+//   * SwiftProtobuf code generated from Signal-Desktop/protos (Sources/SignalProtos);
+//   * MessageParsing and SignalMessageParser.xpc: decrypted messages parsed in a keyless process.
 //
 // Build prerequisites: Tools/apply-vendor-patches.sh, then
 //   CARGO_BUILD_TARGET=aarch64-apple-darwin vendor/libsignal/swift/build_ffi.sh --release
@@ -30,6 +31,8 @@ let package = Package(
     products: [
         .library(name: "SignalCore", targets: ["SignalCore"]),
         .library(name: "SignalProtos", targets: ["SignalProtos"]),
+        .library(name: "MessageParsing", targets: ["MessageParsing"]),
+        .executable(name: "SignalMessageParserService", targets: ["SignalMessageParserService"]),
     ],
     dependencies: [
         .package(path: "../../vendor/libsignal"),
@@ -46,10 +49,28 @@ let package = Package(
             dependencies: [.product(name: "SwiftProtobuf", package: "swift-protobuf")],
             swiftSettings: [.swiftLanguageMode(.v5)] + memorySafety  // generated code
         ),
+        // The keyless structured-message parser: SignalMessageParser.xpc parses decrypted
+        // content, contact-sync records, sticker manifests and link-and-sync backups (which it
+        // also inflates); SignalCore reads its trees back.
+        .target(
+            name: "MessageParsing",
+            dependencies: ["SignalProtos", .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                           .product(name: "MediaXPCInterface", package: "SignalMediaService")],
+            swiftSettings: strict
+        ),
+        // SignalMessageParser.xpc: no keys, no database, no network, no files (Sandbox/SignalMessageParser.sb).
+        .executableTarget(
+            name: "SignalMessageParserService",
+            dependencies: ["MessageParsing", .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                           // gunzip for link-and-sync archives, here only (the app links no codec code).
+                           .product(name: "CodecCore", package: "SignalCodecs")],
+            swiftSettings: strict
+        ),
         .target(
             name: "SignalCore",
             dependencies: [
                 "SignalProtos",
+                "MessageParsing",
                 .product(name: "LibSignalClient", package: "libsignal"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
@@ -65,7 +86,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SignalCoreTests",
-            dependencies: ["SignalCore", "SignalProtos", .product(name: "LibSignalClient", package: "libsignal"),
+            dependencies: ["SignalCore", "SignalProtos", "MessageParsing", .product(name: "LibSignalClient", package: "libsignal"),
                            .product(name: "SignalRingRTC", package: "SignalRingRTC"),
                            .product(name: "RingRTCNative", package: "SignalRingRTC"),
                            .product(name: "MediaXPCInterface", package: "SignalMediaService"),

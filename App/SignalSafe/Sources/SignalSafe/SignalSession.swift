@@ -8,6 +8,7 @@ import Foundation
 import GRDB
 import LibSignalClient
 import MediaXPCInterface
+import MessageParsing
 import Observation
 import UniformTypeIdentifiers
 import SignalCore
@@ -434,7 +435,7 @@ import SignalUI
                                          serverPublicParams: spp, genericServerPublicParams: gspp)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SignalSafe-mock-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return try SignalClient(config: config, directory: folder, keyStore: keys, media: media)
+        return try SignalClient(config: config, directory: folder, keyStore: keys, media: media, parser: XPCMessageParser())
     }
 
     func start() {
@@ -462,7 +463,7 @@ import SignalUI
             let keys = KeychainDatabaseKeyStore(account: isStaging ? "sqlcipher-key-staging" : "sqlcipher-key")
             databaseKeys = keys
             let client = try SignalClient(config: try .signal(environment, userAgent: Self.userAgent), directory: folder, keyStore: keys,
-                                          media: media)
+                                          media: media, parser: XPCMessageParser())
             self.client = client
             observeInbox(client.database)
         } catch {

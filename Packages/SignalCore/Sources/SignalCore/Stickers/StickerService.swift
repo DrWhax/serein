@@ -9,6 +9,7 @@ import Foundation
 import GRDB
 import LibSignalClient
 import MediaXPCInterface
+import MessageParsing
 import SignalProtos
 
 public enum StickerError: Error, Equatable {
@@ -242,10 +243,13 @@ public actor StickerService {
     let endpoints: ServiceEndpoints
     let store: AttachmentStore
     let media: any MediaProcessing
+    /// Pack manifests are parsed outside this process (SignalMessageParser.xpc in the app).
+    let parser: any StructuredMessageParser
     var jobs: JobQueue?
 
     public init(account: Account, database: SignalDatabase, http: HTTPClient, endpoints: ServiceEndpoints, store: AttachmentStore,
-                media: any MediaProcessing) {
+                media: any MediaProcessing, parser: any StructuredMessageParser) {
+        self.parser = parser
         self.account = account
         self.database = database
         self.http = http
@@ -316,7 +320,8 @@ public actor StickerService {
 
         let manifest: Stickers.ParsedManifest
         do {
-            let proto = try Signalservice_StickerPack(serializedBytes: try Stickers.decrypt(try await fetch("/stickers/\(packId)/manifest.proto"), packKey: key))
+            let proto = try parser.stickerManifest(try Stickers.decrypt(try await fetch("/stickers/\(packId)/manifest.proto"), packKey: key),
+                                                   source: "sticker-pack:\(packId)")
             manifest = try Stickers.parseManifest(proto)
         } catch {
             try await database.pool.write { db in
@@ -416,7 +421,8 @@ public actor StickerService {
         if let (title, author, cover, storedKey) = local, storedKey == packKey, let data = try? await stickerData(packId: packId, stickerId: cover) {
             return (title, author, data)
         }
-        let manifest = try Stickers.parseManifest(Signalservice_StickerPack(serializedBytes: try Stickers.decrypt(try await fetch("/stickers/\(packId)/manifest.proto"), packKey: key)))
+        let manifest = try Stickers.parseManifest(parser.stickerManifest(try Stickers.decrypt(try await fetch("/stickers/\(packId)/manifest.proto"), packKey: key),
+                                                                         source: "sticker-pack:\(packId)"))
         let cover = try Stickers.decrypt(try await fetch("/stickers/\(packId)/full/\(manifest.cover.id)"), packKey: key)
         guard Stickers.sniffContentType(cover) != nil else { throw StickerError.notAnImage }
         _ = try await media.imageInfo(cover).validated()
