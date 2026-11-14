@@ -57,6 +57,7 @@ let package = Package(
                 .product(name: "AudioMP3", package: "SignalCodecs"),
                 .product(name: "VideoH264", package: "SignalCodecs"),
                 .product(name: "VideoHEVC", package: "SignalCodecs"),
+                .product(name: "VideoAV1", package: "SignalCodecs"),
                 .product(name: "ImageHEIF", package: "SignalCodecs"),
                 .product(name: "MetadataStrip", package: "SignalCodecs"),
             ],

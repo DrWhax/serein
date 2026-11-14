@@ -166,6 +166,8 @@ struct AV1SequenceHeader: Equatable {
     var enableIntraEdgeFilter = false
     var enableOrderHint = false
     var orderHintBits = 0
+    var enableInterintraCompound = false, enableMaskedCompound = false, enableWarpedMotion = false, enableDualFilter = false
+    var enableJntComp = false, enableRefFrameMvs = false
     var seqForceScreenContentTools = 2
     var seqForceIntegerMv = 2
     var enableSuperres = false
@@ -241,9 +243,15 @@ struct AV1SequenceHeader: Equatable {
         s.enableFilterIntra = try r.flag()
         s.enableIntraEdgeFilter = try r.flag()
         if !s.reducedStillPictureHeader {
-            _ = try r.f(4, "enable_interintra_compound … enable_dual_filter")
+            s.enableInterintraCompound = try r.flag("enable_interintra_compound")
+            s.enableMaskedCompound = try r.flag("enable_masked_compound")
+            s.enableWarpedMotion = try r.flag("enable_warped_motion")
+            s.enableDualFilter = try r.flag("enable_dual_filter")
             s.enableOrderHint = try r.flag("enable_order_hint")
-            if s.enableOrderHint { _ = try r.f(2, "enable_jnt_comp, enable_ref_frame_mvs") }
+            if s.enableOrderHint {
+                s.enableJntComp = try r.flag("enable_jnt_comp")
+                s.enableRefFrameMvs = try r.flag("enable_ref_frame_mvs")
+            }
             if try r.flag("seq_choose_screen_content_tools") {
                 s.seqForceScreenContentTools = 2
             } else {
@@ -331,6 +339,34 @@ struct AV1FilmGrainParams: Equatable {
 }
 
 struct AV1FrameHeader {
+    // Which frame this is, and its references (inter frames, 5.9.2).
+    var showExistingFrame = false, frameToShowMapIdx = 0
+    var frameType = AV1FrameType.key
+    var frameIsIntra = true
+    var showableFrame = false
+    var errorResilientMode = true
+    var primaryRefFrame = AV1Ref.primaryRefNone
+    var refreshFrameFlags = 0xFF
+    var currentFrameId = 0
+    /// ref_frame_idx[i] for LAST_FRAME + i.
+    var refFrameIdx = [Int](repeating: 0, count: 7)
+    var orderHint = 0
+    /// OrderHints and RefFrameSignBias, by reference name.
+    var orderHints = [Int](repeating: 0, count: 8)
+    var refFrameSignBias = [Bool](repeating: false, count: 8)
+    var allowHighPrecisionMv = false
+    /// EIGHTTAP, SMOOTH, SHARP, BILINEAR or SWITCHABLE (4).
+    var interpolationFilter = 0
+    var isMotionModeSwitchable = false
+    var useRefFrameMvs = false
+    var referenceSelect = false
+    var skipModePresent = false
+    var skipModeFrame = [0, 0]
+    var allowWarpedMotion = false
+    var gmType = [Int](repeating: 0, count: 8)
+    var gmParams = AV1Global.identityParams
+    var segmentationUpdateMap = true, segmentationTemporalUpdate = false
+    var contextUpdateTileId = 0
     var showFrame = true
     var disableCdfUpdate = false
     var allowScreenContentTools = false
@@ -401,29 +437,68 @@ struct AV1FrameHeader {
     static let segmentationFeatureSigned = [true, true, true, true, true, false, false, false]
     static let segmentationFeatureMax = [255, 63, 63, 63, 63, 7, 0, 0]
 
-    /// uncompressed_header( ) for a shown key frame; anything else is refused.
-    static func parse(_ r: inout AV1BitReader, _ s: AV1SequenceHeader, temporalId: Int, spatialId: Int) throws(AV1DecodeError) -> AV1FrameHeader {
+    /// uncompressed_header( ). Without `refs` (a still image) only a shown key frame is
+    /// accepted; with them, every frame type, its references read from the slots.
+    static func parse(_ r: inout AV1BitReader, _ s: AV1SequenceHeader, temporalId: Int, spatialId: Int,
+                      refs: [AV1RefSlot]? = nil) throws(AV1DecodeError) -> AV1FrameHeader {
         var h = AV1FrameHeader()
         let idLen = s.frameIdNumbersPresent ? s.additionalFrameIdLength + s.deltaFrameIdLength + 1 : 0
-        var errorResilient = true
+        let allFrames = 0xFF
+        var slots = refs ?? []
         var frameSizeOverride = false
-        if !s.reducedStillPictureHeader {
-            guard try !r.flag("show_existing_frame") else { throw .unsupported("show_existing_frame") }
-            let frameType = try r.f(2, "frame_type")
-            guard frameType == 0 else { throw .unsupported("frame_type \(frameType) (only key frames are decoded)") }
+        if s.reducedStillPictureHeader {
+            h.frameType = AV1FrameType.key
+            h.frameIsIntra = true
+            h.showFrame = true
+            h.showableFrame = false
+            h.errorResilientMode = true
+        } else {
+            h.showExistingFrame = try r.flag("show_existing_frame")
+            if h.showExistingFrame {
+                guard refs != nil else { throw .unsupported("show_existing_frame") }
+                h.frameToShowMapIdx = try r.f(3, "frame_to_show_map_idx")
+                if s.decoderModelInfoPresent && !s.equalPictureInterval { _ = try r.f(s.framePresentationTimeLength, "frame_presentation_time") }
+                h.refreshFrameFlags = 0
+                if s.frameIdNumbersPresent { _ = try r.f(idLen, "display_frame_id") }
+                let slot = slots[h.frameToShowMapIdx]
+                guard slot.valid else { throw .malformed("show_existing_frame of an empty slot") }
+                h.frameType = slot.frameType
+                if h.frameType == AV1FrameType.key { h.refreshFrameFlags = allFrames }
+                if s.filmGrainParamsPresent { h.filmGrain = slot.filmGrain }
+                return h
+            }
+            h.frameType = try r.f(2, "frame_type")
+            guard refs != nil || h.frameType == AV1FrameType.key else { throw .unsupported("frame_type \(h.frameType) (only key frames are decoded)") }
+            h.frameIsIntra = h.frameType == AV1FrameType.intraOnly || h.frameType == AV1FrameType.key
             h.showFrame = try r.flag("show_frame")
-            guard h.showFrame else { throw .unsupported("a key frame that is not shown") }
-            if s.decoderModelInfoPresent && !s.equalPictureInterval { _ = try r.f(s.framePresentationTimeLength, "frame_presentation_time") }
-            errorResilient = true
+            guard refs != nil || h.showFrame else { throw .unsupported("a key frame that is not shown") }
+            if h.showFrame && s.decoderModelInfoPresent && !s.equalPictureInterval { _ = try r.f(s.framePresentationTimeLength, "frame_presentation_time") }
+            h.showableFrame = h.showFrame ? h.frameType != AV1FrameType.key : try r.flag("showable_frame")
+            if h.frameType == AV1FrameType.switchFrame || (h.frameType == AV1FrameType.key && h.showFrame) {
+                h.errorResilientMode = true
+            } else {
+                h.errorResilientMode = try r.flag("error_resilient_mode")
+            }
         }
-        _ = errorResilient
+        if h.frameType == AV1FrameType.key && h.showFrame {
+            for i in slots.indices { slots[i].valid = false; slots[i].orderHint = 0 }
+        }
         h.disableCdfUpdate = try r.flag("disable_cdf_update")
         h.allowScreenContentTools = s.seqForceScreenContentTools == 2 ? try r.flag("allow_screen_content_tools") : s.seqForceScreenContentTools == 1
-        if h.allowScreenContentTools && s.seqForceIntegerMv == 2 { _ = try r.f(1, "force_integer_mv") }
-        h.forceIntegerMv = true
-        if s.frameIdNumbersPresent { _ = try r.f(idLen, "current_frame_id") }
-        if !s.reducedStillPictureHeader { frameSizeOverride = try r.flag("frame_size_override_flag") }
-        _ = try r.f(s.orderHintBits, "order_hint")
+        if h.allowScreenContentTools {
+            h.forceIntegerMv = s.seqForceIntegerMv == 2 ? try r.flag("force_integer_mv") : s.seqForceIntegerMv == 1
+        } else {
+            h.forceIntegerMv = false
+        }
+        if h.frameIsIntra { h.forceIntegerMv = true }
+        if s.frameIdNumbersPresent { h.currentFrameId = try r.f(idLen, "current_frame_id") }
+        if h.frameType == AV1FrameType.switchFrame {
+            frameSizeOverride = true
+        } else if !s.reducedStillPictureHeader {
+            frameSizeOverride = try r.flag("frame_size_override_flag")
+        }
+        h.orderHint = try r.f(s.orderHintBits, "order_hint")
+        h.primaryRefFrame = h.frameIsIntra || h.errorResilientMode ? AV1Ref.primaryRefNone : try r.f(3, "primary_ref_frame")
         if s.decoderModelInfoPresent {
             if try r.flag("buffer_removal_time_present_flag") {
                 for (op, idc) in s.operatingPointIdc.enumerated() where s.decoderModelPresentForOp[op] {
@@ -432,31 +507,92 @@ struct AV1FrameHeader {
                 }
             }
         }
-        // refresh_frame_flags = allFrames for a shown key frame.
-        // frame_size( ), superres_params( ), compute_image_size( ), render_size( )
-        if frameSizeOverride {
-            h.frameWidth = try r.f(s.frameWidthBits, "frame_width_minus_1") + 1
-            h.frameHeight = try r.f(s.frameHeightBits, "frame_height_minus_1") + 1
+        h.allowHighPrecisionMv = false
+        h.useRefFrameMvs = false
+        h.allowIntrabc = false
+        if h.frameType == AV1FrameType.switchFrame || (h.frameType == AV1FrameType.key && h.showFrame) {
+            h.refreshFrameFlags = allFrames
         } else {
-            h.frameWidth = s.maxFrameWidth
-            h.frameHeight = s.maxFrameHeight
+            h.refreshFrameFlags = try r.f(8, "refresh_frame_flags")
         }
-        guard h.frameWidth <= s.maxFrameWidth, h.frameHeight <= s.maxFrameHeight else { throw .malformed("frame larger than max_frame_*") }
-        h.useSuperres = s.enableSuperres ? try r.flag("use_superres") : false
-        h.superresDenom = h.useSuperres ? try r.f(3, "coded_denom") + 9 : 8
-        h.upscaledWidth = h.frameWidth
-        h.frameWidth = (h.upscaledWidth * 8 + h.superresDenom / 2) / h.superresDenom
-        h.miCols = 2 * ((h.frameWidth + 7) >> 3)
-        h.miRows = 2 * ((h.frameHeight + 7) >> 3)
-        if try r.flag("render_and_frame_size_different") {
-            h.renderWidth = try r.f(16) + 1
-            h.renderHeight = try r.f(16) + 1
+        if !h.frameIsIntra || h.refreshFrameFlags != allFrames {
+            if h.errorResilientMode && s.enableOrderHint {
+                for i in 0..<8 {
+                    let hint = try r.f(s.orderHintBits, "ref_order_hint")
+                    if i < slots.count && hint != slots[i].orderHint { slots[i].valid = false }
+                }
+            }
+        }
+        if h.frameIsIntra {
+            try h.parseFrameSize(&r, s, override: frameSizeOverride)
+            try h.parseRenderSize(&r)
+            if h.allowScreenContentTools && h.upscaledWidth == h.frameWidth { h.allowIntrabc = try r.flag("allow_intrabc") }
         } else {
-            h.renderWidth = h.upscaledWidth
-            h.renderHeight = h.frameHeight
+            var shortSignaling = false
+            if s.enableOrderHint {
+                shortSignaling = try r.flag("frame_refs_short_signaling")
+                if shortSignaling {
+                    let last = try r.f(3, "last_frame_idx"), gold = try r.f(3, "gold_frame_idx")
+                    h.refFrameIdx = Self.setFrameRefs(s, refs: slots, orderHint: h.orderHint, last: last, gold: gold)
+                }
+            }
+            for i in 0..<7 {
+                if !shortSignaling { h.refFrameIdx[i] = try r.f(3, "ref_frame_idx") }
+                if s.frameIdNumbersPresent { _ = try r.f(s.deltaFrameIdLength, "delta_frame_id_minus_1") }
+            }
+            for i in 0..<7 where !slots[h.refFrameIdx[i]].valid { throw .malformed("reference \(i + 1) is an empty slot") }
+            if frameSizeOverride && !h.errorResilientMode {
+                // frame_size_with_refs( )
+                var found = false
+                for i in 0..<7 {
+                    if try r.flag("found_ref") {
+                        let ref = slots[h.refFrameIdx[i]]
+                        h.upscaledWidth = ref.upscaledWidth
+                        h.frameWidth = h.upscaledWidth
+                        h.frameHeight = ref.frameHeight
+                        h.renderWidth = ref.renderWidth
+                        h.renderHeight = ref.renderHeight
+                        found = true
+                        break
+                    }
+                }
+                if found {
+                    try h.parseSuperres(&r, s)
+                    h.computeImageSize()
+                } else {
+                    try h.parseFrameSize(&r, s, override: true)
+                    try h.parseRenderSize(&r)
+                }
+            } else {
+                try h.parseFrameSize(&r, s, override: frameSizeOverride)
+                try h.parseRenderSize(&r)
+            }
+            h.allowHighPrecisionMv = h.forceIntegerMv ? false : try r.flag("allow_high_precision_mv")
+            h.interpolationFilter = try r.flag("is_filter_switchable") ? 4 : try r.f(2, "interpolation_filter")
+            h.isMotionModeSwitchable = try r.flag("is_motion_mode_switchable")
+            h.useRefFrameMvs = h.errorResilientMode || !s.enableRefFrameMvs ? false : try r.flag("use_ref_frame_mvs")
+            for i in 0..<7 {
+                let hint = slots[h.refFrameIdx[i]].orderHint
+                h.orderHints[AV1Ref.last + i] = hint
+                h.refFrameSignBias[AV1Ref.last + i] = s.enableOrderHint && s.relativeDist(hint, h.orderHint) > 0
+            }
         }
-        if h.allowScreenContentTools && h.upscaledWidth == h.frameWidth { h.allowIntrabc = try r.flag("allow_intrabc") }
+        guard h.upscaledWidth <= s.maxFrameWidth, h.frameHeight <= s.maxFrameHeight else { throw .malformed("frame larger than max_frame_*") }
         h.disableFrameEndUpdateCdf = s.reducedStillPictureHeader || h.disableCdfUpdate ? true : try r.flag("disable_frame_end_update_cdf")
+        // setup_past_independence( ) or load_previous( ).
+        var prevGmParams = AV1Global.identityParams
+        if h.primaryRefFrame == AV1Ref.primaryRefNone {
+            h.loopFilterRefDeltas = AV1Global.defaultRefDeltas
+            h.loopFilterModeDeltas = [0, 0]
+            h.loopFilterDeltaEnabled = true
+        } else {
+            let prev = slots[h.refFrameIdx[h.primaryRefFrame]]
+            prevGmParams = prev.gmParams
+            h.loopFilterRefDeltas = prev.lfRefDeltas
+            h.loopFilterModeDeltas = prev.lfModeDeltas
+            h.featureEnabled = prev.featureEnabled
+            h.featureData = prev.featureData
+        }
         try h.parseTileInfo(&r, s)
         try h.parseQuantization(&r, s)
         try h.parseSegmentation(&r)
@@ -488,11 +624,134 @@ struct AV1FrameHeader {
         try h.parseCdef(&r, s)
         try h.parseLr(&r, s)
         h.txMode = h.codedLossless ? 0 : (try r.flag("tx_mode_select") ? 2 : 1)
-        // frame_reference_mode( ), skip_mode_params( ), allow_warped_motion: nothing for intra frames.
+        h.referenceSelect = h.frameIsIntra ? false : try r.flag("reference_select")
+        if !h.frameIsIntra && h.referenceSelect && s.enableOrderHint,
+           let (a, b) = Self.skipModeFrames(s, refs: slots, refFrameIdx: h.refFrameIdx, orderHint: h.orderHint) {
+            h.skipModeFrame = [a, b]
+            h.skipModePresent = try r.flag("skip_mode_present")
+        }
+        h.allowWarpedMotion = h.frameIsIntra || h.errorResilientMode || !s.enableWarpedMotion ? false : try r.flag("allow_warped_motion")
         h.reducedTxSet = try r.flag("reduced_tx_set")
-        // global_motion_params( ): nothing for intra frames.
-        try h.parseFilmGrain(&r, s)
+        try h.parseGlobalMotion(&r, prev: prevGmParams)
+        try h.parseFilmGrain(&r, s, refs: slots)
         return h
+    }
+
+    /// frame_size( ) with superres_params( ) and compute_image_size( ).
+    mutating func parseFrameSize(_ r: inout AV1BitReader, _ s: AV1SequenceHeader, override: Bool) throws(AV1DecodeError) {
+        if override {
+            frameWidth = try r.f(s.frameWidthBits, "frame_width_minus_1") + 1
+            frameHeight = try r.f(s.frameHeightBits, "frame_height_minus_1") + 1
+        } else {
+            frameWidth = s.maxFrameWidth
+            frameHeight = s.maxFrameHeight
+        }
+        guard frameWidth <= s.maxFrameWidth, frameHeight <= s.maxFrameHeight else { throw .malformed("frame larger than max_frame_*") }
+        try parseSuperres(&r, s)
+        computeImageSize()
+    }
+
+    mutating func parseSuperres(_ r: inout AV1BitReader, _ s: AV1SequenceHeader) throws(AV1DecodeError) {
+        useSuperres = s.enableSuperres ? try r.flag("use_superres") : false
+        superresDenom = useSuperres ? try r.f(3, "coded_denom") + 9 : 8
+        upscaledWidth = frameWidth
+        frameWidth = (upscaledWidth * 8 + superresDenom / 2) / superresDenom
+    }
+
+    mutating func computeImageSize() {
+        miCols = 2 * ((frameWidth + 7) >> 3)
+        miRows = 2 * ((frameHeight + 7) >> 3)
+    }
+
+    mutating func parseRenderSize(_ r: inout AV1BitReader) throws(AV1DecodeError) {
+        if try r.flag("render_and_frame_size_different") {
+            renderWidth = try r.f(16) + 1
+            renderHeight = try r.f(16) + 1
+        } else {
+            renderWidth = upscaledWidth
+            renderHeight = frameHeight
+        }
+    }
+
+    /// global_motion_params( ) (5.9.24, 5.9.25).
+    mutating func parseGlobalMotion(_ r: inout AV1BitReader, prev: [[Int]]) throws(AV1DecodeError) {
+        gmType = [Int](repeating: 0, count: 8)
+        gmParams = AV1Global.identityParams
+        if frameIsIntra { return }
+        for ref in AV1Ref.last...AV1Ref.altref {
+            var type = 0
+            if try r.flag("is_global") {
+                if try r.flag("is_rot_zoom") { type = 2 } else { type = try r.flag("is_translation") ? 1 : 3 }
+            }
+            gmType[ref] = type
+            func param(_ idx: Int) throws(AV1DecodeError) {
+                var absBits = 12, precBits = 15
+                if idx < 2 {
+                    if type == 1 {
+                        absBits = 9 - (allowHighPrecisionMv ? 0 : 1)
+                        precBits = 3 - (allowHighPrecisionMv ? 0 : 1)
+                    } else {
+                        absBits = 12
+                        precBits = 6
+                    }
+                }
+                let precDiff = 16 - precBits
+                let round = idx % 3 == 2 ? 1 << 16 : 0
+                let sub = idx % 3 == 2 ? 1 << precBits : 0
+                let mx = 1 << absBits
+                let rr = (prev[ref][idx] >> precDiff) - sub
+                gmParams[ref][idx] = (try Self.decodeSignedSubexpWithRef(&r, low: -mx, high: mx + 1, r: rr) << precDiff) + round
+            }
+            if type >= 2 {
+                try param(2)
+                try param(3)
+                if type == 3 {
+                    try param(4)
+                    try param(5)
+                } else {
+                    gmParams[ref][4] = -gmParams[ref][3]
+                    gmParams[ref][5] = gmParams[ref][2]
+                }
+            }
+            if type >= 1 {
+                try param(0)
+                try param(1)
+            }
+        }
+    }
+
+    static func decodeSignedSubexpWithRef(_ r: inout AV1BitReader, low: Int, high: Int, r ref: Int) throws(AV1DecodeError) -> Int {
+        try decodeUnsignedSubexpWithRef(&r, mx: high - low, r: ref - low) + low
+    }
+
+    static func decodeUnsignedSubexpWithRef(_ r: inout AV1BitReader, mx: Int, r ref: Int) throws(AV1DecodeError) -> Int {
+        let v = try decodeSubexp(&r, numSyms: mx)
+        func inverseRecenter(_ r: Int, _ v: Int) -> Int {
+            if v > 2 * r { return v }
+            if v & 1 == 1 { return r - ((v + 1) >> 1) }
+            return r + (v >> 1)
+        }
+        if (ref << 1) <= mx { return inverseRecenter(ref, v) }
+        return mx - 1 - inverseRecenter(mx - 1 - ref, v)
+    }
+
+    static func decodeSubexp(_ r: inout AV1BitReader, numSyms: Int) throws(AV1DecodeError) -> Int {
+        var i = 0, mk = 0
+        let k = 3
+        while true {
+            let b2 = i > 0 ? k + i - 1 : k
+            let a = 1 << b2
+            if numSyms <= mk + 3 * a {
+                return try r.ns(numSyms - mk, "subexp_final_bits") + mk
+            }
+            if try r.flag("subexp_more_bits") {
+                i += 1
+                mk += a
+            } else {
+                return try r.f(b2, "subexp_bits") + mk
+            }
+            guard i < 32 else { throw .malformed("subexp") }
+        }
     }
 
     mutating func parseTileInfo(_ r: inout AV1BitReader, _ s: AV1SequenceHeader) throws(AV1DecodeError) {
@@ -556,7 +815,7 @@ struct AV1FrameHeader {
             tileRowsLog2 = tileLog2(1, tileRows)
         }
         if tileColsLog2 > 0 || tileRowsLog2 > 0 {
-            _ = try r.f(tileRowsLog2 + tileColsLog2, "context_update_tile_id")
+            contextUpdateTileId = try r.f(tileRowsLog2 + tileColsLog2, "context_update_tile_id")
             tileSizeBytes = try r.f(2) + 1
         }
     }
@@ -587,8 +846,18 @@ struct AV1FrameHeader {
 
     mutating func parseSegmentation(_ r: inout AV1BitReader) throws(AV1DecodeError) {
         segmentationEnabled = try r.flag("segmentation_enabled")
-        if segmentationEnabled {
-            // primary_ref_frame is PRIMARY_REF_NONE: update_map = 1, update_data = 1.
+        var updateData = true
+        segmentationUpdateMap = true
+        segmentationTemporalUpdate = false
+        if segmentationEnabled && primaryRefFrame != AV1Ref.primaryRefNone {
+            segmentationUpdateMap = try r.flag("segmentation_update_map")
+            if segmentationUpdateMap { segmentationTemporalUpdate = try r.flag("segmentation_temporal_update") }
+            updateData = try r.flag("segmentation_update_data")
+        }
+        if !segmentationEnabled {
+            featureEnabled = [[Bool]](repeating: [Bool](repeating: false, count: 8), count: 8)
+            featureData = [[Int]](repeating: [Int](repeating: 0, count: 8), count: 8)
+        } else if updateData {
             for i in 0..<8 {
                 for j in 0..<8 {
                     let enabled = try r.flag("feature_enabled")
@@ -617,7 +886,13 @@ struct AV1FrameHeader {
     }
 
     mutating func parseLoopFilter(_ r: inout AV1BitReader, _ s: AV1SequenceHeader) throws(AV1DecodeError) {
-        if codedLossless || allowIntrabc { return }
+        if codedLossless || allowIntrabc {
+            loopFilterLevel[0] = 0
+            loopFilterLevel[1] = 0
+            loopFilterRefDeltas = AV1Global.defaultRefDeltas
+            loopFilterModeDeltas = [0, 0]
+            return
+        }
         loopFilterLevel[0] = try r.f(6)
         loopFilterLevel[1] = try r.f(6)
         if s.numPlanes > 1, loopFilterLevel[0] != 0 || loopFilterLevel[1] != 0 {
@@ -678,13 +953,22 @@ struct AV1FrameHeader {
         }
     }
 
-    mutating func parseFilmGrain(_ r: inout AV1BitReader, _ s: AV1SequenceHeader) throws(AV1DecodeError) {
-        guard s.filmGrainParamsPresent, showFrame else { return }
+    mutating func parseFilmGrain(_ r: inout AV1BitReader, _ s: AV1SequenceHeader, refs: [AV1RefSlot] = []) throws(AV1DecodeError) {
+        filmGrain = AV1FilmGrainParams()
+        guard s.filmGrainParamsPresent, showFrame || showableFrame else { return }
         var g = AV1FilmGrainParams()
         g.applyGrain = try r.flag("apply_grain")
         guard g.applyGrain else { return }
         g.grainSeed = try r.f(16)
-        // update_grain = 1 for key frames.
+        let updateGrain = frameType == AV1FrameType.inter ? try r.flag("update_grain") : true
+        if !updateGrain {
+            let idx = try r.f(3, "film_grain_params_ref_idx")
+            guard idx < refs.count, refs[idx].valid else { throw .malformed("film_grain_params_ref_idx \(idx)") }
+            let seed = g.grainSeed
+            filmGrain = refs[idx].filmGrain
+            filmGrain.grainSeed = seed
+            return
+        }
         let numY = try r.f(4, "num_y_points")
         guard numY <= 14 else { throw .malformed("num_y_points \(numY)") }
         for _ in 0..<numY { g.pointY.append((try r.f(8), try r.f(8))) }

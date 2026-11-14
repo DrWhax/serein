@@ -1,4 +1,37 @@
 {
+"av1_svt_gop6.mp4": {
+"displayHeight": 144,
+"displayWidth": 176,
+"frames": [
+"4fb1ddf3cf393b72808b18c8e9008f99",
+"02b26d9ab25ed735944c385a28ef9895",
+"fa047b6ba87b7e410c79ba5ecb51ae57",
+"370a5c05e2bc61869d06618042f56f9b",
+"bda34a5ccc632a378001a1dbd74df7fb",
+"10bf77f55ca1b0431dbc5343e34baf16",
+"71db793abf6097d871545adf55179c02",
+"924ade8f3951608f374f00077dbcec55",
+"1d8e4c96a468e7d64c0db1950b00b288",
+"91d3b18839bffab5e5f9798ed1e86256",
+"2bb7392b7dcc8bcb8e3e87bd9cc7256d",
+"d06818b543efcd6a47e241b53ca92e8f"
+],
+"rgbBytes": 76032,
+"times": [
+0.0,
+0.04,
+0.08,
+0.12,
+0.16,
+0.2,
+0.24,
+0.28,
+0.32,
+0.36,
+0.4,
+0.44
+]
+},
 "baseline_p_cavlc_ref3.mp4": {
 "displayHeight": 144,
 "displayWidth": 176,

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3 -I
 """Generate Packages/SignalCodecs/Sources/VideoAV1/AV1Tables.generated.swift from the AV1
 specification's own source (github.com/AOMediaCodec/av1-spec, the Markdown the published
-specification is built from): every constant table the intra (key-frame) decoding process
-uses — scan orders, block / transform geometry, default CDFs, quantiser lookups and matrices,
-intra prediction, loop filter / CDEF / loop restoration / superres / film grain constants.
+specification is built from): every constant table of the decoding process — scan orders,
+block / transform geometry, default CDFs, quantiser lookups and matrices, intra and inter
+prediction (interpolation, warp, wedge, OBMC and inter-intra weights), loop filter / CDEF /
+loop restoration / superres / film grain constants.
 
 Symbolic values (BLOCK_*, TX_*, DCT_DCT, …) and dimensions resolve through the constants of
 03.symbols.md and the enumerations of 07.bitstream.semantics.md. Tables are flattened in C
@@ -34,6 +35,9 @@ for m in re.finditer(r"^\|\s*(\d+)\s*\|\s*([A-Z][A-Z0-9_]+)[ \t]*(?:\||$)", read
 for m in re.finditer(r"^\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([A-Z][A-Z0-9_]+)[ \t]*(?:\||$)", read("07.bitstream.semantics.md"), re.M):
     define(m.group(2), int(m.group(1)))
 consts.setdefault("NONE", -1)
+# "| NAME | value" rows in the decoding process (the wedge directions).
+for m in re.finditer(r"^\|\s*([A-Z][A-Z0-9_]+)\s*\|\s*(-?\d+)\s*$", read("08.decoding.process.md"), re.M):
+    define(m.group(1), int(m.group(2)))
 
 def evaluate(expr):
     expr = expr.strip()
@@ -54,9 +58,7 @@ for _ in range(4):
             try: consts[name] = evaluate(value.replace("\\", ""))
             except (KeyError, SyntaxError, ValueError): pass
 
-skip = re.compile(r"^(Obmc_|Wedge_|Ii_Weights|Quant_Dist|Warped_Filters|Div_Lut|Div_Mult|Ref_Frame_List|Compound_Mode_Ctx_Map|"
-                  r"Default_(Inter_Intra|Wedge|Use_Obmc|Comp|Compound|Uni_Comp|Motion_Mode|Interp_Filter|New_Mv|Zero_Mv|Ref_Mv|Drl_Mode|"
-                  r"Is_Inter|Skip_Mode|Single_Ref|Y_Mode)|T$|CurrFrame)")
+skip = re.compile(r"^(T|CurrFrame)$")
 
 tables = {}
 src = "".join(read(f) for f in sorted(os.listdir(SPEC)) if re.match(r"\d\d\..*\.md$", f))

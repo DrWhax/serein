@@ -7,8 +7,10 @@ struct AV1InverseTransform {
     var input = [Int](repeating: 0, count: 64 * 64)
     /// Residual[ i ][ j ] at i * 64 + j.
     var residual = [Int](repeating: 0, count: 64 * 64)
-    var t = [Int](repeating: 0, count: 64)
-    var copy = [Int](repeating: 0, count: 64)
+    /// The 1D transform's array T (and a copy for the permutations): inline, so the
+    /// butterflies write in place without a uniqueness check each.
+    var t = InlineArray<64, Int>(repeating: 0)
+    var copy = InlineArray<64, Int>(repeating: 0)
 
     @inline(__always) static func brev(_ numBits: Int, _ x: Int) -> Int {
         var r = 0
@@ -32,7 +34,11 @@ struct AV1InverseTransform {
         let y = t[a] * Self.sin128(angle) + t[bb] * Self.cos128(angle)
         t[a] = round2(x, 12)
         t[bb] = round2(y, 12)
-        if flip { t.swapAt(a, bb) }
+        if flip {
+            let v = t[a]
+            t[a] = t[bb]
+            t[bb] = v
+        }
     }
 
     @inline(__always) mutating func hd(_ a: Int, _ bb: Int, _ flip: Bool, _ r: Int) {
@@ -202,6 +208,11 @@ struct AV1InverseTransform {
         let rk = Self.rowKind(txType), ck = Self.colKind(txType)
         let rect = abs(log2W - log2H) == 1
         let cLo = -(1 << (colClamp - 1)), cHi = (1 << (colClamp - 1)) - 1
+        // Residual in a local while transforming (no uniqueness check per write).
+        var residual = self.residual
+        self.residual = []
+        defer { self.residual = residual }
+        let input = self.input
         for i in 0..<h {
             if i >= nonzeroRows || i >= 32 {
                 // A zero row stays zero through every row transform.

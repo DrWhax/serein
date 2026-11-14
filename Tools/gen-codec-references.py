@@ -92,6 +92,31 @@ def step_videoservice(corpora):
     json.dump(refs, open(os.path.join(dst, "references.json"), "w"), indent=0, sort_keys=True)
     print("videoservice:", len(files), "files")
 
+def step_videoservice_av1(corpora):
+    """An AV1 MP4 (SVT-AV1, 4:2:0 8-bit, two GOPs) for the service's video requests, added to
+    the videoservice fixtures without touching the others: ffmpeg decodes it with libdav1d."""
+    dst = os.path.join(ROOT, "Packages/SignalMediaService/Tests/SignalMediaDecoderTests/Resources/Video")
+    name = "av1_svt_gop6.mp4"
+    path = os.path.join(dst, name)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=176x144:rate=25,trim=end_frame=12",
+                    "-c:v", "libsvtav1", "-preset", "8", "-g", "6", "-pix_fmt", "yuv420p", "-svtav1-params", "scd=0",
+                    "-an", "-map_metadata", "-1", "-fflags", "+bitexact", "-movflags", "+faststart", path], check=True)
+    dec = ["-c:v", "libdav1d"]
+    rgb = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error"] + dec + ["-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         check=True, capture_output=True).stdout
+    open(path + ".frame0.rgb", "wb").write(rgb)
+    md5 = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error"] + dec + ["-i", path, "-map", "0:v", "-f", "framemd5", "-pix_fmt", "yuv420p", "-"],
+                         check=True, capture_output=True, text=True).stdout
+    frames = [l.split(",")[-1].strip() for l in md5.splitlines() if l and not l.startswith("#")]
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames", "-show_entries", "frame=pts_time:stream=width,height",
+                                       "-of", "json", path], check=True, capture_output=True).stdout)
+    times = [float(fr["pts_time"]) for fr in probe["frames"]]
+    refs_path = os.path.join(dst, "references.json")
+    refs = json.load(open(refs_path))
+    refs[name] = {"frames": frames, "times": times, "displayWidth": 176, "displayHeight": 144, "rgbBytes": len(rgb)}
+    json.dump(refs, open(refs_path, "w"), indent=0, sort_keys=True)
+    print("videoservice_av1:", name, len(frames), "frames")
+
 def step_h264(corpora):
     """H.264 streams from x264 (through ffmpeg) covering the decoder's tools one configuration
     at a time; H.264 decoding is exact, so ffmpeg's per-frame MD5 of the cropped yuv420p
@@ -593,7 +618,7 @@ def step_webpanim(corpora):
     json.dump(refs, open(os.path.join(RES, "References/webp-anim.json"), "w"), indent=1, sort_keys=True)
     print("webp anim:", len(refs), "animated files")
 
-STEPS = {"webpcorpus": step_webpcorpus, "webpanim": step_webpanim, "cjpeg": step_cjpeg, "jpegcorpus": step_jpegcorpus, "blurhash": step_blurhash, "bmp": step_bmp, "pillow": step_pillow, "jpeg": step_jpeg, "webp": step_webp, "mp4": step_mp4, "aac": step_aac, "mp3": step_mp3, "mp3conformance": step_mp3conformance, "audioservice": step_audioservice, "h264": step_h264, "videoservice": step_videoservice}
+STEPS = {"webpcorpus": step_webpcorpus, "webpanim": step_webpanim, "cjpeg": step_cjpeg, "jpegcorpus": step_jpegcorpus, "blurhash": step_blurhash, "bmp": step_bmp, "pillow": step_pillow, "jpeg": step_jpeg, "webp": step_webp, "mp4": step_mp4, "aac": step_aac, "mp3": step_mp3, "mp3conformance": step_mp3conformance, "audioservice": step_audioservice, "h264": step_h264, "videoservice": step_videoservice, "videoservice_av1": step_videoservice_av1}
 
 if __name__ == "__main__":
     corpora = sys.argv[1]

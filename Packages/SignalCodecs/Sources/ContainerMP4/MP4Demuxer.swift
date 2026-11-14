@@ -152,6 +152,7 @@ public enum MP4Demuxer {
             switch b.type {
             case t("avc1"), t("avc3"): out.append(try parseAVCEntry(b, limits: limits, count: &count))
             case t("hvc1"), t("hev1"): out.append(try parseHEVCEntry(b, limits: limits, count: &count))
+            case t("av01"): out.append(try parseAV1Entry(b, limits: limits, count: &count))
             case t("mp4a"): out.append(try parseMP4AEntry(b, limits: limits, count: &count))
             default: out.append(.unsupported(b.type))
             }
@@ -206,6 +207,16 @@ public enum MP4Demuxer {
         let kids = try BoxGrammar.children(c.rest(), topLevel: false, limits: limits, count: &count)
         guard let hvcC = kids.first(where: { $0.type == t("hvcC") }) else { throw ParseFailure(offset: b.offset, rule: "hvc1", reason: .mismatch(expected: "hvcC")) }
         return .hevc(fourCC: b.type, width: width, height: height, config: try parseHvcC(hvcC.body))
+    }
+
+    static func parseAV1Entry(_ b: Box, limits: MP4Limits, count: inout Int) throws(ParseFailure) -> SampleEntry {
+        var c = b.body.cursor()
+        try c.skip(6 + 2 + 16, "VisualSampleEntry.reserved")
+        let width = Int(try c.u16be("VisualSampleEntry.width")), height = Int(try c.u16be("VisualSampleEntry.height"))
+        try c.skip(4 + 4 + 4 + 2 + 32 + 2 + 2, "VisualSampleEntry.rest")
+        let kids = try BoxGrammar.children(c.rest(), topLevel: false, limits: limits, count: &count)
+        guard let av1C = kids.first(where: { $0.type == t("av1C") }) else { throw ParseFailure(offset: b.offset, rule: "av01", reason: .mismatch(expected: "av1C")) }
+        return .av1(width: width, height: height, config: try HEIFParser.parseAv1C(av1C.body))
     }
 
     /// HEVCDecoderConfigurationRecord (ISO/IEC 14496-15 8.3.3.1).

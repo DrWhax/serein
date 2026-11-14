@@ -20,6 +20,8 @@ public struct AV1Frame: Sendable {
     public var y: [UInt16], u: [UInt16], v: [UInt16]
     public var colourPrimaries: Int, transferCharacteristics: Int, matrixCoefficients: Int
     public var fullRange: Bool
+    /// The presentation timestamp of the sample it was shown in (video).
+    public var pts: Int64 = 0
     public var chromaWidth: Int { monochrome ? 0 : (width + (subsamplingX ? 1 : 0)) >> (subsamplingX ? 1 : 0) }
     public var chromaHeight: Int { monochrome ? 0 : (height + (subsamplingY ? 1 : 0)) >> (subsamplingY ? 1 : 0) }
 }
@@ -126,10 +128,19 @@ public enum AV1Decoder {
             if tgEnd == numTiles - 1 { complete = true }
         }
 
+        /// A still frame: tiles parsed in parallel, then reconstructed as a wavefront.
         func decode() throws(AV1DecodeError) -> (frame: AV1Frame, stats: [Int]) {
+            let tiles = try AV1Replay.reconstruct(try decodeTiles(replay: true))
+            let p = Self.parsed(tiles, info)
+            var stats = p.stats
+            let planes = Self.wrapup(Self.samples(tiles, info), p.mode, info, tiles: tiles.count, stats: &stats)
+            return (Self.output(planes, info), stats)
+        }
+
+        /// Every tile, in parallel, each into its own buffers. `replay`: parse only, recording
+        /// what reconstruction replays (AV1TileReplay.swift).
+        func decodeTiles(replay: Bool) throws(AV1DecodeError) -> [AV1TileDecoder] {
             let f = info
-            let h = f.hdr
-            // Tiles in parallel, each into its own buffers.
             let results = Mutex<[Result<AV1TileDecoder, AV1DecodeError>?]>(Array(repeating: nil, count: tiles.count))
             let data = self.data
             let tiles = self.tiles
@@ -137,7 +148,7 @@ public enum AV1Decoder {
                 let t = tiles[i]
                 let r: Result<AV1TileDecoder, AV1DecodeError>
                 do throws(AV1DecodeError) {
-                    var d = try AV1TileDecoder(f, data: data, start: t.start, size: t.size, tileRow: t.row, tileCol: t.col)
+                    var d = try AV1TileDecoder(f, data: data, start: t.start, size: t.size, tileRow: t.row, tileCol: t.col, recording: replay)
                     try d.decodeTile()
                     r = .success(d)
                 } catch {
@@ -146,36 +157,76 @@ public enum AV1Decoder {
                 results.withLock { $0[i] = r }
             }
             var decoded: [AV1TileDecoder] = []
-            var stats = [Int](repeating: 0, count: AV1Tool.allCases.count)
             for r in results.withLock({ $0 }) {
                 switch r {
-                case .success(let d):
-                    decoded.append(d)
-                    for (i, v) in d.stats.enumerated() { stats[i] += v }
+                case .success(let d): decoded.append(d)
                 case .failure(let e): throw e
                 case nil: throw .malformed("tile not decoded")
                 }
             }
-            // Assemble the frame.
+            return decoded
+        }
+
+        /// What parsing the tiles gives the frame: mode info, motion, CDFs and tool counts. A
+        /// single tile is the frame (its arrays, with its stride).
+        static func parsed(_ tiles: [AV1TileDecoder], _ f: AV1FrameInfo) -> AV1ParsedFrame {
+            let h = f.hdr
+            var stats = [Int](repeating: 0, count: AV1Tool.allCases.count)
+            var finalCdf: [UInt16] = []
+            var interStats = [Int](repeating: 0, count: AV1InterTool.allCases.count)
+            for (i, d) in tiles.enumerated() {
+                if i == h.contextUpdateTileId { finalCdf = d.sd.cdf }
+                for (k, v) in d.interStats.enumerated() { interStats[k] += v }
+                for (k, v) in d.stats.enumerated() { stats[k] += v }
+            }
+            let inter = !h.frameIsIntra
+            if let t = tiles.first, tiles.count == 1, t.miRowStart == 0, t.miColStart == 0 {
+                var lrUnits = (0..<3).map { [AV1LRUnit](repeating: AV1LRUnit(), count: f.lrUnitRows[$0] * f.lrUnitCols[$0]) }
+                for u in t.lrUnits where u.index < lrUnits[u.plane].count { lrUnits[u.plane][u.index] = u.unit }
+                let mode = AV1FrameModeInfo(miRows: h.miRows, miCols: h.miCols, stride: t.miStride, miSize: t.miSizes, skip: t.skips, segmentId: t.segmentIds,
+                                            lfTxSize: t.lfTxSizes, lfStride: t.lfStride, deltaLF: t.deltaLFs, cdefIdx: t.cdefIdx, cdefCols: t.cdefCols,
+                                            lrUnits: lrUnits, refFrames: t.refFrames, yMode: t.yModes)
+                return AV1ParsedFrame(mode: mode, mvs: inter ? t.mvs : [], cdf: finalCdf, stats: stats, interStats: interStats)
+            }
+            let (mode, mvs) = assembleMode(tiles, f)
+            return AV1ParsedFrame(mode: mode, mvs: mvs, cdf: finalCdf, stats: stats, interStats: interStats)
+        }
+
+        /// The frame's samples before the in-loop filters.
+        static func samples(_ tiles: [AV1TileDecoder], _ f: AV1FrameInfo) -> [AV1PlaneBuffer] {
+            if let t = tiles.first, tiles.count == 1, t.miRowStart == 0, t.miColStart == 0 { return t.planes }
+            return assembleSamples(tiles, f)
+        }
+
+        /// decode_frame_wrapup: loop filter, CDEF, upscaling, loop restoration; the samples
+        /// UpscaledWidth wide.
+        static func wrapup(_ input: [AV1PlaneBuffer], _ mode: AV1FrameModeInfo, _ f: AV1FrameInfo, tiles: Int, stats: inout [Int]) -> [AV1PlaneBuffer] {
+            let h = f.hdr
+            var planes = input
+            let filters = AV1Filters(f: f, m: mode)
+            if h.loopFilterLevel[0] != 0 || h.loopFilterLevel[1] != 0 { stats[AV1Tool.deblock.rawValue] += 1 }
+            if h.useSuperres { stats[AV1Tool.superres.rawValue] += 1 }
+            if f.seq.use128 { stats[AV1Tool.sb128.rawValue] += 1 }
+            if tiles > 1 { stats[AV1Tool.multiTile.rawValue] += 1 }
+            if mode.cdefIdx.contains(where: { $0 >= 0 }) && (0..<(1 << h.cdefBits)).contains(where: { h.cdefYPri[$0] + h.cdefYSec[$0] + h.cdefUVPri[$0] + h.cdefUVSec[$0] > 0 }) {
+                stats[AV1Tool.cdef.rawValue] += 1
+            }
+            if f.seq.filmGrainParamsPresent && h.filmGrain.applyGrain { stats[AV1Tool.filmGrain.rawValue] += 1 }
+            filters.loopFilter(&planes)
+            let cdef = filters.cdef(planes)
+            let upCdef = filters.upscale(cdef)
+            let upCur = h.usesLr ? filters.upscale(planes) : upCdef
+            return filters.loopRestoration(cur: upCur, cdef: upCdef)
+        }
+
+        /// Several tiles: their samples copied into frame-sized buffers.
+        static func assembleSamples(_ decoded: [AV1TileDecoder], _ f: AV1FrameInfo) -> [AV1PlaneBuffer] {
+            let h = f.hdr
             var planes: [AV1PlaneBuffer] = []
             for p in 0..<f.numPlanes {
                 let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
                 planes.append(AV1PlaneBuffer(x0: 0, y0: 0, width: (h.miCols * 4) >> sx, height: (h.miRows * 4) >> sy))
             }
-            let n = h.miRows * h.miCols
-            var lfStride: [Int] = [], lf: [[UInt8]] = []
-            for p in 0..<f.numPlanes {
-                let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
-                let w = (h.miCols >> sx) + 1, hh = (h.miRows >> sy) + 1
-                lfStride.append(w)
-                lf.append([UInt8](repeating: 0, count: w * hh))
-            }
-            let cdefCols = (h.miCols + 15) / 16
-            var mode = AV1FrameModeInfo(miRows: h.miRows, miCols: h.miCols, miSize: [UInt8](repeating: 0, count: n), skip: [UInt8](repeating: 0, count: n),
-                                        segmentId: [UInt8](repeating: 0, count: n), lfTxSize: lf, lfStride: lfStride,
-                                        deltaLF: h.deltaLfPresent ? [Int8](repeating: 0, count: 4 * n) : [],
-                                        cdefIdx: [Int8](repeating: -1, count: cdefCols * ((h.miRows + 15) / 16)), cdefCols: cdefCols,
-                                        lrUnits: (0..<3).map { [AV1LRUnit](repeating: AV1LRUnit(), count: f.lrUnitRows[$0] * f.lrUnitCols[$0]) })
             for t in decoded {
                 for p in 0..<f.numPlanes {
                     let src = t.planes[p]
@@ -186,6 +237,33 @@ public enum AV1Decoder {
                         let d = y * planes[p].width + src.x0
                         planes[p].px.replaceSubrange(d..<(d + x1 - src.x0), with: src.px[s..<(s + x1 - src.x0)])
                     }
+                }
+            }
+            return planes
+        }
+
+        /// Several tiles: their mode info and motion copied into frame-sized arrays.
+        static func assembleMode(_ decoded: [AV1TileDecoder], _ f: AV1FrameInfo) -> (AV1FrameModeInfo, [Int32]) {
+            let h = f.hdr
+            let n = h.miRows * h.miCols
+            var lfStride: [Int] = [], lf: [[UInt8]] = []
+            for p in 0..<f.numPlanes {
+                let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
+                let w = (h.miCols >> sx) + 1, hh = (h.miRows >> sy) + 1
+                lfStride.append(w)
+                lf.append([UInt8](repeating: 0, count: w * hh))
+            }
+            let cdefCols = (h.miCols + 15) / 16
+            var mode = AV1FrameModeInfo(miRows: h.miRows, miCols: h.miCols, stride: h.miCols, miSize: [UInt8](repeating: 0, count: n),
+                                        skip: [UInt8](repeating: 0, count: n), segmentId: [UInt8](repeating: 0, count: n), lfTxSize: lf, lfStride: lfStride,
+                                        deltaLF: h.deltaLfPresent ? [Int8](repeating: 0, count: 4 * n) : [],
+                                        cdefIdx: [Int8](repeating: -1, count: cdefCols * ((h.miRows + 15) / 16)), cdefCols: cdefCols,
+                                        lrUnits: (0..<3).map { [AV1LRUnit](repeating: AV1LRUnit(), count: f.lrUnitRows[$0] * f.lrUnitCols[$0]) },
+                                        refFrames: [Int8](repeating: Int8(AV1Ref.none), count: 2 * n), yMode: [UInt8](repeating: 0, count: n))
+            let inter = !h.frameIsIntra
+            var mvs = inter ? [Int32](repeating: 0, count: 4 * n) : []
+            for t in decoded {
+                for p in 0..<f.numPlanes {
                     let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
                     let ox = t.miColStart >> sx, oy = t.miRowStart >> sy
                     let tw = t.lfStride[p], th = t.lfTxSizes[p].count / tw
@@ -195,14 +273,17 @@ public enum AV1Decoder {
                         }
                     }
                 }
+                // Row by row: the tile's mode info into the frame's.
+                let cols = t.miColEnd - t.miColStart
                 for r in t.miRowStart..<t.miRowEnd {
-                    for c in t.miColStart..<t.miColEnd {
-                        let s = t.mi(r, c), d = r * h.miCols + c
-                        mode.miSize[d] = t.miSizes[s]
-                        mode.skip[d] = t.skips[s]
-                        mode.segmentId[d] = t.segmentIds[s]
-                        if !mode.deltaLF.isEmpty { for k in 0..<4 { mode.deltaLF[4 * d + k] = t.deltaLFs[4 * s + k] } }
-                    }
+                    let s = t.mi(r, t.miColStart), d = r * h.miCols + t.miColStart
+                    mode.miSize.replaceSubrange(d..<(d + cols), with: t.miSizes[s..<(s + cols)])
+                    mode.skip.replaceSubrange(d..<(d + cols), with: t.skips[s..<(s + cols)])
+                    mode.segmentId.replaceSubrange(d..<(d + cols), with: t.segmentIds[s..<(s + cols)])
+                    mode.yMode.replaceSubrange(d..<(d + cols), with: t.yModes[s..<(s + cols)])
+                    mode.refFrames.replaceSubrange((2 * d)..<(2 * (d + cols)), with: t.refFrames[(2 * s)..<(2 * (s + cols))])
+                    if inter { mvs.replaceSubrange((4 * d)..<(4 * (d + cols)), with: t.mvs[(4 * s)..<(4 * (s + cols))]) }
+                    if !mode.deltaLF.isEmpty { mode.deltaLF.replaceSubrange((4 * d)..<(4 * (d + cols)), with: t.deltaLFs[(4 * s)..<(4 * (s + cols))]) }
                 }
                 for r in stride(from: t.miRowStart, to: t.miRowEnd, by: 16) {
                     for c in stride(from: t.miColStart, to: t.miColEnd, by: 16) {
@@ -211,21 +292,12 @@ public enum AV1Decoder {
                 }
                 for u in t.lrUnits where u.index < mode.lrUnits[u.plane].count { mode.lrUnits[u.plane][u.index] = u.unit }
             }
-            // decode_frame_wrapup: loop filter, CDEF, upscaling, loop restoration.
-            let filters = AV1Filters(f: f, m: mode)
-            if h.loopFilterLevel[0] != 0 || h.loopFilterLevel[1] != 0 { stats[AV1Tool.deblock.rawValue] += 1 }
-            if h.useSuperres { stats[AV1Tool.superres.rawValue] += 1 }
-            if f.seq.use128 { stats[AV1Tool.sb128.rawValue] += 1 }
-            if tiles.count > 1 { stats[AV1Tool.multiTile.rawValue] += 1 }
-            if mode.cdefIdx.contains(where: { $0 >= 0 }) && (0..<(1 << h.cdefBits)).contains(where: { h.cdefYPri[$0] + h.cdefYSec[$0] + h.cdefUVPri[$0] + h.cdefUVSec[$0] > 0 }) {
-                stats[AV1Tool.cdef.rawValue] += 1
-            }
-            filters.loopFilter(&planes)
-            let cdef = filters.cdef(planes)
-            let upCdef = filters.upscale(cdef)
-            let upCur = h.usesLr ? filters.upscale(planes) : upCdef
-            let lr = filters.loopRestoration(cur: upCur, cdef: upCdef)
-            // Output: UpscaledWidth × FrameHeight.
+            return (mode, mvs)
+        }
+
+        /// The output frame: UpscaledWidth × FrameHeight, film grain applied.
+        static func output(_ lr: [AV1PlaneBuffer], _ f: AV1FrameInfo) -> AV1Frame {
+            let h = f.hdr
             let w = h.upscaledWidth, hh = h.frameHeight
             func crop(_ p: AV1PlaneBuffer, _ cw: Int, _ ch: Int) -> [UInt16] {
                 var out = [UInt16](repeating: 0, count: cw * ch)
@@ -245,9 +317,20 @@ public enum AV1Decoder {
             if s.filmGrainParamsPresent && h.filmGrain.applyGrain {
                 AV1FilmGrain(params: h.filmGrain, bitDepth: f.bitDepth, monochrome: s.monochrome, subX: f.subX, subY: f.subY,
                              matrixCoefficients: s.matrixCoefficients).apply(&out)
-                stats[AV1Tool.filmGrain.rawValue] += 1
             }
-            return (out, stats)
+            return out
         }
     }
+}
+
+/// What parsing a frame's tiles gives it: its mode info (what the in-loop filters and a
+/// reference slot read), motion, the CDFs a reference keeps and tool counts.
+struct AV1ParsedFrame: Sendable {
+    var mode: AV1FrameModeInfo
+    /// Mvs (four per mode info unit, stride mode.stride); empty for intra frames.
+    var mvs: [Int32]
+    /// The CDFs at the end of tile context_update_tile_id.
+    var cdf: [UInt16]
+    var stats: [Int]
+    var interStats: [Int]
 }

@@ -161,6 +161,8 @@ public struct AACConfiguration: Sendable, Equatable {
 public enum SampleEntry: Sendable, Equatable {
     case avc(fourCC: FourCC, width: Int, height: Int, config: AVCDecoderConfiguration)
     case hevc(fourCC: FourCC, width: Int, height: Int, config: HEVCDecoderConfiguration)
+    /// `av01` with its `av1C` (AV1-ISOBMFF 2.2, 2.3).
+    case av1(width: Int, height: Int, config: AV1CodecConfiguration)
     case aac(channels: Int, sampleRate: Int, config: AACConfiguration)
     case unsupported(FourCC)
 
@@ -168,6 +170,7 @@ public enum SampleEntry: Sendable, Equatable {
         switch self {
         case .avc(let f, _, _, _): f
         case .hevc(let f, _, _, _): f
+        case .av1: FourCC("av01")
         case .aac: FourCC("mp4a")
         case .unsupported(let f): f
         }

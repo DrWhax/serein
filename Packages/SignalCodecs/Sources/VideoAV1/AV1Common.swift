@@ -63,6 +63,7 @@ enum AV1C {
     static let quantizerMatrix = AV1Tables.quantizerMatrix.map(Int.init)
     static let cos128Lookup = AV1Tables.cos128Lookup.map(Int.init)
     static let subpelFilters = AV1Tables.subpelFilters.map(Int.init)
+    static let warpedFilters = AV1Tables.warpedFilters.map(Int.init)
     static let upscaleFilter = AV1Tables.upscaleFilter.map(Int.init)
     static let sgrParams = AV1Tables.sgrParams.map(Int.init)
     static let cdefUvDir = AV1Tables.cdefUvDir.map(Int.init)
@@ -139,6 +140,13 @@ enum AV1C {
 @inline(__always) func clip3(_ lo: Int, _ hi: Int, _ x: Int) -> Int { x < lo ? lo : (x > hi ? hi : x) }
 
 /// What a decode exercised (tests check that the fixtures cover every tool).
+/// Inter-frame tools a stream used (AV1VideoDecoder.interStats), for coverage tests.
+enum AV1InterTool: Int, CaseIterable, Sendable {
+    case newMv, nearMv, globalMv, compound, unidirCompound, skipMode, temporalCandidate, segmentPredicted, intraInInter
+    case switchableFilter, dualFilter, obmc, localWarp, globalWarp, wedge, diffwtd, distance, interintra, interintraWedge, scaledRef
+    case showExisting, hiddenFrame, primaryRefCdf
+}
+
 enum AV1Tool: Int, CaseIterable, Sendable {
     case paletteY, paletteUV, intrabc, cfl, filterIntra, angleDelta, edgeUpsample, edgeFilter, smooth, paeth, directional
     case lossless, qmatrix, segmentation, deltaQ, deltaLF, varTxSplit, tx64, golomb, idtx, adst, flipadst, wht

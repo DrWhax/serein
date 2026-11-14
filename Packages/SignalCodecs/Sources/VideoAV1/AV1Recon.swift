@@ -10,6 +10,7 @@ extension AV1TileDecoder {
 
     mutating func computePrediction() {
         guard isInter else { return }
+        guard useIntrabc else { computeInterPrediction(); return }
         for plane in 0..<(hasChroma ? 3 : 1) {
             let sx = plane > 0 ? f.subX : 0, sy = plane > 0 ? f.subY : 0
             let planeSz = AV1C.planeResidualSize(miSize, sx, sy)
@@ -129,7 +130,18 @@ extension AV1TileDecoder {
         let stepX = AV1C.txWidth[txSz] >> 2, stepY = AV1C.txHeight[txSz] >> 2
         let maxX = (f.hdr.miCols * 4) >> sx, maxY = (f.hdr.miRows * 4) >> sy
         if startX >= maxX || startY >= maxY { return }
-        if !isInter {
+        if replaying {
+            replayTransformBlock(plane, startX, startY, txSz, x, y)
+            return
+        }
+        var edges: UInt8 = 0
+        if !isInter && recording {
+            if (plane == 0 && paletteSizeY > 0) || (plane != 0 && paletteSizeUV > 0) {
+            } else {
+                if decoded(plane, (sbRow >> sy) - 1, (sbCol >> sx) + stepX) { edges |= 1 }
+                if decoded(plane, (sbRow >> sy) + stepY, (sbCol >> sx) - 1) { edges |= 2 }
+            }
+        } else if !isInter {
             if (plane == 0 && paletteSizeY > 0) || (plane != 0 && paletteSizeUV > 0) {
                 predictPalette(plane, startX, startY, x, y, txSz)
             } else {
@@ -147,19 +159,19 @@ extension AV1TileDecoder {
                 maxLumaH = startY + stepY * 4
             }
         }
+        let coefStart = coefData.count
         if skip == 0 {
             let eob = coeffs(plane, startX, startY, txSz)
-            if eob > 0 { reconstruct(plane, startX, startY, txSz) }
+            if eob > 0 && !recording { reconstruct(plane, startX, startY, txSz) }
         }
-        let originY = miRowStart >> sy, originX = miColStart >> sx
-        for i in 0..<stepY {
-            for j in 0..<stepX {
-                let ly = (row >> sy) + i - originY, lx = (col >> sx) + j - originX
-                if ly < lfTxSizes[plane].count / lfStride[plane], lx < lfStride[plane] { lfTxSizes[plane][ly * lfStride[plane] + lx] = UInt8(txSz) }
-                let by = (sbRow >> sy) + i, bx = (sbCol >> sx) + j
-                if by + 1 < bdStride, bx + 1 < bdStride { blockDecoded[plane][(by + 1) * bdStride + bx + 1] = 1 }
-            }
+        if recording {
+            txRecords.append(AV1TxRecord(coefStart: Int32(coefStart), coefCount: Int16((coefData.count - coefStart) >> 1),
+                                         txType: UInt8(planeTxType), edges: edges))
         }
+        let lfs = lfStride[plane]
+        Self.fillRect(&lfTxSizes[plane], stride: lfs, rows: lfTxSizes[plane].count / lfs, x0: (col >> sx) - (miColStart >> sx),
+                      y0: (row >> sy) - (miRowStart >> sy), w: stepX, h: stepY, UInt8(txSz))
+        Self.fillRect(&blockDecoded[plane], stride: bdStride, rows: bdStride, x0: (sbCol >> sx) + 1, y0: (sbRow >> sy) + 1, w: stepX, h: stepY, 1)
     }
 
     // MARK: Transform type (5.11.47, 5.11.48, 5.11.40)
@@ -230,6 +242,15 @@ extension AV1TileDecoder {
     // MARK: coeffs
 
     mutating func coeffs(_ plane: Int, _ startX: Int, _ startY: Int, _ txSz: Int) -> Int {
+        // The coefficients and the record in locals while parsing (no uniqueness check per
+        // write), put back on return.
+        var quant = self.quant, coefs = self.coefData
+        self.quant = []
+        self.coefData = []
+        defer {
+            self.quant = quant
+            self.coefData = coefs
+        }
         let x4 = startX >> 2, y4 = startY >> 2
         let w4 = AV1C.txWidth[txSz] >> 2, h4 = AV1C.txHeight[txSz] >> 2
         let txSzCtx = (AV1C.txSizeSqr[txSz] + AV1C.txSizeSqrUp[txSz] + 1) >> 1
@@ -390,17 +411,18 @@ extension AV1TileDecoder {
                 q &= 0xFFFFF
                 culLevel += q
                 quant[pos] = Int32(sign != 0 ? -q : q)
+                if recording && q != 0 {
+                    coefs.append(Int32(pos))
+                    coefs.append(quant[pos])
+                }
             }
             culLevel = min(63, culLevel)
         }
-        for i in 0..<w4 {
-            aboveLevel[plane][x4 + i] = UInt8(culLevel)
-            aboveDc[plane][x4 + i] = UInt8(dcCategory)
-        }
-        for i in 0..<h4 {
-            leftLevel[plane][y4 + i] = UInt8(culLevel)
-            leftDc[plane][y4 + i] = UInt8(dcCategory)
-        }
+        let n = aboveLevel[plane].count, m = leftLevel[plane].count
+        Self.fillRect(&aboveLevel[plane], stride: n, rows: 1, x0: x4, y0: 0, w: w4, h: 1, UInt8(culLevel))
+        Self.fillRect(&aboveDc[plane], stride: n, rows: 1, x0: x4, y0: 0, w: w4, h: 1, UInt8(dcCategory))
+        Self.fillRect(&leftLevel[plane], stride: m, rows: 1, x0: y4, y0: 0, w: h4, h: 1, UInt8(culLevel))
+        Self.fillRect(&leftDc[plane], stride: m, rows: 1, x0: y4, y0: 0, w: h4, h: 1, UInt8(dcCategory))
         return eob
     }
 
@@ -410,7 +432,6 @@ extension AV1TileDecoder {
     func acQ(_ b: Int) -> Int { AV1C.acQLookup[((f.bitDepth - 8) >> 1) * 256 + clip3(0, 255, b)] }
 
     mutating func reconstruct(_ plane: Int, _ x: Int, _ y: Int, _ txSz: Int) {
-        let h = f.hdr
         let dqDenom: Int
         switch txSz {
         case AV1C.tx32x32, AV1C.tx16x32, AV1C.tx32x16, AV1C.tx16x64, AV1C.tx64x16: dqDenom = 2
@@ -423,15 +444,15 @@ extension AV1TileDecoder {
         let t = planeTxType
         let flipUD = t == AV1C.flipadstDct || t == AV1C.flipadstAdst || t == AV1C.vFlipadst || t == AV1C.flipadstFlipadst
         let flipLR = t == AV1C.dctFlipadst || t == AV1C.adstFlipadst || t == AV1C.hFlipadst || t == AV1C.flipadstFlipadst
-        let qindex = h.qindex(ignoreDeltaQ: false, segment: segmentId, current: currentQIndex)
+        let qindex = f.hdr.qindex(ignoreDeltaQ: false, segment: segmentId, current: currentQIndex)
         let dcQuant: Int, acQuant: Int
         switch plane {
-        case 0: dcQuant = dcQ(qindex + h.deltaQYDc); acQuant = acQ(qindex)
-        case 1: dcQuant = dcQ(qindex + h.deltaQUDc); acQuant = acQ(qindex + h.deltaQUAc)
-        default: dcQuant = dcQ(qindex + h.deltaQVDc); acQuant = acQ(qindex + h.deltaQVAc)
+        case 0: dcQuant = dcQ(qindex + f.hdr.deltaQYDc); acQuant = acQ(qindex)
+        case 1: dcQuant = dcQ(qindex + f.hdr.deltaQUDc); acQuant = acQ(qindex + f.hdr.deltaQUAc)
+        default: dcQuant = dcQ(qindex + f.hdr.deltaQVDc); acQuant = acQ(qindex + f.hdr.deltaQVAc)
         }
-        let level = h.segQMLevel[plane][segmentId]
-        let useQm = h.usingQmatrix && t < AV1C.idtx && level < 15
+        let level = f.hdr.segQMLevel[plane][segmentId]
+        let useQm = f.hdr.usingQmatrix && t < AV1C.idtx && level < 15
         let qmBase = useQm ? (level * 2 + (plane > 0 ? 1 : 0)) * 3344 + AV1C.qmOffset[txSz] : 0
         let bd = f.bitDepth
         let lo = -(1 << (7 + bd)), hi = (1 << (7 + bd)) - 1

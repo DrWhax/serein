@@ -1,4 +1,4 @@
-// Video in the service: H.264 and HEVC tracks of MP4 files. Metadata, the poster frame (first frame,
+// Video in the service: H.264, HEVC and AV1 tracks of MP4 files. Metadata, the poster frame (first frame,
 // rotated, PNG), and playback sessions that keep a decoder per open video and return frames
 // in display order. Damaged pictures come out concealed (the decoder's errorCount).
 
@@ -7,6 +7,7 @@ import ContainerMP4
 import EncodePNG
 import Foundation
 import MediaXPCInterface
+import VideoAV1
 import VideoH264
 import VideoHEVC
 
@@ -25,6 +26,7 @@ struct VideoStream {
     enum Backend {
         case avc(H264Decoder, AVCDecoderConfiguration)
         case hevc(HEVCDecoder, HEVCDecoderConfiguration)
+        case av1(AV1VideoDecoder, AV1CodecConfiguration)
     }
 
     let bytes: [UInt8]
@@ -50,8 +52,9 @@ struct VideoStream {
         switch track.sampleEntries.first {
         case .avc(_, _, _, let config)?: backend = .avc(try Self.makeDecoder(config), config)
         case .hevc(_, _, _, let config)?: backend = .hevc(try Self.makeDecoder(config, deep: deep), config)
+        case .av1(_, _, let config)?: backend = .av1(try Self.makeDecoder(config), config)
         default:
-            // Name what it is (av01 = AV1, vp09 = VP9, mp4v = MPEG-4 Part 2…).
+            // Name what it is (vp09 = VP9, mp4v = MPEG-4 Part 2…).
             let codec = track.sampleEntries.first.map { Self.text($0.fourCC) } ?? "none"
             throw MediaProcessingError.undecodable("unsupported video codec \(codec)")
         }
@@ -91,12 +94,40 @@ struct VideoStream {
         }
     }
 
+    static func makeDecoder(_ c: AV1CodecConfiguration) throws -> AV1VideoDecoder {
+        guard !c.monochrome, c.subsamplingX, c.subsamplingY else { throw MediaProcessingError.undecodable("AV1 other than 4:2:0") }
+        do { return try AV1VideoDecoder(configOBUs: c.configOBUs) } catch { throw MediaProcessingError.undecodable("\(error)") }
+    }
+
+    /// 4:2:0 planes: 8-bit, or (10-bit when `deep`) 16-bit little-endian as HEVC's.
+    static func frame(_ f: AV1Frame, deep: Bool) -> DecodedVideoFrame {
+        var p = YUVPicture(width: f.width, height: f.height)
+        let shift = f.bitDepth - 8
+        func reduce(_ a: [UInt16]) -> [UInt8] {
+            if shift == 0 { return a.map { UInt8(truncatingIfNeeded: $0) } }
+            let round = UInt16(1 << (shift - 1))
+            return a.map { UInt8(min(255, ($0 + round) >> UInt16(shift))) }
+        }
+        func packed(_ a: [UInt16]) -> [UInt8] {
+            var out = [UInt8](repeating: 0, count: 2 * a.count)
+            for (i, v) in a.enumerated() { out[2 * i] = UInt8(v & 0xFF); out[2 * i + 1] = UInt8(v >> 8) }
+            return out
+        }
+        let two = deep && f.bitDepth > 8
+        p.y = two ? packed(f.y) : reduce(f.y)
+        p.u = two ? packed(f.u) : reduce(f.u)
+        p.v = two ? packed(f.v) : reduce(f.v)
+        return DecodedVideoFrame(picture: p, bitDepth: two ? f.bitDepth : 8, pts: f.pts, fullRange: f.fullRange, matrix: f.matrixCoefficients,
+                                 transfer: f.transferCharacteristics)
+    }
+
     var info: VideoInfo {
         let duration = file.durationSeconds > 0 ? file.durationSeconds : Double(track.duration) / Double(max(1, track.timescale))
         var w = track.presentationWidth, h = track.presentationHeight
         switch track.sampleEntries.first {
         case .avc(_, let cw, let ch, _)? where w <= 0 || h <= 0: w = cw; h = ch
         case .hevc(_, let cw, let ch, _)? where w <= 0 || h <= 0: w = cw; h = ch
+        case .av1(let cw, let ch, _)? where w <= 0 || h <= 0: w = cw; h = ch
         default: break
         }
         if track.rotation % 180 != 0 { swap(&w, &h) }
@@ -154,6 +185,9 @@ struct VideoStream {
                     pending += out.map { DecodedVideoFrame(picture: $0.picture, pts: $0.pts, fullRange: $0.fullRange, matrix: $0.matrixCoefficients, transfer: 1) }
                 case .hevc(let d, _):
                     pending += d.decode(sample: sample, pts: s.compositionTime).map(Self.eightBit)
+                case .av1(let d, _):
+                    let deep = self.deep
+                    pending += d.decode(sample: sample, pts: s.compositionTime).map { Self.frame($0, deep: deep) }
                 }
             } else {
                 switch backend {
@@ -162,6 +196,9 @@ struct VideoStream {
                     backend = .avc(d, c)
                     pending += out.map { DecodedVideoFrame(picture: $0.picture, pts: $0.pts, fullRange: $0.fullRange, matrix: $0.matrixCoefficients, transfer: 1) }
                 case .hevc(let d, _): pending += d.flush().map(Self.eightBit)
+                case .av1(let d, _):
+                    let deep = self.deep
+                    pending += d.flush().map { Self.frame($0, deep: deep) }
                 }
                 flushed = true
             }
@@ -202,6 +239,7 @@ struct VideoStream {
         switch backend {
         case .avc(_, let c): backend = .avc(try Self.makeDecoder(c), c)
         case .hevc(_, let c): backend = .hevc(try Self.makeDecoder(c, deep: deep), c)
+        case .av1(_, let c): backend = .av1(try Self.makeDecoder(c), c)
         }
         next = start
         pending = []

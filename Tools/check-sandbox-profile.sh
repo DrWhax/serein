@@ -157,7 +157,7 @@ out=$("$host/Contents/MacOS/ProbeHost" $probes -- \
   "$codecs/MetadataStripTests/Resources/image.png" "$codecs/MetadataStripTests/Resources/photo.jpg" \
   "$codecs/MetadataStripTests/Resources/anim.gif" "$codecs/MetadataStripTests/Resources/image.webp" \
   "$res/Audio/stereo_44100_vbr_q7.mp3" "$res/Audio/stereo_48000_96k.m4a" "$res/Audio/mono_8000_16k.aac" \
-  "$res/Video/high_bframes_aac_faststart.mp4" "$res/Video/main_rotated_90.mp4" "$res/Video/hlg10.mp4" \
+  "$res/Video/high_bframes_aac_faststart.mp4" "$res/Video/main_rotated_90.mp4" "$res/Video/hlg10.mp4" "$res/Video/av1_svt_gop6.mp4" \
   "$codecs/VideoHEVCTests/Resources/ipb8.mp4" \
   "$res/Image/avifrot.avif" "$res/Image/heicgrid.heic")
 status=$?
@@ -229,7 +229,7 @@ sys.exit(1 if bad else 0)
 for line in "calling audio devices" "calling call connects" "calling video frames" "calling hang-up"; do
   echo "$calls" | grep -q "^ok: $line" || { echo "check-sandbox-profile: '$line' did not run under its profile" >&2; fail=1; }
 done
-for line in "voice note" "voice note from the microphone" "decoder refuses voice notes: refused" "link preview fetch" "parser refuses html from the app: refused" "gif search" "hlg10.mp4 play" "avifrot.avif displayImage" "heicgrid.heic convertHEIC"; do
+for line in "voice note" "voice note from the microphone" "decoder refuses voice notes: refused" "link preview fetch" "parser refuses html from the app: refused" "gif search" "hlg10.mp4 play" "av1_svt_gop6.mp4 play" "avifrot.avif displayImage" "heicgrid.heic convertHEIC"; do
   echo "$out" | grep -q "^ok: $line" || { echo "check-sandbox-profile: '$line' did not run under its profile" >&2; fail=1; }
 done
 [ $fail -eq 0 ] && echo "check-sandbox-profile: ok"

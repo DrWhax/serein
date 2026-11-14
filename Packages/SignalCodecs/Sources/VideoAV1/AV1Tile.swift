@@ -16,6 +16,15 @@ struct AV1FrameInfo: Sendable {
     let cdfIndex: Int
     /// Loop restoration units per plane (rows, cols).
     let lrUnitRows: [Int], lrUnitCols: [Int]
+    /// Inter frames: the pictures of LAST_FRAME … ALTREF_FRAME (index 1 … 7), the projected
+    /// motion field per reference (MotionFieldMvs: (row, col) per 8x8, `AV1Inter.invalidMv`
+    /// where none), and the previous frame's segment ids (MiRows × MiCols; empty: all 0).
+    var refPictures: [AV1RefPicture?] = Array(repeating: nil, count: 8)
+    var motionField = AV1MotionFieldMvs()
+    var prevSegmentIds: [UInt8] = []
+    var prevSegmentStride = 0
+    /// The CDFs the frame starts from (loaded from a reference); empty: the defaults.
+    var initialCdf: [UInt16] = []
 
     init(seq: AV1SequenceHeader, hdr: AV1FrameHeader) {
         self.seq = seq
@@ -41,18 +50,26 @@ struct AV1FrameInfo: Sendable {
     }
 }
 
+/// A reference frame as inter prediction reads it: its samples (upscaled width × height) and
+/// size. Parsing reads only the size; the samples are filled in for reconstruction.
+struct AV1RefPicture: Sendable {
+    var planes: [AV1PlaneBuffer]
+    let upscaledWidth: Int, frameWidth: Int, frameHeight: Int
+}
+
 /// Samples of one plane over a region (a tile, or the frame).
 struct AV1PlaneBuffer: Sendable {
     let x0: Int, y0: Int
     let width: Int, height: Int
     var px: [UInt16]
 
-    init(x0: Int, y0: Int, width: Int, height: Int, fill: UInt16 = 0) {
+    /// `allocate` false: no samples yet (px empty).
+    init(x0: Int, y0: Int, width: Int, height: Int, fill: UInt16 = 0, allocate: Bool = true) {
         self.x0 = x0
         self.y0 = y0
         self.width = width
         self.height = height
-        px = [UInt16](repeating: fill, count: width * height)
+        px = allocate ? [UInt16](repeating: fill, count: width * height) : []
     }
 
     @inline(__always) func at(_ x: Int, _ y: Int) -> Int { Int(px[(y - y0) * width + (x - x0)]) }
@@ -84,7 +101,8 @@ struct AV1TileModeInfo: Sendable {
 }
 
 struct AV1TileDecoder {
-    let f: AV1FrameInfo
+    /// Read-only while decoding; a replay fills in the reference samples.
+    var f: AV1FrameInfo
     let lay = AV1CDFLayout.shared
     var sd: AV1SymbolDecoder
     let miRowStart: Int, miRowEnd: Int, miColStart: Int, miColEnd: Int
@@ -92,7 +110,12 @@ struct AV1TileDecoder {
     let miStride: Int, miRowsAlloc: Int
     var miSizes: [UInt8], yModes: [UInt8], uvModes: [UInt8], isInters: [UInt8], skips: [UInt8], segmentIds: [UInt8]
     var interTxSizes: [UInt8], written: [UInt8], txTypes: [UInt8]
+    /// Mvs: (row, col) for list 0 then list 1, four per mode info unit.
     var mvs: [Int32]
+    /// RefFrames (two per unit), InterpFilters (two per unit), CompGroupIdxs, CompoundIdxs, SkipModes.
+    var refFrames: [Int8], interpFilters: [UInt8], compGroupIdxs: [UInt8], compoundIdxs: [UInt8], skipModes: [UInt8]
+    /// AboveSegPredContext / LeftSegPredContext (absolute mode info columns / rows).
+    var aboveSegPred: [UInt8], leftSegPred: [UInt8]
     var deltaLFs: [Int8]
     var lfTxSizes: [[UInt8]]
     var lfStride: [Int]
@@ -113,6 +136,8 @@ struct AV1TileDecoder {
     var error: AV1DecodeError? = nil
     var stats = [Int](repeating: 0, count: AV1Tool.allCases.count)
     @inline(__always) mutating func used(_ t: AV1Tool) { stats[t.rawValue] += 1 }
+    var interStats = [Int](repeating: 0, count: AV1InterTool.allCases.count)
+    @inline(__always) mutating func used(_ t: AV1InterTool) { interStats[t.rawValue] += 1 }
 
     // The current block (5.11.5 … 5.11.33).
     var miRow = 0, miCol = 0, miSize = 0
@@ -130,20 +155,56 @@ struct AV1TileDecoder {
     var readDeltas = false
     var currentQIndex = 0
     var deltaLF = [0, 0, 0, 0]
-    var mv = (row: 0, col: 0)
+    /// Mv[0] and Mv[1].
+    var mv = (row: 0, col: 0), mv1 = (row: 0, col: 0)
+    // Inter blocks (5.11.23 – 5.11.29) and the motion vector stack (7.10.2).
+    var refFrame = (0, -1)
+    var leftRef = (0, -1), aboveRef = (0, -1)
+    var skipMode = 0
+    var interintra = false, interintraMode = 0, wedgeInterintra = false
+    var wedgeIndex = 0, wedgeSign = 0, maskType = 0
+    var compoundType = AV1Inter.compoundAverage, compGroupIdx = 0, compoundIdx = 1
+    var motionMode = 0
+    var interpFilter = [0, 0]
+    var refMvIdx = 0
+    var numMvFound = 0, newMvCount = 0, foundMatch = false
+    var refStackMv = [Int](repeating: 0, count: 8 * 4)
+    var weightStack = [Int](repeating: 0, count: 8)
+    var globalMvs = [0, 0, 0, 0]
+    var drlCtxStack = [Int](repeating: 0, count: 8)
+    var newMvContext = 0, refMvContext = 0, zeroMvContext = 0
+    var numSamples = 0, numSamplesScanned = 0
+    var candList = [Int](repeating: 0, count: 8 * 4)
+    var localWarpParams = [0, 0, 1 << 16, 0, 0, 1 << 16], localValid = false
+    /// Inter prediction scratch: the two predictions, the filter's intermediate rows, the mask.
+    var predBuf0: [Int] = [], predBuf1: [Int] = [], interBuf: [Int] = [], interMask: [Int] = []
+    var maskStride = 0
     var maxLumaW = 0, maxLumaH = 0
     // Coefficients of the current transform block.
     var quant = [Int32](repeating: 0, count: 1024)
     var planeTxType = 0
     var tx = AV1InverseTransform()
+    // Video frames are parsed first, recording what reconstruction then replays
+    // (AV1TileReplay.swift): a record per block, per transform block, the coefficients.
+    var recording = false, replaying = false
+    var blockRecords: [AV1BlockRecord] = []
+    var txRecords: [AV1TxRecord] = []
+    /// (position, value) of each nonzero coefficient.
+    var coefData: [Int32] = []
+    /// Palettes with their colour maps, and warp samples.
+    var sideData: [Int32] = []
+    var txCursor = 0
+    /// Interintra blocks: per plane, whether the above-right (bit 2p) and below-left (2p + 1) are decoded.
+    var iiEdges: UInt8 = 0
 
-    init(_ f: AV1FrameInfo, data: [UInt8], start: Int, size: Int, tileRow: Int, tileCol: Int) throws(AV1DecodeError) {
+    /// `recording`: parse only (AV1TileReplay.swift); the samples are allocated by the replay.
+    init(_ f: AV1FrameInfo, data: [UInt8], start: Int, size: Int, tileRow: Int, tileCol: Int, recording: Bool = false) throws(AV1DecodeError) {
         self.f = f
-        let h = f.hdr
-        miRowStart = h.miRowStarts[tileRow]
-        miRowEnd = h.miRowStarts[tileRow + 1]
-        miColStart = h.miColStarts[tileCol]
-        miColEnd = h.miColStarts[tileCol + 1]
+        self.recording = recording
+        miRowStart = f.hdr.miRowStarts[tileRow]
+        miRowEnd = f.hdr.miRowStarts[tileRow + 1]
+        miColStart = f.hdr.miColStarts[tileCol]
+        miColEnd = f.hdr.miColStarts[tileCol + 1]
         let sb4 = f.sbSize4
         let colsAlloc = ((miColEnd - miColStart + sb4 - 1) / sb4) * sb4
         let rowsAlloc = ((miRowEnd - miRowStart + sb4 - 1) / sb4) * sb4
@@ -153,8 +214,13 @@ struct AV1TileDecoder {
         miSizes = [UInt8](repeating: 0, count: n)
         yModes = miSizes; uvModes = miSizes; isInters = miSizes; skips = miSizes; segmentIds = miSizes
         interTxSizes = miSizes; written = miSizes; txTypes = miSizes
-        mvs = h.allowIntrabc ? [Int32](repeating: 0, count: 2 * n) : []
-        deltaLFs = h.deltaLfPresent ? [Int8](repeating: 0, count: 4 * n) : []
+        mvs = f.hdr.allowIntrabc || !f.hdr.frameIsIntra ? [Int32](repeating: 0, count: 4 * n) : []
+        refFrames = [Int8](repeating: 0, count: 2 * n)
+        interpFilters = [UInt8](repeating: 0, count: 2 * n)
+        compGroupIdxs = miSizes
+        compoundIdxs = miSizes
+        skipModes = miSizes
+        deltaLFs = f.hdr.deltaLfPresent ? [Int8](repeating: 0, count: 4 * n) : []
         var lfs: [[UInt8]] = [], strides: [Int] = []
         for p in 0..<f.numPlanes {
             let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
@@ -169,10 +235,11 @@ struct AV1TileDecoder {
         var pls: [AV1PlaneBuffer] = []
         for p in 0..<f.numPlanes {
             let sx = p == 0 ? 0 : f.subX, sy = p == 0 ? 0 : f.subY
-            pls.append(AV1PlaneBuffer(x0: (miColStart * 4) >> sx, y0: (miRowStart * 4) >> sy, width: (colsAlloc * 4) >> sx, height: (rowsAlloc * 4) >> sy))
+            pls.append(AV1PlaneBuffer(x0: (miColStart * 4) >> sx, y0: (miRowStart * 4) >> sy, width: (colsAlloc * 4) >> sx, height: (rowsAlloc * 4) >> sy,
+                                      allocate: !recording))
         }
         planes = pls
-        let frameCols4 = ((h.miColStarts.last ?? 0) + 2 * sb4), frameRows4 = ((h.miRowStarts.last ?? 0) + 2 * sb4)
+        let frameCols4 = ((f.hdr.miColStarts.last ?? 0) + 2 * sb4), frameRows4 = ((f.hdr.miRowStarts.last ?? 0) + 2 * sb4)
         aboveLevel = Array(repeating: [UInt8](repeating: 0, count: frameCols4), count: 3)
         aboveDc = aboveLevel
         leftLevel = Array(repeating: [UInt8](repeating: 0, count: frameRows4), count: 3)
@@ -181,10 +248,13 @@ struct AV1TileDecoder {
         abovePal = Array(repeating: [UInt16](repeating: 0, count: frameCols4 * 8), count: 2)
         leftPalSize = Array(repeating: [UInt8](repeating: 0, count: frameRows4), count: 2)
         leftPal = Array(repeating: [UInt16](repeating: 0, count: frameRows4 * 8), count: 2)
+        aboveSegPred = [UInt8](repeating: 0, count: frameCols4)
+        leftSegPred = [UInt8](repeating: 0, count: frameRows4)
         bdStride = sb4 + 3
         blockDecoded = Array(repeating: [UInt8](repeating: 0, count: bdStride * bdStride), count: 3)
-        sd = try AV1SymbolDecoder(data, start: start, size: size, cdf: lay.defaults[f.cdfIndex], disableUpdate: h.disableCdfUpdate)
-        currentQIndex = h.baseQIdx
+        sd = try AV1SymbolDecoder(data, start: start, size: size, cdf: f.initialCdf.isEmpty ? lay.defaults[f.cdfIndex] : f.initialCdf,
+                                  disableUpdate: f.hdr.disableCdfUpdate)
+        currentQIndex = f.hdr.baseQIdx
     }
 
     @inline(__always) func mi(_ r: Int, _ c: Int) -> Int { (r - miRowStart) * miStride + (c - miColStart) }
@@ -221,14 +291,29 @@ struct AV1TileDecoder {
         let sb4 = f.sbSize4
         for plane in 0..<f.numPlanes {
             let sx = plane > 0 ? f.subX : 0, sy = plane > 0 ? f.subY : 0
-            let sbW4 = (miColEnd - c) >> sx, sbH4 = (miRowEnd - r) >> sy
-            for y in -1...(sb4 >> sy) {
-                for x in -1...(sb4 >> sx) {
-                    let v: UInt8 = (y < 0 && x < sbW4) || (x < 0 && y < sbH4) ? 1 : 0
-                    blockDecoded[plane][(y + 1) * bdStride + x + 1] = v
-                }
+            Self.clearDecoded(&blockDecoded[plane], bdStride, sb4 >> sx, sb4 >> sy, (miColEnd - c) >> sx, (miRowEnd - r) >> sy)
+        }
+    }
+
+    static func clearDecoded(_ a: inout [UInt8], _ stride: Int, _ w4: Int, _ h4: Int, _ sbW4: Int, _ sbH4: Int) {
+        var s = a.mutableSpan
+        for y in -1...h4 {
+            for x in -1...w4 {
+                let v: UInt8 = (y < 0 && x < sbW4) || (x < 0 && y < sbH4) ? 1 : 0
+                s[(y + 1) * stride + x + 1] = v
             }
-            blockDecoded[plane][((sb4 >> sy) + 1) * bdStride] = 0
+        }
+        s[(h4 + 1) * stride] = 0
+    }
+
+    /// a[y · stride + x] = v over a w × h rectangle at (x0, y0), clipped to stride × rows.
+    @inline(__always) static func fillRect(_ a: inout [UInt8], stride: Int, rows: Int, x0: Int, y0: Int, w: Int, h: Int, _ v: UInt8) {
+        let x1 = min(stride, x0 + w), y1 = min(rows, y0 + h)
+        guard x0 >= 0, y0 >= 0, x1 > x0, y1 > y0 else { return }
+        var s = a.mutableSpan
+        for y in y0..<y1 {
+            let row = y * stride
+            for x in x0..<x1 { s[row + x] = v }
         }
     }
 
@@ -237,13 +322,12 @@ struct AV1TileDecoder {
     // MARK: decode_partition
 
     mutating func decodePartition(_ r: Int, _ c: Int, _ bSize: Int) {
-        let h = f.hdr
-        if r >= h.miRows || c >= h.miCols || error != nil { return }
+        if r >= f.hdr.miRows || c >= f.hdr.miCols || error != nil { return }
         availU = isInside(r - 1, c)
         availL = isInside(r, c - 1)
         let num4x4 = AV1C.num4x4W[bSize]
         let half = num4x4 >> 1, quarter = half >> 1
-        let hasRows = r + half < h.miRows, hasCols = c + half < h.miCols
+        let hasRows = r + half < f.hdr.miRows, hasCols = c + half < f.hdr.miCols
         var partition: Int
         if bSize < AV1C.block8x8 {
             partition = AV1C.partitionNone
@@ -303,9 +387,9 @@ struct AV1TileDecoder {
             decodeBlock(r, c + half, splitSize)
             decodeBlock(r + half, c + half, splitSize)
         case AV1C.partitionHorz4:
-            for k in 0..<4 where k < 3 || r + quarter * 3 < h.miRows { decodeBlock(r + quarter * k, c, subSize) }
+            for k in 0..<4 where k < 3 || r + quarter * 3 < f.hdr.miRows { decodeBlock(r + quarter * k, c, subSize) }
         default:
-            for k in 0..<4 where k < 3 || c + quarter * 3 < h.miCols { decodeBlock(r, c + quarter * k, subSize) }
+            for k in 0..<4 where k < 3 || c + quarter * 3 < f.hdr.miCols { decodeBlock(r, c + quarter * k, subSize) }
         }
     }
 
@@ -335,33 +419,40 @@ struct AV1TileDecoder {
             availUChroma = false
             availLChroma = false
         }
-        intraFrameModeInfo()
+        if f.hdr.frameIsIntra { intraFrameModeInfo() } else { interFrameModeInfo() }
         paletteTokens()
         readBlockTxSize()
         if skip != 0 { resetBlockContext(bw4, bh4) }
-        for y in 0..<bh4 {
-            for x in 0..<bw4 {
-                let i = mi(r + y, c + x)
-                yModes[i] = UInt8(yMode)
-                if hasChroma { uvModes[i] = UInt8(uvMode) }
-                written[i] = 1
-                if isInter {
-                    mvs[2 * i] = Int32(mv.row)
-                    mvs[2 * i + 1] = Int32(mv.col)
-                }
+        // The block's mode info, row by row (a span per array: no per-element checks).
+        let base = mi(r, c), stride = miStride
+        Self.fill(&yModes, base, stride, 1, bw4, bh4, UInt8(yMode))
+        Self.fill(&written, base, stride, 1, bw4, bh4, UInt8(1))
+        Self.fill(&refFrames, 2 * base, 2 * stride, 2, bw4, bh4, Int8(refFrame.0))
+        Self.fill(&refFrames, 2 * base + 1, 2 * stride, 2, bw4, bh4, Int8(refFrame.1))
+        if hasChroma { Self.fill(&uvModes, base, stride, 1, bw4, bh4, UInt8(uvMode)) }
+        if isInter {
+            if !useIntrabc {
+                Self.fill(&compGroupIdxs, base, stride, 1, bw4, bh4, UInt8(compGroupIdx))
+                Self.fill(&compoundIdxs, base, stride, 1, bw4, bh4, UInt8(compoundIdx))
+            }
+            Self.fill(&interpFilters, 2 * base, 2 * stride, 2, bw4, bh4, UInt8(interpFilter[0]))
+            Self.fill(&interpFilters, 2 * base + 1, 2 * stride, 2, bw4, bh4, UInt8(interpFilter[1]))
+            Self.fill(&mvs, 4 * base, 4 * stride, 4, bw4, bh4, Int32(mv.row))
+            Self.fill(&mvs, 4 * base + 1, 4 * stride, 4, bw4, bh4, Int32(mv.col))
+            if refFrame.1 > AV1Ref.intra {
+                Self.fill(&mvs, 4 * base + 2, 4 * stride, 4, bw4, bh4, Int32(mv1.row))
+                Self.fill(&mvs, 4 * base + 3, 4 * stride, 4, bw4, bh4, Int32(mv1.col))
             }
         }
-        computePrediction()
+        if recording { recordBlock() } else { computePrediction() }
         residual()
-        for y in 0..<bh4 {
-            for x in 0..<bw4 {
-                let i = mi(r + y, c + x)
-                isInters[i] = isInter ? 1 : 0
-                skips[i] = UInt8(skip)
-                miSizes[i] = UInt8(bSize)
-                segmentIds[i] = UInt8(segmentId)
-                if !deltaLFs.isEmpty { for k in 0..<4 { deltaLFs[4 * i + k] = Int8(deltaLF[k]) } }
-            }
+        Self.fill(&isInters, base, stride, 1, bw4, bh4, UInt8(isInter ? 1 : 0))
+        Self.fill(&skipModes, base, stride, 1, bw4, bh4, UInt8(skipMode))
+        Self.fill(&skips, base, stride, 1, bw4, bh4, UInt8(skip))
+        Self.fill(&miSizes, base, stride, 1, bw4, bh4, UInt8(bSize))
+        Self.fill(&segmentIds, base, stride, 1, bw4, bh4, UInt8(segmentId))
+        if !deltaLFs.isEmpty {
+            for k in 0..<4 { Self.fill(&deltaLFs, 4 * base + k, 4 * stride, 4, bw4, bh4, Int8(deltaLF[k])) }
         }
         // Palette colours of this block, for later blocks' palette caches.
         for x in 0..<bw4 {
@@ -381,18 +472,43 @@ struct AV1TileDecoder {
     mutating func resetBlockContext(_ bw4: Int, _ bh4: Int) {
         for plane in 0..<(hasChroma ? 3 : 1) {
             let sx = plane > 0 ? f.subX : 0, sy = plane > 0 ? f.subY : 0
-            for i in (miCol >> sx)..<((miCol + bw4) >> sx) { aboveLevel[plane][i] = 0; aboveDc[plane][i] = 0 }
-            for i in (miRow >> sy)..<((miRow + bh4) >> sy) { leftLevel[plane][i] = 0; leftDc[plane][i] = 0 }
+            let c0 = miCol >> sx, c1 = (miCol + bw4) >> sx, r0 = miRow >> sy, r1 = (miRow + bh4) >> sy
+            Self.zero(&aboveLevel[plane], c0, c1)
+            Self.zero(&aboveDc[plane], c0, c1)
+            Self.zero(&leftLevel[plane], r0, r1)
+            Self.zero(&leftDc[plane], r0, r1)
         }
+    }
+
+    /// a[start + y · rowStride + x · step] = v for x < w, y < h.
+    @inline(__always) static func fill<T>(_ a: inout [T], _ start: Int, _ rowStride: Int, _ step: Int, _ w: Int, _ h: Int, _ v: T) {
+        var s = a.mutableSpan
+        for y in 0..<h {
+            var i = start + y * rowStride
+            for _ in 0..<w {
+                s[i] = v
+                i += step
+            }
+        }
+    }
+
+    @inline(__always) static func zero(_ a: inout [UInt8], _ lo: Int, _ hi: Int) {
+        var s = a.mutableSpan
+        var i = lo
+        while i < hi { s[i] = 0; i += 1 }
     }
 
     // MARK: intra_frame_mode_info
 
     mutating func intraFrameModeInfo() {
-        let h = f.hdr
         skip = 0
-        if h.segIdPreSkip { intraSegmentId() }
-        if h.segIdPreSkip && h.segFeatureActive(segmentId, 6) {
+        skipMode = 0
+        refFrame = (AV1Ref.intra, AV1Ref.none)
+        interintra = false
+        motionMode = AV1Inter.simple
+        compoundType = AV1Inter.compoundAverage
+        if f.hdr.segIdPreSkip { intraSegmentId() }
+        if f.hdr.segIdPreSkip && f.hdr.segFeatureActive(segmentId, 6) {
             skip = 1
         } else {
             var ctx = 0
@@ -400,12 +516,12 @@ struct AV1TileDecoder {
             if availL { ctx += Int(skips[mi(miRow, miCol - 1)]) }
             skip = sd.symbol(lay.skip + ctx * 3, 2)
         }
-        if !h.segIdPreSkip { intraSegmentId() }
+        if !f.hdr.segIdPreSkip { intraSegmentId() }
         readCdef()
         readDeltaQIndex()
         readDeltaLf()
         readDeltas = false
-        useIntrabc = h.allowIntrabc ? sd.symbol(lay.intrabc, 2) == 1 : false
+        useIntrabc = f.hdr.allowIntrabc ? sd.symbol(lay.intrabc, 2) == 1 : false
         useFilterIntra = false
         paletteSizeY = 0
         paletteSizeUV = 0
@@ -416,7 +532,9 @@ struct AV1TileDecoder {
             yMode = AV1C.dcPred
             uvMode = AV1C.dcPred
             used(.intrabc)
-            findMvStackAndAssign()
+            interpFilter = [3, 3]   // BILINEAR
+            findMvStack(false)
+            assignIntrabcMv()
         } else {
             isInter = false
             let above = AV1C.intraModeContext[availU ? Int(yModes[mi(miRow - 1, miCol)]) : 0]
@@ -440,7 +558,7 @@ struct AV1TileDecoder {
             } else {
                 uvMode = AV1C.dcPred
             }
-            if miSize >= AV1C.block8x8 && AV1C.blockWidth[miSize] <= 64 && AV1C.blockHeight[miSize] <= 64 && h.allowScreenContentTools {
+            if miSize >= AV1C.block8x8 && AV1C.blockWidth[miSize] <= 64 && AV1C.blockHeight[miSize] <= 64 && f.hdr.allowScreenContentTools {
                 paletteModeInfo()
             }
             if f.seq.enableFilterIntra && yMode == AV1C.dcPred && paletteSizeY == 0 && max(AV1C.blockWidth[miSize], AV1C.blockHeight[miSize]) <= 32 {
@@ -453,8 +571,19 @@ struct AV1TileDecoder {
     @inline(__always) func isDirectional(_ m: Int) -> Bool { m >= AV1C.vPred && m <= AV1C.d67Pred }
 
     mutating func intraSegmentId() {
-        let h = f.hdr
-        if h.segmentationEnabled {
+        if f.hdr.segmentationEnabled {
+            readSegmentId()
+        } else {
+            segmentId = 0
+        }
+        lossless = f.hdr.losslessArray[segmentId]
+        if lossless { used(.lossless) }
+        if f.hdr.segmentationEnabled && segmentId != 0 { used(.segmentation) }
+    }
+
+    /// read_segment_id (5.11.9).
+    mutating func readSegmentId() {
+        do {
             let prevUL = availU && availL ? Int(segmentIds[mi(miRow - 1, miCol - 1)]) : -1
             let prevU = availU ? Int(segmentIds[mi(miRow - 1, miCol)]) : -1
             let prevL = availL ? Int(segmentIds[mi(miRow, miCol - 1)]) : -1
@@ -466,15 +595,10 @@ struct AV1TileDecoder {
                 let ctx: Int
                 if prevUL < 0 { ctx = 0 } else if prevUL == prevU && prevUL == prevL { ctx = 2 } else if prevUL == prevU || prevUL == prevL || prevU == prevL { ctx = 1 } else { ctx = 0 }
                 let diff = sd.symbol(lay.segmentId + ctx * 9, 8)
-                segmentId = Self.negDeinterleave(diff, pred, h.lastActiveSegId + 1)
+                segmentId = Self.negDeinterleave(diff, pred, f.hdr.lastActiveSegId + 1)
                 if segmentId < 0 || segmentId > 7 { fail(.malformed("segment_id")); segmentId = 0 }
             }
-        } else {
-            segmentId = 0
         }
-        lossless = h.losslessArray[segmentId]
-        if lossless { used(.lossless) }
-        if h.segmentationEnabled && segmentId != 0 { used(.segmentation) }
     }
 
     static func negDeinterleave(_ diff: Int, _ ref: Int, _ max: Int) -> Int {
@@ -489,12 +613,11 @@ struct AV1TileDecoder {
     }
 
     mutating func readCdef() {
-        let h = f.hdr
-        if skip != 0 || h.codedLossless || !f.seq.enableCdef || h.allowIntrabc { return }
+        if skip != 0 || f.hdr.codedLossless || !f.seq.enableCdef || f.hdr.allowIntrabc { return }
         let r = miRow & ~15, c = miCol & ~15
         let idx = ((r - miRowStart) / 16) * cdefCols + (c - miColStart) / 16
         if cdefIdx[idx] == -1 {
-            cdefIdx[idx] = Int8(sd.literal(h.cdefBits))
+            cdefIdx[idx] = Int8(sd.literal(f.hdr.cdefBits))
             let w4 = AV1C.num4x4W[miSize], h4 = AV1C.num4x4H[miSize]
             var i = r
             while i < r + h4 {
@@ -525,13 +648,12 @@ struct AV1TileDecoder {
     }
 
     mutating func readDeltaLf() {
-        let h = f.hdr
         if miSize == f.sbSize && skip != 0 { return }
-        guard readDeltas && h.deltaLfPresent else { return }
-        let count = h.deltaLfMulti ? (f.numPlanes > 1 ? 4 : 2) : 1
+        guard readDeltas && f.hdr.deltaLfPresent else { return }
+        let count = f.hdr.deltaLfMulti ? (f.numPlanes > 1 ? 4 : 2) : 1
         used(.deltaLF)
         for i in 0..<count {
-            let base = h.deltaLfMulti ? lay.deltaLFMulti + i * 5 : lay.deltaLF
+            let base = f.hdr.deltaLfMulti ? lay.deltaLFMulti + i * 5 : lay.deltaLF
             var abs = sd.symbol(base, 4)
             if abs == 3 {
                 let n = sd.literal(3) + 1
@@ -540,7 +662,7 @@ struct AV1TileDecoder {
             if abs != 0 {
                 let sign = sd.literal(1)
                 let reduced = sign != 0 ? -abs : abs
-                deltaLF[i] = clip3(-63, 63, deltaLF[i] + (reduced << h.deltaLfRes))
+                deltaLF[i] = clip3(-63, 63, deltaLF[i] + (reduced << f.hdr.deltaLfRes))
             }
         }
     }
@@ -675,10 +797,9 @@ struct AV1TileDecoder {
     }
 
     mutating func paletteTokens() {
-        let h = f.hdr
         var blockHeight = AV1C.blockHeight[miSize], blockWidth = AV1C.blockWidth[miSize]
-        var onscreenHeight = min(blockHeight, (h.miRows - miRow) * 4)
-        var onscreenWidth = min(blockWidth, (h.miCols - miCol) * 4)
+        var onscreenHeight = min(blockHeight, (f.hdr.miRows - miRow) * 4)
+        var onscreenWidth = min(blockWidth, (f.hdr.miCols - miCol) * 4)
         if paletteSizeY > 0 {
             var map = colorMapY
             readColorMap(&map, n: paletteSizeY, cdfs: lay.paletteYColor, blockWidth: blockWidth, blockHeight: blockHeight,
@@ -743,9 +864,8 @@ struct AV1TileDecoder {
     // MARK: Transform size (5.11.15 – 5.11.17)
 
     mutating func readBlockTxSize() {
-        let h = f.hdr
         let bw4 = AV1C.num4x4W[miSize], bh4 = AV1C.num4x4H[miSize]
-        if h.txMode == AV1C.txModeSelect && miSize > AV1C.block4x4 && isInter && skip == 0 && !lossless {
+        if f.hdr.txMode == AV1C.txModeSelect && miSize > AV1C.block4x4 && isInter && skip == 0 && !lossless {
             let maxTx = AV1C.maxTxSizeRect[miSize]
             let txW4 = AV1C.txWidth[maxTx] / 4, txH4 = AV1C.txHeight[maxTx] / 4
             var row = miRow
@@ -809,8 +929,7 @@ struct AV1TileDecoder {
     }
 
     mutating func readVarTxSize(_ row: Int, _ col: Int, _ txSz: Int, _ depth: Int) {
-        let h = f.hdr
-        if row >= h.miRows || col >= h.miCols { return }
+        if row >= f.hdr.miRows || col >= f.hdr.miCols { return }
         var split = 0
         if txSz != AV1C.tx4x4 && depth != 2 {
             let above = aboveTxWidth(row, col) < AV1C.txWidth[txSz] ? 1 : 0
@@ -839,110 +958,11 @@ struct AV1TileDecoder {
         }
     }
 
-    // MARK: Intra block copy motion vector (7.10.2 for an intra frame, 5.11.26, 5.11.32)
+    // MARK: Intra block copy motion vector (assign_mv with use_intrabc, 5.11.26)
 
-    mutating func findMvStackAndAssign() {
-        let bw4 = AV1C.num4x4W[miSize], bh4 = AV1C.num4x4H[miSize]
-        var stack: [(row: Int, col: Int, weight: Int)] = []
-        func lower(_ v: Int) -> Int {
-            // force_integer_mv: whole samples, rounding half away from zero.
-            let a = (abs(v) + 3) >> 3
-            return v > 0 ? a << 3 : -(a << 3)
-        }
-        func add(_ mvRow: Int, _ mvCol: Int, _ weight: Int) {
-            let i = mi(mvRow, mvCol)
-            guard isInters[i] != 0 else { return }
-            let cand = (row: lower(Int(mvs[2 * i])), col: lower(Int(mvs[2 * i + 1])))
-            if let k = stack.firstIndex(where: { $0.row == cand.row && $0.col == cand.col }) {
-                stack[k].weight += weight
-            } else if stack.count < 8 {
-                stack.append((cand.row, cand.col, weight))
-            }
-        }
-        func scanRow(_ deltaRowIn: Int) {
-            var deltaRow = deltaRowIn, deltaCol = 0
-            let end4 = min(min(bw4, f.hdr.miCols - miCol), 16)
-            let useStep16 = bw4 >= 16
-            if abs(deltaRow) > 1 {
-                deltaRow += miRow & 1
-                deltaCol = 1 - (miCol & 1)
-            }
-            var i = 0
-            while i < end4 {
-                let r = miRow + deltaRow, c = miCol + deltaCol + i
-                if !isInside(r, c) { break }
-                var len = min(bw4, AV1C.num4x4W[Int(miSizes[mi(r, c)])])
-                if abs(deltaRow) > 1 { len = max(2, len) }
-                if useStep16 { len = max(4, len) }
-                add(r, c, len * 2)
-                i += len
-            }
-        }
-        func scanCol(_ deltaColIn: Int) {
-            var deltaCol = deltaColIn, deltaRow = 0
-            let end4 = min(min(bh4, f.hdr.miRows - miRow), 16)
-            let useStep16 = bh4 >= 16
-            if abs(deltaCol) > 1 {
-                deltaRow = 1 - (miRow & 1)
-                deltaCol += miCol & 1
-            }
-            var i = 0
-            while i < end4 {
-                let r = miRow + deltaRow + i, c = miCol + deltaCol
-                if !isInside(r, c) { break }
-                var len = min(bh4, AV1C.num4x4H[Int(miSizes[mi(r, c)])])
-                if abs(deltaCol) > 1 { len = max(2, len) }
-                if useStep16 { len = max(4, len) }
-                add(r, c, len * 2)
-                i += len
-            }
-        }
-        func scanPoint(_ deltaRow: Int, _ deltaCol: Int) {
-            let r = miRow + deltaRow, c = miCol + deltaCol
-            if isInside(r, c) && written[mi(r, c)] != 0 { add(r, c, 4) }
-        }
-        scanRow(-1)
-        scanCol(-1)
-        if max(bw4, bh4) <= 16 { scanPoint(-1, bw4) }
-        let numNearest = stack.count
-        for k in 0..<numNearest { stack[k].weight += 640 }
-        scanPoint(-1, -1)
-        scanRow(-3)
-        scanCol(-3)
-        if bh4 > 1 { scanRow(-5) }
-        if bw4 > 1 { scanCol(-5) }
-        func sortRange(_ start: Int, _ endIn: Int) {
-            var end = endIn
-            while end > start {
-                var newEnd = start
-                var idx = start + 1
-                while idx < end {
-                    if stack[idx - 1].weight < stack[idx].weight {
-                        stack.swapAt(idx - 1, idx)
-                        newEnd = idx
-                    }
-                    idx += 1
-                }
-                end = newEnd
-            }
-        }
-        sortRange(0, numNearest)
-        sortRange(numNearest, stack.count)
-        // Context and clamping (7.10.2.14) for the candidates found.
-        let bw = AV1C.blockWidth[miSize], bh = AV1C.blockHeight[miSize]
-        func clampRow(_ v: Int) -> Int {
-            let top = -((miRow * 4) * 8), bottom = ((f.hdr.miRows - bh4 - miRow) * 4) * 8
-            return clip3(top - (128 + bh * 8), bottom + (128 + bh * 8), v)
-        }
-        func clampCol(_ v: Int) -> Int {
-            let left = -((miCol * 4) * 8), right = ((f.hdr.miCols - bw4 - miCol) * 4) * 8
-            return clip3(left - (128 + bw * 8), right + (128 + bw * 8), v)
-        }
-        var ref: [(Int, Int)] = stack.map { (clampRow($0.row), clampCol($0.col)) }
-        while ref.count < 2 { ref.append((0, 0)) }   // global motion: zero in an intra frame
-        // assign_mv( 0 ) with use_intrabc.
-        var pred = ref[0]
-        if pred.0 == 0 && pred.1 == 0 { pred = ref[1] }
+    mutating func assignIntrabcMv() {
+        var pred = (stackMv(0, 0, 0), stackMv(0, 0, 1))
+        if pred.0 == 0 && pred.1 == 0 { pred = (stackMv(1, 0, 0), stackMv(1, 0, 1)) }
         if pred.0 == 0 && pred.1 == 0 {
             let sb4 = f.sbSize4
             if miRow - sb4 < miRowStart {
@@ -951,16 +971,12 @@ struct AV1TileDecoder {
                 pred = (-(sb4 * 4 * 8), 0)
             }
         }
-        // read_mv( 0 ), MvCtx = MV_INTRABC_CONTEXT.
-        let ctx = 1
-        let joint = sd.symbol(lay.mvJoint + ctx * 5, 4)
-        var diffRow = 0, diffCol = 0
-        if joint == 2 || joint == 3 { diffRow = readMvComponent(ctx, 0) }
-        if joint == 1 || joint == 3 { diffCol = readMvComponent(ctx, 1) }
+        let (diffRow, diffCol) = readMv(ctx: 1)
         mv = (pred.0 + diffRow, pred.1 + diffCol)
         if mv.row & 7 != 0 || mv.col & 7 != 0 { fail(.malformed("fractional intra block copy vector")) }
     }
 
+    /// read_mv_component (5.11.32).
     mutating func readMvComponent(_ ctx: Int, _ comp: Int) -> Int {
         let k = ctx * 2 + comp
         let sign = sd.symbol(lay.mvSign + k * 3, 2)
@@ -968,13 +984,16 @@ struct AV1TileDecoder {
         var mag: Int
         if mvClass == 0 {
             let class0Bit = sd.symbol(lay.mvClass0Bit + k * 3, 2)
-            // force_integer_mv: fr = 3; allow_high_precision_mv = 0: hp = 1.
-            mag = ((class0Bit << 3) | (3 << 1) | 1) + 1
+            let fr = f.hdr.forceIntegerMv ? 3 : sd.symbol(lay.mvClass0Fr + (k * 2 + class0Bit) * 5, 4)
+            let hp = f.hdr.allowHighPrecisionMv ? sd.symbol(lay.mvClass0Hp + k * 3, 2) : 1
+            mag = ((class0Bit << 3) | (fr << 1) | hp) + 1
         } else {
             var d = 0
             for i in 0..<mvClass { d |= sd.symbol(lay.mvBit + (k * 10 + i) * 3, 2) << i }
             mag = 2 << (mvClass + 2)
-            mag += ((d << 3) | (3 << 1) | 1) + 1
+            let fr = f.hdr.forceIntegerMv ? 3 : sd.symbol(lay.mvFr + k * 5, 4)
+            let hp = f.hdr.allowHighPrecisionMv ? sd.symbol(lay.mvHp + k * 3, 2) : 1
+            mag += ((d << 3) | (fr << 1) | hp) + 1
         }
         return sign != 0 ? -mag : mag
     }
@@ -982,18 +1001,17 @@ struct AV1TileDecoder {
     // MARK: Loop restoration coefficients (5.11.57, 5.11.58)
 
     mutating func readLr(_ r: Int, _ c: Int) {
-        let h = f.hdr
-        if h.allowIntrabc { return }
+        if f.hdr.allowIntrabc { return }
         let w = f.sbSize4, hh = f.sbSize4
-        for plane in 0..<f.numPlanes where h.frameRestorationType[plane] != AV1C.restoreNone {
+        for plane in 0..<f.numPlanes where f.hdr.frameRestorationType[plane] != AV1C.restoreNone {
             let sx = plane == 0 ? 0 : f.subX, sy = plane == 0 ? 0 : f.subY
-            let unitSize = h.loopRestorationSize[plane]
+            let unitSize = f.hdr.loopRestorationSize[plane]
             let unitRows = f.lrUnitRows[plane], unitCols = f.lrUnitCols[plane]
             let rowStart = (r * (4 >> sy) + unitSize - 1) / unitSize
             let rowEnd = min(unitRows, ((r + hh) * (4 >> sy) + unitSize - 1) / unitSize)
             let numerator: Int, denominator: Int
-            if h.useSuperres {
-                numerator = (4 >> sx) * h.superresDenom
+            if f.hdr.useSuperres {
+                numerator = (4 >> sx) * f.hdr.superresDenom
                 denominator = unitSize * 8
             } else {
                 numerator = 4 >> sx
