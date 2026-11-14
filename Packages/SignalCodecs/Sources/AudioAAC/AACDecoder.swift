@@ -34,6 +34,11 @@ public struct AACDecoder: Sendable {
     }
     var states: [ChannelState]
     var randomState: UInt32 = 0x1F2E_3D4C
+    /// The filterbank's buffers, made once.
+    var scratch = IMDCT.Scratch()
+    var window = [Float](repeating: 0, count: 2048)
+    /// Codebooks whose values are coded unsigned, followed by sign bits (3, 4, 7–11).
+    static let unsignedBook: [Bool] = [false, false, false, true, true, false, false, true, true, true, true, true]
 
     /// Which coding tools the decoded stream used (for tests and diagnostics).
     public struct Statistics: Sendable, Equatable {
@@ -222,9 +227,11 @@ public struct AACDecoder: Sendable {
         }
         statistics.pulses += pulses.count
         statistics.kbdWindows += info.shape
-        statistics.tnsFilters += ch.tns.reduce(0) { $0 + $1.filter { $0.order > 0 }.count }
-        statistics.noiseBands += ch.bandTypes.filter { $0 == Self.noiseBand }.count
-        statistics.intensityBands += ch.bandTypes.filter { $0 >= Self.intensityOut }.count
+        for filters in ch.tns { for f in filters where f.order > 0 { statistics.tnsFilters += 1 } }
+        for t in ch.bandTypes {
+            if t == Self.noiseBand { statistics.noiseBands += 1 }
+            if t >= Self.intensityOut { statistics.intensityBands += 1 }
+        }
         switch info.sequence {
         case .eightShort: statistics.shortWindowFrames += 1
         case .longStart, .longStop: statistics.transitionFrames += 1
@@ -273,24 +280,25 @@ public struct AACDecoder: Sendable {
     /// followed by sign bits, book 11 by escape sequences.
     mutating func readBand(_ r: inout MSBBitReader, codebook cb: Int, into q: inout [Int32], at base: Int, count: Int) throws(ParseFailure) {
         let table = AACHuffman.spectral[cb - 1]
-        let unsigned = [3, 4, 7, 8, 9, 10, 11].contains(cb)
+        let unsigned = Self.unsignedBook[cb]
         var k = 0
         while k < count {
             let idx = try table.decode(&r, "spectral_data")
-            var values: [Int32]
+            var values = InlineArray<4, Int32>(repeating: 0)
+            let n: Int
             switch cb {
-            case 1, 2: values = [Int32(idx / 27 - 1), Int32(idx / 9 % 3 - 1), Int32(idx / 3 % 3 - 1), Int32(idx % 3 - 1)]
-            case 3, 4: values = [Int32(idx / 27), Int32(idx / 9 % 3), Int32(idx / 3 % 3), Int32(idx % 3)]
-            case 5, 6: values = [Int32(idx / 9 - 4), Int32(idx % 9 - 4)]
-            case 7, 8: values = [Int32(idx / 8), Int32(idx % 8)]
-            case 9, 10: values = [Int32(idx / 13), Int32(idx % 13)]
-            default: values = [Int32(idx / 17), Int32(idx % 17)]
+            case 1, 2: values[0] = Int32(idx / 27 - 1); values[1] = Int32(idx / 9 % 3 - 1); values[2] = Int32(idx / 3 % 3 - 1); values[3] = Int32(idx % 3 - 1); n = 4
+            case 3, 4: values[0] = Int32(idx / 27); values[1] = Int32(idx / 9 % 3); values[2] = Int32(idx / 3 % 3); values[3] = Int32(idx % 3); n = 4
+            case 5, 6: values[0] = Int32(idx / 9 - 4); values[1] = Int32(idx % 9 - 4); n = 2
+            case 7, 8: values[0] = Int32(idx / 8); values[1] = Int32(idx % 8); n = 2
+            case 9, 10: values[0] = Int32(idx / 13); values[1] = Int32(idx % 13); n = 2
+            default: values[0] = Int32(idx / 17); values[1] = Int32(idx % 17); n = 2
             }
             if unsigned {
-                for i in values.indices where values[i] != 0 { if try r.bit("sign_bits") == 1 { values[i] = -values[i] } }
+                for i in 0..<n where values[i] != 0 { if try r.bit("sign_bits") == 1 { values[i] = -values[i] } }
             }
             if cb == 11 {
-                for i in values.indices where values[i].magnitude == 16 {
+                for i in 0..<n where values[i].magnitude == 16 {
                     statistics.escapes += 1
                     var n = 0
                     while try r.bit("escape_prefix") == 1 {
@@ -301,8 +309,8 @@ public struct AACDecoder: Sendable {
                     values[i] = values[i] < 0 ? -v : v
                 }
             }
-            guard k + values.count <= count else { throw fail(r, "spectral_data", "past the band") }
-            for v in values { q[base + k] = v; k += 1 }
+            guard k + n <= count else { throw fail(r, "spectral_data", "past the band") }
+            for i in 0..<n { q[base + k] = values[i]; k += 1 }
         }
     }
 
@@ -391,45 +399,64 @@ public struct AACDecoder: Sendable {
     /// sequence; both halves of an overlap use the previous frame's window shape on the left
     /// and this frame's shape on the right (4.6.11.3.2).
     mutating func synthesize(_ ch: Channel, state s: Int) -> [Float] {
-        var st = states[s]
         let info = ch.info
-        var buf = [Float](repeating: 0, count: 2048)
-        let prevLong = AACWindows.long(st.previousShape), curLong = AACWindows.long(info.shape)
-        let prevShort = AACWindows.short(st.previousShape), curShort = AACWindows.short(info.shape)
-        if info.sequence == .eightShort {
-            for w in 0..<8 {
-                let z = Self.imdctShort.transform(Array(ch.spectrum[w * 128 ..< (w + 1) * 128]))
-                let left = w == 0 ? prevShort : curShort
-                for n in 0..<128 {
-                    buf[448 + w * 128 + n] += z[n] * left[n]
-                    buf[448 + w * 128 + 128 + n] += z[128 + n] * curShort[128 + n]
+        let previousShape = states[s].previousShape, previousSequence = states[s].previousSequence
+        let prevLong = AACWindows.long(previousShape), curLong = AACWindows.long(info.shape)
+        let prevShort = AACWindows.short(previousShape), curShort = AACWindows.short(info.shape)
+        // The buffers out of `self` while they are written.
+        var sc = IMDCT.Scratch(empty: ())
+        swap(&sc, &scratch)
+        var buf: [Float] = []
+        swap(&buf, &window)
+        var overlap: [Float] = []
+        swap(&overlap, &states[s].overlap)
+        var out = [Float](repeating: 0, count: 1024)
+        do {
+            var b = buf.mutableSpan
+            for n in 0..<2048 { b[n] = 0 }
+            let spectrum = ch.spectrum.span
+            let pl = prevLong.span, cl = curLong.span, ps = prevShort.span, cs = curShort.span
+            if info.sequence == .eightShort {
+                for w in 0..<8 {
+                    Self.imdctShort.transform(spectrum.extracting(w * 128 ..< (w + 1) * 128), &sc)
+                    let z = sc.z.span
+                    let base = 448 + w * 128
+                    if w == 0 {
+                        for n in 0..<128 { b[base + n] += z[n] * ps[n] }
+                    } else {
+                        for n in 0..<128 { b[base + n] += z[n] * cs[n] }
+                    }
+                    for n in 0..<128 { b[base + 128 + n] += z[128 + n] * cs[128 + n] }
+                }
+            } else {
+                Self.imdctLong.transform(spectrum, &sc)
+                let z = sc.z.span
+                let leftLong = (previousSequence == .onlyLong || previousSequence == .longStop)
+                    && (info.sequence == .onlyLong || info.sequence == .longStart)
+                if leftLong {
+                    for n in 0..<1024 { b[n] = z[n] * pl[n] }
+                } else {
+                    for n in 0..<128 { b[448 + n] = z[448 + n] * ps[n] }
+                    for n in 576..<1024 { b[n] = z[n] }
+                }
+                if info.sequence == .longStart {
+                    for n in 1024..<1472 { b[n] = z[n] }
+                    for n in 0..<128 { b[1472 + n] = z[1472 + n] * cs[128 + n] }
+                } else {
+                    for n in 1024..<2048 { b[n] = z[n] * cl[n] }
                 }
             }
-        } else {
-            let z = Self.imdctLong.transform(ch.spectrum)
-            let leftLong = (st.previousSequence == .onlyLong || st.previousSequence == .longStop)
-                && (info.sequence == .onlyLong || info.sequence == .longStart)
-            if leftLong {
-                for n in 0..<1024 { buf[n] = z[n] * prevLong[n] }
-            } else {
-                for n in 0..<128 { buf[448 + n] = z[448 + n] * prevShort[n] }
-                for n in 576..<1024 { buf[n] = z[n] }
-            }
-            if info.sequence == .longStart {
-                for n in 1024..<1472 { buf[n] = z[n] }
-                for n in 0..<128 { buf[1472 + n] = z[1472 + n] * curShort[128 + n] }
-            } else {
-                for n in 1024..<2048 { buf[n] = z[n] * curLong[n] }
+            var o = out.mutableSpan, ov = overlap.mutableSpan
+            for n in 0..<1024 {
+                o[n] = (b[n] + ov[n]) / 32768
+                ov[n] = b[1024 + n]
             }
         }
-        var out = [Float](repeating: 0, count: 1024)
-        for n in 0..<1024 {
-            out[n] = (buf[n] + st.overlap[n]) / 32768
-            st.overlap[n] = buf[1024 + n]
-        }
-        st.previousShape = info.shape
-        st.previousSequence = info.sequence
-        states[s] = st
+        swap(&overlap, &states[s].overlap)
+        swap(&buf, &window)
+        swap(&sc, &scratch)
+        states[s].previousShape = info.shape
+        states[s].previousSequence = info.sequence
         return out
     }
 
