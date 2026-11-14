@@ -11,7 +11,8 @@
 // ended. The service exits when its session ends, so a stuck or crashed service leaves no call
 // state behind: the endpoint is lost, its generation moves on, the event wait reports it once,
 // and the next command starts a fresh service and endpoint (replaying `setSelfUuid` and the
-// assets). Video frames are fetched by a thread of their own and handed out from a cache, so the
+// assets). RingRTC retires the endpoint the same way once no call is left (`retire`), so each
+// call gets a fresh service and a compromise of it ends with the call. Video frames are fetched by a thread of their own and handed out from a cache, so the
 // display link never waits on the service.
 
 import Foundation
@@ -183,6 +184,15 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
     }
 
     public var generation: UInt64 { state.withLock { $0.generation } }
+
+    public var isLive: Bool { state.withLock { !$0.closed && $0.id != nil } }
+
+    /// The service has nothing left to do: its session ends (and with it the process), as when
+    /// it is lost.
+    public func retire() {
+        guard let id = state.withLock({ $0.closed ? nil : $0.id }) else { return }
+        lost(id)
+    }
 
     /// The live endpoint, or a new one with the configuration replayed. Nil after `close`.
     func live() throws -> UInt64 {

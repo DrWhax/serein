@@ -144,12 +144,22 @@ public protocol RingRTCEndpoint: AnyObject, Sendable {
     func receiveVideoFrame(demuxId: UInt32, maxWidth: Int, maxHeight: Int, into buffer: inout [UInt8], generation: UInt64?) -> (width: Int, height: Int)?
     /// RingRTC is done with it (replaced by `setConfig`, or released).
     func close()
+    /// Whether an endpoint is running now (a command would not have to start one).
+    var isLive: Bool { get }
+    /// Nothing is left for it to do: it ends as a lost one does (its generation moves on and the
+    /// loss is reported), and the next command starts a fresh one. In the calling service this
+    /// ends the process, so whatever reached WebRTC during a call does not outlive it.
+    func retire()
 }
 
 extension RingRTCEndpoint {
     public func command(_ name: String, _ fields: [String: JSONValue] = [:]) throws -> JSONValue {
         try command(name, fields, generation: nil)
     }
+
+    /// In process: always running, and kept.
+    public var isLive: Bool { true }
+    public func retire() {}
 }
 
 /// Makes an endpoint with ringrtc's field-trial string (`Name/Value/…/`).

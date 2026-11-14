@@ -5,6 +5,8 @@ import Foundation
 
 extension RingRTC {
     func process(_ batch: [JSONValue]) {
+        // Anything but a log line is work: the endpoint is kept a while longer.
+        if batch.contains(where: { $0["type"].string != "onLogMessage" }) { noteActivity() }
         for e in batch { handle(e) }
     }
 

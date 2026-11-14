@@ -11,6 +11,11 @@
 // group call it runs (or a call link's participants), group messages only to a group with a
 // call, a new incoming call only for an offer we passed it, a group ring only from someone whose
 // call message we passed it. Verification/CallBoundary models and proves these.
+//
+// The service is kept only while it has work: once no call, group call client, request or
+// microphone warm-up is left and nothing has been sent or received for `idleGrace`, the endpoint
+// is retired (its process exits) and the next command starts a fresh one. A compromise of WebRTC
+// through one call then ends with that call instead of listening on for the rest of the session.
 
 import Foundation
 
@@ -43,6 +48,15 @@ public final class RingRTC {
     var callMessageSenders: [Data: Date] = [:]
     /// Our own uuid (`setSelfUuid`): ringrtc tells our other devices about rings and keys.
     public internal(set) var selfUuid: Data?
+    /// How long the endpoint is kept with nothing to do (long enough for a hang-up's last
+    /// messages to go out and for a quick call back).
+    public var idleGrace: Duration = .seconds(10)
+    var lastActivity = ContinuousClock.now
+    var retireTask: Task<Void, Never>?
+    /// Microphone warm-up (which records) is on.
+    var microphoneWarm = false
+    /// The generation retired for being idle (its loss report is ours, not a failure).
+    var retiredGeneration: UInt64?
     static let recentWindow: TimeInterval = 120
 
     // Handlers (Service.ts `handle*`).
@@ -107,7 +121,7 @@ public final class RingRTC {
     /// as failed, and the requests waiting on its answers fail. Nothing more is sent for them:
     /// their commands are refused (`Call.generation`).
     func endpointLost(_ generation: UInt64) {
-        logError("the calling service ended; its calls end")
+        if generation == retiredGeneration { logInfo("the calling service was idle and has ended") } else { logError("the calling service ended; its calls end") }
         if let call, call.generation <= generation, call.state != .ended {
             callInfoByCallId[call.callId] = nil
             call.endedReason = .internalFailure
@@ -124,7 +138,55 @@ public final class RingRTC {
         audioDeviceRequests.failAll(RingRTCError.lost)
     }
 
-    func run(_ name: String, _ fields: [String: JSONValue] = [:]) throws -> JSONValue { try endpoint.command(name, fields) }
+    func run(_ name: String, _ fields: [String: JSONValue] = [:]) throws -> JSONValue {
+        noteActivity()
+        return try endpoint.command(name, fields)
+    }
+
+    // MARK: retiring the endpoint
+
+    /// Nothing for the endpoint to do: no live 1:1 call, no group call client, no request
+    /// waiting for its answer, no microphone warm-up.
+    var isIdle: Bool {
+        (call == nil || call?.state == .ended) && groupCallByClientId.isEmpty && peekRequests.isEmpty && callLinkRequests.isEmpty
+            && emptyRequests.isEmpty && audioDeviceRequests.isEmpty && !microphoneWarm
+    }
+
+    /// Something was sent or received: the endpoint is retired `idleGrace` after the last such
+    /// moment at which it is idle.
+    func noteActivity() {
+        lastActivity = .now
+        guard retireTask == nil else { return }
+        retireTask = Task { [weak self] in
+            while true {
+                guard let due = self.map({ $0.lastActivity + $0.idleGrace }) else { return }
+                if ContinuousClock.now < due {
+                    try? await Task.sleep(until: due, clock: .continuous)
+                    continue
+                }
+                guard let self else { return }
+                self.retireTask = nil
+                // Busy: the next event or command (the call ending, a reply) starts the wait again.
+                if self.isIdle { self.retireEndpoint() }
+                return
+            }
+        }
+    }
+
+    func retireEndpoint() {
+        guard endpoint.isLive else { return }
+        retiredGeneration = endpoint.generation
+        logInfo("the calling service is idle: ending it")
+        endpoint.retire()
+    }
+
+    /// For a call or request of an endpoint that is no longer running there is nothing to
+    /// pass on: starting a fresh service for it would only have it dropped there.
+    func forLiveEndpoint(_ what: String) -> Bool {
+        if endpoint.isLive { return true }
+        logInfo("\(what) for an ended calling service; dropped")
+        return false
+    }
 
     public func setSelfUuid(_ uuid: Data) throws {
         selfUuid = uuid
@@ -214,6 +276,9 @@ public final class RingRTC {
                 "senderIdentityKey": .bytes(o.senderIdentityKey), "receiverIdentityKey": .bytes(o.receiverIdentityKey),
             ]) { $1 })
         }
+        // Answers, candidates, hang-ups and busy belong to a call the endpoint has: none once it
+        // ended (an offer or a group call message starts a fresh one).
+        if message.offer == nil, message.opaque == nil, !forLiveEndpoint("call signalling") { return }
         if let answer = message.answer, answer.callId != 0 {
             guard !answer.opaque.isEmpty else { logError("handleCallingMessage(): opaque not received for answer, remote should update"); return }
             _ = try? run("receivedAnswer", peer.merging([
@@ -251,10 +316,12 @@ public final class RingRTC {
     // MARK: HTTP (group calls, call links)
 
     public func receivedHttpResponse(requestId: UInt32, status: Int, body: Data) {
+        guard forLiveEndpoint("an HTTP response") else { return }
         _ = try? run("receivedHttpResponse", ["requestId": .int(Int64(requestId)), "statusCode": .int(Int64(status)), "body": .bytes(body)])
     }
 
     public func httpRequestFailed(requestId: UInt32, debugInfo: String?) {
+        guard forLiveEndpoint("an HTTP failure") else { return }
         _ = try? run("httpRequestFailed", ["requestId": .int(Int64(requestId)), "debugInfo": debugInfo.map { .string($0) } ?? .null])
     }
 
@@ -376,7 +443,10 @@ public final class RingRTC {
     public func setVoiceProcessingEnabled(_ enabled: Bool) async throws -> AudioDevice? { try await audioRequest("setVoiceProcessingEnabled", ["enabled": .bool(enabled)]) }
 
     public func setMicrophoneWarmupEnabled(_ warmup: Bool) async throws -> AudioDevice? {
-        if warmup { return try await audioRequest("setMicrophoneWarmupEnabled", ["enabled": .bool(true)]) }
+        if warmup {
+            microphoneWarm = true
+            return try await audioRequest("setMicrophoneWarmupEnabled", ["enabled": .bool(true)])
+        }
         stopMicrophoneWarmup()
         return nil
     }
@@ -384,6 +454,7 @@ public final class RingRTC {
     /// Stops microphone warmup (which records) now, without waiting: the request is queued to
     /// the audio module before this returns, behind any earlier start.
     public func stopMicrophoneWarmup() {
+        microphoneWarm = false
         do { _ = try run("setMicrophoneWarmupEnabled", ["enabled": .bool(false), "requestId": .int(0)]) } catch { logWarn("Failed to stop microphone warmup: \(error)") }
     }
 
@@ -455,6 +526,7 @@ struct Requests<T: Sendable> {
     }
     var nextId: UInt32 = 1
     var pending: [UInt32: Pending] = [:]
+    var isEmpty: Bool { pending.isEmpty }
 
     mutating func add() -> (UInt32, Pending) {
         let id = nextId

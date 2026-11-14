@@ -33,6 +33,9 @@ SKIP_SWIFT=1 Tools/verify-callboundary.sh    # the Lean side only
 - choose the call ids and group call client ids it answers;
 - claim any participants for a call;
 - lose the client's endpoint at any time, as a crash or the app ending its session does.
+  RingRTC also ends an idle endpoint itself (`retire`, once no call, group call client,
+  request or warm-up is left): in the model that is `crash` followed by the `wait` that finds it,
+  both of which may happen at any time, so the properties below cover it.
 
 **What it may make the app do.** Each request is judged in the state it arrives in:
 

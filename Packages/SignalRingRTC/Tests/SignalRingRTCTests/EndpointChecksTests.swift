@@ -17,6 +17,7 @@ final class FakeEndpoint: RingRTCEndpoint {
     func command(_ name: String, _ fields: [String: JSONValue], generation: UInt64?) throws -> JSONValue {
         if let generation, generation != self.generation { throw RingRTCError.lost }
         commands.withLock { $0.append(name) }
+        live.store(true, ordering: .relaxed)
         switch name {
         case "createGroupCallClient", "createCallLinkCallClient": return .int(7)
         case "createOutgoingCall": return .string("5")
@@ -33,6 +34,15 @@ final class FakeEndpoint: RingRTCEndpoint {
     func receiveVideoFrame(demuxId: UInt32, maxWidth: Int, maxHeight: Int, into buffer: inout [UInt8], generation: UInt64?) -> (width: Int, height: Int)? { nil }
     func close() {}
     var sent: [String] { commands.withLock { $0 } }
+
+    /// Running until retired; a command (as the calling service's) starts it again.
+    let live = Atomic<Bool>(true)
+    var isLive: Bool { live.load(ordering: .relaxed) }
+    func retire() {
+        commands.withLock { $0.append("retire") }
+        live.store(false, ordering: .relaxed)
+        gen.add(1, ordering: .relaxed)
+    }
 }
 
 @MainActor final class Observer: GroupCallObserver {
