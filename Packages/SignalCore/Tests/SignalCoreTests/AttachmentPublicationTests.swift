@@ -27,12 +27,12 @@ import Testing
                 try AttachmentDownloadManager.replace(db, job: job) { old in
                     var a = old; a.path = "validated-file"; a.localKey = "local-key"; a.pending = false; return a
                 }
-                try AttachmentDownloads.remove(db, job)
+                try AttachmentDownloadManager.finish(db, job: job)
             }
         }
         do {
             try await gate.waitUntilEntered()
-            try await database.pool.write { db in
+            let expectedLease = try await database.pool.write { db in
                 switch change {
                 case "cancel", "replace":
                     var a = try #require(try MessageAttachments.fetch(db, location))
@@ -45,16 +45,19 @@ import Testing
                 case "requeue": try AttachmentDownloads.add(db, job)
                 default: break
                 }
+                return try String.fetchOne(db, sql: "SELECT leaseId FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
+                                           arguments: AttachmentDownloads.key(job))
             }
             await gate.release()
             try await completion.value
             try await database.pool.read { db in
                 let a = try MessageAttachments.fetch(db, location)
-                #expect((a?.isDownloaded == true) == (change == "unchanged"))
+                #expect((a?.isDownloaded == true) == (change == "unchanged"), "stale completion published")
                 if change == "replace" { #expect(a?.key == "replacement-key" && a?.size == 1) }
                 if change == "requeue" {
                     let next = try #require(try AttachmentDownloads.next(db, limit: 1, prioritize: [], now: 1).first)
                     #expect(next.leaseId != job.leaseId, "old completion removed the replacement job")
+                    #expect(next.leaseId == expectedLease, "old completion changed replacement lease")
                 }
             }
         } catch { await gate.release(); _ = await completion.result; throw error }

@@ -45,7 +45,7 @@ SKIP_SWIFT=1 Tools/verify-attachments.sh    # the Lean side only
 | `describe_ok` | **By the contracts, a response passes only if it is the named upload's own blob**, and the pointer had a digest or a plaintext hash. |
 | `delivered_holds` | **Unauthenticated bytes never reach decoding or export.** In every reachable state, everything a consumer was handed is the plaintext of the upload its pointer names: not another upload's blob, not forged bytes, not a file changed on disk. It is never longer than the pointer's size. |
 | `published_holds` | **Nothing partially validated is published.** An attachment has a path exactly when it is published, and its file holds the named upload's verified plaintext. |
-| `Publication.publish_current` | A delayed validated result publishes only for its current job generation and unchanged full pointer snapshot, while live, pending and uncancelled. |
+| `Publication.publish_current` | A delayed validated result publishes only for its current job generation and unchanged download/authentication inputs, while live, pending and uncancelled. |
 | `fetched_holds` | **Malformed lengths cannot bypass the limits.** A download holds at most the bound for its pointer's size (plus one byte), and only for an attachment within the incoming limit. |
 
 The explorer finds `delivered-authentic` and `published-validated` false when the pipeline
@@ -64,12 +64,18 @@ skips decryption's verdict.
   would have crashed the process on a value from a malformed record.
 
 - **A3: publication checks the state in the writer, after awaits.** Jobs carry durable leases;
-  requeueing replaces the lease. Publication compares the full original attachment snapshot,
-  pending state, message erasure/expiry and lease. Old jobs cannot delete or retry replacements.
+  requeueing replaces the lease. Publication compares the original download/authentication inputs,
+  pending state, message erasure/expiry and lease. Filenames, captions and flags belong to each
+  reference: shared pointers are completed together without overwriting that metadata. Different
+  authenticated sources sharing a signature are queued in turn until all pending references finish. Old jobs cannot delete or retry replacements.
   The held-completion regression also verifies GRDB's cancellation of an awaited writer: an
   extra application cancellation flag proved redundant under mutation testing and was removed.
   A stale result may leave an orphan file, but cannot publish it. The migration adds
   `attachment_downloads.leaseId`.
+- **A4: running tasks have unique run IDs.** Requeueing the same durable job can overlap its old
+  execution. Both tasks remain tracked for concurrency limits, cancellation and `stopAndWait`;
+  an old completion removes only its own handle. The scheduler ownership rule is tested with
+  two real downloads held before publication, not proved by the single-operation publication model.
 
 ## 4. What is only tested against Swift
 
@@ -99,8 +105,13 @@ skips decryption's verdict.
 `AttachmentPublicationTests` gates the real download after validation, cancels it before the
 writer, then verifies that an uncancelled retry succeeds. Writer-boundary cases also cover pointer
 replacement with the same digest, cancellation, erasure, expiry, deletion and requeueing. The
-separate `Publication` model abstracts full snapshot equality as a version and assumes the held
+separate `Publication` model abstracts equality of authentication and decoding inputs as a version and assumes the held
 bytes already passed the authentication model; composition with Swift is tested, not proved.
+
+`BoundaryReviewRegressionTests` covers overlapping requeues and shutdown, duplicate references
+with distinct metadata, and references sharing a signature but requiring different plaintext
+trimming. Completion cannot change a replacement's lease. These regression tests are also run by
+`Tools/verify-async-boundaries.py` with targeted mutants.
 
 Mutants (step 6), each of which must fail step 5:
 - decryption: no MAC check; no digest check; empty digest accepted; no plaintext-hash check; no

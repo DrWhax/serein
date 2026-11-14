@@ -2,8 +2,8 @@
 # The asynchronous publication boundary
 
 This supplements the byte-authentication model. A validated download result is held across
-CDN/decoder awaits; the writer compares its job lease and original attachment snapshot with the
-current row. `version` abstracts equality of the full pointer snapshot, not just its digest.
+CDN/decoder awaits; the writer compares its job lease and original download source with the
+current row. `version` abstracts equality of the authentication and decoding inputs, not presentation metadata or just the digest.
 Cryptographic validation remains the contract proved by `Attachments.Proofs`.
 -/
 namespace Attachments.Publication
@@ -33,7 +33,7 @@ def step (s : S) : Ev → S
       else s
     | none => s
 
-/-- Publication authorizes the current full snapshot, in its current live job, at commit. -/
+/-- Publication authorizes the current download source, in its current live job, at commit. -/
 def safe (s s' : S) : Bool := s'.published == s.published ||
   (s.live && s.pending && !s.cancelled && s.work == some (s.lease, s.version) &&
     s'.published == s.published ++ [s.version])

@@ -91,7 +91,11 @@ The send log now retains the original group id and story flag in `serein_sendLog
 a local table keyed by payload with cascading deletion. `SentProto.payload()` restores that
 context; `Messenger.resend` then uses the ordinary send authorization plus a resend-specific
 check of the requester block and original log entry. That lookup is repeated at submission,
-including retention and story-list eligibility, rather than trusting the pre-encryption read. Previously rebuilding a
+including retention and story-list eligibility, rather than trusting the pre-encryption read.
+The held authorization contains the complete payload and context, including a canonical ordered
+source-message set. SQLite payload IDs can be reused after deletion and are not an authorization
+identity by themselves. A regression revokes a story, deletes its log row, and inserts a different
+payload with the same timestamp and reused row ID: it must not authorize the held story. Previously rebuilding a
 payload lost its group id, allowing group membership/block checks to be bypassed on retry.
 Legacy log rows without this context are retained for receipts/pruning but are not resent; they
 cannot safely distinguish a direct payload from a group-key distribution. Message history is

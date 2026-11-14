@@ -45,3 +45,8 @@ a safety property alone may correctly accept a system that never produces output
 of identity submission checks, resend context, publication snapshots/leases, and
 playback cancellation to fail at runtime. It temporarily edits one source at a time and restores
 it even on failure; do not run alongside other edits to those files.
+
+`python3 Tools/test-async-boundary-runner.py` checks mutation failure attribution. A mutant counts
+as killed only when its exact test records the expected assertion in that issue's own record;
+a passed target test plus an unrelated failure does not count. Runtime mutants also cover reused
+send-log row IDs, overlapping download task handles, reference metadata and follow-up sources.

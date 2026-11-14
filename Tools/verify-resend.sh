@@ -73,7 +73,7 @@ cd "$root/Packages/SignalCore"
 echo "== 5. Swift: runs against the oracle"
 status=0
 SEREIN_RESEND_ORACLE="$oracle" SEREIN_RESEND_CASES="${SEREIN_RESEND_CASES:-3000}" \
-  swift test --filter 'ResendConformanceTests' > "$tmp/swift" 2>&1 || status=$?
+  swift test --filter 'ResendConformanceTests|BoundaryReviewRegressionTests' > "$tmp/swift" 2>&1 || status=$?
 grep -E 'Test run|passed after|failed after|disagree|model ' "$tmp/swift" | tail -40
 [ "$status" -eq 0 ] || exit "$status"
 
@@ -89,7 +89,7 @@ mutant() {
   if cmp -s "$file" "$backup"; then echo "error: mutant '$name' did not apply" >&2; exit 1; fi
   if [ "${DRY_RUN:-}" = 1 ]; then restore; echo "applies: $name"; return; fi
   SEREIN_RESEND_ORACLE="$oracle" SEREIN_RESEND_CASES=2000 \
-    swift test --filter 'ResendConformanceTests' > "$tmp/mutant" 2>&1 && survived=1 || survived=0
+    swift test --filter 'ResendConformanceTests|BoundaryReviewRegressionTests' > "$tmp/mutant" 2>&1 && survived=1 || survived=0
   restore
   if [ "$survived" = 1 ]; then echo "error: mutant '$name' survived the conformance tests" >&2; exit 1; fi
   if ! grep -qE "$expect" "$tmp/mutant"; then

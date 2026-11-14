@@ -126,7 +126,7 @@ import Testing
                 state.membersV2 = [GroupMember(aci: c.account.aci, role: 1, joinedAtVersion: 0)]
                 try GroupStore.save(db, conversationId: conversation, state: state, ourAci: c.account.aci)
             }
-            await #expect(throws: SendError.notAMember(c.aliceAci)) { try await c.messenger.resend(job) }
+            await #expect(throws: SendError.notAMember(c.aliceAci), "resend lost group membership check") { try await c.messenger.resend(job) }
             try await c.database.pool.write { try BlockedList.groups.save($0, [(keys.groupId.base64EncodedString(), nil)]) }
             await #expect(throws: JobError.self) { try await c.messenger.resend(job) }
         }
@@ -157,7 +157,7 @@ import Testing
                 if change == "logout" { try Items.remove(db, "uuid_id") }
                 else { var next = c.account; next.aciIdentity = .generate(); try next.save(db) }
             }
-            await #expect(throws: IdentityReviewError.identityChanged) { try await c.messenger.approveIdentities([review]) }
+            await #expect(throws: IdentityReviewError.identityChanged, "retained account changed trust") { try await c.messenger.approveIdentities([review]) }
             await #expect(throws: IdentityReviewError.identityChanged) { try await c.messenger.setVerified(review, true) }
             let after = try await c.database.pool.read { try ProtocolStore.identityRow($0, serviceId: c.aliceAci) }
             #expect(before?.nonblockingApproval == after?.nonblockingApproval)

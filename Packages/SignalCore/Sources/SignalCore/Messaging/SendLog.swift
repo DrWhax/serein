@@ -24,17 +24,18 @@ public struct SentProto: Sendable, Equatable {
         var payload = OutgoingPayload(content: try Signalservice_Content(serializedBytes: proto), timestamp: timestamp,
                                       contentHint: ContentHint(rawValue: contentHint), urgent: urgent, story: story)
         payload.groupId = groupId
-        payload.resendAuthorization = .init(payloadId: id, requester: requester, device: device, timestamp: timestamp)
+        payload.resendAuthorization = .init(payload: self, requester: requester, device: device)
         return payload
     }
 }
 
 public enum SendLog {
     struct Authorization: Sendable {
-        let payloadId: Int64
+        // Row IDs are reusable. Bind the held ciphertext to the complete immutable payload
+        // and authorization context, including its source-message set.
+        let payload: SentProto
         let requester: String
         let device: UInt32
-        let timestamp: UInt64
     }
 
     /// Repeat the lookup at submission: receipts, retention and story-list changes can occur
@@ -44,7 +45,7 @@ public enum SendLog {
             throw JobError.permanent("recipient blocked")
         }
         guard case .resend(let current) = try answer(db, requester: snapshot.requester, deviceId: snapshot.device,
-            timestamp: snapshot.timestamp, answered: 0, ourAci: ourAci), current.id == snapshot.payloadId else {
+            timestamp: snapshot.payload.timestamp, answered: 0, ourAci: ourAci), current == snapshot.payload else {
             throw JobError.permanent("resend no longer authorized")
         }
     }
@@ -92,7 +93,7 @@ public enum SendLog {
             ORDER BY p.id LIMIT 1
             """, arguments: [Int64(timestamp), recipient, Int(deviceId), now - maxAge]) else { return nil }
         let id: Int64 = row["id"]
-        let ids = try String.fetchAll(db, sql: "SELECT messageId FROM sendLogMessageIds WHERE payloadId = ?", arguments: [id])
+        let ids = try String.fetchAll(db, sql: "SELECT messageId FROM sendLogMessageIds WHERE payloadId = ? ORDER BY messageId", arguments: [id])
         return SentProto(id: id, timestamp: UInt64(row["timestamp"] as Int64), contentHint: UInt32(row["contentHint"] as Int),
                          proto: row["proto"], urgent: (row["urgent"] as Bool?) ?? true, messageIds: ids, groupId: row["groupId"], story: (row["story"] as Bool?) ?? false)
     }

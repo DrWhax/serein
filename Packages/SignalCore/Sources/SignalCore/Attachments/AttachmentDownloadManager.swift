@@ -248,7 +248,9 @@ public actor AttachmentDownloadManager {
             return
         }
         for job in jobs {
-            let id = "\(job.messageId)|\(job.attachmentType.rawValue)|\(job.signature)"
+            // A durable job key can be requeued while its old task is still running. Track
+            // every physical run independently so completion cannot forget a replacement.
+            let id = "\(job.messageId)|\(job.attachmentType.rawValue)|\(job.signature)|\(UUID().uuidString)"
             active[id] = Task { [weak self] in
                 await self?.run(job)
                 await self?.finished(id)
@@ -284,7 +286,7 @@ public actor AttachmentDownloadManager {
             await beforePublication?()
             try await db.write { db in
                 try Self.replace(db, job: job) { _ in updated }
-                try AttachmentDownloads.remove(db, job)
+                try Self.finish(db, job: job)
             }
             onUpdate?(job.messageId)
         } catch {
@@ -304,12 +306,31 @@ public actor AttachmentDownloadManager {
                         if case AttachmentDownloadError.tooBig = error { a.wasTooBig = true } else { a.error = true }
                         return a
                     }
-                    try AttachmentDownloads.remove(db, job)
+                    try Self.finish(db, job: job)
                 } else {
                     try AttachmentDownloads.retryLater(db, job, now: now)
                 }
             }
             if permanent { onUpdate?(job.messageId) }
+        }
+    }
+
+    /// A signature can also name pending references with different authenticated inputs.
+    /// After completing this source, enqueue the next source rather than stranding it. An old
+    /// lease must not touch a replacement job, including its active flag and retry accounting.
+    static func finish(_ db: Database, job: AttachmentDownloadJob) throws {
+        if let lease = job.leaseId {
+            guard try String.fetchOne(db, sql: "SELECT leaseId FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
+                                      arguments: AttachmentDownloads.key(job)) == lease else { return }
+        }
+        try AttachmentDownloads.remove(db, job)
+        guard let row = try Row.fetchOne(db, sql: "SELECT received_at, sent_at FROM messages WHERE id = ? AND COALESCE(json ->> '$.isErased', 0) = 0 AND (expiresAt IS NULL OR expiresAt > ?)",
+                                        arguments: [job.messageId, MessageStore.now()]) else { return }
+        if let (_, next) = try MessageAttachments.fetch(db, messageId: job.messageId).first(where: {
+            $0.0.type == job.attachmentType && $0.1.signature == job.signature && $0.1.pending == true && !$0.1.isDownloaded
+        }) {
+            try AttachmentDownloads.add(db, .init(messageId: job.messageId, attachmentType: job.attachmentType, signature: job.signature,
+                                                  receivedAt: row["received_at"], sentAt: row["sent_at"], attachment: next))
         }
     }
 
@@ -322,11 +343,11 @@ public actor AttachmentDownloadManager {
         guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, sent_at, received_at, type FROM messages WHERE id = ? AND COALESCE(json ->> '$.isErased', 0) = 0 AND (expiresAt IS NULL OR expiresAt > ?)", arguments: [job.messageId, MessageStore.now()])
         else { return }
         for (loc, a) in try MessageAttachments.fetch(db, messageId: job.messageId) where loc.type == job.attachmentType && a.signature == job.signature {
-            // A matching digest is not a snapshot: size, keys or the pending flag can change
-            // while the CDN or media service is awaited. Never overwrite the new attachment.
-            guard a == job.attachment, a.pending == true, !a.isDownloaded else { continue }
+            // Match all download/authentication inputs, not presentation metadata. One job
+            // may serve duplicate pointers with different filenames, captions or flags.
+            guard a.hasSameDownloadSource(as: job.attachment), a.pending == true, !a.isDownloaded else { continue }
             try MessageAttachments.upsert(db, loc, conversationId: row["conversationId"], sentAt: row["sent_at"], receivedAt: row["received_at"],
-                                          messageType: row["type"] ?? "incoming", change(a))
+                                          messageType: row["type"] ?? "incoming", a.applyingDownloadResult(change(a)))
         }
     }
 

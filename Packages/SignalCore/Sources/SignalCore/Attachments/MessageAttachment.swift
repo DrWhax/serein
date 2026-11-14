@@ -79,6 +79,33 @@ public struct MessageAttachment: Codable, Sendable, Equatable {
     /// `getUndownloadedAttachmentSignature`
     public var signature: String { "\(digest ?? "").\(plaintextHash ?? "")" }
 
+    /// Inputs that determine authentication, plaintext trimming, limits and derivative decoding.
+    /// Display metadata belongs to each reference and must neither split a shared download nor
+    /// be overwritten when that download finishes.
+    func hasSameDownloadSource(as other: Self) -> Bool {
+        contentType == other.contentType && size == other.size && cdnKey == other.cdnKey && cdnNumber == other.cdnNumber &&
+            key == other.key && digest == other.digest && incrementalMac == other.incrementalMac && chunkSize == other.chunkSize &&
+            plaintextHash == other.plaintextHash && uploadTimestamp == other.uploadTimestamp
+    }
+
+    func applyingDownloadResult(_ result: Self) -> Self {
+        var a = self
+        a.path = result.path
+        a.localKey = result.localKey
+        a.version = result.version
+        a.plaintextHash = result.plaintextHash
+        a.pending = result.pending
+        a.error = result.error
+        a.wasTooBig = result.wasTooBig
+        a.thumbnail = result.thumbnail
+        a.screenshot = result.screenshot
+        a.width = a.width ?? result.width
+        a.height = a.height ?? result.height
+        a.blurHash = a.blurHash ?? result.blurHash
+        a.duration = a.duration ?? result.duration
+        return a
+    }
+
     /// `processAttachment`: an incoming pointer.
     public init(pointer p: Signalservice_AttachmentPointer) {
         self.init(contentType: p.hasContentType ? p.contentType : "application/octet-stream", size: Int(p.size))
