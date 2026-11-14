@@ -30,6 +30,10 @@ public final class HEVCDecoder {
     var sps: [Int: HEVCSPS] = [:]
     var pps: [Int: HEVCPPS] = [:]
     let nalLengthSize: Int
+    let limits: DecodeLimits
+    let expectedDimensions: (width: Int, height: Int)?
+    let pictureLimit: Int?
+    var picturesStarted = 0
     // POC (8.3.1).
     var prevTid0PocLsb = 0, prevTid0PocMsb = 0
     var firstPicture = true
@@ -61,8 +65,13 @@ public final class HEVCDecoder {
     public enum PackedOutput: Sendable { case none, eightBit, littleEndian16 }
     public var packedOutput = PackedOutput.none
 
-    public init(vps vpsNALs: [[UInt8]] = [], sps spsNALs: [[UInt8]], pps ppsNALs: [[UInt8]], nalLengthSize: Int) throws(HEVCDecodeError) {
+    public init(vps vpsNALs: [[UInt8]] = [], sps spsNALs: [[UInt8]], pps ppsNALs: [[UInt8]], nalLengthSize: Int,
+                limits: DecodeLimits = .default, expectedDimensions: (width: Int, height: Int)? = nil,
+                pictureLimit: Int? = nil) throws(HEVCDecodeError) {
         self.nalLengthSize = nalLengthSize
+        self.limits = limits
+        self.expectedDimensions = expectedDimensions
+        self.pictureLimit = pictureLimit
         do {
             for n in vpsNALs { try handleParameterSet(try HEVCNALUnit.make(n[...])) }
             for n in spsNALs { try handleParameterSet(try HEVCNALUnit.make(n[...])) }
@@ -78,7 +87,13 @@ public final class HEVCDecoder {
     func handleParameterSet(_ u: HEVCNALUnit) throws {
         switch u.type {
         case HEVCNALUnit.vps: let v = try HEVCVPS.parse(u.rbsp); vps[v.id] = v
-        case HEVCNALUnit.sps: let s = try HEVCSPS.parse(u.rbsp); sps[s.id] = s
+        case HEVCNALUnit.sps:
+            let s = try HEVCSPS.parse(u.rbsp)
+            // In-band SPS replacements need the same restrictions as initialization.
+            guard s.chromaFormatIdc <= 1 else { throw HEVCDecodeError.unsupported("chroma format \(s.chromaFormatIdc)") }
+            guard s.bitDepthLuma <= 12, s.bitDepthChroma <= 12 else { throw HEVCDecodeError.unsupported("bit depth") }
+            try limits.checkDimensions(width: s.width, height: s.height, at: 0, rule: "hevc.picture")
+            sps[s.id] = s
         case HEVCNALUnit.pps: let p = try HEVCPPS.parse(u.rbsp, sps: sps); pps[p.id] = p
         default: break
         }
@@ -118,6 +133,13 @@ public final class HEVCDecoder {
         let h = try HEVCSliceHeader.parse(u.rbsp, nal: u, sps: sps, pps: pps, inherit: lastIndependentHeader)
         guard let p = pps[h.ppsId], let s = sps[p.spsId] else { throw HEVCDecodeError.malformed("parameter sets") }
         if h.firstSliceSegmentInPic {
+            if let pictureLimit, picturesStarted >= pictureLimit { throw HEVCDecodeError.malformed("picture budget exceeded") }
+            let width = s.width - (s.conformanceWindow.left + s.conformanceWindow.right) * s.subWidthC
+            let height = s.height - (s.conformanceWindow.top + s.conformanceWindow.bottom) * s.subHeightC
+            if let expectedDimensions, width != expectedDimensions.width || height != expectedDimensions.height {
+                throw HEVCDecodeError.malformed("picture dimensions differ from container")
+            }
+            picturesStarted += 1
             // RASL pictures after a CRA that starts decoding (or a BLA) are skipped (8.1.3).
             if u.isIRAP { noRaslOutput = u.isIDR || u.type <= HEVCNALUnit.blaNLP || firstPicture }
             if u.isRASL && noRaslOutput { current = nil; return }

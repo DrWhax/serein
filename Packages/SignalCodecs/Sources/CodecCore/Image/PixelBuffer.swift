@@ -80,7 +80,8 @@ public struct DecodeLimits: Sendable, Equatable {
         guard width > 0, height > 0 else {
             throw ParseFailure(offset: offset, rule: rule, reason: .invalid("zero dimension \(width)x\(height)"))
         }
-        guard width <= maxDimension, height <= maxDimension, width * height <= maxPixels else {
+        let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow, width <= maxDimension, height <= maxDimension, pixels <= maxPixels else {
             throw ParseFailure(offset: offset, rule: rule, reason: .limitExceeded("dimensions \(width)x\(height)"))
         }
     }

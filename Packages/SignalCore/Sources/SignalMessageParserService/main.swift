@@ -13,7 +13,7 @@ import MediaXPCInterface
 import MessageParsing
 import Synchronization
 
-ServiceSandbox.requireConfinement("SignalMessageParser")
+ServiceSandbox.requireConfinement("SignalMessageParser", memoryLimit: 1024 * 1024 * 1024)
 
 let childExecutable = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SignalMessageParserChild")
 let pool = ParserChildPool { try ParserChildProcess.spawn(childExecutable) }

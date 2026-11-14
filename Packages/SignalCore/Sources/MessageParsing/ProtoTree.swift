@@ -43,10 +43,49 @@ public struct ProtoTree: Codable, Sendable, Equatable {
 
     public init(nodes: [Node] = [Node(parent: 0, field: 0, kind: .message)]) { self.nodes = nodes }
 
+    private enum CodingKeys: String, CodingKey { case nodes }
+
+    /// Enforce limits while decoding the helper's wire representation, not after an unbounded
+    /// array has already been materialized. `validated` still checks shape before typed decode.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var input = try container.nestedUnkeyedContainer(forKey: .nodes)
+        var nodes: [Node] = []
+        var bytes = 0
+        while !input.isAtEnd {
+            guard nodes.count < Limits.maxNodes else { throw TreeError.tooLarge }
+            let node = try input.decode(Node.self)
+            guard node.d.count <= Limits.maxBytes - bytes else { throw TreeError.tooLarge }
+            bytes += node.d.count
+            nodes.append(node)
+        }
+        self.nodes = nodes
+    }
+
+    /// A reply's budget is aggregate: splitting values among trees must not multiply it.
+    public static func validateBudget(_ trees: [ProtoTree], maxNodes: Int = Limits.maxNodes, maxBytes: Int = Limits.maxBytes) throws {
+        var budget = Budget(nodes: maxNodes, bytes: maxBytes)
+        for tree in trees { try budget.consume(tree) }
+    }
+
+    struct Budget {
+        var nodes = Limits.maxNodes
+        var bytes = Limits.maxBytes
+        mutating func consume(_ tree: ProtoTree) throws {
+            guard nodes >= 0, bytes >= 0, tree.nodes.count <= nodes else { throw TreeError.tooLarge }
+            nodes -= tree.nodes.count
+            for node in tree.nodes {
+                guard node.d.count <= bytes else { throw TreeError.tooLarge }
+                bytes -= node.d.count
+            }
+        }
+    }
+
     public enum Limits {
         /// Message nesting (SwiftProtobuf's own default is 100; Signal's messages nest a handful).
         public static let maxDepth = 64
         public static let maxNodes = 1 << 20
+        public static let maxBytes = 64 << 20
         /// The largest protobuf field number.
         public static let maxField: UInt32 = (1 << 29) - 1
     }
@@ -65,6 +104,7 @@ public struct ProtoTree: Codable, Sendable, Equatable {
     }
 
     public func validated() throws -> Validated {
+        try Self.validateBudget([self])
         guard !nodes.isEmpty, nodes.count <= Limits.maxNodes else { throw nodes.isEmpty ? TreeError.malformed("empty") : TreeError.tooLarge }
         let root = nodes[0]
         guard root.k == .message, root.p == 0, root.f == 0, root.v == 0, root.d.isEmpty else { throw TreeError.malformed("root") }

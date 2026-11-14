@@ -65,17 +65,38 @@ enum MP4Strip {
             if b.type == "moov" { try collect(bytes, b, depth: 0, into: &removed) }
         }
         removed.sort { $0.lowerBound < $1.lowerBound }
-        func shift(_ offset: UInt64) -> UInt64 {
-            var s: UInt64 = 0
-            for r in removed where UInt64(r.upperBound) <= offset { s += UInt64(r.count) }
-            return offset - s
-        }
+        let offsets = RemovedOffsets(removed)
         // Pass 2: rebuild.
         var out: [UInt8] = []
         for b in top where topKept.contains(b.type) {
-            if b.type == "moov" { out += try rebuild(bytes, b, depth: 0, shift: shift) } else { out += bytes[b.start ..< b.end] }
+            if b.type == "moov" { out += try rebuild(bytes, b, depth: 0, shift: offsets.shift) } else { out += bytes[b.start ..< b.end] }
         }
         return out
+    }
+
+    /// Removed ranges are disjoint and sorted by their end. A prefix sum and binary search
+    /// avoid scanning every metadata range for every chunk offset (quadratic on small files).
+    struct RemovedOffsets {
+        let ends: [UInt64]
+        let totals: [UInt64]
+        init(_ ranges: [Range<Int>]) {
+            var ends: [UInt64] = [], totals: [UInt64] = []
+            var total: UInt64 = 0
+            for r in ranges {
+                total += UInt64(r.count)
+                ends.append(UInt64(r.upperBound))
+                totals.append(total)
+            }
+            self.ends = ends; self.totals = totals
+        }
+        func shift(_ offset: UInt64) -> UInt64 {
+            var lo = 0, hi = ends.count
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2
+                if ends[mid] <= offset { lo = mid + 1 } else { hi = mid }
+            }
+            return offset - (lo == 0 ? 0 : totals[lo - 1])
+        }
     }
 
     static func collect(_ bytes: [UInt8], _ box: BoxSpan, depth: Int, into removed: inout [Range<Int>]) throws(ParseFailure) {

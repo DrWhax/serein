@@ -8,7 +8,7 @@ import Foundation
 import MediaXPCInterface
 import SignalMediaDecoder
 
-ServiceSandbox.requireConfinement("SignalMediaDecoder")
+ServiceSandbox.requireConfinement("SignalMediaDecoder", memoryLimit: ProcessMemoryWatchdog.defaultLimit)
 
 // Only the app (signed as XPCPeer says) may connect.
 XPCServer.serve(MediaXPCClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalMediaDecoder"), MediaXPCHandler())

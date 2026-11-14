@@ -25,13 +25,23 @@ struct TreeDecoder: SwiftProtobuf.Decoder {
     var position = 0
     /// The node of the field the generated code is decoding now.
     var current = 0
+    var singularFields: Set<UInt32> = []
+
+    /// TreeVisitor emits each singular field once. Duplicate singular nodes from an untrusted
+    /// helper are not protobuf byte input: merging them can repeatedly copy growing messages.
+    mutating func singular() throws {
+        let field = tree.tree.nodes[current].f
+        guard singularFields.insert(field).inserted else { throw ProtoTree.TreeError.malformed("duplicate singular field \(field)") }
+    }
 
     init(tree: ProtoTree.Validated, fields: [Int]) {
         self.tree = tree
         self.fields = fields
     }
 
-    mutating func handleConflictingOneOf() throws {}   // as in protobuf bytes: the last one wins
+    mutating func handleConflictingOneOf() throws {
+        throw ProtoTree.TreeError.malformed("conflicting oneof in canonical tree")
+    }
 
     mutating func nextFieldNumber() throws -> Int? {
         guard position < fields.count else { return nil }
@@ -60,51 +70,51 @@ struct TreeDecoder: SwiftProtobuf.Decoder {
         try m.decodeMessage(decoder: &sub)
     }
 
-    mutating func decodeSingularFloatField(value: inout Float) throws { value = Float(bitPattern: try fixed32()) }
-    mutating func decodeSingularFloatField(value: inout Float?) throws { value = Float(bitPattern: try fixed32()) }
+    mutating func decodeSingularFloatField(value: inout Float) throws { try singular(); value = Float(bitPattern: try fixed32()) }
+    mutating func decodeSingularFloatField(value: inout Float?) throws { try singular(); value = Float(bitPattern: try fixed32()) }
     mutating func decodeRepeatedFloatField(value: inout [Float]) throws { value.append(Float(bitPattern: try fixed32())) }
-    mutating func decodeSingularDoubleField(value: inout Double) throws { value = Double(bitPattern: try fixed64()) }
-    mutating func decodeSingularDoubleField(value: inout Double?) throws { value = Double(bitPattern: try fixed64()) }
+    mutating func decodeSingularDoubleField(value: inout Double) throws { try singular(); value = Double(bitPattern: try fixed64()) }
+    mutating func decodeSingularDoubleField(value: inout Double?) throws { try singular(); value = Double(bitPattern: try fixed64()) }
     mutating func decodeRepeatedDoubleField(value: inout [Double]) throws { value.append(Double(bitPattern: try fixed64())) }
-    mutating func decodeSingularInt32Field(value: inout Int32) throws { value = Int32(truncatingIfNeeded: try signed()) }
-    mutating func decodeSingularInt32Field(value: inout Int32?) throws { value = Int32(truncatingIfNeeded: try signed()) }
+    mutating func decodeSingularInt32Field(value: inout Int32) throws { try singular(); value = Int32(truncatingIfNeeded: try signed()) }
+    mutating func decodeSingularInt32Field(value: inout Int32?) throws { try singular(); value = Int32(truncatingIfNeeded: try signed()) }
     mutating func decodeRepeatedInt32Field(value: inout [Int32]) throws { value.append(Int32(truncatingIfNeeded: try signed())) }
-    mutating func decodeSingularInt64Field(value: inout Int64) throws { value = try signed() }
-    mutating func decodeSingularInt64Field(value: inout Int64?) throws { value = try signed() }
+    mutating func decodeSingularInt64Field(value: inout Int64) throws { try singular(); value = try signed() }
+    mutating func decodeSingularInt64Field(value: inout Int64?) throws { try singular(); value = try signed() }
     mutating func decodeRepeatedInt64Field(value: inout [Int64]) throws { value.append(try signed()) }
-    mutating func decodeSingularUInt32Field(value: inout UInt32) throws { value = UInt32(truncatingIfNeeded: try varint()) }
-    mutating func decodeSingularUInt32Field(value: inout UInt32?) throws { value = UInt32(truncatingIfNeeded: try varint()) }
+    mutating func decodeSingularUInt32Field(value: inout UInt32) throws { try singular(); value = UInt32(truncatingIfNeeded: try varint()) }
+    mutating func decodeSingularUInt32Field(value: inout UInt32?) throws { try singular(); value = UInt32(truncatingIfNeeded: try varint()) }
     mutating func decodeRepeatedUInt32Field(value: inout [UInt32]) throws { value.append(UInt32(truncatingIfNeeded: try varint())) }
-    mutating func decodeSingularUInt64Field(value: inout UInt64) throws { value = try varint() }
-    mutating func decodeSingularUInt64Field(value: inout UInt64?) throws { value = try varint() }
+    mutating func decodeSingularUInt64Field(value: inout UInt64) throws { try singular(); value = try varint() }
+    mutating func decodeSingularUInt64Field(value: inout UInt64?) throws { try singular(); value = try varint() }
     mutating func decodeRepeatedUInt64Field(value: inout [UInt64]) throws { value.append(try varint()) }
     // The tree holds sint values themselves (no zigzag: that is a byte encoding).
-    mutating func decodeSingularSInt32Field(value: inout Int32) throws { value = Int32(truncatingIfNeeded: try signed()) }
-    mutating func decodeSingularSInt32Field(value: inout Int32?) throws { value = Int32(truncatingIfNeeded: try signed()) }
+    mutating func decodeSingularSInt32Field(value: inout Int32) throws { try singular(); value = Int32(truncatingIfNeeded: try signed()) }
+    mutating func decodeSingularSInt32Field(value: inout Int32?) throws { try singular(); value = Int32(truncatingIfNeeded: try signed()) }
     mutating func decodeRepeatedSInt32Field(value: inout [Int32]) throws { value.append(Int32(truncatingIfNeeded: try signed())) }
-    mutating func decodeSingularSInt64Field(value: inout Int64) throws { value = try signed() }
-    mutating func decodeSingularSInt64Field(value: inout Int64?) throws { value = try signed() }
+    mutating func decodeSingularSInt64Field(value: inout Int64) throws { try singular(); value = try signed() }
+    mutating func decodeSingularSInt64Field(value: inout Int64?) throws { try singular(); value = try signed() }
     mutating func decodeRepeatedSInt64Field(value: inout [Int64]) throws { value.append(try signed()) }
-    mutating func decodeSingularFixed32Field(value: inout UInt32) throws { value = try fixed32() }
-    mutating func decodeSingularFixed32Field(value: inout UInt32?) throws { value = try fixed32() }
+    mutating func decodeSingularFixed32Field(value: inout UInt32) throws { try singular(); value = try fixed32() }
+    mutating func decodeSingularFixed32Field(value: inout UInt32?) throws { try singular(); value = try fixed32() }
     mutating func decodeRepeatedFixed32Field(value: inout [UInt32]) throws { value.append(try fixed32()) }
-    mutating func decodeSingularFixed64Field(value: inout UInt64) throws { value = try fixed64() }
-    mutating func decodeSingularFixed64Field(value: inout UInt64?) throws { value = try fixed64() }
+    mutating func decodeSingularFixed64Field(value: inout UInt64) throws { try singular(); value = try fixed64() }
+    mutating func decodeSingularFixed64Field(value: inout UInt64?) throws { try singular(); value = try fixed64() }
     mutating func decodeRepeatedFixed64Field(value: inout [UInt64]) throws { value.append(try fixed64()) }
-    mutating func decodeSingularSFixed32Field(value: inout Int32) throws { value = Int32(bitPattern: try fixed32()) }
-    mutating func decodeSingularSFixed32Field(value: inout Int32?) throws { value = Int32(bitPattern: try fixed32()) }
+    mutating func decodeSingularSFixed32Field(value: inout Int32) throws { try singular(); value = Int32(bitPattern: try fixed32()) }
+    mutating func decodeSingularSFixed32Field(value: inout Int32?) throws { try singular(); value = Int32(bitPattern: try fixed32()) }
     mutating func decodeRepeatedSFixed32Field(value: inout [Int32]) throws { value.append(Int32(bitPattern: try fixed32())) }
-    mutating func decodeSingularSFixed64Field(value: inout Int64) throws { value = Int64(bitPattern: try fixed64()) }
-    mutating func decodeSingularSFixed64Field(value: inout Int64?) throws { value = Int64(bitPattern: try fixed64()) }
+    mutating func decodeSingularSFixed64Field(value: inout Int64) throws { try singular(); value = Int64(bitPattern: try fixed64()) }
+    mutating func decodeSingularSFixed64Field(value: inout Int64?) throws { try singular(); value = Int64(bitPattern: try fixed64()) }
     mutating func decodeRepeatedSFixed64Field(value: inout [Int64]) throws { value.append(Int64(bitPattern: try fixed64())) }
-    mutating func decodeSingularBoolField(value: inout Bool) throws { value = try varint() != 0 }
-    mutating func decodeSingularBoolField(value: inout Bool?) throws { value = try varint() != 0 }
+    mutating func decodeSingularBoolField(value: inout Bool) throws { try singular(); value = try varint() != 0 }
+    mutating func decodeSingularBoolField(value: inout Bool?) throws { try singular(); value = try varint() != 0 }
     mutating func decodeRepeatedBoolField(value: inout [Bool]) throws { value.append(try varint() != 0) }
-    mutating func decodeSingularStringField(value: inout String) throws { value = try string() }
-    mutating func decodeSingularStringField(value: inout String?) throws { value = try string() }
+    mutating func decodeSingularStringField(value: inout String) throws { try singular(); value = try string() }
+    mutating func decodeSingularStringField(value: inout String?) throws { try singular(); value = try string() }
     mutating func decodeRepeatedStringField(value: inout [String]) throws { value.append(try string()) }
-    mutating func decodeSingularBytesField(value: inout Data) throws { value = try bytes() }
-    mutating func decodeSingularBytesField(value: inout Data?) throws { value = try bytes() }
+    mutating func decodeSingularBytesField(value: inout Data) throws { try singular(); value = try bytes() }
+    mutating func decodeSingularBytesField(value: inout Data?) throws { try singular(); value = try bytes() }
     mutating func decodeRepeatedBytesField(value: inout [Data]) throws { value.append(try bytes()) }
 
     // An enum value the schema does not name is dropped, as protobuf drops it from a closed enum.
@@ -112,17 +122,17 @@ struct TreeDecoder: SwiftProtobuf.Decoder {
         guard let raw = Int32(exactly: try signed()) else { return nil }
         return E(rawValue: Int(raw))
     }
-    mutating func decodeSingularEnumField<E: SwiftProtobuf.Enum>(value: inout E) throws where E.RawValue == Int {
+    mutating func decodeSingularEnumField<E: SwiftProtobuf.Enum>(value: inout E) throws where E.RawValue == Int { try singular();
         if let v = try enumValue(E.self) { value = v }
     }
-    mutating func decodeSingularEnumField<E: SwiftProtobuf.Enum>(value: inout E?) throws where E.RawValue == Int {
+    mutating func decodeSingularEnumField<E: SwiftProtobuf.Enum>(value: inout E?) throws where E.RawValue == Int { try singular();
         if let v = try enumValue(E.self) { value = v }
     }
     mutating func decodeRepeatedEnumField<E: SwiftProtobuf.Enum>(value: inout [E]) throws where E.RawValue == Int {
         if let v = try enumValue(E.self) { value.append(v) }
     }
 
-    mutating func decodeSingularMessageField<M: SwiftProtobuf.Message>(value: inout M?) throws {
+    mutating func decodeSingularMessageField<M: SwiftProtobuf.Message>(value: inout M?) throws { try singular();
         var m = value ?? M()
         try message(into: &m)
         value = m
@@ -132,7 +142,7 @@ struct TreeDecoder: SwiftProtobuf.Decoder {
         try message(into: &m)
         value.append(m)
     }
-    mutating func decodeSingularGroupField<G: SwiftProtobuf.Message>(value: inout G?) throws {
+    mutating func decodeSingularGroupField<G: SwiftProtobuf.Message>(value: inout G?) throws { try singular();
         throw ProtoTree.TreeError.malformed("groups are not part of Signal's protocol")
     }
     mutating func decodeRepeatedGroupField<G: SwiftProtobuf.Message>(value: inout [G]) throws {

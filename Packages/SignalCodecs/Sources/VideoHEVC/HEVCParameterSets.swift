@@ -266,6 +266,9 @@ public struct HEVCSPS: Sendable, Equatable {
         if try r.flag("conformance_window_flag") {
             let l = try r.ue("conf_win_left_offset", 0...maxDimension), rt = try r.ue("conf_win_right_offset", 0...maxDimension)
             let t = try r.ue("conf_win_top_offset", 0...maxDimension), b = try r.ue("conf_win_bottom_offset", 0...maxDimension)
+            guard (l + rt) * s.subWidthC < s.width, (t + b) * s.subHeightC < s.height else {
+                throw r.fail("conformance_window", "crop removes the whole picture")
+            }
             s.conformanceWindow = (l, rt, t, b)
         }
         s.bitDepthLuma = try r.ue("bit_depth_luma_minus8", 0...8) + 8

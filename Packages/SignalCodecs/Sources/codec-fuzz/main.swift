@@ -6,9 +6,11 @@
 //   swift run -c release -Xswiftc -sanitize=address codec-fuzz <target> <corpus-dir> [iterations] [seed]
 //   swift run ... codec-fuzz <target> <corpus-dir> --dump <seed> <iteration> <out-file>   # reproduce a crash
 //
-// Targets: png (PngSuite); mp4, h264, aac, mp3 (Media.swift; seeds from
+// Targets: hevc/av1 (VideoHEVCTests/VideoAV1Tests Resources), png (PngSuite);
+// mp4, h264, aac, mp3 (Media.swift; seeds from
 // Tests/DifferentialTests/Resources/{MP4,H264,AAC,MP3}).
 //
+// Replay one input with <target> <corpus-dir> --run <seed> <iteration>.
 // Every input is derived from (seed, iteration), so a crash report of the form
 // "seed S iteration N" is enough to regenerate the exact input with --dump.
 //
@@ -95,7 +97,7 @@ func input(seed: UInt64, iteration: Int, corpus: [[UInt8]]) -> [UInt8] {
 }
 
 let args = CommandLine.arguments
-let targets = ["png", "mp4", "h264", "aac", "mp3"]
+let targets = ["png", "mp4", "h264", "hevc", "av1", "av1video", "aac", "mp3"]
 guard args.count >= 3, targets.contains(args[1]) else {
     print("usage: codec-fuzz <\(targets.joined(separator: "|"))> <corpus-dir> [iterations] [seed] | <target> <corpus-dir> --dump <seed> <iteration> <out>")
     exit(2)
@@ -145,6 +147,12 @@ case "mp4":
     t = Target(seeds: corpus.count, input: mp4Input, run: { MediaFuzz.runMP4(mp4Input($0, $1)) })
 case "h264":
     t = unitTarget(MediaFuzz.h264Seeds(MediaFuzz.files(dir, [".mp4"])), run: MediaFuzz.runH264)
+case "hevc":
+    t = unitTarget(MediaFuzz.hevcSeeds(MediaFuzz.files(dir, [".mp4"])), run: MediaFuzz.runHEVC)
+case "av1video":
+    t = unitTarget(MediaFuzz.av1VideoSeeds(MediaFuzz.files(dir, [".ivf"])), run: MediaFuzz.runAV1Video)
+case "av1":
+    t = unitTarget(MediaFuzz.files(dir, [".obu"]).map { UnitSeed(units: [$0], context: .none) }, run: MediaFuzz.runAV1)
 case "aac":
     t = unitTarget(MediaFuzz.aacSeeds(MediaFuzz.files(dir, [".aac", ".m4a"])), run: MediaFuzz.runAAC)
 default:
@@ -159,6 +167,11 @@ if args.count >= 7 && args[3] == "--dump" {
     exit(0)
 }
 
+if args.count >= 6 && args[3] == "--run" {
+    print(t.run(UInt64(args[4])!, Int(args[5])!))
+    exit(0)
+}
+
 let iterations = args.count > 3 ? Int(args[3])! : 100_000
 let seed = args.count > 4 ? UInt64(args[4])! : UInt64(Date().timeIntervalSince1970)
 print("codec-fuzz \(target): \(t.seeds) seeds, \(iterations) iterations, seed \(seed)")
@@ -170,7 +183,7 @@ let started = Date()
 let every = target == "png" ? 1_000 : 50
 for it in 0..<iterations {
     // Printed before each run so that a crash leaves "seed/iteration" on stdout.
-    if it % every == 0 { print("seed \(seed) iteration \(it)") }
+    if it % every == 0 || target == "hevc" || target == "av1" || target == "av1video" { print("seed \(seed) iteration \(it)") }
     outcomes[t.run(seed, it), default: 0] += 1
 }
 let rate = Double(iterations) / Date().timeIntervalSince(started)

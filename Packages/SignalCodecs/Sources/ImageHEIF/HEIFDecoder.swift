@@ -131,12 +131,12 @@ public enum HEIFDecoder {
         try checkEssentials(item)
         switch item.type.fourCCString {
         case "hvc1", "av01":
-            let p = try decodeCoded(item, codec: codec)
+            let p = try decodeCoded(item, codec: codec, limits: limits)
             try limits.checkDimensions(width: p.width, height: p.height, at: 0, rule: "heif.item")
             return withColour(p, item)
         case "grid":
             guard depth == 0 else { throw ParseFailure(offset: 0, rule: "heif.grid", reason: .invalid("nested derivation")) }
-            let grid = try HEIFParser.parseGrid(item.data)
+            let grid = try HEIFParser.parseGrid(itemData(item, limits: limits))
             try limits.checkDimensions(width: grid.outputWidth, height: grid.outputHeight, at: 0, rule: "heif.grid")
             let ids = file.references("dimg", from: item.id)
             guard ids.count == grid.rows * grid.columns else {
@@ -157,7 +157,23 @@ public enum HEIFDecoder {
                   th * grid.rows >= grid.outputHeight, th * (grid.rows - 1) < grid.outputHeight else {
                 throw ParseFailure(offset: 0, rule: "heif.grid", reason: .invalid("\(tw)x\(th) tiles for \(grid.outputWidth)x\(grid.outputHeight)"))
             }
-            let decoded = try decodeTiles(tiles, codec: codec)
+            try limits.checkDimensions(width: tw, height: th, at: 0, rule: "heif.tile")
+            guard tw * th <= limits.maxPixels / tiles.count else {
+                throw ParseFailure(offset: 0, rule: "heif.grid", reason: .limitExceeded("aggregate tile pixels"))
+            }
+            var remaining = limits.maxInputBytes
+            for tile in tiles {
+                guard let size = tile.spatialExtent, size.width == tw, size.height == th else {
+                    throw ParseFailure(offset: 0, rule: "heif.grid", reason: .invalid("tile dimensions differ"))
+                }
+                for extent in tile.extents {
+                    guard extent.count <= remaining else { throw ParseFailure(offset: 0, rule: "heif.grid", reason: .limitExceeded("aggregate tile input")) }
+                    remaining -= extent.count
+                }
+            }
+            var tileLimits = limits
+            tileLimits.maxPixels = limits.maxPixels / tiles.count
+            let decoded = try decodeTiles(tiles, codec: codec, limits: tileLimits)
             var out = try compose(decoded, grid: grid, tileWidth: tw, tileHeight: th)
             out = withColour(out, tiles[0])
             return withColour(out, item)
@@ -178,11 +194,11 @@ public enum HEIFDecoder {
         return p
     }
 
-    static func decodeTiles(_ tiles: [HEIFItem], codec: HEIFCodec) throws(ParseFailure) -> [HEIFPlanes] {
+    static func decodeTiles(_ tiles: [HEIFItem], codec: HEIFCodec, limits: DecodeLimits) throws(ParseFailure) -> [HEIFPlanes] {
         let results = Mutex<[Result<HEIFPlanes, ParseFailure>?]>(Array(repeating: nil, count: tiles.count))
         DispatchQueue.concurrentPerform(iterations: tiles.count) { i in
             let r: Result<HEIFPlanes, ParseFailure>
-            do throws(ParseFailure) { r = .success(try decodeCoded(tiles[i], codec: codec)) } catch { r = .failure(error) }
+            do throws(ParseFailure) { r = .success(try decodeCoded(tiles[i], codec: codec, limits: limits)) } catch { r = .failure(error) }
             results.withLock { $0[i] = r }
         }
         var out: [HEIFPlanes] = []
@@ -227,9 +243,20 @@ public enum HEIFDecoder {
         return out
     }
 
+    static func itemData(_ item: HEIFItem, limits: DecodeLimits) throws(ParseFailure) -> ByteSlice {
+        var remaining = limits.maxInputBytes
+        for extent in item.extents {
+            guard extent.count <= remaining else { throw ParseFailure(offset: 0, rule: "heif.item", reason: .limitExceeded("item extents")) }
+            remaining -= extent.count
+        }
+        return item.data
+    }
+
     /// One coded image item through its codec.
-    static func decodeCoded(_ item: HEIFItem, codec: HEIFCodec) throws(ParseFailure) -> HEIFPlanes {
-        let data = item.data
+    static func decodeCoded(_ item: HEIFItem, codec: HEIFCodec, limits: DecodeLimits) throws(ParseFailure) -> HEIFPlanes {
+        guard let size = item.spatialExtent else { throw ParseFailure(offset: 0, rule: "heif.item", reason: .invalid("missing ispe")) }
+        try limits.checkDimensions(width: size.width, height: size.height, at: 0, rule: "heif.item")
+        let data = try itemData(item, limits: limits)
         guard !data.isEmpty else { throw ParseFailure(offset: 0, rule: "heif.item", reason: .invalid("item \(item.id) has no data")) }
         switch codec {
         case .hevc:
@@ -239,7 +266,8 @@ public enum HEIFDecoder {
             let frame: HEVCFrame
             do {
                 let d = try HEVCDecoder(vps: cfg.videoParameterSets.map { $0.copyBytes() }, sps: cfg.sequenceParameterSets.map { $0.copyBytes() },
-                                        pps: cfg.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: cfg.nalLengthSize)
+                                        pps: cfg.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: cfg.nalLengthSize,
+                                        limits: limits, expectedDimensions: size, pictureLimit: 1)
                 var frames = d.decode(sample: data, pts: 0)
                 frames += d.flush()
                 guard d.errorCount == 0, let f = frames.first else {
@@ -258,7 +286,7 @@ public enum HEIFDecoder {
                 throw ParseFailure(offset: 0, rule: "heif.av01", reason: .mismatch(expected: "av1C"))
             }
             let f: AV1Frame
-            do throws(AV1DecodeError) { f = try AV1Decoder.decodeStill(data, configOBUs: cfg.configOBUs) } catch {
+            do throws(AV1DecodeError) { f = try AV1Decoder.decodeStill(data, configOBUs: cfg.configOBUs, limits: limits, expectedDimensions: size) } catch {
                 throw ParseFailure(offset: 0, rule: "heif.av01", reason: .invalid("item \(item.id): \(error)"))
             }
             let cf = f.monochrome ? 0 : (f.subsamplingX && f.subsamplingY ? 1 : (f.subsamplingX ? 2 : 3))

@@ -75,7 +75,7 @@ let package = Package(
         .target(name: "VideoAV1", dependencies: ["CodecCore"], swiftSettings: strict),
         .target(name: "ImageHEIF", dependencies: ["CodecCore", "ContainerMP4", "VideoHEVC", "VideoAV1"], swiftSettings: strict),
         .target(name: "MetadataStrip", dependencies: ["CodecCore", "ImageJPEG"], swiftSettings: strict),
-        .executableTarget(name: "codec-fuzz", dependencies: ["CodecCore", "ImagePNG", "ContainerMP4", "VideoH264", "AudioAAC", "AudioMP3"],
+        .executableTarget(name: "codec-fuzz", dependencies: ["CodecCore", "ImagePNG", "ContainerMP4", "VideoH264", "VideoHEVC", "VideoAV1", "AudioAAC", "AudioMP3"],
                           swiftSettings: memorySafety),
 
         .testTarget(name: "CodecCoreTests", dependencies: ["CodecCore"], swiftSettings: memorySafety),

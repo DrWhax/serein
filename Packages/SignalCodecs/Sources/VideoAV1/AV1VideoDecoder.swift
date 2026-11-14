@@ -48,6 +48,7 @@ final class AV1Job: Sendable {
 }
 
 public final class AV1VideoDecoder {
+    let limits: DecodeLimits
     var seq: AV1SequenceHeader?
     var slots = [AV1RefSlot](repeating: AV1RefSlot(), count: 8)
     public private(set) var errorCount = 0
@@ -62,7 +63,8 @@ public final class AV1VideoDecoder {
     static let maxJobs = 3
 
     /// `configOBUs`: av1C's configOBUs (a sequence header), or empty when the stream carries it.
-    public init(configOBUs: ByteSlice = .empty) throws(AV1DecodeError) {
+    public init(configOBUs: ByteSlice = .empty, limits: DecodeLimits = .default) throws(AV1DecodeError) {
+        self.limits = limits
         if !configOBUs.isEmpty {
             let cfg = configOBUs.copyBytes()
             for o in try AV1OBU.split(cfg) where o.type == AV1OBUType.sequenceHeader {
@@ -125,6 +127,8 @@ public final class AV1VideoDecoder {
                 }
                 guard h.upscaledWidth <= AV1Decoder.maxDimension, h.frameHeight <= AV1Decoder.maxDimension,
                       h.upscaledWidth * h.frameHeight <= AV1Decoder.maxPixels else { throw .limitExceeded("\(h.upscaledWidth)x\(h.frameHeight)") }
+                do { try limits.checkDimensions(width: h.upscaledWidth, height: h.frameHeight, at: 0, rule: "AV1 frame") }
+                catch { throw .limitExceeded("frame dimensions") }
                 var st = AV1Decoder.FrameState(info: try frameInfo(s, h))
                 if o.type == AV1OBUType.frame {
                     r.byteAlign()

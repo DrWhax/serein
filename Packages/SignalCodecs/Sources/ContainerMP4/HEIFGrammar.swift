@@ -41,6 +41,7 @@ public struct HEIFLimits: Sendable {
     public var maxProperties = 4096
     public var maxReferences = 16_384
     public var maxExtentsPerItem = 1024
+    public var maxExtents = 16_384
     public var maxBoxes = 20_000
     public init() {}
 }
@@ -332,6 +333,7 @@ public enum HEIFParser {
         let n = v < 2 ? Int(try c.u16be("iloc.item_count")) : Int(try c.u32be("iloc.item_count"))
         guard n <= limits.maxItems else { throw c.fail("iloc.item_count", .limitExceeded("\(n) items")) }
         var out: [(UInt32, [ByteSlice])] = []
+        var remainingExtents = limits.maxExtents
         var ids: Set<UInt32> = []
         for _ in 0..<n {
             let id = v < 2 ? UInt32(try c.u16be("iloc.item_ID")) : try c.u32be("iloc.item_ID")
@@ -340,7 +342,10 @@ public enum HEIFParser {
             let dref = try c.u16be("iloc.data_reference_index")
             let base = try field(baseSize, "iloc.base_offset")
             let extentCount = Int(try c.u16be("iloc.extent_count"))
-            guard extentCount <= limits.maxExtentsPerItem else { throw c.fail("iloc.extent_count", .limitExceeded("\(extentCount) extents")) }
+            guard extentCount <= limits.maxExtentsPerItem, extentCount <= remainingExtents else {
+                throw c.fail("iloc.extent_count", .limitExceeded("extent budget"))
+            }
+            remainingExtents -= extentCount
             var extents: [ByteSlice] = []
             for _ in 0..<extentCount {
                 _ = try field(indexSize, "iloc.extent_index")

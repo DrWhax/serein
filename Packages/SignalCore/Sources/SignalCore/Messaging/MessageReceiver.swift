@@ -94,7 +94,9 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     func handleIncoming(_ bytes: Data, serverDeliveryTimestamp: UInt64, sendAck: @escaping () throws -> Void) {
         let envelope: Signalservice_Envelope
         do {
+            guard bytes.count <= MessageParserLimits.maxInputBytes else { throw ReceiveError.invalidEnvelope("envelope too large") }
             envelope = try Signalservice_Envelope(serializedBytes: bytes)
+            try InboundTimestamps.validate(envelope)
         } catch {
             try? sendAck()   // unparseable: never deliverable
             emit(.failed(serverGuid: "", reason: "envelope: \(error)"))
@@ -169,6 +171,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     // MARK: unprocessed cache
 
     func cache(_ e: Signalservice_Envelope, _ db: Database) throws -> String {
+        try InboundTimestamps.validate(e)
         let id = UUID().uuidString.lowercased()
         let counter = try MessageStore.nextReceivedAt(db)
         try db.execute(
@@ -344,6 +347,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     // MARK: dispatch
 
     func dispatch(_ d: Decrypted, envelope e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
+        try InboundTimestamps.validate(e)
+        try InboundTimestamps.validate(d.content)
         var events: [ReceiveEvent] = []
         let ctx = DatabaseStoreContext(db)
         let c = d.content
@@ -414,6 +419,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             }
         case .decryptionErrorMessage(let bytes):
             let dem = try DecryptionErrorMessage(bytes: bytes)
+            try InboundTimestamps.check(dem.timestamp)
             // Only errors about a message this device sent can be answered from our send log.
             if dem.deviceId == account.deviceId {
                 let ratchetKey = dem.ratchetKey?.serialize()

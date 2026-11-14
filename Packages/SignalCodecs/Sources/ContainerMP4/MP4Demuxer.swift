@@ -410,7 +410,10 @@ public enum MP4Demuxer {
             var chunk = run.first
             while chunk <= lastChunk, index < n {
                 var offset = chunkOffsets[chunk - 1]
-                for _ in 0..<run.perChunk where index < n {
+                guard run.perChunk <= n - index else {
+                    throw ParseFailure(offset: stscBox.offset, rule: "stsc", reason: .invalid("chunk contains more samples than stsz"))
+                }
+                for _ in 0..<run.perChunk {
                     let size = sizes[index]
                     let (end, overflow) = offset.addingReportingOverflow(size)
                     guard !overflow, end <= fileSize else {
@@ -432,7 +435,8 @@ public enum MP4Demuxer {
         index = 0
         for _ in 0..<tCount {
             let k = Int(try tc.u32be("stts.sample_count")), delta = Int64(try tc.u32be("stts.sample_delta"))
-            for _ in 0..<k where index < n {
+            guard k <= n - index else { throw tc.fail("stts", .invalid("run exceeds remaining samples")) }
+            for _ in 0..<k {
                 samples[index].decodeTime = dts
                 samples[index].compositionTime = dts
                 let (next, o) = dts.addingReportingOverflow(delta)
@@ -452,11 +456,15 @@ public enum MP4Demuxer {
                 let raw = try cc.u32be("ctts.sample_offset")
                 // Version 0 is unsigned by the spec, but writers put negative values there too.
                 let off = version == 1 || raw > 0x7FFF_FFFF ? Int64(Int32(bitPattern: raw)) : Int64(raw)
-                for _ in 0..<k where index < n {
-                    samples[index].compositionTime = samples[index].decodeTime + off
+                guard k <= n - index else { throw cc.fail("ctts", .invalid("run exceeds remaining samples")) }
+                for _ in 0..<k {
+                    let (time, overflow) = samples[index].decodeTime.addingReportingOverflow(off)
+                    guard !overflow else { throw cc.fail("ctts", .invalid("time overflow")) }
+                    samples[index].compositionTime = time
                     index += 1
                 }
             }
+            guard index == n else { throw cc.fail("ctts", .invalid("\(index) of \(n) samples have composition offsets")) }
         }
 
         // Sync samples.

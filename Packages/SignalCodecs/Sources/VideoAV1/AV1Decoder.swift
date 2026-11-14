@@ -32,12 +32,14 @@ public enum AV1Decoder {
 
     /// Decodes the first shown key frame of `data` (an AVIF item). `configOBUs` (av1C's) is
     /// used when the item itself carries no sequence header.
-    public static func decodeStill(_ data: ByteSlice, configOBUs: ByteSlice = .empty) throws(AV1DecodeError) -> AV1Frame {
-        try decodeStillWithStats(data, configOBUs: configOBUs).frame
+    public static func decodeStill(_ data: ByteSlice, configOBUs: ByteSlice = .empty, limits: DecodeLimits = .default,
+                                   expectedDimensions: (width: Int, height: Int)? = nil) throws(AV1DecodeError) -> AV1Frame {
+        try decodeStillWithStats(data, configOBUs: configOBUs, limits: limits, expectedDimensions: expectedDimensions).frame
     }
 
     /// decodeStill, with how often each tool was used (AV1Tool order).
-    static func decodeStillWithStats(_ data: ByteSlice, configOBUs: ByteSlice = .empty) throws(AV1DecodeError) -> (frame: AV1Frame, stats: [Int]) {
+    static func decodeStillWithStats(_ data: ByteSlice, configOBUs: ByteSlice = .empty, limits: DecodeLimits = .default,
+                                     expectedDimensions: (width: Int, height: Int)? = nil) throws(AV1DecodeError) -> (frame: AV1Frame, stats: [Int]) {
         let bytes = data.copyBytes()
         var seq: AV1SequenceHeader? = nil
         if !configOBUs.isEmpty {
@@ -68,6 +70,11 @@ public enum AV1Decoder {
                 let h = try AV1FrameHeader.parse(&r, s, temporalId: o.temporalId, spatialId: o.spatialId)
                 guard h.upscaledWidth <= maxDimension, h.frameHeight <= maxDimension, h.upscaledWidth * h.frameHeight <= maxPixels else {
                     throw .limitExceeded("\(h.upscaledWidth)x\(h.frameHeight)")
+                }
+                guard h.upscaledWidth <= limits.maxDimension, h.frameHeight <= limits.maxDimension,
+                      h.upscaledWidth * h.frameHeight <= limits.maxPixels else { throw .limitExceeded("image pixel budget") }
+                if let expectedDimensions, h.upscaledWidth != expectedDimensions.width || h.frameHeight != expectedDimensions.height {
+                    throw .malformed("frame dimensions differ from container")
                 }
                 var st = FrameState(info: AV1FrameInfo(seq: s, hdr: h))
                 if o.type == AV1OBUType.frame {

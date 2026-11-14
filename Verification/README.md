@@ -50,3 +50,50 @@ it even on failure; do not run alongside other edits to those files.
 as killed only when its exact test records the expected assertion in that issue's own record;
 a passed target test plus an unrelated failure does not count. Runtime mutants also cover reused
 send-log row IDs, overlapping download task handles, reference metadata and follow-up sources.
+
+## Message-parser boundary audit — 2026-11-14
+
+The keyless child is a containment boundary, not a reason to trust its output. This audit added:
+
+- Canonical reply enforcement: each singular field occurs once and conflicting oneof nodes
+  are rejected. Repeated message merges could otherwise repeatedly copy growing values in the
+  main app, outside the child process's time budget. Duplicate fields in original protobuf bytes
+  still use normal protobuf semantics in the child, which emits a canonical tree.
+- Per-tree and aggregate reply node/byte limits, including enforcement during wire decoding.
+  Splitting an oversized response across many small trees cannot multiply the budget.
+- Archive record-size/count bounds and slice-aware framing without copying the whole archive.
+  The concurrent streaming-backup implementation carries these bounds into its record reader;
+  empty frames are skipped but still counted. Streaming work is tested separately by its owner.
+- Generation ownership for spare-child creation, so a refill racing `ParserChildPool.drain()`
+  cannot install a child after shutdown. The race reproduced in the existing pool test and now
+  has a deterministic held-spawn regression.
+- Host-side timestamp validation before envelope caching and content dispatch, including nested
+  modifiers, quotes, receipts and sync messages. A receipt containing `UInt64.max` reproduced a
+  main-process integer-conversion trap before the fix. Timestamps are bounded at half of
+  `Int64.max` to leave arithmetic headroom; random call/CDN IDs and monetary quantities retain
+  their unsigned wire range. Native decryption-error timestamps are checked as well.
+
+`ParserSecurityTests` and `ParserSemanticSecurityTests` exercise these boundaries. The source
+policy gate `python3 Tools/check-parser-numbers.py` classifies all 42 unsigned 64-bit fields of
+SignalService: 30 bounded timestamp fields and 12 unsigned identifiers/quantities. It runs from
+`Tools/lint-codecs.sh` so a schema update cannot silently add an unreviewed field.
+
+These are parser and implementation regressions, not new Lean refinement proofs. The codec
+findings and remaining fuzzing priorities are documented in `Packages/SignalCodecs/README.md`.
+
+### Parser process-memory backstop
+
+Parser startup now opts into a dedicated-thread footprint watchdog: 2 GiB for the media
+service, 1 GiB each for the message service, its children and the HTML parser. Every
+100 ms it queries the kernel's physical-footprint metric, including when idle; exceeding
+the threshold or failing the measurement ends the process with `_exit(70)`. Existing
+connection-loss handling then fails outstanding requests. It does not run in the app.
+These are per-process sampled thresholds, not hard allocation quotas or a machine-wide
+budget: transient overshoot and the sum of multiple child processes remain possible.
+
+`ProcessMemoryWatchdogTests` checks thresholds and failed measurements.
+`sh Tools/check-parser-memory.sh` tests real launchd XPC processes under all three production
+parser sandbox profiles: a normal request must succeed, then a 128 MiB allocation above a
+lower test threshold must lose the connection rather than time out. It is part of
+`Tools/qa.sh app:parser-memory`. The kernel query uses two scoped unsafe C operations on a
+stack buffer; codec code retains its zero-unsafe rule.

@@ -19,7 +19,7 @@ mkdir -p "$logs"
 slices="attachments broker callboundary calls codecs crypto group identity media modifiers queue resend send"
 all=""
 for s in $slices; do all="$all lean:$s"; done
-all="$all test:codecs test:core test:i18n test:media test:ringrtc test:ui test:app lint:codecs app:sandbox vectors"
+all="$all test:codecs test:core test:i18n test:media test:ringrtc test:ui test:app lint:codecs app:parser-memory app:sandbox vectors"
 
 if [ "${1:-}" = "--list" ]; then
   for s in $all; do echo "$s"; done
@@ -52,6 +52,7 @@ run() {
         return 1
       fi ;;
     lint:codecs) Tools/lint-codecs.sh ;;
+    app:parser-memory) sh Tools/check-parser-memory.sh ;;
     app:sandbox) Tools/build-app.sh && Tools/check-sandbox-profile.sh ;;
     vectors) Tools/crypto-vectors/check.sh ;;
   esac

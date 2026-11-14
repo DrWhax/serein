@@ -17,10 +17,13 @@ extension ProtoTree {
 
 final class TreeBuilder {
     var nodes = [ProtoTree.Node(parent: 0, field: 0, kind: .message)]
+    var bytesRemaining = ProtoTree.Limits.maxBytes
 
     func add(_ parent: UInt32, _ field: Int, _ kind: ProtoTree.Kind, bits: UInt64 = 0, bytes: Data = Data()) throws -> UInt32 {
         guard nodes.count < ProtoTree.Limits.maxNodes else { throw ProtoTree.TreeError.tooLarge }
         guard let f = UInt32(exactly: field), f >= 1, f <= ProtoTree.Limits.maxField else { throw ProtoTree.TreeError.malformed("field \(field)") }
+        guard bytes.count <= bytesRemaining else { throw ProtoTree.TreeError.tooLarge }
+        bytesRemaining -= bytes.count
         nodes.append(ProtoTree.Node(parent: parent, field: f, kind: kind, bits: bits, bytes: bytes))
         return UInt32(nodes.count - 1)
     }

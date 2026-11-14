@@ -11,6 +11,8 @@ import CodecCore
 import ContainerMP4
 import Foundation
 import VideoH264
+import VideoHEVC
+import VideoAV1
 
 /// A seed as units, plus what decoding needs besides them.
 struct UnitSeed {
@@ -18,6 +20,7 @@ struct UnitSeed {
     var context: Context
     enum Context {
         case h264(sps: [[UInt8]], pps: [[UInt8]], nalLengthSize: Int)
+        case hevc(HEVCDecoderConfiguration)
         case aac(AACConfig)
         case none
     }
@@ -70,6 +73,66 @@ enum MediaFuzz {
             return UnitSeed(units: samples, context: .h264(sps: c.sequenceParameterSets.map { $0.copyBytes() }, pps: c.pictureParameterSets.map { $0.copyBytes() },
                                                            nalLengthSize: c.nalLengthSize))
         }
+    }
+
+    static func hevcSeeds(_ files: [[UInt8]]) -> [UnitSeed] {
+        files.compactMap { b in
+            guard let f = try? MP4Demuxer.parse(b), let t = f.videoTracks.first,
+                  case .hevc(_, _, _, let c)? = t.sampleEntries.first else { return nil }
+            let units = t.samples.prefix(maxUnits).compactMap { s -> [UInt8]? in
+                s.offset >= 0 && s.size <= b.count - s.offset ? Array(b[s.offset ..< s.offset + s.size]) : nil
+            }
+            return UnitSeed(units: units, context: .hevc(c))
+        }
+    }
+
+    static func runHEVC(_ units: [[UInt8]], _ ctx: UnitSeed.Context) -> String {
+        guard case .hevc(let c) = ctx else { return "no context" }
+        var limits = DecodeLimits()
+        limits.maxPixels = 4 * 1024 * 1024
+        guard let d = try? HEVCDecoder(vps: c.videoParameterSets.map { $0.copyBytes() },
+            sps: c.sequenceParameterSets.map { $0.copyBytes() }, pps: c.pictureParameterSets.map { $0.copyBytes() },
+            nalLengthSize: c.nalLengthSize, limits: limits) else { return "parameter sets" }
+        var frames = 0
+        for u in units { frames += d.decode(sample: ByteSlice(u), pts: 0).count }
+        frames += d.flush().count
+        return d.errorCount > 0 ? "concealed" : frames > 0 ? "decoded" : "no frames"
+    }
+
+    static func av1VideoSeeds(_ files: [[UInt8]]) -> [UnitSeed] {
+        files.compactMap { b in
+            guard b.count >= 32, Array(b.prefix(4)) == Array("DKIF".utf8) else { return nil }
+            var pos = Int(b[6]) | Int(b[7]) << 8
+            guard pos >= 32, pos <= b.count else { return nil }
+            var units: [[UInt8]] = []
+            while b.count - pos >= 12 && units.count < maxUnits {
+                let size = Int(b[pos]) | Int(b[pos + 1]) << 8 | Int(b[pos + 2]) << 16 | Int(b[pos + 3]) << 24
+                pos += 12
+                guard size <= b.count - pos else { return nil }
+                units.append(Array(b[pos ..< pos + size]))
+                pos += size
+            }
+            return units.isEmpty ? nil : UnitSeed(units: units, context: .none)
+        }
+    }
+
+    static func runAV1Video(_ units: [[UInt8]], _ ctx: UnitSeed.Context) -> String {
+        var limits = DecodeLimits()
+        limits.maxPixels = 4 * 1024 * 1024
+        guard let d = try? AV1VideoDecoder(limits: limits) else { return "config" }
+        var frames = 0
+        for u in units { frames += d.decode(sample: ByteSlice(u), pts: 0).count }
+        frames += d.flush().count
+        return d.errorCount > 0 ? "concealed" : frames > 0 ? "decoded" : "no frames"
+    }
+
+    static func runAV1(_ units: [[UInt8]], _ ctx: UnitSeed.Context) -> String {
+        var limits = DecodeLimits()
+        limits.maxPixels = 4 * 1024 * 1024
+        do {
+            _ = try AV1Decoder.decodeStill(ByteSlice(units.flatMap { $0 }), limits: limits)
+            return "decoded"
+        } catch { return "rejected" }
     }
 
     static func aacSeeds(_ files: [[UInt8]]) -> [UnitSeed] {
