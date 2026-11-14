@@ -1,6 +1,7 @@
 // ts/components/Select.dom.stories.tsx and ts/components/fun/FunEmojiPicker.dom.stories.tsx
 // (the picker open under its trigger, beside the story's skin-tone Select).
 
+import AppKit
 import Foundation
 import SwiftUI
 import Testing
@@ -60,7 +61,9 @@ import Testing
         return PortalStage {
             CSSText("Open StickerPicker", style: LegacyType.body1(), wrap: .nowrap)
         } modal: {
-            FunStickerPicker(panel: FunPanelStickers(packs: packs, favorites: [k1, k2], recents: [abe, k1, k2, k3, tall, wide, k2]))
+            // Upstream's padding (the grid leaning left): the shipped grid is centred, see
+            // stickerGridIsCentred.
+            FunStickerPicker(panel: { var p = FunPanelStickers(packs: packs, favorites: [k1, k2], recents: [abe, k1, k2, k3, tall, wide, k2]); p.centersGrid = false; return p }())
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .offset(x: 12, y: 44)
         }
@@ -69,6 +72,38 @@ import Testing
     @Test(arguments: ["light", "dark"])
     func stickerPicker(theme: String) throws {
         try Snapshot.assertMatches(Self.stickerStage(), story: "components-fun-funstickerpicker--default", theme: theme)
+    }
+
+    @Observable final class Frame { var rect = CGRect.zero }
+
+    /// The sticker grid sits in the middle of what the scroller shows (with this Mac's scroller
+    /// style; a legacy scroller takes 17pt), and the scroller stays inside the panel.
+    @Test func stickerGridIsCentred() async throws {
+        _ = NSApplication.shared
+        let grid = Frame()
+        let view = FunScroller(centering: 320) {
+            VStack(spacing: 0) {
+                Color.red.frame(width: 320, height: 80).onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { grid.rect = $0 }
+                ForEach(0..<20) { _ in Color.blue.frame(width: 320, height: 80) }
+            }
+        }
+        .frame(width: FunMetrics.dialogWidth, height: FunMetrics.panelHeight)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: FunMetrics.dialogWidth, height: FunMetrics.panelHeight), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        func scrollViews(_ v: NSView) -> [NSScrollView] { (v as? NSScrollView).map { [$0] } ?? [] + v.subviews.flatMap(scrollViews) }
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        // Laid out once the grid has its frame and the scroller its width (slow under load).
+        for _ in 0..<200 {
+            if grid.rect.width > 0, let sv = scrollViews(host).first, sv.contentView.bounds.width > 0 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let scroller = try #require(scrollViews(host).first)
+        let visible = scroller.contentView.bounds.width
+        #expect(scroller.frame.width == FunMetrics.dialogWidth)
+        #expect(grid.rect.width == 320 && abs(grid.rect.minX - (visible - grid.rect.maxX)) <= 0.5, "left \(grid.rect.minX), right \(visible - grid.rect.maxX)")
     }
 
     @Test(arguments: ["light", "dark"])

@@ -2,6 +2,7 @@
 // username / phone number) and the helpers' logic, checked structurally.
 
 import SwiftUI
+import SignalI18n
 import Testing
 @testable import SignalUI
 

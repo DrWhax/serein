@@ -5,6 +5,7 @@
 // footer sub-nav of 32px category buttons (the selected one on fill-primary-pressed).
 
 import SignalI18n
+import AppKit
 import SwiftUI
 
 public enum FunMetrics {
@@ -131,27 +132,46 @@ struct FunSubNavItemButton: View {
 
 /// `FunScroller`: the body's scroll view (12px leading, 1px trailing padding) with 2px
 /// elevation-1 shade hints at the top and bottom while there is more to scroll that way.
+/// With `centering`, the content is that wide and centred in what is visible instead (the
+/// sticker grid; a deviation from upstream's padding, which leaves it leaning left).
 public struct FunScroller<Content: View>: View {
     let content: Content
+    let centering: CGFloat?
     /// Called when the content first scrolls away from the top.
     let onScrolledFromTop: (() -> Void)?
     @State private var atTop = true
     @State private var atBottom = false
+    /// The system's scroller style: SwiftUI keeps the content at the width it had when the
+    /// style changes under an open panel (a mouse plugged in or out), 17pt off what shows, so
+    /// the scroller is made again for the new style.
+    @State private var scrollerStyle = NSScroller.preferredScrollerStyle
     @Environment(\.axoStaticRendering) var staticRendering
     @Environment(\.colorScheme) var scheme
 
-    public init(onScrolledFromTop: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    public init(centering: CGFloat? = nil, onScrolledFromTop: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+        self.centering = centering
         self.onScrolledFromTop = onScrolledFromTop
         self.content = content()
     }
 
+    @ViewBuilder var inner: some View {
+        if let centering {
+            content.frame(width: centering, alignment: .leading).frame(maxWidth: .infinity)
+        } else {
+            content.padding(.leading, 12).padding(.trailing, 1)
+        }
+    }
+
     public var body: some View {
-        let inner = content.padding(.leading, 12).padding(.trailing, 1)
         Group {
             if staticRendering {
                 Color.clear.overlay(alignment: .top) { inner.fixedSize(horizontal: false, vertical: true) }.clipped()
             } else {
                 ScrollView(.vertical) { inner }
+                    .id(scrollerStyle)
+                    .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+                        scrollerStyle = NSScroller.preferredScrollerStyle
+                    }
                     .scrollIndicators(.automatic)
                     .onScrollGeometryChange(for: [Bool].self) { g in
                         [g.contentOffset.y <= 0, g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 0.5]

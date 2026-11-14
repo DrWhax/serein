@@ -52,6 +52,9 @@ public struct FunPanelStickers: View {
     let onMarkStickerAsFavorite: (FunStickerItem, Bool) -> Void
     /// The media editor's "Featured" section: the analog and digital time stickers.
     var showTimeStickers = false
+    /// The grid centred in what is visible (upstream pads it 12px left, 1px right, which leaves
+    /// it leaning left); off only to compare with upstream's captures.
+    var centersGrid = true
     var onSelectTimeSticker: (_ analog: Bool) -> Void = { _ in }
     @State private var searchInput = ""
     @State private var selected: FunStickersSection?
@@ -104,7 +107,7 @@ public struct FunPanelStickers: View {
                 FunResultsHeader(runs: [CSSTextRun(i18n("icu:FunPanelStickers__SearchResults__EmptyHeading") + " "), Emojify.run("🙁")])
             } else {
                 ScrollViewReader { proxy in
-                    FunScroller {
+                    FunScroller(centering: centersGrid ? CGFloat(Self.columns) * Self.cell : nil) {
                         VStack(alignment: .leading, spacing: 20) {
                             if showTimeStickers && searchInput.trimmingCharacters(in: .whitespaces).isEmpty { featuredSection }
                             ForEach(sections, id: \.id) { s in sectionView(s) }
