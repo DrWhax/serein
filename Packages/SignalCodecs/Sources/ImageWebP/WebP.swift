@@ -172,13 +172,14 @@ public enum WebPDecoder {
         switch b {
         case .lossless(let s):
             let (w, h, argb) = try VP8LDecoder.decode(s, limits: limits)
-            var out = PixelBuffer(transparentWidth: w, height: h)
-            for i in 0..<(w * h) {
-                let p = argb[i]
-                out.rgba[i * 4] = UInt8(truncatingIfNeeded: p >> 16); out.rgba[i * 4 + 1] = UInt8(truncatingIfNeeded: p >> 8)
-                out.rgba[i * 4 + 2] = UInt8(truncatingIfNeeded: p); out.rgba[i * 4 + 3] = UInt8(truncatingIfNeeded: p >> 24)
+            let rgba = ParallelRows.build(rows: h, rowLength: 4 * w, chunk: 64, zero: UInt8(0)) { rows, out in
+                for i in (rows.lowerBound * w)..<(rows.upperBound * w) {
+                    let p = argb[i], o = (i - rows.lowerBound * w) * 4
+                    out[o] = UInt8(truncatingIfNeeded: p >> 16); out[o + 1] = UInt8(truncatingIfNeeded: p >> 8)
+                    out[o + 2] = UInt8(truncatingIfNeeded: p); out[o + 3] = UInt8(truncatingIfNeeded: p >> 24)
+                }
             }
-            return out
+            return PixelBuffer(width: w, height: h, rgba: rgba)
         case .lossy(let s, let alphaChunk):
             let frame = try VP8Decoder.decode(s, limits: limits)
             var out = yuvToRGBA(frame)
@@ -241,11 +242,12 @@ public enum WebPDecoder {
         out[i + 3] = 255
     }
 
+    /// Rows in parallel (each depends only on the planes).
     static func yuvToRGBA(_ f: VP8Frame) -> PixelBuffer {
         let W = f.width, H = f.height
-        var out = PixelBuffer(transparentWidth: W, height: H)
         let uvH = (H + 1) / 2
-        for y in 0..<H {
+        let rgba = ParallelRows.build(rows: H, rowLength: 4 * W, chunk: 32, zero: UInt8(0)) { rows, out in
+        for y in rows {
             // Near / far chroma rows (libwebp EmitFancyRGB row pairing).
             let near: Int, far: Int
             if y == 0 { near = 0; far = 0 }
@@ -253,8 +255,8 @@ public enum WebPDecoder {
             else { near = y / 2; far = y / 2 - 1 }
             let nb = near * f.uvStride, fb = far * f.uvStride
             @inline(__always) func uvAt(_ base: Int, _ x: Int) -> (Int, Int) { (Int(f.u[base + x]), Int(f.v[base + x])) }
-            let yb = y * f.yStride, ob = y * W * 4
-            func emit(_ x: Int, _ u: Int, _ v: Int) { put(&out.rgba, ob + x * 4, Int(f.y[yb + x]), u, v) }
+            let yb = y * f.yStride, ob = (y - rows.lowerBound) * W * 4
+            func emit(_ x: Int, _ u: Int, _ v: Int) { put(&out, ob + x * 4, Int(f.y[yb + x]), u, v) }
             let (n0u, n0v) = uvAt(nb, 0), (f0u, f0v) = uvAt(fb, 0)
             emit(0, (3 * n0u + f0u + 2) >> 2, (3 * n0v + f0v + 2) >> 2)
             let lastPair = (W - 1) >> 1
@@ -275,7 +277,8 @@ public enum WebPDecoder {
             }
             if W & 1 == 0 { emit(W - 1, (3 * tl.0 + l.0 + 2) >> 2, (3 * tl.1 + l.1 + 2) >> 2) }
         }
-        return out
+        }
+        return PixelBuffer(width: W, height: H, rgba: rgba)
     }
 
     // MARK: animation (demux/anim_decode.c, non-premultiplied RGBA)

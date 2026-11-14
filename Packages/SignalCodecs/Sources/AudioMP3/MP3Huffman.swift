@@ -127,15 +127,40 @@ struct MP3HuffmanEncoder: Sendable {
             return L
         }
         let index = MP3Decoder.bandIndexLong[r]
+        // Every region ends on a band boundary (clamped to big): per table, the bits up to
+        // each boundary, and each band's largest value, make a region's cost a difference.
+        let bounds = (0...22).map { min(index[$0], big) }
+        var bandMax = [Int](repeating: 0, count: 22)
+        for k in 0..<22 { for i in bounds[k]..<bounds[k + 1] { bandMax[k] = max(bandMax[k], abs(ix[i])) } }
+        var cum = [Int](repeating: 0, count: 32 * 23)
+        for ts in 0..<32 {
+            var n = 0
+            for k in 0..<22 {
+                n += bits(ix, bounds[k], bounds[k + 1], table: ts)
+                cum[ts * 23 + k + 1] = n
+            }
+        }
+        func region(_ ka: Int, _ kb: Int) -> (table: Int, bits: Int) {
+            guard bounds[kb] > bounds[ka] else { return (0, 0) }
+            var m = 0
+            for k in ka..<kb { m = max(m, bandMax[k]) }
+            var best = (table: 0, bits: Int.max)
+            for ts in candidates(m) {
+                let n = cum[ts * 23 + kb] - cum[ts * 23 + ka]
+                if n < best.bits { best = (ts, n) }
+            }
+            return best
+        }
         var best = (bits: Int.max, r0: 0, r1: 0, t: [0, 0, 0])
         for r0c in 0 ..< 16 {
             let e0 = min(index[r0c + 1], big)
-            let t0 = bestTable(ix, 0, e0)
+            let t0 = region(0, r0c + 1)
             if t0.bits >= best.bits { continue }
             for r1c in 0 ..< 8 {
-                let e1 = min(index[min(r0c + r1c + 2, 22)], big)
-                let t1 = bestTable(ix, e0, e1)
-                let t2 = bestTable(ix, e1, big)
+                let k1 = min(r0c + r1c + 2, 22)
+                let e1 = min(index[k1], big)
+                let t1 = region(r0c + 1, k1)
+                let t2 = region(k1, 22)
                 let n = t0.bits + t1.bits + t2.bits
                 if n < best.bits { best = (n, r0c, r1c, [t0.table, t1.table, t2.table]) }
                 if e1 >= big { break }

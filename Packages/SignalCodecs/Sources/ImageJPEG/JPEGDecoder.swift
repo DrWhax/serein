@@ -10,6 +10,11 @@ struct JPEGHuffmanTable {
     var maxcode = [Int](repeating: -1, count: 18)
     var valoffset = [Int](repeating: 0, count: 17)
     var symbols: [UInt8]
+    /// Codes of up to `lookBits` bits by their next `lookBits` bits (jdhuff.c's look-ahead):
+    /// length (0: longer) and symbol.
+    static let lookBits = 9
+    var lookLength = [UInt8](repeating: 0, count: 1 << 9)
+    var lookSymbol = [UInt8](repeating: 0, count: 1 << 9)
 
     init(_ spec: JPEGHuffmanSpec) {
         symbols = spec.symbols
@@ -18,6 +23,13 @@ struct JPEGHuffmanTable {
             let n = spec.counts[l - 1]
             if n > 0 {
                 valoffset[l] = p - code
+                for k in 0..<n where l <= Self.lookBits && p + k < symbols.count {
+                    let c = code + k, fill = Self.lookBits - l
+                    for suffix in 0..<(1 << fill) {
+                        lookLength[(c << fill) | suffix] = UInt8(l)
+                        lookSymbol[(c << fill) | suffix] = symbols[p + k]
+                    }
+                }
                 p += n
                 code += n
                 maxcode[l] = code - 1
@@ -30,6 +42,12 @@ struct JPEGHuffmanTable {
     /// Bad codes consume 17 bits and decode as 0 (libjpeg JWRN_HUFF_BAD_CODE).
     @inline(__always)
     func decode(_ r: inout MSBBitReader) -> Int {
+        let ahead = Int(r.peek(Self.lookBits))
+        let n = Int(lookLength[ahead])
+        if n != 0 {
+            _ = try! r.bits(n, "huffman")
+            return Int(lookSymbol[ahead])
+        }
         var code = Int(try! r.bit("huffman"))
         var l = 1
         while code > maxcode[l] {
@@ -83,16 +101,18 @@ public enum JPEGDecoder {
             try decodeScan(scan, frame: f, planes: &planes, mcusPerRow: mcusPerRow, mcuRows: mcuRows)
         }
 
-        // IDCT and upsample each component to full size.
+        // IDCT and upsample each component to full size, then convert: each by rows in
+        // parallel (every output row depends only on the coefficients).
         var full: [[UInt8]] = []
         for (ci, comp) in f.components.enumerated() {
             let plane = planes[ci]
             let pw = plane.widthInBlocks * 8
-            var samples = [UInt8](repeating: 0, count: pw * plane.heightInBlocks * 8)
             let q = file.quant[ci]
-            for by in 0..<plane.heightInBlocks {
-                for bx in 0..<plane.widthInBlocks {
-                    IDCT.islow(plane.coef, plane.base(bx, by), q, &samples, by * 8 * pw + bx * 8, pw)
+            let samples = ParallelRows.build(rows: plane.heightInBlocks, rowLength: 8 * pw, chunk: 8, zero: UInt8(0)) { rows, out in
+                for by in rows {
+                    for bx in 0..<plane.widthInBlocks {
+                        IDCT.islow(plane.coef, plane.base(bx, by), q, &out, (by - rows.lowerBound) * 8 * pw + bx * 8, pw)
+                    }
                 }
             }
             let dsW = (f.width * comp.h + hmax - 1) / hmax
@@ -310,7 +330,7 @@ enum IDCT {
     }
 
     static func islow(_ coef: [Int16], _ base: Int, _ q: [Int32], _ out: inout [UInt8], _ outBase: Int, _ stride: Int) {
-        var ws = [Int32](repeating: 0, count: 64)
+        var ws = InlineArray<64, Int32>(repeating: 0)
         for col in 0..<8 {
             @inline(__always) func dq(_ row: Int) -> Int64 { Int64(coef[base + row * 8 + col]) * Int64(q[row * 8 + col]) }
             if coef[base + 8 + col] == 0 && coef[base + 16 + col] == 0 && coef[base + 24 + col] == 0 && coef[base + 32 + col] == 0
@@ -392,38 +412,44 @@ enum Upsample {
     /// (jdmainct.c context rows); columns are never read past `dsW`.
     static func component(_ s: [UInt8], stride: Int, dsW: Int, dsH: Int, h: Int, v: Int,
                           hmax: Int, vmax: Int, width W: Int, height H: Int) -> [UInt8] {
-        var out = [UInt8](repeating: 0, count: W * H)
-        @inline(__always) func at(_ x: Int, _ y: Int) -> Int { Int(s[min(max(y, 0), dsH - 1) * stride + x]) }
+        ParallelRows.build(rows: H, rowLength: W, chunk: 64, zero: UInt8(0)) { rows, out in
+            rowsOf(s, stride: stride, dsW: dsW, dsH: dsH, h: h, v: v, hmax: hmax, vmax: vmax, width: W, rows: rows, into: &out)
+        }
+    }
 
+    /// Output rows `rows` of `component` into `out` (from its first element).
+    static func rowsOf(_ s: [UInt8], stride: Int, dsW: Int, dsH: Int, h: Int, v: Int,
+                       hmax: Int, vmax: Int, width W: Int, rows: Range<Int>, into out: inout [UInt8]) {
+        @inline(__always) func at(_ x: Int, _ y: Int) -> Int { Int(s[min(max(y, 0), dsH - 1) * stride + x]) }
+        let y0 = rows.lowerBound
         if h == hmax && v == vmax {
-            for y in 0..<H { for x in 0..<W { out[y * W + x] = UInt8(at(x, y)) } }
+            for y in rows { for x in 0..<W { out[(y - y0) * W + x] = UInt8(at(x, y)) } }
         } else if 2 * h == hmax && v == vmax && dsW > 2 {
-            for y in 0..<H {
-                var row = [UInt8](repeating: 0, count: 2 * dsW)
+            var row = [UInt8](repeating: 0, count: 2 * dsW)
+            for y in rows {
                 h2v1Row({ at($0, y) }, dsW, &row)
-                for x in 0..<W { out[y * W + x] = row[x] }
+                for x in 0..<W { out[(y - y0) * W + x] = row[x] }
             }
         } else if h == hmax && 2 * v == vmax {
-            for y in 0..<H {
+            for y in rows {
                 let inrow = y / 2
                 let other = y % 2 == 0 ? inrow - 1 : inrow + 1
                 let bias = y % 2 == 0 ? 1 : 2
-                for x in 0..<W { out[y * W + x] = UInt8((at(x, inrow) * 3 + at(x, other) + bias) >> 2) }
+                for x in 0..<W { out[(y - y0) * W + x] = UInt8((at(x, inrow) * 3 + at(x, other) + bias) >> 2) }
             }
         } else if 2 * h == hmax && 2 * v == vmax && dsW > 2 {
-            for y in 0..<H {
+            var row = [UInt8](repeating: 0, count: 2 * dsW)
+            for y in rows {
                 let inrow = y / 2
                 let other = y % 2 == 0 ? inrow - 1 : inrow + 1
-                var row = [UInt8](repeating: 0, count: 2 * dsW)
                 h2v2Row({ at($0, inrow) * 3 + at($0, other) }, dsW, &row)
-                for x in 0..<W { out[y * W + x] = row[x] }
+                for x in 0..<W { out[(y - y0) * W + x] = row[x] }
             }
         } else {
             // Box replication (int_upsample / h2v1_upsample / h2v2_upsample).
             let hx = hmax / h, vx = vmax / v
-            for y in 0..<H { for x in 0..<W { out[y * W + x] = UInt8(at(x / hx, y / vx)) } }
+            for y in rows { for x in 0..<W { out[(y - y0) * W + x] = UInt8(at(x / hx, y / vx)) } }
         }
-        return out
     }
 
     static func h2v1Row(_ sample: (Int) -> Int, _ n: Int, _ out: inout [UInt8]) {
@@ -478,33 +504,42 @@ enum ColorConvert {
     }
 
     static func toRGBA(_ c: [[UInt8]], transform: JPEGColorTransform, width: Int, height: Int) -> PixelBuffer {
-        var out = PixelBuffer(transparentWidth: width, height: height)
-        for i in 0..<(width * height) {
-            let o = i * 4
+        let rgba = ParallelRows.build(rows: height, rowLength: 4 * width, chunk: 64, zero: UInt8(0)) { rows, out in
+            convert(c, transform: transform, from: rows.lowerBound * width, count: rows.count * width, into: &out)
+        }
+        return PixelBuffer(width: width, height: height, rgba: rgba)
+    }
+
+    /// Pixels first ..< first + count into out (from its first element).
+    static func convert(_ c: [[UInt8]], transform: JPEGColorTransform, from first: Int, count: Int, into rgba: inout [UInt8]) {
+        let crR = Self.crR, cbB = Self.cbB, crG = Self.crG, cbG = Self.cbG
+        let c0 = c[0], c1 = c.count > 1 ? c[1] : [], c2 = c.count > 2 ? c[2] : [], c3 = c.count > 3 ? c[3] : []
+        var out = rgba.mutableSpan
+        for p in 0..<count {
+            let i = first + p, o = p * 4
             switch transform {
             case .grayscale:
-                out.rgba[o] = c[0][i]; out.rgba[o + 1] = c[0][i]; out.rgba[o + 2] = c[0][i]
+                out[o] = c0[i]; out[o + 1] = c0[i]; out[o + 2] = c0[i]
             case .rgb:
-                out.rgba[o] = c[0][i]; out.rgba[o + 1] = c[1][i]; out.rgba[o + 2] = c[2][i]
+                out[o] = c0[i]; out[o + 1] = c1[i]; out[o + 2] = c2[i]
             case .ycbcr:
-                let y = Int(c[0][i]), cb = Int(c[1][i]), cr = Int(c[2][i])
-                out.rgba[o] = clamp(y + crR[cr])
-                out.rgba[o + 1] = clamp(y + ((cbG[cb] + crG[cr]) >> scaleBits))
-                out.rgba[o + 2] = clamp(y + cbB[cb])
+                let y = Int(c0[i]), cb = Int(c1[i]), cr = Int(c2[i])
+                out[o] = clamp(y + crR[cr])
+                out[o + 1] = clamp(y + ((cbG[cb] + crG[cr]) >> scaleBits))
+                out[o + 2] = clamp(y + cbB[cb])
             case .cmyk, .ycck:
                 // Adobe CMYK/YCCK JPEGs store inverted ink values (as Chromium assumes).
-                var cc = Int(c[0][i]), mm = Int(c[1][i]), yy = Int(c[2][i])
+                var cc = Int(c0[i]), mm = Int(c1[i]), yy = Int(c2[i])
                 if transform == .ycck {
                     let y = cc, cb = mm, cr = yy
                     cc = 255 - Int(clamp(y + crR[cr]))
                     mm = 255 - Int(clamp(y + ((cbG[cb] + crG[cr]) >> scaleBits)))
                     yy = 255 - Int(clamp(y + cbB[cb]))
                 }
-                let k = Int(c[3][i])
-                out.rgba[o] = mulDiv255(cc, k); out.rgba[o + 1] = mulDiv255(mm, k); out.rgba[o + 2] = mulDiv255(yy, k)
+                let k = Int(c3[i])
+                out[o] = mulDiv255(cc, k); out[o + 1] = mulDiv255(mm, k); out[o + 2] = mulDiv255(yy, k)
             }
-            out.rgba[o + 3] = 255
+            out[o + 3] = 255
         }
-        return out
     }
 }

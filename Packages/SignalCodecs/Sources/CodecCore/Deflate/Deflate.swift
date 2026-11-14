@@ -2,6 +2,9 @@
 // as stored, fixed-Huffman or dynamic-Huffman, whichever is smallest. Dynamic codes
 // are length-limited to 15 bits with the package-merge algorithm.
 
+import Dispatch
+import Synchronization
+
 public enum Deflate {
     public struct Options: Sendable {
         public var maxChain = 128
@@ -12,20 +15,43 @@ public enum Deflate {
 
     enum Symbol { case literal(UInt8), match(length: Int, distance: Int) }
 
-    public static func compress(_ data: [UInt8], options: Options = Options()) -> [UInt8] {
-        var w = LSBBitWriter(capacity: data.count / 2 + 64)
-        var symbols: [Symbol] = []
-        symbols.reserveCapacity(min(options.blockSymbols, data.count))
-        var blockStart = 0
+    /// Inputs this large are compressed in parallel chunks (pigz style): each chunk's matcher
+    /// starts with the 32 KiB before it, its matches end inside it, and it ends with an empty
+    /// stored block (a sync flush), so the chunks' bytes concatenate into one stream.
+    static let parallelChunk = 256 * 1024
 
-        func flush(final: Bool, upTo end: Int) {
-            writeBlock(&w, symbols, raw: data[blockStart..<end], final: final)
+    public static func compress(_ data: [UInt8], options: Options = Options()) -> [UInt8] {
+        let chunks = (data.count + parallelChunk - 1) / parallelChunk
+        guard chunks > 2 else { return compressRange(data, 0, data.count, final: true, options: options) }
+        let results = Mutex<[[UInt8]]>(Array(repeating: [], count: chunks))
+        DispatchQueue.concurrentPerform(iterations: chunks) { k in
+            let lo = k * parallelChunk, hi = min(data.count, lo + parallelChunk)
+            let part = compressRange(data, lo, hi, final: k == chunks - 1, options: options)
+            results.withLock { $0[k] = part }
+        }
+        var out: [UInt8] = []
+        out.reserveCapacity(data.count / 2)
+        for part in results.withLock({ $0 }) { out += part }
+        return out
+    }
+
+    /// Deflate blocks for data[start..<end] (the bytes before `start`, up to the window, are
+    /// matchable history); final: the last block is marked final, else a sync flush follows.
+    static func compressRange(_ data: [UInt8], _ start: Int, _ end: Int, final isFinal: Bool, options: Options) -> [UInt8] {
+        var w = LSBBitWriter(capacity: (end - start) / 2 + 64)
+        var symbols: [Symbol] = []
+        symbols.reserveCapacity(min(options.blockSymbols, end - start))
+        var blockStart = start
+
+        func flush(final: Bool, upTo blockEnd: Int) {
+            writeBlock(&w, symbols, raw: data[blockStart..<blockEnd], final: final)
             symbols.removeAll(keepingCapacity: true)
-            blockStart = end
+            blockStart = blockEnd
         }
 
-        if data.isEmpty {
-            writeBlock(&w, [], raw: data[0..<0], final: true)
+        if end <= start {
+            writeBlock(&w, [], raw: data[start..<start], final: isFinal)
+            if !isFinal { syncFlush(&w) }
             return w.finish()
         }
 
@@ -42,11 +68,11 @@ public enum Deflate {
             head[h] = Int32(i)
         }
         func longestMatch(_ i: Int) -> (Int, Int) {
-            guard i + 2 < data.count else { return (0, 0) }
+            guard i + 2 < end else { return (0, 0) }
             var best = 0, bestDist = 0
             var cand = Int(head[hash(i)])
             var chain = options.maxChain
-            let maxLen = min(258, data.count - i)
+            let maxLen = min(258, end - i)
             while cand >= 0 && i - cand <= window && chain > 0 {
                 if data[cand + best] == data[i + best] || best == 0 {
                     var l = 0
@@ -65,10 +91,13 @@ public enum Deflate {
             return best >= 3 ? (best, bestDist) : (0, 0)
         }
 
-        var i = 0
-        while i < data.count {
+        // The history before the chunk.
+        var h = max(0, start - window)
+        while h < start { insert(h); h += 1 }
+        var i = start
+        while i < end {
             var (len, dist) = longestMatch(i)
-            if len > 0 && len < options.lazyThreshold && i + 1 < data.count {
+            if len > 0 && len < options.lazyThreshold && i + 1 < end {
                 insert(i)
                 let (len2, dist2) = longestMatch(i + 1)
                 if len2 > len {
@@ -95,21 +124,43 @@ public enum Deflate {
             }
             if symbols.count >= options.blockSymbols { flush(final: false, upTo: i) }
         }
-        flush(final: true, upTo: data.count)
+        flush(final: isFinal, upTo: end)
+        if !isFinal { syncFlush(&w) }
         return w.finish()
+    }
+
+    /// An empty stored block: the stream continues at a byte boundary.
+    static func syncFlush(_ w: inout LSBBitWriter) {
+        w.write(0, 1)
+        w.write(0, 2)
+        w.alignToByte()
+        w.write(0, 16)
+        w.write(0xFFFF, 16)
+    }
+
+    /// Length (3 … 258) → index into Inflate.lengthBase; distance − 1 → index into distBase
+    /// (via distance − 1 for d ≤ 256, else 256 + (d − 1) >> 7; zlib's _dist_code).
+    static let lengthIndex: [UInt8] = (0...258).map { len in
+        var c = 28
+        while len >= 3 && Inflate.lengthBase[c] > len { c -= 1 }
+        return UInt8(c)
+    }
+    static let distIndex: [UInt8] = (0..<512).map { k in
+        let d = k < 256 ? k + 1 : ((k - 256) << 7) + 1
+        var c = 29
+        while Inflate.distBase[c] > d { c -= 1 }
+        return UInt8(c)
     }
 
     // MARK: block encoding
 
-    static func lengthCode(_ len: Int) -> (code: Int, extraBits: Int, extra: Int) {
-        var c = 28
-        while Inflate.lengthBase[c] > len { c -= 1 }
+    @inline(__always) static func lengthCode(_ len: Int) -> (code: Int, extraBits: Int, extra: Int) {
+        let c = Int(lengthIndex[len])
         return (257 + c, Inflate.lengthExtra[c], len - Inflate.lengthBase[c])
     }
 
-    static func distCode(_ d: Int) -> (code: Int, extraBits: Int, extra: Int) {
-        var c = 29
-        while Inflate.distBase[c] > d { c -= 1 }
+    @inline(__always) static func distCode(_ d: Int) -> (code: Int, extraBits: Int, extra: Int) {
+        let c = Int(distIndex[d <= 256 ? d - 1 : 256 + ((d - 1) >> 7)])
         return (c, Inflate.distExtra[c], d - Inflate.distBase[c])
     }
 

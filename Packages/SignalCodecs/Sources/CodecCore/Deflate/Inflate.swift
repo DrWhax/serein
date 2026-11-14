@@ -13,35 +13,57 @@ public enum Inflate {
     ///   - maxOutput: hard cap; exceeding it is `limitExceeded`.
     ///   - windowSize: maximum back-reference distance (32768, or less if a zlib header says so).
     public static func decode(_ r: inout LSBBitReader, maxOutput: Int, windowSize: Int = 32_768, sizeHint: Int = 0) throws(ParseFailure) -> [UInt8] {
-        var out: [UInt8] = []
-        out.reserveCapacity(min(max(sizeHint, 0), maxOutput))
-
+        // The output is written in place into a buffer grown ahead (to the size hint first),
+        // then trimmed to what was produced.
+        var out = [UInt8](repeating: 0, count: min(max(sizeHint, 0), maxOutput))
+        var n = 0
         while true {
             let header = try DeflateGrammar.blockHeader(&r)
             switch header.body {
             case .stored(let data):
-                guard out.count + data.count <= maxOutput else {
+                guard n + data.count <= maxOutput else {
                     throw ParseFailure(offset: r.byteOffset, rule: "stored", reason: .limitExceeded("output > \(maxOutput)"))
                 }
-                data.append(to: &out)
+                if n == out.count { data.append(to: &out) } else {
+                    out.removeLast(out.count - n)
+                    data.append(to: &out)
+                }
+                n = out.count
             case .huffman(let lit, let dist):
-                try decodeHuffmanBlock(&r, lit, dist, &out, maxOutput, windowSize)
+                try decodeHuffmanBlock(&r, lit, dist, &out, &n, maxOutput, windowSize)
             }
-            if header.isFinal { return out }
+            if header.isFinal {
+                if n < out.count { out.removeLast(out.count - n) }
+                return out
+            }
         }
+    }
+
+    /// Room for `extra` more bytes after `n` (within maxOutput): the buffer doubles.
+    @inline(__always)
+    static func reserve(_ out: inout [UInt8], _ n: Int, _ extra: Int, _ maxOutput: Int) {
+        guard n + extra > out.count else { return }
+        let target = min(maxOutput, max(n + extra, 2 * out.count, 64 * 1024))
+        out.append(contentsOf: repeatElement(0, count: target - out.count))
     }
 
     static func decodeHuffmanBlock(
         _ r: inout LSBBitReader, _ lit: HuffmanTable, _ dist: HuffmanTable,
-        _ out: inout [UInt8], _ maxOutput: Int, _ windowSize: Int
+        _ out: inout [UInt8], _ n: inout Int, _ maxOutput: Int, _ windowSize: Int
     ) throws(ParseFailure) {
+        if out.count >= maxOutput {
+            try decodeHuffmanBlockInPlace(&r, lit, dist, &out, &n, windowSize)
+            return
+        }
         while true {
             let sym = try lit.decode(&r, "literal/length")
             if sym < 256 {
-                guard out.count < maxOutput else {
+                guard n < maxOutput else {
                     throw ParseFailure(offset: r.byteOffset, rule: "literal", reason: .limitExceeded("output > \(maxOutput)"))
                 }
-                out.append(UInt8(sym))
+                reserve(&out, n, 1, maxOutput)
+                out[n] = UInt8(sym)
+                n += 1
                 continue
             }
             if sym == 256 { return }
@@ -59,17 +81,64 @@ public enum Inflate {
                 throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("distance symbol \(ds)"))
             }
             let distance = distBase[ds] + Int(try r.bits(distExtra[ds], "distance.extra"))
-            guard distance <= out.count, distance <= windowSize else {
-                throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("distance \(distance) too far back (have \(out.count))"))
+            guard distance <= n, distance <= windowSize else {
+                throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("distance \(distance) too far back (have \(n))"))
             }
-            guard out.count + length <= maxOutput else {
+            guard n + length <= maxOutput else {
                 throw ParseFailure(offset: r.byteOffset, rule: "match", reason: .limitExceeded("output > \(maxOutput)"))
             }
-            var from = out.count - distance
-            for _ in 0..<length {
-                out.append(out[from])
-                from += 1
+            reserve(&out, n, length, maxOutput)
+            // Byte by byte: the source may overlap what is being written.
+            var o = out.mutableSpan
+            var from = n - distance
+            for k in 0..<length { o[n + k] = o[from]; from += 1 }
+            n += length
+        }
+    }
+
+    /// The buffer already holds the whole output (its size is known): every write goes
+    /// through one span, bounded by the buffer.
+    static func decodeHuffmanBlockInPlace(
+        _ r: inout LSBBitReader, _ lit: HuffmanTable, _ dist: HuffmanTable,
+        _ out: inout [UInt8], _ n: inout Int, _ windowSize: Int
+    ) throws(ParseFailure) {
+        var o = out.mutableSpan
+        let cap = o.count
+        var pos = n
+        defer { n = pos }
+        while true {
+            let sym = try lit.decode(&r, "literal/length")
+            if sym < 256 {
+                guard pos < cap else {
+                    throw ParseFailure(offset: r.byteOffset, rule: "literal", reason: .limitExceeded("output > \(cap)"))
+                }
+                o[pos] = UInt8(truncatingIfNeeded: sym)
+                pos += 1
+                continue
             }
+            if sym == 256 { return }
+            let li = sym - 257
+            guard li < 29 else {
+                throw ParseFailure(offset: r.byteOffset, rule: "length", reason: .invalid("length symbol \(sym)"))
+            }
+            let length = lengthBase[li] + Int(try r.bits(lengthExtra[li], "length.extra"))
+            guard !dist.isEmpty else {
+                throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("back-reference without distance code"))
+            }
+            let ds = try dist.decode(&r, "distance")
+            guard ds < 30 else {
+                throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("distance symbol \(ds)"))
+            }
+            let distance = distBase[ds] + Int(try r.bits(distExtra[ds], "distance.extra"))
+            guard distance <= pos, distance <= windowSize else {
+                throw ParseFailure(offset: r.byteOffset, rule: "distance", reason: .invalid("distance \(distance) too far back (have \(pos))"))
+            }
+            guard pos + length <= cap else {
+                throw ParseFailure(offset: r.byteOffset, rule: "match", reason: .limitExceeded("output > \(cap)"))
+            }
+            var from = pos - distance
+            for k in 0..<length { o[pos + k] = o[from]; from += 1 }
+            pos += length
         }
     }
 }

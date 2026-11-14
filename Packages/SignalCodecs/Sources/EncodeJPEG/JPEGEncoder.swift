@@ -33,24 +33,29 @@ public enum JPEGEncoder {
         let vs = hs
         let hmax = hs[0], vmax = vs[0]
 
-        // Colour conversion (jccolor.c), alpha composited over black.
-        var planes = [[UInt8]](repeating: [UInt8](repeating: 0, count: W * H), count: ncomp)
-        for i in 0..<(W * H) {
-            let a = Int(image.rgba[i * 4 + 3])
-            func ch(_ k: Int) -> Int { a == 255 ? Int(image.rgba[i * 4 + k]) : (Int(image.rgba[i * 4 + k]) * a + 127) / 255 }
-            let r = ch(0), g = ch(1), b = ch(2)
-            if ncomp == 1 {
-                planes[0][i] = UInt8((Color.ry[r] + Color.gy[g] + Color.by[b]) >> 16)
-            } else {
-                planes[0][i] = UInt8((Color.ry[r] + Color.gy[g] + Color.by[b]) >> 16)
-                planes[1][i] = UInt8((Color.rcb[r] + Color.gcb[g] + Color.bcb[b]) >> 16)
-                planes[2][i] = UInt8((Color.rcr[r] + Color.gcr[g] + Color.bcr[b]) >> 16)
-            }
-        }
-        if ncomp == 1 {
-            // Grey input: cjpeg reads PGM directly; Y of R=G=B is exactly that grey.
-            for i in 0..<(W * H) where image.rgba[i * 4] == image.rgba[i * 4 + 1] && image.rgba[i * 4] == image.rgba[i * 4 + 2] && image.rgba[i * 4 + 3] == 255 {
-                planes[0][i] = image.rgba[i * 4]
+        // Colour conversion (jccolor.c), alpha composited over black; rows in parallel.
+        let rgba = image.rgba
+        let planes: [[UInt8]] = (0..<ncomp).map { c in
+            ParallelRows.build(rows: H, rowLength: W, chunk: 64, zero: UInt8(0)) { rows, out in
+                for y in rows {
+                    for x in 0..<W {
+                        let i = y * W + x, o = (y - rows.lowerBound) * W + x
+                        let a = Int(rgba[i * 4 + 3])
+                        @inline(__always) func ch(_ k: Int) -> Int { a == 255 ? Int(rgba[i * 4 + k]) : (Int(rgba[i * 4 + k]) * a + 127) / 255 }
+                        let r = ch(0), g = ch(1), b = ch(2)
+                        switch c {
+                        case 0:
+                            if ncomp == 1 && a == 255 && rgba[i * 4] == rgba[i * 4 + 1] && rgba[i * 4] == rgba[i * 4 + 2] {
+                                // Grey input: cjpeg reads PGM directly; Y of R=G=B is exactly that grey.
+                                out[o] = rgba[i * 4]
+                            } else {
+                                out[o] = UInt8((Color.ry[r] + Color.gy[g] + Color.by[b]) >> 16)
+                            }
+                        case 1: out[o] = UInt8((Color.rcb[r] + Color.gcb[g] + Color.bcb[b]) >> 16)
+                        default: out[o] = UInt8((Color.rcr[r] + Color.gcr[g] + Color.bcr[b]) >> 16)
+                        }
+                    }
+                }
             }
         }
 
@@ -60,42 +65,57 @@ public enum JPEGEncoder {
         let divisors = [Quantizer(lumaQ), Quantizer(chromaQ)]
         let qIndex = [0, 1, 1]
 
-        // Downsample + pad each component to whole blocks (jcsample.c / jcprepct.c).
-        var comp: [(samples: [UInt8], stride: Int, wb: Int, hb: Int)] = []
+        // Downsample + pad each component to whole blocks (jcsample.c / jcprepct.c), then the
+        // FDCT and quantisation of every block: rows in parallel.
+        var comp: [(coef: [Int16], wb: Int, hb: Int)] = []
         for c in 0..<ncomp {
             let dsW = (W * hs[c] + hmax - 1) / hmax
             let dsH = (H * vs[c] + vmax - 1) / vmax
             let wb = (dsW + 7) / 8, hb = (dsH + 7) / 8
             let stride = wb * 8
             let rows = mcuRows * vs[c] * 8
-            var s = [UInt8](repeating: 0, count: stride * rows)
+            let plane = planes[c]
             // Source rows padded (expand_bottom_edge) to the row group, columns to stride*factor.
             @inline(__always) func src(_ x: Int, _ y: Int) -> Int {
-                Int(planes[c][min(y, H - 1) * W + min(x, W - 1)])
+                Int(plane[min(y, H - 1) * W + min(x, W - 1)])
             }
             let fx = hmax / hs[c], fy = vmax / vs[c]
-            let realRows = (dsH + 0)
-            for y in 0..<rows {
-                let yy = min(y, (realRows + 0) - 1 + 0)  // rows past the real data replicate (expand_bottom_edge)
-                for x in 0..<stride {
-                    let v: Int
-                    if fx == 1 && fy == 1 {
-                        v = src(x, yy)
-                    } else {
-                        // h2v2_downsample: bias 1,2,1,2 per output column.
-                        let bias = x & 1 == 0 ? 1 : 2
-                        v = (src(2 * x, 2 * yy) + src(2 * x + 1, 2 * yy) + src(2 * x, 2 * yy + 1) + src(2 * x + 1, 2 * yy + 1) + bias) >> 2
+            let realRows = dsH
+            let samples = ParallelRows.build(rows: rows, rowLength: stride, chunk: 64, zero: UInt8(0)) { range, s in
+                for y in range {
+                    let yy = min(y, realRows - 1)  // rows past the real data replicate (expand_bottom_edge)
+                    for x in 0..<stride {
+                        let v: Int
+                        if fx == 1 && fy == 1 {
+                            v = src(x, yy)
+                        } else {
+                            // h2v2_downsample: bias 1,2,1,2 per output column.
+                            let bias = x & 1 == 0 ? 1 : 2
+                            v = (src(2 * x, 2 * yy) + src(2 * x + 1, 2 * yy) + src(2 * x, 2 * yy + 1) + src(2 * x + 1, 2 * yy + 1) + bias) >> 2
+                        }
+                        s[(y - range.lowerBound) * stride + x] = UInt8(v)
                     }
-                    s[y * stride + x] = UInt8(v)
                 }
             }
-            comp.append((s, stride, wb, hb))
+            let quant = divisors[qIndex[c]]
+            let coef = ParallelRows.build(rows: hb, rowLength: wb * 64, chunk: 4, zero: Int16(0)) { range, out in
+                var block = InlineArray<64, Int>(repeating: 0)
+                for by in range {
+                    for bx in 0..<wb {
+                        FDCT.islow(samples, by * 8 * stride + bx * 8, stride, &block)
+                        quant.quantize(&block)
+                        let o = ((by - range.lowerBound) * wb + bx) * 64
+                        for k in 0..<64 { out[o + k] = Int16(truncatingIfNeeded: block[k]) }
+                    }
+                }
+            }
+            comp.append((coef, wb, hb))
         }
 
         // Entropy coding.
         var w = HuffmanWriter()
         var lastDC = [Int](repeating: 0, count: ncomp)
-        var block = [Int](repeating: 0, count: 64)
+        var block = InlineArray<64, Int>(repeating: 0)
         for my in 0..<mcuRows {
             for mx in 0..<mcusPerRow {
                 for c in 0..<ncomp {
@@ -109,8 +129,8 @@ public enum JPEGEncoder {
                                 for k in 0..<64 { block[k] = 0 }
                                 block[0] = prevDCInMCU
                             } else {
-                                FDCT.islow(comp[c].samples, by * 8 * comp[c].stride + bx * 8, comp[c].stride, &block)
-                                divisors[qIndex[c]].quantize(&block)
+                                let o = (by * comp[c].wb + bx) * 64
+                                for k in 0..<64 { block[k] = Int(comp[c].coef[o + k]) }
                             }
                             prevDCInMCU = block[0]
                             w.encodeBlock(block, &lastDC[c], dc: tables.0, ac: tables.1)
@@ -182,7 +202,7 @@ enum FDCT {
     @inline(__always) static func descale(_ x: Int, _ n: Int) -> Int { (x + (1 << (n - 1))) >> n }
     @inline(__always) static func s16(_ x: Int) -> Int { Int(Int16(truncatingIfNeeded: x)) }
 
-    static func islow(_ s: [UInt8], _ base: Int, _ stride: Int, _ d: inout [Int]) {
+    static func islow(_ s: [UInt8], _ base: Int, _ stride: Int, _ d: inout InlineArray<64, Int>) {
         for r in 0..<8 { for c in 0..<8 { d[r * 8 + c] = Int(s[base + r * stride + c]) - 128 } }
         for pass in 0..<2 {
             for i in 0..<8 {
@@ -242,7 +262,7 @@ struct Quantizer {
         }
     }
 
-    func quantize(_ d: inout [Int]) {
+    func quantize(_ d: inout InlineArray<64, Int>) {
         for i in 0..<64 {
             var t = d[i]
             let neg = t < 0
@@ -309,7 +329,7 @@ struct HuffmanWriter {
 
     @inline(__always) static func nbits(_ v: Int) -> Int { v == 0 ? 0 : 64 - UInt64(v).leadingZeroBitCount }
 
-    mutating func encodeBlock(_ block: [Int], _ lastDC: inout Int, dc: [(UInt32, Int)], ac: [(UInt32, Int)]) {
+    mutating func encodeBlock(_ block: InlineArray<64, Int>, _ lastDC: inout Int, dc: [(UInt32, Int)], ac: [(UInt32, Int)]) {
         var temp = block[0] - lastDC
         lastDC = block[0]
         var temp2 = temp

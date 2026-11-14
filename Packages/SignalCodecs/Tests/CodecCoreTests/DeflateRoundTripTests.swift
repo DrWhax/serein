@@ -15,6 +15,10 @@ import Testing
         ("small alphabet", pseudoRandom(200_000, seed: 2).map { $0 & 3 }),
         ("runs", (0..<150_000).map { UInt8(($0 / 300) & 0xFF) }),
         ("one literal type", [UInt8](repeating: 7, count: 2)),
+        // Several parallel chunks (Deflate.parallelChunk): matches across chunk boundaries,
+        // random chunks stored, a partial last chunk.
+        ("chunked mixed 1.3M", (0..<1_300_000).map { i in i % 400_000 < 200_000 ? UInt8((i / 7) & 0x3F) : UInt8(truncatingIfNeeded: i &* 2654435761 >> 13) }),
+        ("chunked text 1M", Array(String(repeating: "Signal-safe parallel deflate, chunk after chunk. ", count: 21_000).utf8)),
     ]
 
     @Test(arguments: inputs)
@@ -22,6 +26,13 @@ import Testing
         let z = ZlibWriter.compress(data)
         let back = try Zlib.decompress(ByteSlice(z), maxOutput: data.count + 1)
         #expect(back == data, "\(name)")
+    }
+
+    /// Chunks compress about as well as one stream (their history is the previous 32 KiB).
+    @Test func chunkedOutputStaysSmall() {
+        let text = Array(String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 30_000).utf8)
+        #expect(text.count > 3 * Deflate.parallelChunk)
+        #expect(Deflate.compress(text).count * 50 < text.count)
     }
 
     @Test func compressesComparablyToZlib() {
@@ -43,5 +54,33 @@ import Testing
         // Kraft equality: a complete code.
         let kraft = lens.reduce(0.0) { $0 + ($1 == 0 ? 0 : 1 / Double(1 << Int($1))) }
         #expect(abs(kraft - 1) < 1e-12)
+    }
+}
+
+@Suite struct GzipTests {
+    @Test(arguments: DeflateRoundTripTests.inputs.map(\.1))
+    func roundTrips(data: [UInt8]) throws {
+        let gz = Gzip.compress(data)
+        #expect(try Gzip.decompress(ByteSlice(gz), maxOutput: data.count + 1) == data)
+    }
+
+    /// `printf 'hello gzip\n' | gzip -n` (FLG 0) and with a file name (FNAME).
+    @Test func readsGzipOutput() throws {
+        let plain: [UInt8] = [0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xCB, 0x48, 0xCD, 0xC9, 0xC9, 0x57, 0x48, 0xAF, 0xCA, 0x2C,
+                              0xE0, 0x02, 0x00, 0x39, 0x7C, 0x63, 0x56, 0x0B, 0x00, 0x00, 0x00]
+        #expect(try Gzip.decompress(ByteSlice(plain), maxOutput: 100) == Array("hello gzip\n".utf8))
+        var named = Array(plain.prefix(10))
+        named[3] = 0x08
+        named += Array("a.txt".utf8) + [0] + Array(plain.dropFirst(10))
+        #expect(try Gzip.decompress(ByteSlice(named), maxOutput: 100) == Array("hello gzip\n".utf8))
+    }
+
+    @Test func refusesDamage() throws {
+        var gz = Gzip.compress(Array("some text, some text, some text".utf8))
+        #expect(throws: ParseFailure.self) { try Gzip.decompress(ByteSlice(gz), maxOutput: 10) }        // over the cap
+        gz[gz.count - 6] ^= 1                                                                             // CRC
+        #expect(throws: ParseFailure.self) { try Gzip.decompress(ByteSlice(gz), maxOutput: 100) }
+        #expect(throws: ParseFailure.self) { try Gzip.decompress(ByteSlice([0x1F, 0x8B, 9, 0]), maxOutput: 100) }
+        #expect(throws: ParseFailure.self) { try Gzip.decompress(ByteSlice(Gzip.compress([1, 2, 3]) + [0]), maxOutput: 100) }
     }
 }

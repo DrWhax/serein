@@ -6,17 +6,31 @@ public struct Adler32: Sendable {
     public init() {}
 
     public mutating func update(_ bytes: [UInt8]) {
+        let s = bytes.span
+        var a = self.a, b = self.b
         var i = 0
-        while i < bytes.count {
-            let n = min(5552, bytes.count - i)  // largest n with no UInt32 overflow
-            for j in i..<(i + n) {
-                a &+= UInt32(bytes[j])
+        while i < s.count {
+            let n = min(5552, s.count - i)  // largest n with no UInt32 overflow
+            var j = i
+            let end = i + n
+            while j + 4 <= end {
+                a &+= UInt32(s[j]); b &+= a
+                a &+= UInt32(s[j + 1]); b &+= a
+                a &+= UInt32(s[j + 2]); b &+= a
+                a &+= UInt32(s[j + 3]); b &+= a
+                j += 4
+            }
+            while j < end {
+                a &+= UInt32(s[j])
                 b &+= a
+                j += 1
             }
             a %= 65521
             b %= 65521
-            i += n
+            i = end
         }
+        self.a = a
+        self.b = b
     }
 
     public var value: UInt32 { b << 16 | a }

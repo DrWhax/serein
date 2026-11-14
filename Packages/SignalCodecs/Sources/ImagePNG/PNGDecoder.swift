@@ -54,9 +54,38 @@ public enum PNGDecoder {
         let expected = rawSize(w, h, header)
         let raw = try Zlib.decompress(ByteSlice.concatenate(data), maxOutput: expected, expectedSize: expected, trailing: .ignore)
 
-        var out = PixelBuffer(transparentWidth: w, height: h)
         let bpp = header.bitsPerPixel
         let filterStride = max(1, bpp / 8)
+        if !header.interlaced {
+            // Unfilter row by row (each row needs the one above), then expand rows to RGBA in
+            // parallel.
+            let rb = rowBytes(w, bpp)
+            var rows: [UInt8] = []
+            rows.reserveCapacity(rb * h)
+            var prior = [UInt8](repeating: 0, count: rb)
+            var line = [UInt8](repeating: 0, count: rb)
+            var pos = 0
+            for row in 0..<h {
+                let filter = raw[pos]
+                for i in 0..<rb { line[i] = raw[pos + 1 + i] }
+                pos += 1 + rb
+                try unfilter(filter, &line, prior, filterStride, rule: rule, row: row)
+                rows += line
+                swap(&prior, &line)
+            }
+            let palette = file.palette, transparency = file.transparency
+            let rgba = ParallelRows.build(rows: h, rowLength: 4 * w, chunk: 32, zero: UInt8(0)) { range, out in
+                var pixels = [UInt8](repeating: 0, count: w * 4)
+                for y in range {
+                    let l = Array(rows[(y * rb)..<((y + 1) * rb)])
+                    expand(l, count: w, header: header, palette: palette, transparency: transparency, into: &pixels)
+                    let o = (y - range.lowerBound) * 4 * w
+                    for i in 0..<(4 * w) { out[o + i] = pixels[i] }
+                }
+            }
+            return PixelBuffer(width: w, height: h, rgba: rgba)
+        }
+        var out = PixelBuffer(transparentWidth: w, height: h)
         var pos = 0
         for p in header.interlaced ? adam7 : progressive {
             let (pw, ph) = passSize(p, w, h)

@@ -560,14 +560,30 @@ public struct MP3Decoder: Sendable {
 
     // MARK: synthesis
 
+    /// cos(n (2k + 1) π / 64): the 32-point DCT-II the matrixing reduces to.
+    static let dct32: [Float] = (0..<(32 * 32)).map { idx in
+        let n = idx / 32, k = idx % 32
+        return Float(LibM.cos(Double(n) * Double(2 * k + 1) * Double.pi / 64))
+    }
+
     mutating func synthesize(_ subbands: [Float], slot: Int, channel ch: Int, into out: inout [Float]) {
+        // The history out of the decoder while it is written (no copy of it each call).
         var v = synthesisV[ch]
+        synthesisV[ch] = []
         var off = synthesisOffset[ch]
         off = (off - 64) & 1023
-        for i in 0 ..< 64 {
+        // Matrixing: V[i] = Σ cos((16 + i)(2k + 1)π/64) S[k] = C(16 + i) with C the DCT-II
+        // above, C(32) = 0, C(64 − n) = C(64 + n) = −C(n).
+        var c = InlineArray<32, Float>(repeating: 0)
+        let d = Self.dct32
+        for n in 0 ..< 32 {
             var acc: Float = 0
-            for k in 0 ..< 32 { acc += Self.synthesisMatrix[i * 32 + k] * subbands[slot * 32 + k] }
-            v[(off + i) & 1023] = acc
+            for k in 0 ..< 32 { acc += d[n * 32 + k] * subbands[slot * 32 + k] }
+            c[n] = acc
+        }
+        for i in 0 ..< 64 {
+            let n = 16 + i
+            v[(off + i) & 1023] = n < 32 ? c[n] : (n == 32 ? 0 : (n < 64 ? -c[64 - n] : -c[n - 64]))
         }
         for j in 0 ..< 32 {
             var sum: Float = 0

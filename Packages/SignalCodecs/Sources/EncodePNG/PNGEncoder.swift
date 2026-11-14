@@ -18,43 +18,50 @@ public enum PNGEncoder {
         let pick: [Int] = grey ? (opaque ? [0] : [0, 3]) : (opaque ? [0, 1, 2] : [0, 1, 2, 3])
         let stride = w * channels
 
-        var raw: [UInt8] = []
-        raw.reserveCapacity((stride + 1) * h)
-        var prior = [UInt8](repeating: 0, count: stride)
-        var line = [UInt8](repeating: 0, count: stride)
-        var candidate = [UInt8](repeating: 0, count: stride)
-        var best = [UInt8](repeating: 0, count: stride)
-        for y in 0..<h {
-            for x in 0..<w { for (k, c) in pick.enumerated() { line[x * channels + k] = image.rgba[(y * w + x) * 4 + c] } }
-            var bestType: UInt8 = 0
-            var bestScore = Int.max
-            for t: UInt8 in 0...4 {
-                var score = 0
-                for i in 0..<stride {
-                    let a = i >= channels ? Int(line[i - channels]) : 0
-                    let b = Int(prior[i])
-                    let c = i >= channels ? Int(prior[i - channels]) : 0
-                    let x = Int(line[i])
-                    let pred: Int
-                    switch t {
-                    case 0: pred = 0
-                    case 1: pred = a
-                    case 2: pred = b
-                    case 3: pred = (a + b) >> 1
-                    default:
-                        let p = a + b - c
-                        let pa = abs(p - a), pb = abs(p - b), pc = abs(p - c)
-                        pred = pa <= pb && pa <= pc ? a : (pb <= pc ? b : c)
-                    }
-                    let v = UInt8(truncatingIfNeeded: x - pred)
-                    candidate[i] = v
-                    score += v < 128 ? Int(v) : 256 - Int(v)
-                }
-                if score < bestScore { bestScore = score; bestType = t; swap(&best, &candidate) }
+        // Each row's filter depends only on it and the (unfiltered) row above: rows in parallel.
+        let rgba = image.rgba
+        let raw = ParallelRows.build(rows: h, rowLength: stride + 1, chunk: 32, zero: UInt8(0)) { rows, out in
+            var prior = [UInt8](repeating: 0, count: stride)
+            var line = [UInt8](repeating: 0, count: stride)
+            var candidate = [UInt8](repeating: 0, count: stride)
+            var best = [UInt8](repeating: 0, count: stride)
+            @inline(__always) func pack(_ y: Int, into row: inout [UInt8]) {
+                for x in 0..<w { for (k, c) in pick.enumerated() { row[x * channels + k] = rgba[(y * w + x) * 4 + c] } }
             }
-            raw.append(bestType)
-            raw += best
-            swap(&prior, &line)
+            if rows.lowerBound > 0 { pack(rows.lowerBound - 1, into: &prior) }
+            for y in rows {
+                pack(y, into: &line)
+                var bestType: UInt8 = 0
+                var bestScore = Int.max
+                for t: UInt8 in 0...4 {
+                    var score = 0
+                    for i in 0..<stride {
+                        let a = i >= channels ? Int(line[i - channels]) : 0
+                        let b = Int(prior[i])
+                        let c = i >= channels ? Int(prior[i - channels]) : 0
+                        let x = Int(line[i])
+                        let pred: Int
+                        switch t {
+                        case 0: pred = 0
+                        case 1: pred = a
+                        case 2: pred = b
+                        case 3: pred = (a + b) >> 1
+                        default:
+                            let p = a + b - c
+                            let pa = abs(p - a), pb = abs(p - b), pc = abs(p - c)
+                            pred = pa <= pb && pa <= pc ? a : (pb <= pc ? b : c)
+                        }
+                        let v = UInt8(truncatingIfNeeded: x - pred)
+                        candidate[i] = v
+                        score += v < 128 ? Int(v) : 256 - Int(v)
+                    }
+                    if score < bestScore { bestScore = score; bestType = t; swap(&best, &candidate) }
+                }
+                let o = (y - rows.lowerBound) * (stride + 1)
+                out[o] = bestType
+                for i in 0..<stride { out[o + 1 + i] = best[i] }
+                swap(&prior, &line)
+            }
         }
 
         var out: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
