@@ -360,7 +360,7 @@ public actor AttachmentDownloadManager {
         let base = endpoints.cdnURLs[a.cdnNumber ?? 0] ?? endpoints.cdnURLs[0]!
         var client = http
         client.maxResponseBytes = job.ciphertextSize + 64 << 10
-        let blob = try await client.send("GET", base.appendingPathComponent("attachments").appendingPathComponent(cdnKey)).body
+        let blob = try await client.send("GET", try base.cdnAttachment(cdnKey)).body
         let integrity: AttachmentIntegrity
         if let d = a.digest.flatMap({ Data(base64Encoded: $0) }) { integrity = .encrypted(digest: d) }
         else if let h = a.plaintextHash.flatMap(Data.init(hex:)) { integrity = .plaintext(hash: h) }

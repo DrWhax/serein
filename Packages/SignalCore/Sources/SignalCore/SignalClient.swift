@@ -106,10 +106,21 @@ public actor SignalClient {
     public func storedAccount() async throws -> Account? { try await database.pool.read { try Account.load($0) } }
 
     /// Links as a new device: `onURL` gets the `sgnl://linkdevice` URL to show as a QR code.
-    public func link(deviceName: String, onURL: @escaping @Sendable (String) -> Void) async throws -> Account {
+    /// The device offers link and sync (`backup5`): when the primary sends history, it is
+    /// imported before the session starts, `onSync` reporting how far it is.
+    public func link(deviceName: String, onURL: @escaping @Sendable (String) -> Void,
+                     onSync: @escaping @Sendable (LinkAndSyncProgress) -> Void = { _ in }) async throws -> Account {
         let linker = DeviceLinker(net: net, socket: socket, database: database)
         let account = try await linker.link(LinkOptions(deviceName: deviceName), onURL: onURL)
-        try await start(account, uploadOneTimeKeys: linker)
+        guard try await hasLinkAndSync() else {
+            try await start(account, uploadOneTimeKeys: linker)
+            return account
+        }
+        // As upstream: the keys go up at link time, the history comes down before the session.
+        try await socket.connect(listener: HoldingListener())
+        try await linker.uploadOneTimePreKeys(for: account)
+        try await linkAndSync(account, progress: onSync)
+        try await start(account, uploadOneTimeKeys: nil)
         return account
     }
 

@@ -50,7 +50,7 @@ public final class DeviceLinker: Sendable {
         for try await event in events.stream {
             switch event {
             case .address(let address):
-                await onURL(cipher.linkURL(address: address))
+                await onURL(cipher.linkURL(address: address, capabilities: ["nopni", "nopni2", LinkAndSync.capability]))
             case .envelope(let data):
                 message = try cipher.decrypt(envelope: data)
             }
@@ -109,6 +109,9 @@ public final class DeviceLinker: Sendable {
         // Persist account and every private key before using the new credentials.
         try await database.pool.write { db in
             try account.save(db)
+            if m.hasEphemeralBackupKey, m.ephemeralBackupKey.count == 32 {
+                try Items.set(db, LinkAndSync.ephemeralKeyItem, m.ephemeralBackupKey.base64EncodedString())
+            }
             try aciKeys.store(into: account.aciStore(), db)
             if let pniKeys, let store = account.pniStore() { try pniKeys.store(into: store, db) }
         }

@@ -70,7 +70,7 @@ public final class ContactSync: Sendable {
         }
         var client = http
         client.maxResponseBytes = Self.maxBlobBytes
-        return try await client.send("GET", base.appendingPathComponent("attachments").appendingPathComponent(path)).body
+        return try await client.send("GET", try base.cdnAttachment(path)).body
     }
 
     // MARK: grammar

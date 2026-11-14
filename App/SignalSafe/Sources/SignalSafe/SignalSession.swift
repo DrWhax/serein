@@ -21,6 +21,8 @@ import SignalUI
         /// Install screen: the QR code (or its loading/error state).
         case linking(InstallScreenProvisioningURL)
         case linkError(InstallScreenError)
+        /// Link and sync: the primary's message history being prepared and imported.
+        case syncing(InstallScreenBackupStep)
         /// The database could not be opened (upstream: the database-error dialog).
         case failed(String)
         case ready
@@ -525,16 +527,29 @@ import SignalUI
         linkTask = Task {
             do {
                 Self.trace("link: requesting provisioning URL")
-                _ = try await client.link(deviceName: name) { url in
+                _ = try await client.link(deviceName: name, onURL: { url in
                     Self.trace("link: QR code shown")
                     if let path = Self.mockReadyPath { try? Data(url.utf8).write(to: URL(fileURLWithPath: path + ".url")) }
                     Task { @MainActor in self.phase = .linking(.loaded(url)) }
-                }
+                }, onSync: { progress in
+                    // Counts only: what the history holds never goes to the log.
+                    let step: InstallScreenBackupStep?
+                    switch progress {
+                    case .waiting: step = .waitForBackup
+                    case .downloading: step = .download
+                    case .importing(let done, let total): step = .process(current: done, total: total)
+                    case .finished(let r): Self.trace("link and sync: \(r.messages) messages, \(r.frameErrors) frame errors"); step = nil
+                    case .skipped: Self.trace("link and sync: the primary sent no history"); step = nil
+                    case .failed: Self.trace("link and sync failed; continuing without history"); step = nil
+                    }
+                    if let step { Task { @MainActor in self.phase = .syncing(step) } }
+                })
                 guard let session = await client.session else { throw InstallError() }
                 Self.trace("link: linked as device \(session.account.deviceId)")
                 becameReady(session, client: client)
                 // Upstream after linking: ask the primary for contacts, blocked list,
-                // configuration and keys (the storage sync runs in becameReady). No history.
+                // configuration and keys (the storage sync runs in becameReady). History, when
+                // the primary sent it, was imported before the session started.
                 do {
                     try await session.messenger.requestSync()
                     Self.trace("sync requests sent")
@@ -542,6 +557,10 @@ import SignalUI
                     Self.trace("sync request failed: \(error)")
                 }
             } catch is CancellationError {
+            } catch LinkAndSyncError.relinkRequested {
+                // Upstream RelinkRequestedError: the device is unlinked and starts over.
+                Self.trace("link and sync: the primary asked to link again")
+                deleteAllData()
             } catch {
                 Self.trace("link failed: \(error)")    // errors carry no message content
                 if let e = error as? ChatRequestError, case .http(_, _, let body) = e {

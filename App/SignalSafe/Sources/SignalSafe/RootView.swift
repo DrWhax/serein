@@ -96,7 +96,7 @@ struct RootView: View {
     var appView: AppViewType {
         switch session.phase {
         case .starting: .blank
-        case .linking, .linkError, .failed, .deletingData: .installer
+        case .linking, .linkError, .syncing, .failed, .deletingData: .installer
         case .ready: model.appView
         }
     }
@@ -108,6 +108,8 @@ struct RootView: View {
             InstallScreenQrCodeNotScannedStep(provisioningUrl: url, isStaging: session.isStaging, retryGetQrCode: { session.link() })
         case .linkError(let error):
             InstallScreenErrorStep(error: error, quit: { NSApp.terminate(nil) }, tryAgain: { session.link() })
+        case .syncing(let step):
+            InstallScreenBackupImportStep(step: step)
         case .failed(let reason):
             Text(reason).font(.system(size: 13)).foregroundStyle(.secondary).padding(40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(AxoColor.surfacePrimary)

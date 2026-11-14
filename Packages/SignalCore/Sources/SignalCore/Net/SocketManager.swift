@@ -221,12 +221,12 @@ public actor SocketManager {
     }
 
     /// The raw response (any status), for requests that use headers such as ETags.
-    public func authenticatedResponse(_ method: String, _ path: String, headers: [String: String] = [:], json: Data? = nil) async throws
-        -> ChatResponse
+    public func authenticatedResponse(_ method: String, _ path: String, headers: [String: String] = [:], json: Data? = nil,
+                                      timeout: TimeInterval = 30) async throws -> ChatResponse
     {
         var h = headers
         if json != nil { h["content-type"] = "application/json" }
-        let request = ChatRequest(method: method, pathAndQuery: path, headers: h, body: json, timeout: 30)
+        let request = ChatRequest(method: method, pathAndQuery: path, headers: h, body: json, timeout: timeout)
         return try await withAuthenticated { chat in try await chat.send(request) }
     }
 

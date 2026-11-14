@@ -150,3 +150,15 @@ public struct HTTPClient: Sendable {
         return (http.statusCode, data)
     }
 }
+
+extension URL {
+    /// `<cdn>/attachments/<encodeURIComponent(key)>` (upstream getAttachment): a key from a
+    /// sender or the server can never add path segments ("../", "/") or a query.
+    func cdnAttachment(_ key: String) throws -> URL {
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        guard let encoded = key.addingPercentEncoding(withAllowedCharacters: unreserved), !encoded.isEmpty,
+              let url = URL(string: absoluteString.hasSuffix("/") ? absoluteString + "attachments/" + encoded : absoluteString + "/attachments/" + encoded)
+        else { throw URLError(.badURL) }
+        return url
+    }
+}

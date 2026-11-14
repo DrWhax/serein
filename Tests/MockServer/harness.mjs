@@ -183,10 +183,17 @@ const needDesktop = () => {
   return desktop;
 };
 
+// Link and sync: what the phone's next provisioning offers (setLinkAndSync).
+let pendingTransferArchive = null;
+
 const commands = {
   async provision({ url }) {
     const pending = await server.waitForProvision();
     desktop = await pending.complete({ provisionURL: url, primaryDevice: phone });
+    if (pendingTransferArchive) {
+      await server.provideTransferArchive(desktop, pendingTransferArchive);
+      pendingTransferArchive = null;
+    }
     // mock-server keeps one of the two (ACI, PNI) entries of its link-time bookkeeping, and
     // then refuses the device's next upload of one-time keys for that identity ("Duplicate
     // service id kind") although it has stored them. Linking is over: drop what is left.
@@ -382,6 +389,14 @@ const commands = {
       attachments: [{ attachmentIdentifier: { cdnKey }, cdnNumber: 3, contentType, key: keys, digest, size: plaintext.length, fileName }] };
     await account(from).sendRaw(needDesktop(), wrap({ dataMessage: message }), { timestamp });
     return { cdnKey, digest: digest.toString('base64') };
+  },
+  // Link and sync: the phone sends `ephemeralBackupKey` (base64) in its provision message, and
+  // once the device is linked answers its transfer_archive request with `archive`
+  // ({ cdn, key } or { error }).
+  async setLinkAndSync({ ephemeralBackupKey = null, archive = null }) {
+    phone.ephemeralBackupKey = ephemeralBackupKey ? Buffer.from(ephemeralBackupKey, 'base64') : undefined;
+    pendingTransferArchive = archive;
+    return {};
   },
   // Arbitrary bytes on CDN 3 (forged or oversized blobs for the attachment rig).
   async putCdnBlob({ cdnKey, data }) {

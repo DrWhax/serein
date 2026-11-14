@@ -21,6 +21,14 @@ import Testing
                                    theme: theme)
     }
 
+    /// Link and sync while the primary prepares its archive (the Waiting story). The
+    /// Download/Process stories add a Cancel button this port does not have.
+    @Test(arguments: ["light", "dark"])
+    func backupImportWaiting(theme: String) throws {
+        try Snapshot.assertMatches(Self.stage(InstallScreenBackupImportStep(step: .waitForBackup)),
+                                   story: "components-installscreen-installscreenbackupimportstep--waiting", theme: theme)
+    }
+
     @Test(arguments: ["light", "dark"])
     func errorStep(theme: String) throws {
         for (name, error) in [("too-many-devices", InstallScreenError.tooManyDevices), ("too-old", .tooOld), ("connection-failed", .connectionFailed)] {
