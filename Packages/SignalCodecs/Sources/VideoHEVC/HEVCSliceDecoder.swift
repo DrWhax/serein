@@ -174,6 +174,8 @@ struct HEVCSliceDecoder {
                 cabac.initContexts(initType: initType, qp: sliceQp)
             }
             if (tileStart || (pps.entropyCodingSync && rowStartInTile)) { firstQgInCtbRowOrTile = true }
+            // Slice segments never overlap (a repeated one would add its work to the picture's).
+            guard !pic.ctbDecoded[ctbAddrRs] else { throw .malformed("CTB \(ctbAddrRs) in two slice segments") }
             pic.ctbSliceAddr[ctbAddrRs] = sliceAddrRs
             pic.ctbSliceIndex[ctbAddrRs] = Int16(sliceIndex)
             pic.ctbDeblockDisabled[ctbAddrRs] = header.deblockingFilterDisabled

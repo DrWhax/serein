@@ -118,4 +118,116 @@ import Testing
         }
         #expect(errors > 0 && frames > 0 && wavefront > 0, "\(name): \(errors) errors, \(frames) frames, \(wavefront) wavefront segments")
     }
+
+    /// intra8's SPS with its picture size replaced.
+    private func sps(width: Int, height: Int) throws -> [UInt8] {
+        let f = try HEVCFixture("intra8")
+        let unit = try HEVCNALUnit.make(try #require(f.config.sequenceParameterSets.first).copyBytes()[...])
+        var r = HEVCReader(unit.rbsp)
+        try r.skip(4, "vps")
+        let layers = try r.u(3, "layers")
+        try r.skip(1, "nesting")
+        _ = try HEVCProfileTierLevel.parse(&r, maxSubLayersMinus1: layers)
+        _ = try r.ue("id")
+        if try r.ue("chroma") == 3 { try r.skip(1, "separate") }
+        let lo = r.position
+        _ = try r.ue("width")
+        _ = try r.ue("height")
+        let hi = r.position
+        let bits = unit.rbsp.flatMap { byte in (0..<8).map { UInt32(byte >> (7 - $0) & 1) } }
+        var out = MSBBitWriter()
+        for b in bits[..<lo] { out.write(b, 1) }
+        Self.ue(width, &out)
+        Self.ue(height, &out)
+        for b in bits[hi...] { out.write(b, 1) }
+        return out.finish()
+    }
+
+    private static func ue(_ n: Int, _ w: inout MSBBitWriter) {
+        let value = UInt32(n + 1), length = 32 - UInt32(n + 1).leadingZeroBitCount
+        w.write(0 as UInt32, length - 1)
+        w.write(value, length)
+    }
+
+    /// A PPS for `s` with every tool off and `cols` × `rows` uniformly spaced tiles.
+    private func pps(for s: HEVCSPS, cols: Int, rows: Int) -> [UInt8] {
+        var w = MSBBitWriter()
+        func bit(_ b: Bool) { w.write(b ? 1 : 0 as UInt32, 1) }
+        Self.ue(0, &w); Self.ue(s.id, &w)
+        bit(false); bit(false); w.write(0 as UInt32, 3); bit(false); bit(false)   // dependent slices … cabac_init_present
+        Self.ue(0, &w); Self.ue(0, &w); Self.ue(0, &w)                           // ref idx defaults, init_qp_minus26 (se 0)
+        bit(false); bit(false); bit(false)                                      // constrained intra, transform skip, cu_qp_delta
+        Self.ue(0, &w); Self.ue(0, &w)                                          // cb, cr QP offsets (se 0)
+        bit(false); bit(false); bit(false); bit(false)                          // slice chroma offsets, weighted (bi)pred, bypass
+        bit(true); bit(false)                                                   // tiles, no wavefront
+        Self.ue(cols - 1, &w); Self.ue(rows - 1, &w); bit(true); bit(true)      // uniform spacing, filter across tiles
+        bit(true); bit(false); bit(false); bit(false)                           // across slices, deblocking control, scaling list, list modification
+        Self.ue(0, &w); bit(false); bit(false)                                  // parallel merge level, header extension, PPS extension
+        bit(true)                                                               // rbsp_stop_one_bit
+        return w.finish()
+    }
+
+    /// Level 6.2's limits (Table A.8): MaxLumaPs 35 651 584 samples (8192 x 4352), at most 20
+    /// tile columns and 22 tile rows. Beyond them a picture is rejected before any allocation.
+    @Test func levelLimitsAreEnforced() throws {
+        #expect(try HEVCSPS.parse(try sps(width: 8192, height: 4352)).height == 4352)
+        #expect(throws: ParseFailure.self) { try HEVCSPS.parse(try sps(width: 8192, height: 4360)) }
+        #expect(throws: ParseFailure.self) { try HEVCSPS.parse(try sps(width: 8192, height: 8192)) }
+        let s = try HEVCSPS.parse(try sps(width: 1408, height: 1472))   // 22 x 23 CTBs of 64
+        let p = try HEVCPPS.parse(pps(for: s, cols: 20, rows: 22), sps: [s.id: s])
+        #expect(p.tileColumnWidths.count == 20 && p.tileRowHeights.count == 22)
+        #expect(throws: ParseFailure.self) { try HEVCPPS.parse(pps(for: s, cols: 21, rows: 1), sps: [s.id: s]) }
+        #expect(throws: ParseFailure.self) { try HEVCPPS.parse(pps(for: s, cols: 1, rows: 23), sps: [s.id: s]) }
+    }
+
+    /// A picture's later slice segment sent again over the CTBs it already decoded, once or
+    /// past level 6.2's 600 segments per picture: every copy is rejected before it touches the
+    /// picture (its work would otherwise be added to the picture's, and its slice index once
+    /// overflowed 16 bits), so the stream decodes exactly as before, an error per copy.
+    @Test(arguments: [1, 700]) func repeatedSliceSegmentsAreRejected(_ copies: Int) throws {
+        let f = try HEVCFixture("wpp_slices8")
+        let n = f.config.nalLengthSize
+        let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: n)
+        var frames: [HEVCFrame] = []
+        for (i, sample) in f.samples().enumerated() {
+            // The sample's NAL units (length prefix included); the copies go after its second
+            // slice segment.
+            var units: [[UInt8]] = []
+            var at = 0
+            while at + n <= sample.count {
+                let len = sample[at ..< at + n].reduce(0) { $0 << 8 | Int($1) }
+                units.append(Array(sample[at ..< min(sample.count, at + n + len)]))
+                at += n + len
+            }
+            let vcl = units.indices.filter { (units[$0][n] >> 1) & 0x3F < 32 }
+            var out = sample
+            if i == 3 {
+                let second = try #require(vcl.dropFirst().first)
+                out = units[...second].flatMap { $0 } + Array(repeating: units[second], count: copies).flatMap { $0 } + units[(second + 1)...].flatMap { $0 }
+            }
+            frames += d.decode(sample: ByteSlice(out), pts: Int64(i))
+        }
+        frames += d.flush()
+        #expect(d.errorCount == copies)
+        let want = try f.expectedMD5s()
+        #expect(frames.count == want.count)
+        for (k, (frame, md)) in zip(frames, want).enumerated() { #expect(md5(frame) == md, "frame \(k)") }
+    }
+
+    /// Without budget for parsing rows or tiles in parallel (each in a picture of its own),
+    /// their segments parse serially into the picture, bit-exact.
+    @Test(arguments: ["wpp_slices8", "kvz_tiles"]) func serialFallbackIsBitExact(_ name: String) throws {
+        let f = try HEVCFixture(name)
+        let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+        d.parallelStateBudget = 0
+        var frames: [HEVCFrame] = []
+        for (i, s) in f.samples().enumerated() { frames += d.decode(sample: ByteSlice(s), pts: Int64(i)) }
+        frames += d.flush()
+        #expect(d.errorCount == 0 && d.wavefrontSegments == 0 && d.tileParallelSegments == 0)
+        let want = try f.expectedMD5s()
+        #expect(frames.count == want.count)
+        for (k, (frame, md)) in zip(frames, want).enumerated() { #expect(md5(frame) == md, "frame \(k)") }
+    }
 }

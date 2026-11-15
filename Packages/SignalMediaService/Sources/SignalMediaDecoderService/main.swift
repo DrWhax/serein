@@ -9,6 +9,7 @@ import MediaXPCInterface
 import SignalMediaDecoder
 
 ServiceSandbox.requireConfinement("SignalMediaDecoder")
+MediaDecoder.shedVideosUnderMemoryPressure()
 
 // Only the app (signed as XPCPeer says) may connect.
 XPCServer.serve(MediaXPCClient.serviceName, requirement: XPCPeer.required(.app, by: "SignalMediaDecoder"), MediaXPCHandler())

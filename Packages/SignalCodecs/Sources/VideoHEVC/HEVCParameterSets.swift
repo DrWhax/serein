@@ -247,8 +247,10 @@ public struct HEVCSPS: Sendable, Equatable {
             && a.log2MaxPocLsb == b.log2MaxPocLsb && a.saoEnabled == b.saoEnabled && a.pcmEnabled == b.pcmEnabled && a.ampEnabled == b.ampEnabled
     }
 
-    /// The decoder's limits: up to 8192 × 4320 (level 6.2) and 8/10-bit 4:0:0 or 4:2:0.
+    /// The decoder's limits: a side up to 8192, and no more luma samples than level 6.2 allows
+    /// (MaxLumaPs, Table A.8: 8192 × 4352).
     public static let maxDimension = 8192
+    public static let maxLumaSamples = 35_651_584
 
     public static func parse(_ rbsp: [UInt8]) throws(ParseFailure) -> HEVCSPS {
         var r = HEVCReader(rbsp)
@@ -263,6 +265,7 @@ public struct HEVCSPS: Sendable, Equatable {
         if s.chromaFormatIdc == 3 { s.separateColourPlane = try r.flag("separate_colour_plane_flag") }
         s.width = try r.ue("pic_width_in_luma_samples", 1...maxDimension)
         s.height = try r.ue("pic_height_in_luma_samples", 1...maxDimension)
+        guard s.width * s.height <= maxLumaSamples else { throw r.fail("pic_width_in_luma_samples", "\(s.width)x\(s.height): beyond level 6.2") }
         if try r.flag("conformance_window_flag") {
             let l = try r.ue("conf_win_left_offset", 0...maxDimension), rt = try r.ue("conf_win_right_offset", 0...maxDimension)
             let t = try r.ue("conf_win_top_offset", 0...maxDimension), b = try r.ue("conf_win_bottom_offset", 0...maxDimension)
@@ -406,6 +409,9 @@ public struct HEVCSPS: Sendable, Equatable {
 }
 
 public struct HEVCPPS: Sendable, Equatable {
+    /// Level 6.2's tile limits (Table A.8).
+    public static let maxTileColumns = 20, maxTileRows = 22
+
     public var id = 0
     public var spsId = 0
     public var dependentSliceSegmentsEnabled = false
@@ -472,8 +478,9 @@ public struct HEVCPPS: Sendable, Equatable {
         p.tileColumnWidths = [s.widthCtbs]
         p.tileRowHeights = [s.heightCtbs]
         if p.tilesEnabled {
-            let cols = try r.ue("num_tile_columns_minus1", 0...(s.widthCtbs - 1)) + 1
-            let rows = try r.ue("num_tile_rows_minus1", 0...(s.heightCtbs - 1)) + 1
+            // At most level 6.2's tiles (MaxTileCols 20, MaxTileRows 22, Table A.8).
+            let cols = try r.ue("num_tile_columns_minus1", 0...(min(s.widthCtbs, HEVCPPS.maxTileColumns) - 1)) + 1
+            let rows = try r.ue("num_tile_rows_minus1", 0...(min(s.heightCtbs, HEVCPPS.maxTileRows) - 1)) + 1
             guard cols * rows > 1 else { throw r.fail("num_tile_columns_minus1", "tiles enabled with one tile") }
             if try r.flag("uniform_spacing_flag") {
                 p.tileColumnWidths = (0..<cols).map { ($0 + 1) * s.widthCtbs / cols - $0 * s.widthCtbs / cols }

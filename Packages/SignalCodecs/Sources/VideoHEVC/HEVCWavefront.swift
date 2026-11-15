@@ -103,6 +103,8 @@ extension HEVCDecoder {
                               inter: HEVCInterContext?) throws {
         let wc = geom.widthCtbs, r0 = h.segmentAddress / wc, rows = h.entryPointOffsets.count + 1
         let ctb = s.ctbSize, h4 = pic.h4
+        // The rows' CTBs are all new (slice segments never overlap).
+        guard !pic.ctbDecoded[(r0 * wc) ..< ((r0 + rows) * wc)].contains(true) else { throw HEVCDecodeError.malformed("rows over decoded CTBs") }
         let sliceAddrRs = lastSliceAddrRs, index = sliceIndex
         // The first row's neighbours above are the picture's (earlier slices').
         let top = r0 == 0 ? [] : (0..<wc).map { pic.edge((r0 - 1) * wc + $0) }

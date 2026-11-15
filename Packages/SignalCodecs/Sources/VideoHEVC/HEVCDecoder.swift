@@ -56,6 +56,8 @@ public final class HEVCDecoder {
     /// Reconstruction, the in-loop filters and output run here, behind the parser.
     let stage = HEVCReconStage()
     var nextPictureId = 0
+    /// What this picture's parallel parsing allocated for its rows' and tiles' own state.
+    var parallelStateBytes = 0
     /// The current picture's slice segments, recorded for the stage.
     var currentSlices: [HEVCSliceWork] = []
     public private(set) var errorCount = 0
@@ -107,6 +109,9 @@ public final class HEVCDecoder {
         default: break
         }
     }
+
+    /// Level 6.2's MaxSliceSegmentsPerPicture (Table A.8).
+    static let maxSliceSegments = 600
 
     /// Decodes one MP4 sample (one access unit); returns the frames now due for output.
     public func decode(sample: ByteSlice, pts: Int64) -> [HEVCFrame] {
@@ -176,9 +181,11 @@ public final class HEVCDecoder {
             }
             currentPts = pts
             sliceIndex = 0
+            parallelStateBytes = 0
             firstPicture = false
         } else {
             guard current != nil else { return }
+            guard sliceIndex + 1 < Self.maxSliceSegments else { throw HEVCDecodeError.malformed("more than \(Self.maxSliceSegments) slice segments") }
             sliceIndex += 1
         }
         guard let pic = current, let geom = currentGeometry else { return }
@@ -191,11 +198,13 @@ public final class HEVCDecoder {
             while pic.sliceRefPocs.count <= sliceIndex { pic.sliceRefPocs.append([[], []]); pic.sliceRefLongTerm.append([[], []]) }
         }
         if h.type == .i, p.tilesEnabled, !p.entropyCodingSync, !h.dependentSliceSegment, !h.entryPointOffsets.isEmpty,
-           let starts = Self.tileStarts(geom, from: geom.rsToTs[h.segmentAddress], count: h.entryPointOffsets.count + 1) {
+           let starts = Self.tileStarts(geom, from: geom.rsToTs[h.segmentAddress], count: h.entryPointOffsets.count + 1),
+           reserveParallelState(starts.reduce(0) { $0 + Self.stateBytes(s, gridRows: Self.tileRows4(geom, s, start: $1).count) }) {
             try decodeTilesInParallel(u, header: h, sps: s, pps: p, pic: pic, geom: geom, starts: starts)
             return
         }
-        if Self.parsesAsWavefront(h, pps: p, geometry: geom) {
+        if Self.parsesAsWavefront(h, pps: p, geometry: geom),
+           reserveParallelState((h.entryPointOffsets.count + 1) * Self.stateBytes(s, gridRows: (s.ctbSize >> 2) + 1)) {
             try decodeRowsInParallel(u, header: h, sps: s, pps: p, pic: pic, geom: geom, inter: inter)
             return
         }
@@ -210,6 +219,34 @@ public final class HEVCDecoder {
 
     /// The first CTBs (tile scan) of the `count` tiles from the one starting at `ts0`; nil
     /// unless `ts0` starts a tile and that many tiles follow.
+    /// At most this much state (bytes) is allocated per picture for parsing its rows or tiles in
+    /// parallel, each in a picture of its own; past it a segment parses serially, into the
+    /// picture itself. (A small stream may declare up to 600 segments of many rows or tiles.)
+    var parallelStateBudget = 256 << 20
+
+    /// The state a row's band or a tile's shadow picture allocates: the per-CTB tables (of the
+    /// whole picture) and `gridRows` rows of the 4x4 grid.
+    static func stateBytes(_ s: HEVCSPS, gridRows: Int) -> Int {
+        let perCtb = MemoryLayout<Int>.stride + 9 + 3 * MemoryLayout<HEVCSAO>.stride
+        let perUnit = 11 + MemoryLayout<HEVCMotion>.stride
+        return s.picSizeInCtbs * perCtb + gridRows * ((s.width + 3) >> 2) * perUnit
+    }
+
+    /// Takes `bytes` of the picture's parallel-parsing budget, if they fit.
+    func reserveParallelState(_ bytes: Int) -> Bool {
+        guard parallelStateBytes + bytes <= parallelStateBudget else { return false }
+        parallelStateBytes += bytes
+        return true
+    }
+
+    /// The 4x4 grid rows a tile's shadow picture holds: the tile's (from its first CTB, at tile
+    /// scan address `start`) and the one above it.
+    static func tileRows4(_ g: HEVCGeometry, _ s: HEVCSPS, start: Int) -> Range<Int> {
+        let top = g.tsToRs[start] / g.widthCtbs, bottom = g.rowBd.first(where: { $0 > top }) ?? g.heightCtbs
+        let h4 = (s.height + 3) >> 2
+        return max(0, (top << (s.log2CtbSize - 2)) - 1) ..< min(h4, bottom << (s.log2CtbSize - 2))
+    }
+
     static func tileStarts(_ g: HEVCGeometry, from ts0: Int, count: Int) -> [Int]? {
         guard ts0 == 0 || g.tileId[ts0] != g.tileId[ts0 - 1] else { return nil }
         var starts = [ts0]
@@ -224,44 +261,62 @@ public final class HEVCDecoder {
     /// An intra slice segment of whole tiles, parsed tile by tile in parallel: within a tile
     /// every neighbour (availability, MPM, contexts, QP prediction, SAO merge) stops at the
     /// tile's edge, and each tile restarts CABAC at its entry point with the slice's contexts
-    /// and QP (9.3.1, 8.6.1). Each tile parses into a shadow picture whose decoded CTBs are
-    /// merged back; its recorded reconstruction becomes one slice work.
+    /// and QP (9.3.1, 8.6.1). Each tile parses into a shadow picture of its rows (and the grid
+    /// row above, read as unavailable), whose decoded CTBs are merged back; its recorded
+    /// reconstruction becomes one slice work. The tiles go in waves of at most
+    /// `tileWave`, each merged before the next starts: at most that many shadows at once.
     func decodeTilesInParallel(_ u: HEVCNALUnit, header h: HEVCSliceHeader, sps s: HEVCSPS, pps p: HEVCPPS, pic: HEVCPicture, geom: HEVCGeometry,
                                starts: [Int]) throws {
+        // The tiles' CTBs (tile scan, from the first to the end of the last) are all new.
+        var end = starts[starts.count - 1] + 1
+        while end < geom.tileId.count && geom.tileId[end] == geom.tileId[end - 1] { end += 1 }
+        for ts in starts[0]..<end where pic.ctbDecoded[geom.tsToRs[ts]] { throw HEVCDecodeError.malformed("tiles over decoded CTBs") }
         let sliceAddrRs = lastSliceAddrRs, index = sliceIndex
-        let results = Mutex<[Result<HEVCTileParse, HEVCDecodeError>?]>(Array(repeating: nil, count: starts.count))
-        DispatchQueue.concurrentPerform(iterations: starts.count) { k in
-            let r: Result<HEVCTileParse, HEVCDecodeError>
-            do throws(HEVCDecodeError) {
-                let shadow = HEVCPicture(sps: s, id: -1)
-                var d = try HEVCSliceDecoder(sps: s, pps: p, header: h, nal: u, pic: shadow, geom: geom, sliceAddrRs: sliceAddrRs, sliceIndex: index,
-                                             dependentState: nil, inter: nil)
-                d.startTs = starts[k]
-                d.startEntry = k
-                d.stopAtTileEnd = k < starts.count - 1
-                try d.decode()
-                r = .success(HEVCTileParse(shadow, work: d.recorded(), endState: d.endState, endStat: d.endStat))
-            } catch {
-                r = .failure(error)
+        let wave = wavefrontThreads > 0 ? wavefrontThreads : Self.tileWave
+        var last: HEVCTileParse?
+        var first = 0
+        while first < starts.count {
+            let n = min(wave, starts.count - first), base = first
+            let results = Mutex<[Result<HEVCTileParse, HEVCDecodeError>?]>(Array(repeating: nil, count: n))
+            DispatchQueue.concurrentPerform(iterations: n) { i in
+                let k = base + i
+                let r: Result<HEVCTileParse, HEVCDecodeError>
+                do throws(HEVCDecodeError) {
+                    let shadow = HEVCPicture(sps: s, id: -1, band: Self.tileRows4(geom, s, start: starts[k]))
+                    var d = try HEVCSliceDecoder(sps: s, pps: p, header: h, nal: u, pic: shadow, geom: geom, sliceAddrRs: sliceAddrRs, sliceIndex: index,
+                                                 dependentState: nil, inter: nil)
+                    d.startTs = starts[k]
+                    d.startEntry = k
+                    d.stopAtTileEnd = k < starts.count - 1
+                    try d.decode()
+                    r = .success(HEVCTileParse(shadow, work: d.recorded(), endState: d.endState, endStat: d.endStat))
+                } catch {
+                    r = .failure(error)
+                }
+                results.withLock { $0[i] = r }
             }
-            results.withLock { $0[k] = r }
-        }
-        var parsed: [HEVCTileParse] = []
-        for r in results.withLock({ $0 }) {
-            switch r {
-            case .success(let t): parsed.append(t)
-            case .failure(let e): throw e
-            case nil: throw HEVCDecodeError.malformed("tile not parsed")
+            var parsed: [HEVCTileParse] = []
+            for r in results.withLock({ $0 }) {
+                switch r {
+                case .success(let t): parsed.append(t)
+                case .failure(let e): throw e
+                case nil: throw HEVCDecodeError.malformed("tile not parsed")
+                }
             }
+            for t in parsed {
+                pic.merge(t, geometry: geom)
+                currentSlices.append(t.work)
+            }
+            last = parsed.last
+            first += n
         }
-        for t in parsed {
-            pic.merge(t, geometry: geom)
-            currentSlices.append(t.work)
-        }
-        if let last = parsed.last { dependentState = (last.endState, last.endStat) }
+        if let last { dependentState = (last.endState, last.endStat) }
         wppCarry = nil
         tileParallelSegments += 1
     }
+
+    /// Tiles parsed at once (each with a shadow picture).
+    static let tileWave = 16
 
     /// 8.3.1: PicOrderCntVal from slice_pic_order_cnt_lsb.
     func computePOC(_ u: HEVCNALUnit, _ h: HEVCSliceHeader, _ s: HEVCSPS) -> Int {

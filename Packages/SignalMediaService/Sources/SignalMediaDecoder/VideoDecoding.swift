@@ -38,6 +38,8 @@ struct VideoStream {
     var flushed = false
     /// 10/12-bit HEVC keeps its precision (playback); otherwise frames are 8-bit.
     let deep: Bool
+    /// The coded picture size the decoder is held to (`admittedSize`).
+    let admitted: (width: Int, height: Int)
 
     init(_ bytes: [UInt8], deep: Bool = false) throws {
         self.deep = deep
@@ -49,10 +51,12 @@ struct VideoStream {
         self.bytes = bytes
         self.file = file
         self.track = track
+        let size = Self.admittedSize(track.sampleEntries.first)
+        admitted = size
         switch track.sampleEntries.first {
-        case .avc(_, _, _, let config)?: backend = .avc(try Self.makeDecoder(config), config)
-        case .hevc(_, _, _, let config)?: backend = .hevc(try Self.makeDecoder(config, deep: deep), config)
-        case .av1(_, _, let config)?: backend = .av1(try Self.makeDecoder(config), config)
+        case .avc(_, _, _, let config)?: backend = .avc(try Self.makeDecoder(config, size), config)
+        case .hevc(_, _, _, let config)?: backend = .hevc(try Self.makeDecoder(config, size, deep: deep), config)
+        case .av1(_, _, let config)?: backend = .av1(try Self.makeDecoder(config, size), config)
         default:
             // Name what it is (vp09 = VP9, mp4v = MPEG-4 Part 2…).
             let codec = track.sampleEntries.first.map { Self.text($0.fourCC) } ?? "none"
@@ -72,9 +76,48 @@ struct VideoStream {
     /// alongside) and one for the rest of the service; 6 on an 8-core Mac.
     static let decodeThreads = max(2, min(16, ProcessInfo.processInfo.activeProcessorCount - 2))
 
-    static func makeDecoder(_ c: AVCDecoderConfiguration) throws -> H264Decoder {
+    /// The coded picture size a session admits: its container's (the sample entry's), rounded
+    /// up to 64 (any codec's block alignment), at least 64 x 64. Its decoder is held to it, so
+    /// no parameter set, in-band or not, grows a picture past what `estimatedBytes` counted.
+    static func admittedSize(_ entry: SampleEntry?) -> (width: Int, height: Int) {
+        let (w, h): (Int, Int)
+        switch entry {
+        case .avc(_, let ew, let eh, _)?: (w, h) = (ew, eh)
+        case .hevc(_, let ew, let eh, _)?: (w, h) = (ew, eh)
+        case .av1(let ew, let eh, _)?: (w, h) = (ew, eh)
+        default: (w, h) = (0, 0)
+        }
+        func side(_ v: Int) -> Int { min(VideoSessions.maxSide, max(64, (max(0, v) + 63) & ~63)) }
+        return (side(w), side(h))
+    }
+
+    /// The decoder limits of an admitted size.
+    static func limits(_ size: (width: Int, height: Int)) -> DecodeLimits {
+        var l = DecodeLimits()
+        l.maxDimension = max(size.width, size.height)
+        l.maxPixels = size.width * size.height
+        return l
+    }
+
+    /// The most memory a session holds: its input, and its decoder's pictures of the admitted
+    /// size at their most (references and those in flight: H.264 16, 6 decoding and 6 read
+    /// ahead; HEVC 16, the reconstruction stage's 4 and the one parsing; AV1 8 and 4), each with
+    /// its samples (two bytes each when deep) and per-block state.
+    var estimatedBytes: Int {
+        let pixels = admitted.width * admitted.height
+        let pictures: Int, sampleBytes: Int
+        switch backend {
+        case .avc: (pictures, sampleBytes) = (28, 1)
+        case .hevc: (pictures, sampleBytes) = (21, deep ? 2 : 1)
+        case .av1: (pictures, sampleBytes) = (12, deep ? 2 : 1)
+        }
+        return bytes.count + pictures * pixels * (3 * sampleBytes + 3) / 2
+    }
+
+    static func makeDecoder(_ c: AVCDecoderConfiguration, _ size: (width: Int, height: Int)) throws -> H264Decoder {
         do {
             var limits = H264Decoder.Limits()
+            limits.maxMacroblocks = (size.width / 16) * (size.height / 16)
             limits.threads = decodeThreads
             return try H264Decoder(sequenceParameterSets: c.sequenceParameterSets.map { $0.copyBytes() }, pictureParameterSets: c.pictureParameterSets.map { $0.copyBytes() },
                                    limits: limits)
@@ -83,10 +126,10 @@ struct VideoStream {
         }
     }
 
-    static func makeDecoder(_ c: HEVCDecoderConfiguration, deep: Bool) throws -> HEVCDecoder {
+    static func makeDecoder(_ c: HEVCDecoderConfiguration, _ size: (width: Int, height: Int), deep: Bool) throws -> HEVCDecoder {
         do {
             let d = try HEVCDecoder(vps: c.videoParameterSets.map { $0.copyBytes() }, sps: c.sequenceParameterSets.map { $0.copyBytes() },
-                                    pps: c.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: c.nalLengthSize)
+                                    pps: c.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: c.nalLengthSize, limits: limits(size))
             d.packedOutput = deep ? .littleEndian16 : .eightBit
             return d
         } catch {
@@ -94,9 +137,9 @@ struct VideoStream {
         }
     }
 
-    static func makeDecoder(_ c: AV1CodecConfiguration) throws -> AV1VideoDecoder {
+    static func makeDecoder(_ c: AV1CodecConfiguration, _ size: (width: Int, height: Int)) throws -> AV1VideoDecoder {
         guard !c.monochrome, c.subsamplingX, c.subsamplingY else { throw MediaProcessingError.undecodable("AV1 other than 4:2:0") }
-        do { return try AV1VideoDecoder(configOBUs: c.configOBUs) } catch { throw MediaProcessingError.undecodable("\(error)") }
+        do { return try AV1VideoDecoder(configOBUs: c.configOBUs, limits: limits(size)) } catch { throw MediaProcessingError.undecodable("\(error)") }
     }
 
     /// 4:2:0 planes: 8-bit, or (10-bit when `deep`) 16-bit little-endian as HEVC's.
@@ -237,9 +280,9 @@ struct VideoStream {
         var start = 0
         for (i, s) in track.samples.enumerated() where s.isSync && s.compositionTime <= target { start = i }
         switch backend {
-        case .avc(_, let c): backend = .avc(try Self.makeDecoder(c), c)
-        case .hevc(_, let c): backend = .hevc(try Self.makeDecoder(c, deep: deep), c)
-        case .av1(_, let c): backend = .av1(try Self.makeDecoder(c), c)
+        case .avc(_, let c): backend = .avc(try Self.makeDecoder(c, admitted), c)
+        case .hevc(_, let c): backend = .hevc(try Self.makeDecoder(c, admitted, deep: deep), c)
+        case .av1(_, let c): backend = .av1(try Self.makeDecoder(c, admitted), c)
         }
         next = start
         pending = []
@@ -266,6 +309,22 @@ extension MediaDecoder {
 
     static let videoSessions = VideoSessions()
 
+    /// Closes idle videos when the system runs short of memory (the backstop for a process that
+    /// cannot measure its own footprint without unsafe code): a warning closes those idle for a
+    /// minute, a critical event those idle for five seconds. The source lives with the process.
+    static let memoryPressure: any DispatchSourceMemoryPressure = {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        source.setEventHandler {
+            let critical = source.data.contains(.critical)
+            Task { await videoSessions.shed(critical: critical) }
+        }
+        source.activate()
+        return source
+    }()
+
+    /// Starts watching for memory pressure (once; later calls do nothing).
+    public static func shedVideosUnderMemoryPressure() { _ = memoryPressure }
+
     public func openVideo(_ bytes: Data) async throws -> (session: UUID, info: VideoInfo) {
         try await Self.videoSessions.open(Array(bytes))
     }
@@ -278,24 +337,69 @@ extension MediaDecoder {
     public func closeVideo(_ session: UUID) async { await Self.videoSessions.close(session) }
 }
 
+/// The open videos. Their memory is budgeted: a video is admitted only if its estimate
+/// (`VideoStream.estimatedBytes`) fits beside the others', making room by closing those idle
+/// longest (unused for `evictableAfter` at least); videos idle for `idleTimeout` are closed
+/// anyway, and memory pressure closes idle ones early (`shed`). A video in use is never closed.
 actor VideoSessions {
-    var sessions: [UUID: VideoStream] = [:]
+    struct Entry {
+        var stream: VideoStream
+        let bytes: Int
+        var lastUsed: ContinuousClock.Instant
+    }
+
+    /// The longest side a video may have.
+    static let maxSide = 8192
+    /// All open videos together: a quarter of the Mac's memory, at most 8 GB.
+    static let defaultBudget = Int(min(UInt64(8) << 30, ProcessInfo.processInfo.physicalMemory / 4))
+
+    var sessions: [UUID: Entry] = [:]
+    let budget: Int, evictableAfter: Duration, idleTimeout: Duration
+    let clock = ContinuousClock()
+
+    init(budget: Int = VideoSessions.defaultBudget, evictableAfter: Duration = .seconds(60), idleTimeout: Duration = .seconds(30 * 60)) {
+        self.budget = budget
+        self.evictableAfter = evictableAfter
+        self.idleTimeout = idleTimeout
+    }
+
+    var usedBytes: Int { sessions.values.reduce(0) { $0 + $1.bytes } }
+    var count: Int { sessions.count }
+
+    /// Closes the videos unused for `idle` or longer, longest first, while `more()` holds.
+    func evict(idleFor idle: Duration, while more: () -> Bool = { true }) {
+        let now = clock.now
+        for (id, e) in sessions.sorted(by: { $0.value.lastUsed < $1.value.lastUsed }) where now - e.lastUsed >= idle {
+            guard more() else { return }
+            sessions[id] = nil
+        }
+    }
+
+    /// Memory pressure: closes the videos idle for a minute (critical: five seconds).
+    func shed(critical: Bool) { evict(idleFor: critical ? .seconds(5) : evictableAfter) }
 
     /// The stream (and its decoder) is built inside the actor and never leaves it.
     func open(_ bytes: [UInt8]) throws -> (session: UUID, info: VideoInfo) {
-        guard sessions.count < VideoLimits.maxSessions else { throw MediaProcessingError.undecodable("too many open videos") }
+        evict(idleFor: idleTimeout)
         let s: VideoStream
         do { s = try VideoStream(bytes, deep: true) } catch let e as MediaProcessingError { throw e } catch { throw MediaProcessingError.undecodable("\(error)") }
+        let need = s.estimatedBytes
+        guard need <= budget else { throw MediaProcessingError.undecodable("video too large (\(need >> 20) MB of \(budget >> 20) MB)") }
+        evict(idleFor: evictableAfter) { sessions.count >= VideoLimits.maxSessions || usedBytes + need > budget }
+        guard sessions.count < VideoLimits.maxSessions else { throw MediaProcessingError.undecodable("too many open videos") }
+        guard usedBytes + need <= budget else { throw MediaProcessingError.undecodable("not enough memory for another video") }
         let id = UUID()
-        sessions[id] = s
+        sessions[id] = Entry(stream: s, bytes: need, lastUsed: clock.now)
         return (id, s.info)
     }
 
     /// The next frames, each scaled down to `fit` when larger than it shows.
     func frames(_ id: UUID, count: Int, fit: VideoFit? = nil) throws -> [VideoFrame] {
-        guard var s = sessions[id] else { throw MediaProcessingError.invalidResult }
-        let frames = s.frames(count)
-        sessions[id] = s
+        guard var e = sessions[id] else { throw MediaProcessingError.invalidResult }
+        let frames = e.stream.frames(count)
+        e.lastUsed = clock.now
+        sessions[id] = e
+        let s = e.stream
         let rotation = s.track.rotation
         return frames.map { decoded in
             let f = fit.map { decoded.scaled(to: $0, rotation: rotation) } ?? decoded
@@ -306,9 +410,10 @@ actor VideoSessions {
     }
 
     func seek(_ id: UUID, to t: Double) throws {
-        guard var s = sessions[id] else { throw MediaProcessingError.invalidResult }
-        try s.seek(to: t)
-        sessions[id] = s
+        guard var e = sessions[id] else { throw MediaProcessingError.invalidResult }
+        try e.stream.seek(to: t)
+        e.lastUsed = clock.now
+        sessions[id] = e
     }
 
     func close(_ id: UUID) { sessions[id] = nil }
