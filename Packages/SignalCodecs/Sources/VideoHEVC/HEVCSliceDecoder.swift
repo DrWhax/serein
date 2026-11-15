@@ -76,8 +76,6 @@ struct HEVCSliceDecoder {
     var mcJobs: [HEVCMCJob] = []
     var interResiduals: [HEVCResidualJob] = []
     var intraSteps: [HEVCIntraStep] = []
-    var work = [Int32](repeating: 0, count: 1024)
-    var resid = [Int32](repeating: 0, count: 1024)
 
     init(sps: HEVCSPS, pps: HEVCPPS, header: HEVCSliceHeader, nal: HEVCNALUnit, pic: HEVCPicture, geom: HEVCGeometry,
          sliceAddrRs: Int, sliceIndex: Int, dependentState: (state: InlineArray<157, UInt8>, stat: [Int])?, inter: HEVCInterContext?) throws(HEVCDecodeError) {
@@ -95,7 +93,7 @@ struct HEVCSliceDecoder {
         self.sliceIndex = sliceIndex
         self.inter = inter
         mcShared = inter?.shared(sps: sps, pps: pps, type: header.type)
-            ?? HEVCMCShared(refIds: [], planes: [], weightW: [], weightO: [], weighted: false, lumaLog2Denom: 0, chromaLog2Denom: 0, comps: 1, subW: 1, subH: 1,
+            ?? HEVCMCShared(refIds: [], weightW: [], weightO: [], weighted: false, lumaLog2Denom: 0, chromaLog2Denom: 0, comps: 1, subW: 1, subH: 1,
                             bitDepthLuma: 8, bitDepthChroma: 8)
         sliceQp = pps.initQp + header.qpDelta
         switch header.type {
@@ -650,33 +648,60 @@ struct HEVCResidualJob: Sendable {
     var transformSkip: Bool, bypass: Bool, dst: Bool
     var factors: [Int32]?
 
-    /// TransCoeffLevel as a dense n×n block (raster).
-    func levels(_ pool: [Int32]) -> [Int32] {
-        let n = 1 << log2Size
-        var d = [Int32](repeating: 0, count: n * n)
+    /// 8.6.2 – 8.6.4: the residual (raster, n·n) into `s.residual`. The block's levels (its
+    /// nonzero TransCoeffLevels, in the pool) go into the zeroed coefficient block, dequantised as
+    /// they go (8.6.3: a zero level stays zero), with the extent of the nonzero results; then the
+    /// inverse transform over that extent, and the block is zeroed again.
+    static func residual(_ j: HEVCResidualJob, _ pool: [Int32], _ s: inout HEVCResidualScratch) {
+        let log2 = j.log2Size, n = 1 << log2, mask = n - 1
         let p = pool.span
+        let start = Int(j.start), end = start + Int(j.count)
+        var lastRow = -1, lastCol = -1
         do {
-            var ds = d.mutableSpan
-            var k = Int(start)
-            let end = k + Int(count)
-            while k < end {
-                let e = p[k]
-                ds[Int(e & 0xFFFF)] = e >> 16
-                k += 1
+            var c = s.coeffs.mutableSpan
+            if j.bypass {
+                for k in start..<end { let e = p[k]; c[Int(e & 0xFFFF)] = e >> 16 }
+            } else {
+                let bdShift = Int64(j.bitDepth + log2 - 5)
+                let scale = Int64(HEVCTransform.levelScale[j.qp % 6]) << Int64(j.qp / 6)
+                let round = Int64(1) << (bdShift - 1)
+                @inline(__always) func put(_ c: inout MutableSpan<Int32>, _ pos: Int, _ v: Int64) {
+                    let d = Int32(max(-32768, min(32767, (v + round) >> bdShift)))
+                    c[pos] = d
+                    if d != 0 { lastRow = max(lastRow, pos >> log2); lastCol = max(lastCol, pos & mask) }
+                }
+                if let f = j.factors {
+                    let fs = f.span
+                    for k in start..<end { let e = p[k], pos = Int(e & 0xFFFF); put(&c, pos, Int64(e >> 16) * Int64(fs[pos]) * scale) }
+                } else {
+                    let m = 16 * scale
+                    for k in start..<end { let e = p[k], pos = Int(e & 0xFFFF); put(&c, pos, Int64(e >> 16) * m) }
+                }
             }
         }
-        return d
+        if j.bypass {
+            // The residual is the levels themselves.
+            var out: [Int32] = []
+            swap(&out, &s.residual)
+            do {
+                let c = s.coeffs.span
+                var r = out.mutableSpan
+                for i in 0..<(n * n) { r[i] = c[i] }
+            }
+            swap(&out, &s.residual)
+        } else {
+            HEVCTransform.inverse(s.coeffs, into: &s.residual, work: &s.work, log2Size: log2, bitDepth: j.bitDepth, dst4x4: j.dst,
+                                  transformSkip: j.transformSkip, lastRow: lastRow, lastCol: lastCol)
+        }
+        var c = s.coeffs.mutableSpan
+        for k in start..<end { c[Int(p[k] & 0xFFFF)] = 0 }
     }
+}
 
-    /// 8.6.2 – 8.6.4: dequantisation and the inverse transform, with a reusable work buffer.
-    static func residual(_ j: HEVCResidualJob, _ pool: [Int32], _ work: inout [Int32]) -> [Int32] {
-        var d = j.levels(pool)
-        if j.bypass { return d }
-        let n = 1 << j.log2Size
-        HEVCTransform.dequantize(&d, log2Size: j.log2Size, qp: j.qp, bitDepth: j.bitDepth, factors: j.factors)
-        if work.count < n * n { work = [Int32](repeating: 0, count: 1024) }
-        var r = [Int32](repeating: 0, count: n * n)
-        HEVCTransform.inverse(d, into: &r, work: &work, log2Size: j.log2Size, bitDepth: j.bitDepth, dst4x4: j.dst, transformSkip: j.transformSkip)
-        return r
-    }
+/// A worker's buffers for residuals (32x32 at most): the coefficient block (all zero between
+/// blocks), the transform's intermediate and the residual.
+struct HEVCResidualScratch {
+    var coeffs = [Int32](repeating: 0, count: 1024)
+    var work = [Int32](repeating: 0, count: 1024)
+    var residual = [Int32](repeating: 0, count: 1024)
 }

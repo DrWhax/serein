@@ -41,28 +41,8 @@ enum HEVCTransform {
 
     static let dst4: [Int32] = [29, 55, 74, 84, 74, 74, 0, -74, 84, -29, -74, 55, 55, -84, 74, -29]
 
-    static let levelScale: [Int32] = [40, 45, 51, 57, 64, 72]
-
-    /// 8.6.3: scaled coefficients d from levels (in place), raster order (x + y·n).
-    static func dequantize(_ c: inout [Int32], log2Size: Int, qp: Int, bitDepth: Int, factors: [Int32]?) {
-        let n = 1 << log2Size
-        let bdShift = bitDepth + log2Size - 5
-        let scale = levelScale[qp % 6] << (qp / 6)
-        let round = Int64(1) << (bdShift - 1)
-        if factors == nil {
-            var cs = c.mutableSpan
-            let m = 16 * Int64(scale)
-            for i in 0..<(n * n) where cs[i] != 0 {
-                cs[i] = Int32(max(-32768, min(32767, (Int64(cs[i]) * m + round) >> bdShift)))
-            }
-            return
-        }
-        for i in 0..<(n * n) where c[i] != 0 {
-            let m = Int64(factors?[i] ?? 16)
-            let v = (Int64(c[i]) * m * Int64(scale) + round) >> bdShift
-            c[i] = Int32(max(-32768, min(32767, v)))
-        }
-    }
+    /// levelScale (8.6.3), a literal: static data.
+    static let levelScale: InlineArray<6, Int32> = [40, 45, 51, 57, 64, 72]
 
     /// The m[x][y] factors of a scaling list (8.6.4.1 / 7.4.5), raster order.
     static func scalingFactors(_ l: HEVCScalingList, log2Size: Int, matrixId: Int) -> [Int32] {
@@ -83,9 +63,11 @@ enum HEVCTransform {
         return out
     }
 
-    /// 8.6.4.2 / 8.6.2 step 3–4: residual (raster, x + y·n) from the scaled coefficients `d`,
-    /// with `work` (n·n) for the vertical pass.
-    static func inverse(_ dArr: [Int32], into rArr: inout [Int32], work eArr: inout [Int32], log2Size: Int, bitDepth: Int, dst4x4: Bool, transformSkip: Bool) {
+    /// 8.6.4.2 / 8.6.2 step 3–4: residual (raster, x + y·n) from the scaled coefficients `d`
+    /// (nonzero in rows 0 … lastRow and columns 0 … lastCol only, none if −1), with `work` (n·n)
+    /// for the vertical pass.
+    static func inverse(_ dArr: [Int32], into rArr: inout [Int32], work eArr: inout [Int32], log2Size: Int, bitDepth: Int, dst4x4: Bool, transformSkip: Bool,
+                        lastRow: Int, lastCol: Int) {
         let n = 1 << log2Size
         let d = dArr.span
         var r = rArr.mutableSpan, e = eArr.mutableSpan
@@ -97,15 +79,8 @@ enum HEVCTransform {
             while i < n * n { r[i] = (d[i] << ts + round) >> bdShift; i += 1 }
             return
         }
-        // The extent of nonzero coefficients bounds both passes.
-        var lastRow = -1, lastCol = -1
-        var y = 0
-        while y < n {
-            var x = 0
-            while x < n { if d[x + y * n] != 0 { if y > lastRow { lastRow = y }; if x > lastCol { lastCol = x } }; x += 1 }
-            y += 1
-        }
         var i = 0
+        var y = 0
         guard lastRow >= 0 else { while i < n * n { r[i] = 0; i += 1 }; return }
         // DC only: every residual sample is the same.
         if lastRow == 0 && lastCol == 0 && !dst4x4 {
@@ -147,61 +122,30 @@ enum HEVCTransform {
             inverseLanes(d, &r, &e, n: n, lastRow: lastRow, lastCol: lastCol, round: round, bdShift: bdShift)
             return
         }
-        var col = InlineArray<32, Int32>(repeating: 0), v = InlineArray<32, Int32>(repeating: 0), out = InlineArray<32, Int32>(repeating: 0)
-        // Vertical pass, column by column (only columns up to lastCol hold coefficients).
+        // 4x4: columns (those with coefficients; the rest of the intermediate is zero), then rows.
+        var t = InlineArray<16, Int32>(repeating: 0)
         var x = 0
         while x <= lastCol {
-            var j = 0
-            while j < n { col[j] = j <= lastRow ? d[x + j * n] : 0; j += 1 }
-            butterfly(col, n: n, last: lastRow, v: &v, out: &out)
-            var yy = 0
-            while yy < n { e[x + yy * n] = max(-32768, min(32767, (out[yy] &+ 64) >> 7)); yy += 1 }
+            let (v0, v1, v2, v3) = idct4(d[x], d[x + 4], d[x + 8], d[x + 12])
+            t[x] = max(-32768, min(32767, (v0 &+ 64) >> 7)); t[x + 4] = max(-32768, min(32767, (v1 &+ 64) >> 7))
+            t[x + 8] = max(-32768, min(32767, (v2 &+ 64) >> 7)); t[x + 12] = max(-32768, min(32767, (v3 &+ 64) >> 7))
             x += 1
         }
-        // Horizontal pass, row by row over e[0…lastCol][y].
         y = 0
-        while y < n {
-            var j = 0
-            while j < n { col[j] = j <= lastCol ? e[j + y * n] : 0; j += 1 }
-            butterfly(col, n: n, last: lastCol, v: &v, out: &out)
-            var xx = 0
-            while xx < n { r[xx + y * n] = (out[xx] &+ round) >> bdShift; xx += 1 }
+        while y < 4 {
+            let b = 4 * y
+            let (v0, v1, v2, v3) = idct4(t[b], t[b + 1], t[b + 2], t[b + 3])
+            r[b] = (v0 &+ round) >> bdShift; r[b + 1] = (v1 &+ round) >> bdShift
+            r[b + 2] = (v2 &+ round) >> bdShift; r[b + 3] = (v3 &+ round) >> bdShift
             y += 1
         }
     }
 
-    /// The n-point inverse DCT of `a` (coefficients 0…last nonzero) by the even / odd
-    /// decomposition of the 8.6.4.2 matrix: the 4-point inverse of a[0], a[n/4], a[n/2],
-    /// a[3n/4], then each doubling adds the odd rows' contribution. Result in `out[0..<n]`.
-    @inline(__always) static func butterfly(_ a: borrowing InlineArray<32, Int32>, n: Int, last: Int, v: inout InlineArray<32, Int32>,
-                                             out: inout InlineArray<32, Int32>) {
-        let m32 = matrix32.span
-        let q = n / 4
-        let a0 = a[0], a1 = q <= last ? a[q] : 0, a2 = 2 * q <= last ? a[2 * q] : 0, a3 = 3 * q <= last ? a[3 * q] : 0
+    /// The 4-point inverse DCT (8.6.4.2: its even and odd halves).
+    @inline(__always) static func idct4(_ a0: Int32, _ a1: Int32, _ a2: Int32, _ a3: Int32) -> (Int32, Int32, Int32, Int32) {
         let o0 = 83 &* a1 &+ 36 &* a3, o1 = 36 &* a1 &- 83 &* a3
         let e0 = 64 &* (a0 &+ a2), e1 = 64 &* (a0 &- a2)
-        out[0] = e0 &+ o0; out[1] = e1 &+ o1; out[2] = e1 &- o1; out[3] = e0 &- o0
-        var m = 8
-        while m <= n {
-            let stride = n / m, rowStep = 32 / m, half = m / 2
-            var k = 0
-            while k < half { v[k] = out[k]; k += 1 }
-            k = 0
-            while k < half {
-                var o: Int32 = 0
-                var i = 0
-                while true {
-                    let ci = stride * (2 * i + 1)
-                    if ci > last || i >= half { break }
-                    o &+= m32[(2 * i + 1) * rowStep * 32 + k] &* a[ci]
-                    i += 1
-                }
-                out[k] = v[k] &+ o
-                out[m - 1 - k] = v[k] &- o
-                k += 1
-            }
-            m <<= 1
-        }
+        return (e0 &+ o0, e1 &+ o1, e1 &- o1, e0 &- o0)
     }
 
     /// The two passes eight columns (then eight rows) at a time, one transform per SIMD lane:

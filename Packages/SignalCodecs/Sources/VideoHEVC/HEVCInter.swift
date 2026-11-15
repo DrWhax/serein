@@ -366,7 +366,7 @@ final class HEVCInterContext: Sendable {
     /// predSamplesLX (14-bit intermediate) of one component, read from the window of reference
     /// samples it needs (the block and the filter's reach): row by row from the reference's
     /// bands when the window is inside the picture, else from a copy clamped at its edges.
-    static func interpolate(_ src: borrowing Span<[UInt16]>, _ ref: HEVCRefGeometry, x xPb: Int, y yPb: Int, w: Int, h: Int, mvx: Int, mvy: Int,
+    static func interpolate<S: HEVCSample>(_ src: borrowing Span<[S]>, _ ref: HEVCRefGeometry, x xPb: Int, y yPb: Int, w: Int, h: Int, mvx: Int, mvy: Int,
                             chroma: Bool, bitDepth: Int, into outArr: inout [Int32], win winArr: inout [Int32], tmp tmpArr: inout [Int32]) {
         let fracBits = chroma ? 3 : 2, n = chroma ? 4 : 8, half = chroma ? 1 : 3
         let xFrac = mvx & ((1 << fracBits) - 1), yFrac = mvy & ((1 << fracBits) - 1)
@@ -429,7 +429,7 @@ final class HEVCInterContext: Sendable {
     /// `filterWindow` on a window (from (x, y)) inside the reference, each row read from its
     /// band: the vertical taps of one output row may span two bands.
     @inline(__always)
-    static func filterBands(_ src: borrowing Span<[UInt16]>, _ g: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, xFrac: Int, yFrac: Int,
+    static func filterBands<S: HEVCSample>(_ src: borrowing Span<[S]>, _ g: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, xFrac: Int, yFrac: Int,
                             n: Int, half: Int, fx: InlineArray<8, Int32>, fy: InlineArray<8, Int32>, shift1: Int32, shift3: Int32,
                             into outArr: inout [Int32], tmp tmpArr: inout [Int32]) {
         let l = g.log2Rows, mask = g.rowMask, rw = g.width
@@ -482,7 +482,7 @@ final class HEVCInterContext: Sendable {
     /// The vertical taps of one output row, rows y … y + n − 1 of the reference (from x), each
     /// from its band.
     @inline(__always)
-    static func filterColumns(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: borrowing Span<[UInt16]>, _ g: HEVCRefGeometry, y: Int, x: Int,
+    static func filterColumns<S: HEVCSample>(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: borrowing Span<[S]>, _ g: HEVCRefGeometry, y: Int, x: Int,
                               _ c: InlineArray<8, Int32>, n: Int, w: Int, shift: Int32) {
         let l = g.log2Rows, mask = g.rowMask, rw = g.width
         let o0 = (y & mask) * rw + x, o1 = ((y + 1) & mask) * rw + x, o2 = ((y + 2) & mask) * rw + x, o3 = ((y + 3) & mask) * rw + x
@@ -538,7 +538,7 @@ final class HEVCInterContext: Sendable {
         d.mcJobs.append(job)
     }
 
-    /// What every job of the slice shares: the reference planes and the weights.
+    /// What every job of the slice shares: the references and the weights.
     func shared(sps: HEVCSPS, pps: HEVCPPS, type: HEVCSliceHeader.SliceType) -> HEVCMCShared {
         let weighted = ((type == .p && pps.weightedPred) || (type == .b && pps.weightedBipred)) && weights != nil
         var ws = [Int32](repeating: 0, count: 2 * 16 * 3), os = ws
@@ -558,18 +558,19 @@ final class HEVCInterContext: Sendable {
                 }
             }
         }
-        return HEVCMCShared(refIds: refIds, planes: [], weightW: ws, weightO: os, weighted: weighted,
+        return HEVCMCShared(refIds: refIds, weightW: ws, weightO: os, weighted: weighted,
                             lumaLog2Denom: weights?.lumaLog2Denom ?? 0, chromaLog2Denom: weights?.chromaLog2Denom ?? 0,
                             comps: sps.chromaArrayType != 0 ? 3 : 1, subW: sps.subWidthC, subH: sps.subHeightC,
                             bitDepthLuma: sps.bitDepthLuma, bitDepthChroma: sps.bitDepthChroma)
     }
 
-    /// 8.5.3.3 for a band's jobs, written into its planes (first rows `rowBase`). Per component,
-    /// the jobs go by the references they use: each group takes its reference samples once (a
-    /// copy per job would retain buffers every worker shares), and the band's plane is written
-    /// through one span. Prediction blocks never overlap, so the order does not matter.
-    static func predictBand(_ jobs: [HEVCInterBand.MC], _ shared: [HEVCMCShared], _ scratch: inout HEVCMCScratch, into out: inout [[UInt16]],
-                            widths: [Int], heights: [Int], rowBase: [Int]) {
+    /// 8.5.3.3 for a band's jobs, written into its planes (first rows `rowBase`), from each
+    /// slice's reference planes `refs`. Per component, the jobs go by the references they use:
+    /// each group takes its reference samples once (a copy per job would retain buffers every
+    /// worker shares), and the band's plane is written through one span. Prediction blocks never
+    /// overlap, so the order does not matter.
+    static func predictBand<S: HEVCSample>(_ jobs: [HEVCInterBand.MC], _ shared: [HEVCMCShared], refs: [HEVCRefPlanes<S>], _ scratch: inout HEVCMCScratch,
+                                           into out: inout [[S]], widths: [Int], heights: [Int], rowBase: [Int]) {
         guard let first = jobs.first else { return }
         // The (slice, refIdxL0, refIdxL1) combinations, in order of first use.
         var keys: [(slice: Int, r0: Int8, r1: Int8)] = []
@@ -577,7 +578,7 @@ final class HEVCInterContext: Sendable {
             keys.append((m.slice, m.job.refIdx.0, m.job.refIdx.1))
         }
         for c in 0..<min(shared[first.slice].comps, out.count) {
-            var plane: [UInt16] = []
+            var plane: [S] = []
             swap(&plane, &out[c])
             do {
                 var o = plane.mutableSpan
@@ -594,8 +595,8 @@ final class HEVCInterContext: Sendable {
                         continue
                     }
                     // The lists used: the first (L0 before L1), and L1 when bi-predicting.
-                    let pa = sh.planes[has0 ? 0 : 1][Int(has0 ? k.r0 : k.r1)][c]
-                    let pb = has0 && has1 ? sh.planes[1][Int(k.r1)][c] : pa
+                    let pa = refs[k.slice][has0 ? 0 : 1][Int(has0 ? k.r0 : k.r1)][c]
+                    let pb = has0 && has1 ? refs[k.slice][1][Int(k.r1)][c] : pa
                     let a = pa.bands.span, b = pb.bands.span
                     let ga = HEVCRefGeometry(pa), gb = HEVCRefGeometry(pb)
                     for m in jobs where m.slice == k.slice && m.job.refIdx.0 == k.r0 && m.job.refIdx.1 == k.r1 {
@@ -613,14 +614,15 @@ final class HEVCInterContext: Sendable {
     /// prediction is then that band itself, shared rather than copied (a static screen region
     /// stays one buffer from picture to picture); nil otherwise. Each reference picture is
     /// checked once (equal arrays sharing a buffer compare at once).
-    static func sharedBand(_ band: HEVCInterBand, _ shared: [HEVCMCShared], widths: [Int], heights: [Int], log2Rows: [Int]) -> [[UInt16]]? {
+    static func sharedBand<S: HEVCSample>(_ band: HEVCInterBand, _ shared: [HEVCMCShared], refs: [HEVCRefPlanes<S>], widths: [Int], heights: [Int],
+                                          log2Rows: [Int]) -> [[S]]? {
         guard band.decoded, !band.intra, band.residuals.isEmpty, !band.mc.isEmpty else { return nil }
         for m in band.mc {
             let j = m.job
             let has0 = j.refIdx.0 >= 0, has1 = j.refIdx.1 >= 0
             guard has0 || has1, !has0 || (j.mv.0 == 0 && j.mv.1 == 0), !has1 || (j.mv.2 == 0 && j.mv.3 == 0) else { return nil }
         }
-        var candidate: [[UInt16]] = []
+        var candidate: [[S]] = []
         var checked: [Int] = []
         for m in band.mc {
             let sh = shared[m.slice]
@@ -628,12 +630,12 @@ final class HEVCInterContext: Sendable {
             for l in 0..<2 {
                 let r = Int(l == 0 ? m.job.refIdx.0 : m.job.refIdx.1)
                 guard r >= 0 else { continue }
-                guard sh.refIds.indices.contains(l), sh.refIds[l].indices.contains(r), sh.planes.indices.contains(l), sh.planes[l].indices.contains(r)
-                else { return nil }
+                let rp = refs[m.slice]
+                guard sh.refIds.indices.contains(l), sh.refIds[l].indices.contains(r), rp.indices.contains(l), rp[l].indices.contains(r) else { return nil }
                 let id = sh.refIds[l][r]
                 guard !checked.contains(id) else { continue }
                 checked.append(id)
-                let planes = sh.planes[l][r]
+                let planes = rp[l][r]
                 guard planes.count == widths.count else { return nil }
                 for c in planes.indices {
                     let p = planes[c]
@@ -663,9 +665,9 @@ final class HEVCInterContext: Sendable {
     /// rounded average (two): the 14-bit intermediate's shifts cancel exactly, so the samples
     /// are copied without interpolating.
     @inline(__always)
-    static func predictComponent(_ job: HEVCMCJob, c: Int, _ sh: HEVCMCShared, _ a: borrowing Span<[UInt16]>, _ ra: HEVCRefGeometry,
-                                 _ b: borrowing Span<[UInt16]>, _ rb1: HEVCRefGeometry, _ scratch: inout HEVCMCScratch, into o: inout MutableSpan<UInt16>,
-                                 pw: Int, ph: Int, rowBase rb: Int) {
+    static func predictComponent<S: HEVCSample>(_ job: HEVCMCJob, c: Int, _ sh: HEVCMCShared, _ a: borrowing Span<[S]>, _ ra: HEVCRefGeometry,
+                                                _ b: borrowing Span<[S]>, _ rb1: HEVCRefGeometry, _ scratch: inout HEVCMCScratch,
+                                                into o: inout MutableSpan<S>, pw: Int, ph: Int, rowBase rb: Int) {
         let has0 = job.refIdx.0 >= 0
         let l0 = has0 ? 0 : 1, r0 = has0 ? Int(job.refIdx.0) : Int(job.refIdx.1)
         let mx0 = has0 ? Int(job.mv.0) : Int(job.mv.2), my0 = has0 ? Int(job.mv.1) : Int(job.mv.3)
@@ -706,7 +708,7 @@ final class HEVCInterContext: Sendable {
                     for i in 0..<rw {
                         let p = p0[src + i]
                         let v = log2WD >= 1 ? ((p * w0 + (1 << (log2WD - 1))) >> log2WD) + o0 : p * w0 + o0
-                        o[row + i] = UInt16(max(0, min(maxV, v)))
+                        o[row + i] = S(truncatingIfNeeded: max(0, min(maxV, v)))
                     }
                 }
             } else {
@@ -716,7 +718,7 @@ final class HEVCInterContext: Sendable {
                     let row = (cy + j - rb) * pw + cx, src = j * cw
                     for i in 0..<rw {
                         let v = (p0[src + i] * w0 + p1[src + i] * w1 + ((o0 + o1 + 1) << log2WD)) >> (log2WD + 1)
-                        o[row + i] = UInt16(max(0, min(maxV, v)))
+                        o[row + i] = S(truncatingIfNeeded: max(0, min(maxV, v)))
                     }
                 }
             }
@@ -725,14 +727,14 @@ final class HEVCInterContext: Sendable {
             for j in 0..<rows {
                 let row = (cy + j - rb) * pw + cx, s0 = p0.extracting(j * cw ..< j * cw + rw)
                 var k = 0
-                for i in row ..< row + rw { o[i] = UInt16(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ off) &>> shift1))); k += 1 }
+                for i in row ..< row + rw { o[i] = S(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ off) &>> shift1))); k += 1 }
             }
         } else {
             let shift2 = Int32(15 - bitDepth), off = Int32(1) << (shift2 - 1)
             for j in 0..<rows {
                 let row = (cy + j - rb) * pw + cx, s0 = p0.extracting(j * cw ..< j * cw + rw), s1 = p1.extracting(j * cw ..< j * cw + rw)
                 var k = 0
-                for i in row ..< row + rw { o[i] = UInt16(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ s1[k] &+ off) &>> shift2))); k += 1 }
+                for i in row ..< row + rw { o[i] = S(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ s1[k] &+ off) &>> shift2))); k += 1 }
             }
         }
     }
@@ -742,8 +744,8 @@ final class HEVCInterContext: Sendable {
     /// bands), written by iterating the destination's indices: bounds are checked once per row
     /// and the copy vectorises.
     @inline(__always)
-    static func copyFullSample(_ a: borrowing Span<[UInt16]>, _ ga: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<UInt16>,
-                               width pw: Int, rowBase rb: Int) {
+    static func copyFullSample<S: HEVCSample>(_ a: borrowing Span<[S]>, _ ga: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<S>,
+                                              width pw: Int, rowBase rb: Int) {
         let inside = ga.inside(x, y, w, h)
         for j in 0..<h {
             let row = (y + j - rb) * pw + x
@@ -762,10 +764,11 @@ final class HEVCInterContext: Sendable {
     }
 
     /// The same from two references: the rounded mean, (a + b + 1) >> 1 (what
-    /// ((a << s) + (b << s) + (1 << s)) >> (s + 1) of the 14-bit intermediates comes to).
+    /// ((a << s) + (b << s) + (1 << s)) >> (s + 1) of the 14-bit intermediates comes to), in 32
+    /// bits (one rounding halving add per vector).
     @inline(__always)
-    static func averageFullSample(_ a: borrowing Span<[UInt16]>, _ ga: HEVCRefGeometry, _ b: borrowing Span<[UInt16]>, _ gb: HEVCRefGeometry,
-                                  x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<UInt16>, width pw: Int, rowBase rb: Int) {
+    static func averageFullSample<S: HEVCSample>(_ a: borrowing Span<[S]>, _ ga: HEVCRefGeometry, _ b: borrowing Span<[S]>, _ gb: HEVCRefGeometry,
+                                                 x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<S>, width pw: Int, rowBase rb: Int) {
         let inside = ga.inside(x, y, w, h) && gb.inside(x, y, w, h)
         for j in 0..<h {
             let row = (y + j - rb) * pw + x
@@ -773,11 +776,11 @@ final class HEVCInterContext: Sendable {
                 let sa = ga.offset(x, y + j), sb = gb.offset(x, y + j)
                 let ar = a[ga.band(y + j)].span.extracting(sa ..< sa + w), br = b[gb.band(y + j)].span.extracting(sb ..< sb + w)
                 var k = 0
-                for i in row ..< row + w { d[i] = (ar[k] &+ br[k] &+ 1) >> 1; k += 1 }
+                for i in row ..< row + w { d[i] = S(truncatingIfNeeded: (UInt32(ar[k]) &+ UInt32(br[k]) &+ 1) >> 1); k += 1 }
             } else {
                 for i in 0..<w {
                     let (ba, ia) = ga.clamped(x + i, y + j), (bb, ib) = gb.clamped(x + i, y + j)
-                    d[row + i] = (a[ba][ia] &+ b[bb][ib] &+ 1) >> 1
+                    d[row + i] = S(truncatingIfNeeded: (UInt32(a[ba][ia]) &+ UInt32(b[bb][ib]) &+ 1) >> 1)
                 }
             }
         }
@@ -789,7 +792,7 @@ struct HEVCRefGeometry {
     let width: Int, height: Int, log2Rows: Int
     var dx = 0, dy = 0
 
-    init(_ p: HEVCPlane) {
+    init<S: HEVCSample>(_ p: HEVCPlane<S>) {
         width = p.width
         height = p.height
         log2Rows = p.log2Rows
@@ -837,12 +840,13 @@ struct HEVCMCJob: Sendable {
     var mv: (Int16, Int16, Int16, Int16)
 }
 
-/// What the jobs of one slice share (reference planes are copy-on-write values).
+/// A slice's reference planes: [list][refIdx] → Y, Cb, Cr (copy-on-write values).
+typealias HEVCRefPlanes<S: HEVCSample> = [[[HEVCPlane<S>]]]
+
+/// What the jobs of one slice share but the reference samples.
 struct HEVCMCShared: Sendable {
-    /// [list][refIdx] → picture id; the stage resolves them to `planes`.
+    /// [list][refIdx] → picture id; the stage resolves them to the slice's `HEVCRefPlanes`.
     var refIds: [[Int]]
-    /// [list][refIdx] → Y, Cb, Cr.
-    var planes: [[[HEVCPlane]]]
     /// Weight and offset at (list · 16 + refIdx) · 3 + component, when weighted.
     var weightW: [Int32], weightO: [Int32]
     var weighted: Bool

@@ -1,35 +1,89 @@
 // A decoded picture and the per-block state decoding and in-loop filtering read: samples in
-// three UInt16 planes (8 … 16 bits), and on a 4x4 grid the prediction mode, intra mode, QP,
-// coding-tree depth, skip / PCM / bypass flags, transform and prediction edges, motion.
+// three planes (bytes for 8-bit pictures, else 16 bits: 9 … 16), and on a 4x4 grid the
+// prediction mode, intra mode, QP, coding-tree depth, skip / PCM / bypass flags, transform and
+// prediction edges, motion.
+
+/// A plane's sample type: bytes when the picture is 8-bit (half the memory traffic of every
+/// step), else 16 bits.
+protocol HEVCSample: FixedWidthInteger, UnsignedInteger, BitwiseCopyable, Sendable {
+    /// A picture's planes of this type, if they are stored as such.
+    static func planes(_ s: HEVCSamples) -> [HEVCPlane<Self>]?
+    static func samples(_ p: [HEVCPlane<Self>]) -> HEVCSamples
+}
+
+extension UInt8: HEVCSample {
+    static func planes(_ s: HEVCSamples) -> [HEVCPlane<UInt8>]? {
+        if case .bytes(let p) = s { return p }
+        return nil
+    }
+    static func samples(_ p: [HEVCPlane<UInt8>]) -> HEVCSamples { .bytes(p) }
+}
+
+extension UInt16: HEVCSample {
+    static func planes(_ s: HEVCSamples) -> [HEVCPlane<UInt16>]? {
+        if case .words(let p) = s { return p }
+        return nil
+    }
+    static func samples(_ p: [HEVCPlane<UInt16>]) -> HEVCSamples { .words(p) }
+}
+
+/// A picture's samples: luma, then (unless 4:0:0) Cb and Cr.
+enum HEVCSamples: Sendable {
+    case bytes([HEVCPlane<UInt8>])
+    case words([HEVCPlane<UInt16>])
+
+    /// Whether a picture of `sps` stores bytes.
+    static func storesBytes(_ sps: HEVCSPS) -> Bool { sps.bitDepthLuma == 8 && sps.bitDepthChroma == 8 }
+
+    /// Mid-grey planes of the type `sps` stores: a missing reference (8.3.3).
+    static func grey(_ sps: HEVCSPS) -> HEVCSamples {
+        storesBytes(sps) ? .bytes(HEVCPictureState.greyPlanes(sps)) : .words(HEVCPictureState.greyPlanes(sps))
+    }
+
+    /// The planes as `S`: themselves, or converted (clamped) when stored as the other type,
+    /// which only a corrupt stream asks for (a reference of another bit depth).
+    func planes<S: HEVCSample>(as _: S.Type) -> [HEVCPlane<S>] {
+        if let p = S.planes(self) { return p }
+        switch self {
+        case .bytes(let p): return p.map(HEVCPlane<S>.init(converting:))
+        case .words(let p): return p.map(HEVCPlane<S>.init(converting:))
+        }
+    }
+}
 
 /// One plane's samples in bands of a CTB row each (the last one shorter): a band is what one
 /// worker reconstructs or filters, so no step copies a picture whole, and a reader takes a row
 /// from its band (`bands.span[y >> log2Rows]` borrows it, without retaining).
-public struct HEVCPlane: Sendable {
-    public let width: Int, height: Int
+struct HEVCPlane<S: HEVCSample>: Sendable {
+    let width: Int, height: Int
     /// Rows per band, 1 << log2Rows.
     let log2Rows: Int
-    var bands: [[UInt16]]
+    var bands: [[S]]
 
-    init(width: Int, height: Int, log2Rows: Int, fill: UInt16) {
+    init(width: Int, height: Int, log2Rows: Int, fill: S) {
         self.width = width
         self.height = height
         self.log2Rows = log2Rows
         let n = (height + (1 << log2Rows) - 1) >> log2Rows
-        bands = (0..<n).map { k in [UInt16](repeating: fill, count: width * (min(height, (k + 1) << log2Rows) - (k << log2Rows))) }
+        bands = (0..<n).map { k in [S](repeating: fill, count: width * (min(height, (k + 1) << log2Rows) - (k << log2Rows))) }
     }
 
-    init(width: Int, height: Int, log2Rows: Int, bands: [[UInt16]]) {
+    init(width: Int, height: Int, log2Rows: Int, bands: [[S]]) {
         self.width = width
         self.height = height
         self.log2Rows = log2Rows
         self.bands = bands
     }
 
+    /// The same samples as another type, clamped to it.
+    init<T: HEVCSample>(converting p: HEVCPlane<T>) {
+        self.init(width: p.width, height: p.height, log2Rows: p.log2Rows, bands: p.bands.map { $0.map { S(clamping: $0) } })
+    }
+
     /// The rows of band `k`.
     @inline(__always) func rows(_ k: Int) -> Range<Int> { (k << log2Rows) ..< min(height, (k + 1) << log2Rows) }
 
-    @inline(__always) subscript(x: Int, y: Int) -> UInt16 {
+    @inline(__always) subscript(x: Int, y: Int) -> S {
         get { bands[y >> log2Rows][x + (y & ((1 << log2Rows) - 1)) * width] }
         set { bands[y >> log2Rows][x + (y & ((1 << log2Rows) - 1)) * width] = newValue }
     }
@@ -142,7 +196,7 @@ final class HEVCPicture {
     /// What reconstruction and the in-loop filters read, once the picture is parsed (the
     /// arrays are shared, not copied: parsing never changes them again).
     func state() -> HEVCPictureState {
-        HEVCPictureState(sps: sps, w4: w4, h4: h4, planes: [], predMode: predMode, qpY: qpY, bypass: bypass, tuEdgeV: tuEdgeV, tuEdgeH: tuEdgeH,
+        HEVCPictureState(sps: sps, w4: w4, h4: h4, predMode: predMode, qpY: qpY, bypass: bypass, tuEdgeV: tuEdgeV, tuEdgeH: tuEdgeH,
                          puEdgeV: puEdgeV, puEdgeH: puEdgeH, nonZeroCoeff: nonZeroCoeff, motion: motion, ctbSliceAddr: ctbSliceAddr,
                          ctbDeblockDisabled: ctbDeblockDisabled, ctbFilterAcrossSlices: ctbFilterAcrossSlices, ctbBetaOffset: ctbBetaOffset,
                          ctbTcOffset: ctbTcOffset, sao: sao, ctbDecoded: ctbDecoded, ctbSliceIndex: ctbSliceIndex, sliceRefPocs: sliceRefPocs)
@@ -374,12 +428,11 @@ extension HEVCPicture {
     }
 }
 
-/// A parsed picture's samples with the metadata reconstruction and the in-loop filters read
-/// (a value: it moves to the reconstruction thread).
+/// What reconstruction and the in-loop filters read of a parsed picture (a value: it moves to
+/// the reconstruction thread). The samples go alongside (`HEVCSamples`).
 struct HEVCPictureState: Sendable {
     let sps: HEVCSPS
     let w4: Int, h4: Int
-    var planes: [HEVCPlane]
     let predMode: [UInt8]
     let qpY: [Int8]
     let bypass: [Bool]
@@ -406,11 +459,13 @@ struct HEVCPictureState: Sendable {
     /// log2 of plane `c`'s rows per band: a CTB row.
     static func bandLog2(_ sps: HEVCSPS, _ c: Int) -> Int { c == 0 || sps.subHeightC == 1 ? sps.log2CtbSize : sps.log2CtbSize - 1 }
 
-    /// Mid-grey planes: a picture before reconstruction, or a missing reference (8.3.3).
-    static func greyPlanes(_ sps: HEVCSPS) -> [HEVCPlane] {
+    /// Mid-grey planes (8.3.3: what a missing reference holds).
+    static func greyPlanes<S: HEVCSample>(_ sps: HEVCSPS) -> [HEVCPlane<S>] {
         planeSizes(sps).enumerated().map { c, size in
-            HEVCPlane(width: size.width, height: size.height, log2Rows: bandLog2(sps, c),
-                      fill: UInt16(1 << ((c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma) - 1)))
+            HEVCPlane(width: size.width, height: size.height, log2Rows: bandLog2(sps, c), fill: grey(sps, c))
         }
     }
+
+    /// Plane c's mid-grey, 1 << (bitDepth − 1).
+    static func grey<S: HEVCSample>(_ sps: HEVCSPS, _ c: Int) -> S { S(clamping: 1 << ((c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma) - 1)) }
 }
