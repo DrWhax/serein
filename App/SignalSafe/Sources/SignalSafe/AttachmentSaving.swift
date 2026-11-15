@@ -96,11 +96,13 @@ import SignalUI
             guard panel.runModal() == .OK, let dir = panel.url else { return }
             targets = names.map { Self.unusedURL(dir.appendingPathComponent($0)) }
         }
-        guard let store = signalSession?.attachmentStore else { return }
+        guard let store = signalSession?.attachmentStore, let db = clientDatabase else { return }
         var saved = 0
         for (a, url) in zip(files, targets) {
             do {
-                try store.export(a, to: url)
+                // Checked again after the panel: the message may have been deleted for everyone,
+                // or have disappeared, while it was open.
+                try MediaAvailability.export(a, of: m.id, to: url, database: db, store: store)
                 saved += 1
             } catch {
                 Self.trace("save failed: \(error)")

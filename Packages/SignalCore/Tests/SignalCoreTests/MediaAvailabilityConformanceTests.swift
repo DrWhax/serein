@@ -158,3 +158,42 @@ struct MediaAvailabilityConformanceTests {
         #expect(throws: AttachmentStoreError.self) { try MediaAvailability.export(a, of: other, to: dir.appendingPathComponent("late.png"), database: db, store: store) }
     }
 }
+
+@Suite struct StoryExportTests {
+    /// Saving a story's media re-checks the story after the panel: refused once it is past its
+    /// 24 hours (before the sweep deletes it) or deleted for everyone.
+    @Test func exportRechecksTheStory() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("serein-story-export-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = try SignalDatabase(url: dir.appendingPathComponent("db.sqlite"), key: Data(repeating: 1, count: 32))
+        let store = try AttachmentStore(root: dir.appendingPathComponent("files"))
+        let stored = try store.storeLocally(Data("story".utf8))
+        var a = MessageAttachment(contentType: "image/png", size: 5)
+        a.path = stored.path
+        a.localKey = stored.localKey.base64EncodedString()
+        let start: Int64 = 1_000_000
+        let storyId = try db.pool.write { db -> String in
+            let conversation = try MessageStore.privateConversation(db, serviceId: UUID().uuidString.lowercased())
+            let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "story", body: "", sentAt: UInt64(start), source: "them",
+                                                       sourceDevice: 1, serverGuid: nil, serverTimestamp: nil, unidentified: false))
+            try db.execute(sql: "UPDATE messages SET expirationStartTimestamp = ? WHERE id = ?", arguments: [start, id])
+            try db.execute(sql: """
+                INSERT INTO message_attachments (messageId, editHistoryIndex, attachmentType, orderInMessage, conversationId, sentAt, size,
+                                                 contentType, path)
+                VALUES (?, -1, 'attachment', 0, ?, ?, 5, 'image/png', ?)
+                """, arguments: [id, conversation, start, stored.path])
+            return id
+        }
+        let out = dir.appendingPathComponent("story.png")
+        try MediaAvailability.exportStory(a, storyId: storyId, to: out, database: db, store: store, now: start + StoryStore.day - 1)
+        #expect(try Data(contentsOf: out) == Data("story".utf8))
+        #expect(throws: AttachmentStoreError.self) {
+            try MediaAvailability.exportStory(a, storyId: storyId, to: dir.appendingPathComponent("late.png"), database: db, store: store, now: start + StoryStore.day)
+        }
+        try db.pool.write { try MessageStore.updateJSON($0, messageId: storyId) { $0["deletedForEveryone"] = true } }
+        #expect(throws: AttachmentStoreError.self) {
+            try MediaAvailability.exportStory(a, storyId: storyId, to: dir.appendingPathComponent("deleted.png"), database: db, store: store, now: start + 1)
+        }
+    }
+}

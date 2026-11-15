@@ -221,7 +221,8 @@ public actor SignalClient {
         await storage.register(on: jobs)
         await contactSync.register(on: jobs)
         await jobs.start()
-        let receiver = MessageReceiver(account: account, database: database, trustRoots: trustRoots, parser: parser, jobs: jobs)
+        let receiver = MessageReceiver(account: account, database: database, trustRoots: trustRoots, parser: parser, jobs: jobs,
+                                       groupRefresher: { await groups.refreshForMessage(masterKey: $0, revision: $1, groupChange: $2, timestamp: $3) })
         let params = config.serverPublicParams
         await groups.configure(credentials: { aci in try await profiles.expiringCredential(aci, serverPublicParams: params) },
                                sender: messenger.groupSender)

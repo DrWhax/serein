@@ -58,6 +58,22 @@ extension MediaAvailability {
             try store.export(a, to: url)
         }
     }
+
+    /// `export` for a story's media: the story must also still be one the feed shows, within its
+    /// 24 hours and not deleted for everyone (StoryFeed; expired stories are deleted by a
+    /// periodic sweep, so the row alone does not say so).
+    public static func exportStory(_ a: MessageAttachment, storyId: String, to url: URL, database: SignalDatabase, store: AttachmentStore,
+                                   now: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) throws {
+        guard let path = a.path else { throw AttachmentStoreError.invalidPath("") }
+        try database.pool.write { db in
+            let live = try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM messages WHERE id = ? AND type = 'story' AND coalesce(expirationStartTimestamp, sent_at) + ? > ?
+                  AND coalesce(json ->> '$.deletedForEveryone', 0) = 0)
+                """, arguments: [storyId, StoryStore.day, now]) ?? false
+            guard live, try permits(db, path: path, messageId: storyId, now: now) else { throw AttachmentStoreError.invalidPath(path) }
+            try store.export(a, to: url)
+        }
+    }
 }
 
 extension SignalDatabase {

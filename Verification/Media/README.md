@@ -63,6 +63,11 @@ a bubble is only drawn for a live message.
 the message's own reference is checked and the plaintext written in one database writer transaction. A WAL read alone would
 not prevent a revocation from committing while the file is written. It was the
 same check inline in the app; now the test can call exactly what the app calls.
+Every save goes through it (2026-11-15): the Lightbox's, the timeline's (one attachment or all of
+a message's, `saveAttachments`) and a story's. The timeline and story saves had written the file
+straight from the attachment store after the panel, without the re-check. A story's save
+(`MediaAvailability.exportStory`) also requires the story to be within its 24 hours and not deleted
+for everyone, as the story feed shows it (expired stories are only deleted by a periodic sweep).
 
 **M3: cancelled playback cannot resume after its await.** Video play rechecks both source and
 playback generations after rewind/audio awaits; stopping invalidates pending playback even if
@@ -79,6 +84,9 @@ queued resume actions recheck their reference when they actually run.
   references) with the oracle.
 - `exportRechecksTheMessage`: the export succeeds while the message is live, is refused once it is
   erased, and once the other message referencing the same file expires.
+- `StoryExportTests.exportRechecksTheStory`: a story's export succeeds within its 24 hours and is
+  refused at the 24th hour (before the sweep) and once it is deleted for everyone. Not compared with
+  the model: the story window is a check on top of `permits`.
 - `MediaApplyConformanceTests.randomViewers` (app): 3,000 random viewer states (a lightbox with one
   or two attachments, or none downloaded; an inline video; a voice note; cached files) and random
   availabilities through `applyMediaAvailability`, against the oracle.

@@ -139,5 +139,5 @@ mutant "a flood evicts the oldest entry, whoever sent it" "$mods" \
 mutant "old entries are not dropped" "$mods" \
   's/list\.filter \{ now - \$0\.storedAt <= pendingMaxAge \}/list.filter { now - \$0.storedAt <= pendingMaxAge || now != 0 }/'
 mutant "a duplicate message is stored again" "$store" \
-  's/"SELECT id FROM messages WHERE sourceServiceId = \? AND sent_at = \? LIMIT 1"/"SELECT id FROM messages WHERE sourceServiceId = ? AND sent_at = ? AND type = '"'"'none'"'"' LIMIT 1"/'
+  's/AND sent_at = \? AND type IN \('"'"'incoming'"'"', '"'"'outgoing'"'"'\) LIMIT 1"/AND sent_at = ? AND type = '"'"'none'"'"' LIMIT 1"/'
 echo "$killed mutants killed"

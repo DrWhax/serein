@@ -53,6 +53,23 @@ public actor GroupsService {
         try await serialized(keys.groupIdBase64) { try await self.updateNow(keys, newRevision: newRevision, groupChange: groupChange, timestamp: timestamp) }
     }
 
+    /// The receive path's refresh before it judges a group message or story (MessageReceiver's
+    /// GroupRefresher): `.done` once the group server has answered, also with "not a member" or
+    /// "no such group"; `.retry` when it could not be asked.
+    public func refreshForMessage(masterKey: Data, revision: Int, groupChange: Data?, timestamp: UInt64) async -> GroupRefreshOutcome {
+        guard let keys = try? GroupKeys(masterKey: masterKey) else { return .done }
+        do {
+            _ = try await update(keys, newRevision: revision, groupChange: groupChange, timestamp: timestamp)
+            return .done
+        } catch GroupsServiceError.notAMember, GroupsServiceError.notFound {
+            return .done
+        } catch HTTPError.status(let status, _) where (400..<500).contains(status) && status != 408 && status != 429 {
+            return .done
+        } catch {
+            return .retry
+        }
+    }
+
     func updateNow(_ keys: GroupKeys, newRevision: Int?, groupChange: Data?, timestamp: UInt64?) async throws -> [String] {
         let stored = try await database.pool.write { try GroupStore.conversation($0, keys: keys) }
         let ts = timestamp ?? UInt64(MessageStore.now())
@@ -70,9 +87,10 @@ public actor GroupsService {
         }
         do {
             return try await updateViaLogs(keys, stored: stored, timestamp: ts)
-        } catch HTTPError.status(403, _) {
-            // Not (or no longer) a member: if we thought we were, record that we were removed;
-            // a group we never had state for (storage service only) is marked left.
+        } catch HTTPError.status(let status, _) where status == 403 || status == 404 {
+            // Not (or no longer) a member, or no such group (upstream GROUP_ACCESS_DENIED_CODE /
+            // GROUP_NONEXISTENT_CODE: generateLeftGroupChanges): if we thought we were a member,
+            // record that we were removed; a group we never had state for is marked left.
             guard let current = stored.state, current.isMember(ourAci) else {
                 if stored.state == nil {
                     try await database.pool.write { db in

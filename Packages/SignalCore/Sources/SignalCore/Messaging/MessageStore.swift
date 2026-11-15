@@ -108,8 +108,12 @@ enum MessageStore {
     }
 
     /// Duplicate detection (upstream getMessageBySender): same author + sent_at.
+    /// The message `author` sent at `sentAt`. Timeline notices are not messages: a group change
+    /// applied for a message carries its author and timestamp (upstream's getMessageBySender
+    /// does not match them either, as they have no source device).
     static func find(_ db: Database, author: String, sentAt: UInt64) throws -> String? {
-        try String.fetchOne(db, sql: "SELECT id FROM messages WHERE sourceServiceId = ? AND sent_at = ? LIMIT 1", arguments: [author, Int64(sentAt)])
+        try String.fetchOne(db, sql: "SELECT id FROM messages WHERE sourceServiceId = ? AND sent_at = ? AND type IN ('incoming', 'outgoing') LIMIT 1",
+                            arguments: [author, Int64(sentAt)])
     }
 
     /// Applies an EditMessage: the previous version moves to `editHistory`, the body is replaced,

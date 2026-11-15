@@ -131,7 +131,8 @@ struct LinkedClient: Sendable {
         await contactSync.register(on: jobs)
         await jobs.start()
 
-        let receiver = MessageReceiver(account: account, database: database, trustRoots: server.ready.trustRoots, parser: parser, jobs: jobs)
+        let receiver = MessageReceiver(account: account, database: database, trustRoots: server.ready.trustRoots, parser: parser, jobs: jobs,
+                                       groupRefresher: { await groups.refreshForMessage(masterKey: $0, revision: $1, groupChange: $2, timestamp: $3) })
         let log = EventLog()
         Task {
             for await e in receiver.events {
@@ -195,7 +196,9 @@ struct LinkedClient: Sendable {
 
     func messageJSON(sentAt: UInt64) async throws -> [String: Any] {
         let json = try await database.pool.read { db in
-            try String.fetchOne(db, sql: "SELECT json FROM messages WHERE sent_at = ?", arguments: [Int64(sentAt)])
+            // The message itself before notices with its timestamp (a group change applied for it).
+            try String.fetchOne(db, sql: "SELECT json FROM messages WHERE sent_at = ? ORDER BY type IN ('incoming', 'outgoing') DESC, received_at",
+                                arguments: [Int64(sentAt)])
         }
         return try MessageStore.jsonObject(try #require(json))
     }

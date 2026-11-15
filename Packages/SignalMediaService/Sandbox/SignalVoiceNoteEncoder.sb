@@ -6,7 +6,8 @@
 ; service records voice notes from the microphone (macOS asks the user on the app's behalf; the
 ; app itself may not use it) and returns the MP3 and its waveform, in memory: it needs the audio
 ; system, which reads system files (its components, CoreAudio's own checks) and talks to its
-; services: so those stay as App Sandbox allows them, and nothing else does. Recording from the
+; services: so those stay readable, and of other programs' Mach services it looks up only the
+; audio system's and TCC's. Recording from the
 ; microphone was tried under stricter rules: with no system file readable the audio unit is not
 ; even made, and AVAudioEngine raises. Tools/check-sandbox-profile.sh runs a probe service under
 ; these rules and records a voice note with the real service.
@@ -26,6 +27,13 @@
 ; Registers no Mach services.
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))
+; No other programs' Mach services but the audio system's and TCC's: the audio HAL, the audio
+; session, and tccd (the microphone permission, asked on the app's behalf). The pasteboard,
+; Launch Services, preferences and the rest are denied; the start-up lookups that fail
+; (directory helper, container manager, opendirectory, DiskArbitration, analytics) are not
+; needed.
+(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.audio.audiohald")) (require-not (global-name "com.apple.audio.AudioSession")) (require-not (global-name "com.apple.tccd")) (require-not (global-name "com.apple.tccd.system"))))
+(deny mach-lookup (local-name-regex #".*"))
 ; No network of any kind (App Sandbox without network entitlements already denies IP sockets).
 (deny network* (remote ip))
 (deny network* (local ip))

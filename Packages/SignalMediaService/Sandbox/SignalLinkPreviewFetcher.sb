@@ -4,9 +4,9 @@
 ; com.apple.security.temporary-exception.sbpl entitlement, appended to the App Sandbox profile.
 ; App Sandbox's own allow rules carry filters and win over an unfiltered deny, so every deny
 ; here has a filter that matches everything. The fetcher opens HTTPS connections to the web
-; (DNS, TLS trust evaluation and the network stack need their system services, so Mach lookups
-; stay as App Sandbox allows them) and talks XPC to the app and the parser; it reads no user
-; data, writes nothing, runs nothing, and cannot reach this machine's own services.
+; (of other programs' Mach services it looks up only the three DNS, TLS trust evaluation and
+; content filtering need) and talks XPC to the app and the parser; it reads no user data,
+; writes nothing, runs nothing, and cannot reach this machine's own services.
 ; Tools/check-sandbox-profile.sh runs a probe service under these rules.
 ;
 ;! com.apple.security.network.client
@@ -26,6 +26,13 @@
 ; Registers no Mach services.
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))
+; No other programs' Mach services but the three HTTPS needs: DNS (mDNSResponder), TLS trust
+; evaluation (trustd) and the system's network content filters (so a filter the user installed
+; still sees the traffic). The pasteboard, Launch Services, preferences and the rest are
+; denied; the start-up lookups that fail (directory helper, container manager, opendirectory,
+; DiskArbitration, analytics) are not needed.
+(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.dnssd.service")) (require-not (global-name "com.apple.trustd.agent")) (require-not (global-name "com.apple.nesessionmanager.content-filter"))))
+(deny mach-lookup (local-name-regex #".*"))
 ; Outgoing connections only, and never to this machine (DNS rebinding cannot turn a preview
 ; into a request to a local service); nothing listens.
 (deny network-outbound (remote ip "localhost:*"))

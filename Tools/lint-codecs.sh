@@ -57,6 +57,37 @@ if [ -n "$(echo "$hits" | grep -v "^$allowed:" | grep -v "^$allowed2:" | grep -v
   echo "lint: unsafe escape in shipping code (allowed: one line each in $allowed, $allowed2, $allowed3 and $allowed4)" >&2; fail=1
 fi
 
+# Unchecked conformances in shipping code outside the codecs: the compiler takes `@unchecked
+# Sendable` (and `@safe`) on trust, so a data race behind one is memory unsafety it never
+# reports. Only these, one line each, all reviewed 2026-11-15: libsignal's Net (native handles
+# the Rust side synchronises), the freshly generated pre-key records of a link, ProtocolStore
+# (immutable keys; its state lives in the database), MessageReceiver (immutable references and
+# Mutex-guarded state, run on its serial queue), and a received XPC dictionary that is only read.
+# A new one needs the user's approval. (protoc-gen-swift's message structs with heap storage are
+# generated `@unchecked Sendable`.)
+unchecked_allowed="Packages/SignalCore/Sources/SignalCore/Net/SocketManager.swift
+  Packages/SignalCore/Sources/SignalCore/Provisioning/DeviceLinker.swift
+  Packages/SignalCore/Sources/SignalCore/Protocol/ProtocolStore.swift
+  Packages/SignalCore/Sources/SignalCore/Messaging/MessageReceiver.swift
+  Packages/SignalMediaService/Sources/MediaXPCInterface/XPCTransport.swift"
+unchecked=$(grep -nE '@unchecked[[:space:]]+Sendable|@safe\b' $others | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+  | grep -vE '^[^:]+\.pb\.swift:[0-9]+:[[:space:]]*public nonisolated struct [A-Za-z0-9_]+: @unchecked Sendable \{$' || true)
+unchecked_bad="" unchecked_seen=" "
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  file=${hit%%:*}
+  case " $(echo $unchecked_allowed) " in
+    *" $file "*) case "$unchecked_seen" in *" $file "*) unchecked_bad="$unchecked_bad$hit
+" ;; *) unchecked_seen="$unchecked_seen$file " ;; esac ;;
+    *) unchecked_bad="$unchecked_bad$hit
+" ;;
+  esac
+done <<< "$unchecked"
+if [ -n "$unchecked_bad" ]; then
+  printf '%s' "$unchecked_bad"
+  echo "lint: @unchecked Sendable or @safe in shipping code outside the allowlist (one line each in: $(echo $unchecked_allowed))" >&2; fail=1
+fi
+
 # Every package manifest we own enables strict memory safety on every target.
 for manifest in Packages/*/Package.swift; do
   targets=$(grep -cE '\.(target|executableTarget|testTarget)\(' "$manifest" || true)

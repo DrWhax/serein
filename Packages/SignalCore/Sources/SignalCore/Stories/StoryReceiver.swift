@@ -14,15 +14,17 @@ import GRDB
 import SignalProtos
 
 extension MessageReceiver {
-    func handleStoryMessage(_ story: Signalservice_StoryMessage, _ d: Decrypted, _ e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
+    func handleStoryMessage(_ story: Signalservice_StoryMessage, _ d: Decrypted, _ e: Signalservice_Envelope, _ db: Database,
+                            groupRefreshed: Bool = false) throws -> [ReceiveEvent] {
         let timestamp = e.clientTimestamp
         // Already expired (timeRemaining <= 0).
         guard Int64(timestamp) + StoryStore.day > MessageStore.now() else { return [] }
         if try StoryStore.find(db, author: d.sender, sentAt: timestamp) != nil { return [] }
         let conversation: String
         if story.hasGroup, story.group.hasMasterKey {
-            guard story.group.masterKey.count == 32 else { throw ReceiveError.invalidEnvelope("bad group master key") }
-            conversation = try MessageStore.groupConversation(db, masterKey: story.group.masterKey).id
+            // `story=true` needs no access key: only the group's own members may post its stories.
+            guard let g = try groupDestination(db, story.group, sender: d.sender, timestamp: timestamp, groupRefreshed: groupRefreshed) else { return [] }
+            conversation = g.conversationId
             if try MessageModifiers.isBlocked(db, conversationId: conversation, sender: d.sender) { return [] }
         } else {
             conversation = try MessageStore.privateConversation(db, serviceId: d.sender)

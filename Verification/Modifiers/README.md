@@ -35,8 +35,9 @@ A modifier whose target is not there waits (`keep`): there are at most 500 entri
 48 hours. When a message arrives, everything waiting for it is applied, in timestamp order.
 When an edit is accepted, everything waiting for its revision is applied the same way. A message
 arriving with the author and timestamp of a stored one is a **duplicate** and dropped, whatever
-happened to the stored one (`MessageStore.find`). A message can be removed here (delete for
-me, expiry).
+happened to the stored one (`MessageStore.find`). Only messages count: a timeline notice (a
+group change applied for the message, with its author and timestamp) is not one. A message can
+be removed here (delete for me, expiry).
 
 ## 2. What is proved
 

@@ -51,11 +51,23 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
     let parser: any StructuredMessageParser
     /// The wait before cached envelopes are tried again after the parser was unavailable.
     let parserRetry = Mutex<Double>(0)
+    /// Brings a group up to date before one of its messages is judged (upstream
+    /// `maybeUpdateGroup`); without one, group messages are judged on the stored state alone.
+    let groupRefresher: GroupRefresher?
+    /// True while a group refresh runs: envelopes arriving meanwhile wait in `unprocessed` and
+    /// are processed in order after it, as upstream's queue waits for the update.
+    let groupPause = Mutex(false)
+    /// The wait before an envelope whose group could not be refreshed is tried again, and the
+    /// envelopes waiting for that (id → when).
+    let groupRetry = Mutex<Double>(0)
+    let deferred = Mutex<[String: Date]>([:])
 
-    public init(account: Account, database: SignalDatabase, trustRoots: [PublicKey], parser: any StructuredMessageParser, jobs: JobQueue? = nil) {
+    public init(account: Account, database: SignalDatabase, trustRoots: [PublicKey], parser: any StructuredMessageParser, jobs: JobQueue? = nil,
+                groupRefresher: GroupRefresher? = nil) {
         self.account = account
         self.parser = parser
         self.jobs = jobs
+        self.groupRefresher = groupRefresher
         self.database = database
         self.trustRoots = trustRoots
         aciStore = account.aciStore()
@@ -81,11 +93,25 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
 
     /// Processes envelopes cached by a previous run (crash between ack and commit).
     public func processCached() {
-        queue.async {
-            let rows = (try? self.database.pool.read { db in
-                try Row.fetchAll(db, sql: "SELECT * FROM unprocessed ORDER BY receivedAtCounter")
-            }) ?? []
-            for row in rows { self.process(id: row["id"], envelope: Self.envelope(from: row)) }
+        queue.async { self.processCachedNow() }
+    }
+
+    /// On `queue`: the cached envelopes in arrival order, until one waits for its group's
+    /// refresh. `refreshed` is the envelope whose group was just refreshed.
+    func processCachedNow(refreshed: String? = nil) {
+        guard !groupPause.withLock({ $0 }) else { return }
+        let now = Date()
+        let waiting = deferred.withLock { d -> Set<String> in
+            d = d.filter { $0.value > now }
+            return Set(d.keys)
+        }
+        let rows = (try? database.pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM unprocessed ORDER BY receivedAtCounter")
+        }) ?? []
+        for row in rows {
+            let id: String = row["id"]
+            if waiting.contains(id) { continue }
+            if process(id: id, envelope: Self.envelope(from: row), groupRefreshed: id == refreshed) { return }
         }
     }
 
@@ -111,19 +137,31 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             return
         }
         try? sendAck()
+        // A group refresh is running: this one is processed after it, in order.
+        if groupPause.withLock({ $0 }) { return }
         process(id: id, envelope: envelope)
     }
 
-    func process(id: String, envelope: Signalservice_Envelope) {
+    /// Returns true when the envelope waits for its group's refresh (processing pauses).
+    @discardableResult
+    func process(id: String, envelope: Signalservice_Envelope, groupRefreshed: Bool = false) -> Bool {
         do {
-            let events = try database.pool.write { db -> [ReceiveEvent] in
-                let events = try self.decryptAndDispatch(envelope, db)
+            let events = try database.pool.write { db -> [ReceiveEvent]? in
+                // Gone already: processed by another pass while it waited for its group.
+                guard let attempts = try Int.fetchOne(db, sql: "SELECT attempts FROM unprocessed WHERE id = ?", arguments: [id]) else { return nil }
+                let events = try self.decryptAndDispatch(envelope, db, groupRefreshed: groupRefreshed || attempts > Self.groupRefreshAttempts)
                 try db.execute(sql: "DELETE FROM unprocessed WHERE id = ?", arguments: [id])
                 return events
             }
+            guard let events else { return false }
             jobs?.poke()
             parserRetry.withLock { $0 = 0 }
             events.forEach(emit)
+        } catch let needed as GroupRefreshNeeded {
+            // Decrypted, but its group is unknown or behind the message: the transaction rolled
+            // back, the group is refreshed, and the envelope is processed again after that.
+            refreshGroup(needed, heldId: id)
+            return true
         } catch MessageParserError.unavailable(let why) {
             // Decrypted, but the parser could not be reached: the transaction rolled back, so the
             // envelope stays cached as it came and is decrypted and parsed again shortly.
@@ -138,6 +176,39 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             }
             jobs?.poke()
             emit(.failed(serverGuid: envelope.serverGuid, reason: "\((error as? DecryptionFailure)?.underlying ?? error)"))
+        }
+        return false
+    }
+
+    /// How often an envelope's group refresh may fail (the group server unreachable) before the
+    /// envelope is judged on the stored group state instead.
+    static let groupRefreshAttempts = 4
+
+    /// Pauses processing, refreshes the group, then processes the cached envelopes in order:
+    /// the held one first, judged on the refreshed state. When the group server could not be
+    /// asked, everything else goes on and the held envelope is tried again after a wait.
+    func refreshGroup(_ needed: GroupRefreshNeeded, heldId: String) {
+        guard let groupRefresher else { return }
+        groupPause.withLock { $0 = true }
+        Task {
+            let outcome = await groupRefresher(needed.masterKey, needed.revision, needed.groupChange, needed.timestamp)
+            self.queue.async {
+                if outcome == .retry {
+                    try? self.database.pool.write { db in
+                        try db.execute(sql: "UPDATE unprocessed SET attempts = attempts + 1 WHERE id = ?", arguments: [heldId])
+                    }
+                    let wait = self.groupRetry.withLock { w -> Double in
+                        w = min(60, max(1, w * 2))
+                        return w
+                    }
+                    self.deferred.withLock { $0[heldId] = Date().addingTimeInterval(wait) }
+                    self.queue.asyncAfter(deadline: .now() + wait) { self.processCachedNow() }
+                } else {
+                    self.groupRetry.withLock { $0 = 0 }
+                }
+                self.groupPause.withLock { $0 = false }
+                self.processCachedNow(refreshed: outcome == .done ? heldId : nil)
+            }
         }
     }
 
@@ -239,10 +310,10 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         var underlying: Error
     }
 
-    func decryptAndDispatch(_ e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
+    func decryptAndDispatch(_ e: Signalservice_Envelope, _ db: Database, groupRefreshed: Bool = false) throws -> [ReceiveEvent] {
         if e.type == .serverDeliveryReceipt { return [.serverDeliveryReceipt(timestamp: e.clientTimestamp)] }
         let decrypted = try decrypt(e, db)
-        return try dispatch(decrypted, envelope: e, db)
+        return try dispatch(decrypted, envelope: e, db, groupRefreshed: groupRefreshed)
     }
 
     func decrypt(_ e: Signalservice_Envelope, _ db: Database) throws -> Decrypted {
@@ -346,7 +417,9 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
 
     // MARK: dispatch
 
-    func dispatch(_ d: Decrypted, envelope e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
+    /// - Parameter groupRefreshed: the message's group was refreshed for it already (or could
+    ///   not be): it is judged on the stored group state, never held again.
+    func dispatch(_ d: Decrypted, envelope e: Signalservice_Envelope, _ db: Database, groupRefreshed: Bool = false) throws -> [ReceiveEvent] {
         try InboundTimestamps.validate(e)
         try InboundTimestamps.validate(d.content)
         var events: [ReceiveEvent] = []
@@ -387,7 +460,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             // timeline where it first failed, unless the chat has been opened since.
             let placeholder = try RetryPlaceholders.take(db, conversationId: RetryPlaceholders.conversation(db, sender: d.sender, groupId: d.groupId),
                                                          sentAt: e.clientTimestamp)
-            events += try handleDataMessage(m, d, e, db)
+            events += try handleDataMessage(m, d, e, db, groupRefreshed: groupRefreshed)
             if let placeholder, placeholder.wasOpened != true {
                 try db.execute(sql: """
                     UPDATE messages SET received_at = ?, json = json_set(json, '$.received_at', ?, '$.received_at_ms', ?)
@@ -402,12 +475,24 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             let n = try MessageStore.applyReceipt(db, kind: kind, from: d.sender, timestamps: r.timestamp)
             events.append(.receipt(kind: kind, sender: d.sender, timestamps: r.timestamp, updatedMessages: n))
         case .typingMessage(let t):
+            // `onTyping`: not in a group we or the sender are not members of, or a terminated one.
+            if t.hasGroupID {
+                guard let state = try GroupStore.find(db, groupId: t.groupID)?.state, state.isMember(account.aci), state.isMember(d.sender),
+                      !state.terminated else { return events }
+            }
             events.append(.typing(sender: d.sender, started: t.action == .started, timestamp: t.timestamp, groupId: t.hasGroupID ? t.groupID : nil))
         case .editMessage(let edit):
             guard edit.hasDataMessage else { throw ReceiveError.invalidEnvelope("EditMessage without dataMessage") }
-            let conversation = edit.dataMessage.hasGroupV2 && edit.dataMessage.groupV2.hasMasterKey
-                ? try MessageStore.groupConversation(db, masterKey: edit.dataMessage.groupV2.masterKey).id
-                : try MessageStore.privateConversation(db, serviceId: d.sender)
+            let conversation: String
+            if edit.dataMessage.hasGroupV2 && edit.dataMessage.groupV2.hasMasterKey {
+                // An edit only finds its target in a group we have: none is created for it.
+                guard edit.dataMessage.groupV2.masterKey.count == 32,
+                      let stored = try GroupStore.find(db, groupId: try GroupKeys(masterKey: edit.dataMessage.groupV2.masterKey).groupId)
+                else { return events }
+                conversation = stored.conversationId
+            } else {
+                conversation = try MessageStore.privateConversation(db, serviceId: d.sender)
+            }
             // An edit for a blocked group is dropped (upstream `handleEditMessage`).
             if try MessageModifiers.isBlocked(db, conversationId: conversation, sender: d.sender) { return events }
             let ctx = ModifierContext(sender: d.sender, timestamp: edit.dataMessage.timestamp, serverTimestamp: e.serverTimestamp, conversationId: conversation,
@@ -428,7 +513,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                                     ratchetKey: ratchetKey, wasSenderKey: ratchetKey == nil))
             }
             events.append(.decryptionErrorReported(sender: d.sender, senderDevice: d.senderDevice, timestamp: dem.timestamp, deviceId: dem.deviceId))
-        case .storyMessage(let story): events += try handleStoryMessage(story, d, e, db)
+        case .storyMessage(let story): events += try handleStoryMessage(story, d, e, db, groupRefreshed: groupRefreshed)
         case .callMessage(let call):
             // Signalling is handled by CallingService (handleCallingMessage); nothing is stored.
             let destination = Self.destination(e) ?? account.aci
@@ -443,7 +528,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         return events
     }
 
-    func handleDataMessage(_ m: Signalservice_DataMessage, _ d: Decrypted, _ e: Signalservice_Envelope, _ db: Database) throws -> [ReceiveEvent] {
+    func handleDataMessage(_ m: Signalservice_DataMessage, _ d: Decrypted, _ e: Signalservice_Envelope, _ db: Database,
+                           groupRefreshed: Bool = false) throws -> [ReceiveEvent] {
         guard m.timestamp == e.clientTimestamp || !e.hasClientTimestamp else {
             throw ReceiveError.invalidEnvelope("timestamp mismatch \(m.timestamp) != \(e.clientTimestamp)")
         }
@@ -452,9 +538,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         var groupId: Data? = nil
         var events: [ReceiveEvent] = []
         if m.hasGroupV2, m.groupV2.hasMasterKey {
-            guard m.groupV2.masterKey.count == 32 else { throw ReceiveError.invalidEnvelope("bad group master key") }
-            let g = try MessageStore.groupConversation(db, masterKey: m.groupV2.masterKey)
-            conversation = g.id
+            guard let g = try groupDestination(db, m.groupV2, sender: d.sender, timestamp: m.timestamp, groupRefreshed: groupRefreshed) else { return [] }
+            conversation = g.conversationId
             groupId = g.groupId
             events.append(.groupContext(masterKey: m.groupV2.masterKey, revision: Int(m.groupV2.revision),
                                         groupChange: m.groupV2.hasGroupChange ? m.groupV2.groupChange : nil, sender: d.sender, timestamp: m.timestamp))

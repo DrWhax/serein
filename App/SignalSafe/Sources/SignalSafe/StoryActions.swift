@@ -24,9 +24,10 @@ extension SignalSession {
         let panel = NSSavePanel()
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         panel.nameFieldStringValue = name
-        guard panel.runModal() == .OK, let url = panel.url, let store = signalSession?.attachmentStore else { return }
+        guard panel.runModal() == .OK, let url = panel.url, let store = signalSession?.attachmentStore, let db = clientDatabase else { return }
         do {
-            try store.export(media, to: url)
+            // Checked again after the panel: the story may have expired or been deleted meanwhile.
+            try MediaAvailability.exportStory(media, storyId: id, to: url, database: db, store: store)
             toast = .fileSaved(fullPath: url.path, countOfFiles: 1)
         } catch {
             Self.trace("story save failed: \(error)")

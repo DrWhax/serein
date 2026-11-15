@@ -317,4 +317,128 @@ import Testing
             #expect(try await count(c, "SELECT count(*) FROM messages WHERE type = 'chat-session-refreshed'") == 2)
         }
     }
+
+    // MARK: groups
+
+    private func groupContent(_ body: String, masterKey: Data, revision: UInt32 = 0, timestamp: UInt64) -> Signalservice_Content {
+        var content = textContent(body, timestamp: timestamp)
+        content.dataMessage.groupV2.masterKey = masterKey
+        content.dataMessage.groupV2.revision = revision
+        return content
+    }
+
+    /// Upstream handleDataMessage: "Received message destined for group, which we or the sender
+    /// are not a part of. Dropping." (also for stories, which need no access key), terminated
+    /// groups, and announcement-only groups unless the sender is an admin.
+    @Test func whoMayPostIntoAGroup() {
+        let us = GroupActionTests.us, alice = GroupActionTests.alice, bob = GroupActionTests.bob, stranger = UUID().uuidString.lowercased()
+        var s = GroupV2State()
+        s.membersV2 = [GroupMember(aci: us, role: GroupRole.default, joinedAtVersion: 0), GroupMember(aci: alice, role: GroupRole.administrator, joinedAtVersion: 0),
+                       GroupMember(aci: bob, role: GroupRole.default, joinedAtVersion: 0)]
+        s.pendingMembersV2 = [GroupPendingMember(serviceId: stranger, addedByUserId: alice, timestamp: 1, role: GroupRole.default)]
+        #expect(MessageReceiver.mayPost(alice, in: s, ourAci: us) && MessageReceiver.mayPost(bob, in: s, ourAci: us))
+        #expect(!MessageReceiver.mayPost(stranger, in: s, ourAci: us))              // invited, not a member
+        var announcements = s
+        announcements.announcementsOnly = true
+        #expect(MessageReceiver.mayPost(alice, in: announcements, ourAci: us) && !MessageReceiver.mayPost(bob, in: announcements, ourAci: us))
+        var terminated = s
+        terminated.terminated = true
+        #expect(!MessageReceiver.mayPost(alice, in: terminated, ourAci: us))
+        var removed = s
+        removed.membersV2.removeAll { $0.aci == us }
+        #expect(!MessageReceiver.mayPost(alice, in: removed, ourAci: us))
+    }
+
+    /// A group we have no state for is refreshed before its message is judged (the receive
+    /// transaction rolls back and the envelope waits). Judged without state, because the
+    /// refresh found nothing, the message is dropped. No conversation is created for it, by
+    /// an edit either.
+    @Test func unknownGroupIsRefreshedBeforeItsMessage() async throws {
+        try await LinkedClient.with { c in
+            let masterKey = try GroupKeys.generate().masterKey
+            let t = TestClock.next()
+            let d = MessageReceiver.Decrypted(sender: c.aliceAci, senderDevice: 1, content: groupContent("unknown group", masterKey: masterKey, timestamp: t),
+                                              sealed: true, groupId: nil)
+            let e = envelope(c, type: .unidentifiedSender, content: Data(), timestamp: t)
+            await #expect(throws: GroupRefreshNeeded.self) { try await c.database.pool.write { db in try c.receiver.dispatch(d, envelope: e, db) } }
+            #expect(try await c.database.pool.write { db in try c.receiver.dispatch(d, envelope: e, db, groupRefreshed: true) }.isEmpty)
+            var editing = Signalservice_Content()
+            editing.editMessage.targetSentTimestamp = t
+            editing.editMessage.dataMessage = groupContent("edited", masterKey: masterKey, timestamp: t + 1).dataMessage
+            let edit = editing
+            let editEvents = try await c.database.pool.write { db in
+                try c.receiver.dispatch(.init(sender: c.aliceAci, senderDevice: 1, content: edit, sealed: true, groupId: nil),
+                                        envelope: envelope(c, type: .unidentifiedSender, content: Data(), timestamp: t + 1), db)
+            }
+            #expect(editEvents.isEmpty)
+            #expect(try await count(c, "SELECT count(*) FROM conversations WHERE type = 'group'") == 0)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body IN ('unknown group', 'edited')") == 0)
+        }
+    }
+
+    /// bob has the group's master key but is not a member: his message, story and typing stay
+    /// out, the members' get in.
+    @Test func nonMembersCannotPostIntoAGroup() async throws {
+        try await LinkedClient.with { c in
+            let bob = try await c.server.json("addAccount", ["name": "bob"])
+            let bobAci = try #require(bob["aci"] as? String).lowercased()
+            let g = try await c.server.json("createGroup", ["title": "Mock club"])
+            let groupId = try #require(g["id"] as? String), masterKey = try #require(Data(base64Encoded: g["masterKey"] as! String))
+            _ = try await c.server.json("sendGroupText", ["groupId": groupId, "text": "hi group", "timestamp": TestClock.next()])
+            _ = try await c.log.waitFor("group update") { if case .other("groupUpdated", _) = $0 { true } else { false } }
+            try await c.server.call("sendGroupText", ["from": "bob", "groupId": groupId, "text": "from outside", "timestamp": TestClock.next()])
+            try await c.server.call("sendStory", ["from": "bob", "text": "outside story", "timestamp": TestClock.next(), "groupId": groupId])
+            _ = try await c.receiveFromAlice("after")   // processed in order: bob's were judged before it
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = 'hi group'") == 1)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = 'from outside'") == 0)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE type = 'story'") == 0)
+
+            let groupIdBytes = try GroupKeys(masterKey: masterKey).groupId
+            func typing(from sender: String) async throws -> [ReceiveEvent] {
+                var content = Signalservice_Content()
+                content.typingMessage.action = .started
+                content.typingMessage.timestamp = TestClock.next()
+                content.typingMessage.groupID = groupIdBytes
+                let d = MessageReceiver.Decrypted(sender: sender, senderDevice: 1, content: content, sealed: true, groupId: nil)
+                return try await c.database.pool.write { db in try c.receiver.dispatch(d, envelope: envelope(c, type: .unidentifiedSender, content: Data()), db) }
+            }
+            #expect(try await typing(from: bobAci).isEmpty)
+            #expect(try await typing(from: c.aliceAci).contains { if case .typing = $0 { true } else { false } })
+        }
+    }
+
+    /// A group alice and bob are in, we are not: the refresh hears so from the group server and
+    /// neither her message nor her story to it gets in. A message that waited for a refresh keeps
+    /// its place: the one sent after it is processed after it.
+    @Test func aGroupWeAreNotInStaysOut() async throws {
+        try await LinkedClient.with { c in
+            _ = try await c.server.json("addAccount", ["name": "bob"])
+            let g = try await c.server.json("createGroup", ["title": "Not ours", "members": ["alice", "bob"]])
+            let groupId = try #require(g["id"] as? String), masterKey = try #require(Data(base64Encoded: g["masterKey"] as! String))
+            try await c.server.call("sendGroupText", ["groupId": groupId, "text": "not for us", "timestamp": TestClock.next()])
+            try await c.server.call("sendStory", ["text": "not ours either", "timestamp": TestClock.next(), "groupId": groupId])
+            _ = try await c.receiveFromAlice("after")
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body IN ('not for us', 'not ours either') OR type = 'story'") == 0)
+            let stored = try await c.database.pool.read { db in try GroupStore.find(db, groupId: GroupKeys(masterKey: masterKey).groupId) }
+            if let stored {
+                #expect(stored.state == nil)
+                let left = try await c.database.pool.read { db in
+                    try Bool.fetchOne(db, sql: "SELECT json ->> '$.left' FROM conversations WHERE id = ?", arguments: [stored.conversationId])
+                }
+                #expect(left == true)
+            }
+
+            // Ours: the first message waits for the group's first fetch, the next 1:1 text after it.
+            let ours = try await c.server.json("createGroup", ["title": "Ours"])
+            let oursId = try #require(ours["id"] as? String)
+            let first = TestClock.next()
+            try await c.server.call("sendGroupText", ["groupId": oursId, "text": "first in group", "timestamp": first])
+            let (_, second) = try await c.receiveFromAlice("second, 1:1")
+            let order = try await c.database.pool.read { db in
+                try Int64.fetchAll(db, sql: "SELECT sent_at FROM messages WHERE type = 'incoming' AND sent_at IN (?, ?) ORDER BY received_at",
+                                   arguments: [Int64(first), Int64(second)])
+            }
+            #expect(order == [Int64(first), Int64(second)])
+        }
+    }
 }

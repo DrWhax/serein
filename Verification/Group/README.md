@@ -114,3 +114,10 @@ longer block submission. All 12 must be killed.
   not the full endorsed network send. SQLite transaction isolation and transport invocation of
   the authorization closure remain assumptions covered by their existing boundary tests.
 - The membership is the local group state; what the server or other members believe is outside.
+- The receiving side is not modelled. Who may post into a group (an incoming group message, group
+  story or group typing indicator) is decided by `MessageReceiver.groupDestination` / `mayPost`
+  (SignalCore Messaging/GroupMessageGate.swift, upstream handleDataMessage). It is accepted only
+  when we and the sender are members, the group is not terminated, and in an announcement-only
+  group only from an admin. A group with no stored state, or one behind the message's revision,
+  is refreshed first while the envelope waits. This is tested in `ReceivePathTests` (end to end
+  against the mock server, plus the decision table), not proved.

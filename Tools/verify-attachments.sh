@@ -123,7 +123,7 @@ mutant "the padding is not trimmed to the size" "$cipher" \
 mutant "the incoming size limit is ignored" "$dl" \
   's/guard a\.size <= maxSize else \{ throw AttachmentDownloadError\.tooBig\(a\.size\) \}/guard a.size <= maxSize || maxSize >= 0 else { throw AttachmentDownloadError.tooBig(a.size) }/'
 mutant "the response is not bounded" "$dl" \
-  's/client\.maxResponseBytes = job\.ciphertextSize \+ 64 << 10/client.maxResponseBytes = Int(Int32.max)/'
+  's/fetch\(a, maxBytes: job\.ciphertextSize \+ 64 << 10\)/fetch(a, maxBytes: Int(Int32.max))/'
 mutant "a pointer with neither digest nor hash is accepted" "$dl" \
   's/else \{ throw AttachmentError\.missingDigest \}\n        let local/else { integrity = .local }\n        let local/'
 mutant "an unverified blob is stored as received" "$dl" \

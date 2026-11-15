@@ -4,7 +4,8 @@
 #     Packages/SignalMediaService/Sandbox/<Profile>.sb) must be able to do what that process
 #     needs and nothing else: the decoder and the parser nothing at all (no files, writes,
 #     processes, preferences or network), the link-preview fetcher and the GIF service HTTPS to
-#     the web but no user files, writes, processes or connections to this machine, the
+#     the web but no user files, writes, processes, other programs' Mach services (the
+#     pasteboard) or connections to this machine, the
 #     calling service UDP and the audio input but no user files, writes, processes or
 #     connections to this machine, the voice-note service the audio input and nothing else,
 #     and the app (Serein.sb) its container and the network but no programs, no home directory
@@ -218,8 +219,10 @@ system = {"read a system file", "read /etc/hosts"}
 mach = "look up a Mach service"
 # Only the two services with the microphone may hear it (when this terminal may); the web
 # services and the app run the audio input but hear silence.
-may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalMessageParser": {online}, "SignalVoiceNoteEncoder": system | {mach, hear},
-       "SignalLinkPreviewFetcher": system | {mach, "send udp", audio}, "SignalGifSearch": system | {mach, "send udp", audio},
+# Of the services, only the calling service may look up the Mach services of other programs (the
+# pasteboard stands for them): the web services and the voice-note encoder name the few theirs need.
+may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalMessageParser": {online}, "SignalVoiceNoteEncoder": system | {hear},
+       "SignalLinkPreviewFetcher": system | {"send udp", audio}, "SignalGifSearch": system | {"send udp", audio},
        "SignalCalling": system | {mach, hear, "https to the web"},
        "Serein": system | udp | {mach, audio, "open an IOKit device", "tcp to 127.0.0.1", "send udp to 127.0.0.1", "list /Users", "write preferences"}}
 
