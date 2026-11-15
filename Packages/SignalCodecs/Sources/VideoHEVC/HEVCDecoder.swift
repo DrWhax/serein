@@ -61,6 +61,15 @@ public final class HEVCDecoder {
     public private(set) var errorCount = 0
     /// Slice segments whose tiles were parsed in parallel.
     public private(set) var tileParallelSegments = 0
+    /// Slice segments whose CTB rows were parsed in parallel (wavefront).
+    public internal(set) var wavefrontSegments = 0
+    /// Bands (CTB rows of a plane set) whose samples were shared with a reference: all copies of
+    /// the same position (static content); counted as reconstruction finishes.
+    public var sharedBands: Int { stage.sharedBands.load(ordering: .relaxed) }
+    /// At most this many CTB rows parse at once (0: as many as the system runs).
+    public var wavefrontThreads = 0
+    /// A fresh picture's grid, made while the last picture's rows parsed.
+    var spare: HEVCPicture?
     /// How frames come out (packed on the reconstruction thread).
     public enum PackedOutput: Sendable { case none, eightBit, littleEndian16 }
     public var packedOutput = PackedOutput.none
@@ -143,7 +152,16 @@ public final class HEVCDecoder {
             // RASL pictures after a CRA that starts decoding (or a BLA) are skipped (8.1.3).
             if u.isIRAP { noRaslOutput = u.isIDR || u.type <= HEVCNALUnit.blaNLP || firstPicture }
             if u.isRASL && noRaslOutput { current = nil; return }
-            let pic = HEVCPicture(sps: s, id: newPictureId())
+            let pic: HEVCPicture
+            if let fresh = spare, fresh.fits(s) {
+                // Made during the last picture's wavefront.
+                pic = fresh
+                pic.sps = s
+                pic.id = newPictureId()
+            } else {
+                pic = HEVCPicture(sps: s, id: newPictureId())
+            }
+            spare = nil
             pic.poc = computePOC(u, h, s)
             pic.pts = pts
             pic.pps = p
@@ -175,6 +193,10 @@ public final class HEVCDecoder {
         if h.type == .i, p.tilesEnabled, !p.entropyCodingSync, !h.dependentSliceSegment, !h.entryPointOffsets.isEmpty,
            let starts = Self.tileStarts(geom, from: geom.rsToTs[h.segmentAddress], count: h.entryPointOffsets.count + 1) {
             try decodeTilesInParallel(u, header: h, sps: s, pps: p, pic: pic, geom: geom, starts: starts)
+            return
+        }
+        if Self.parsesAsWavefront(h, pps: p, geometry: geom) {
+            try decodeRowsInParallel(u, header: h, sps: s, pps: p, pic: pic, geom: geom, inter: inter)
             return
         }
         var d = try HEVCSliceDecoder(sps: s, pps: p, header: h, nal: u, pic: pic, geom: geom, sliceAddrRs: lastSliceAddrRs, sliceIndex: sliceIndex,

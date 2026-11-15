@@ -60,23 +60,22 @@ func hevcParallel<T: Sendable, R: Sendable, S>(_ items: [T], state: @escaping @S
 
 extension HEVCPictureState {
     /// The whole picture: the inter work of every slice (motion compensation and inter
-    /// residuals, by CTB-row bands in parallel), then each slice's intra steps in decoding
-    /// order. Intra prediction reads only its own slice, whose inter blocks are then done.
-    mutating func reconstruct(_ slices: [HEVCSliceWork], geometry g: HEVCGeometry) {
-        reconstructInter(slices)
-        for s in slices { reconstructIntra(s, geometry: g) }
+    /// residuals, by CTB-row bands in parallel), then the intra steps (CTB rows as a wavefront).
+    /// Intra prediction reads only its own slice, whose inter blocks are then done.
+    /// Returns how many bands were shared with references (`HEVCInterContext.sharedBand`).
+    @discardableResult
+    mutating func reconstruct(_ slices: [HEVCSliceWork], geometry g: HEVCGeometry) -> Int {
+        let shared = reconstructInter(slices)
+        reconstructIntra(slices, geometry: g)
+        return shared
     }
 
-    /// Plane `c`'s rows covering luma rows [y0, y1).
-    func bandRows(_ c: Int, _ y0: Int, _ y1: Int) -> Range<Int> {
-        let sh = c == 0 ? 1 : sps.subHeightC
-        return (y0 / sh) ..< min(planes[c].height, (y1 + sh - 1) / sh)
-    }
-
-    /// Prediction units and transform blocks never cross a CTB row, so each row is a band a
-    /// worker fills on its own (from the mid-grey the picture starts as); the bands are then
-    /// copied into the planes.
-    mutating func reconstructInter(_ slices: [HEVCSliceWork]) {
+    /// Makes the planes, a band per CTB row: prediction units and transform blocks never cross
+    /// a CTB row, so each band is a worker's own, filled from mid-grey (8.3.3's grey is also what
+    /// a picture whose parse failed shows); the planes are these bands, never copied. A band
+    /// that is all a copy of its references' (`sharedBand`) is theirs, shared.
+    @discardableResult
+    mutating func reconstructInter(_ slices: [HEVCSliceWork]) -> Int {
         let ctb = sps.ctbSize
         let rows = (sps.height + ctb - 1) / ctb
         var bands = (0..<rows).map { HEVCInterBand(row: $0) }
@@ -86,39 +85,44 @@ extension HEVCPictureState {
                 let yL = r.cIdx == 0 ? r.y : r.y * sps.subHeightC
                 bands[min(rows - 1, yL / ctb)].residuals.append(HEVCInterBand.Residual(slice: k, job: r))
             }
+            for step in s.intraSteps {
+                let yL: Int
+                switch step {
+                case .predict(let c, _, let y, _, _, _, _): yL = c == 0 ? y : y * sps.subHeightC
+                case .residual(let j): yL = j.cIdx == 0 ? j.y : j.y * sps.subHeightC
+                case .pcm(_, let y, _, _): yL = y
+                }
+                bands[min(rows - 1, yL / ctb)].intra = true
+            }
         }
-        bands.removeAll { $0.mc.isEmpty && $0.residuals.isEmpty }
-        guard !bands.isEmpty else { return }
+        let wc = (sps.width + ctb - 1) / ctb
+        for r in 0..<rows where ctbDecoded.count >= (r + 1) * wc {
+            bands[r].decoded = !ctbDecoded[(r * wc) ..< ((r + 1) * wc)].contains(false)
+        }
         let shared = slices.map(\.mc)
         let pools = slices.map(\.coeffs)
-        let layout = self.withoutSamples()
-        let grey = planes.enumerated().map { c, _ in UInt16(1 << ((c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma) - 1)) }
-        let widths = planes.map(\.width), heights = planes.map(\.height)
-        let filled = hevcParallel(bands, state: { HEVCBandScratch() }) { scratch, band -> [[UInt16]] in
-            let y0 = band.row * ctb, y1 = min(y0 + ctb, layout.sps.height)
+        let sps = self.sps
+        let sizes = HEVCPictureState.planeSizes(sps)
+        let widths = sizes.map(\.width), heights = sizes.map(\.height)
+        let log2s = sizes.indices.map { HEVCPictureState.bandLog2(sps, $0) }
+        let grey = sizes.indices.map { c in UInt16(1 << ((c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma) - 1)) }
+        let filled = hevcParallel(bands, state: { HEVCBandScratch() }) { scratch, band -> ([[UInt16]], Bool) in
+            if let same = HEVCInterContext.sharedBand(band, shared, widths: widths, heights: heights, log2Rows: log2s) { return (same, true) }
+            let base = log2s.map { band.row << $0 }
             var out = (0..<widths.count).map { c in
-                [UInt16](repeating: grey[c], count: layout.bandRows(c, y0, y1, heights: heights).count * widths[c])
+                [UInt16](repeating: grey[c], count: (min(heights[c], base[c] + (1 << log2s[c])) - base[c]) * widths[c])
             }
-            let base = (0..<widths.count).map { layout.bandRows($0, y0, y1, heights: heights).lowerBound }
-            for m in band.mc {
-                let sh = shared[m.slice]
-                let pred = HEVCInterContext.predict(m.job, sh, &scratch.mc)
-                Self.put(&out, m.job, pred, sh, widths: widths, heights: heights, rowBase: base)
-            }
+            guard !band.mc.isEmpty || !band.residuals.isEmpty else { return (out, false) }
+            HEVCInterContext.predictBand(band.mc, shared, &scratch.mc, into: &out, widths: widths, heights: heights, rowBase: base)
             for b in band.residuals {
                 let r = b.job
                 let res = HEVCResidualJob.residual(r, pools[b.slice], &scratch.work)
                 Self.addBlock(&out[r.cIdx], r, res, width: widths[r.cIdx], height: heights[r.cIdx], rowBase: base[r.cIdx])
             }
-            return out
+            return (out, false)
         }
-        for (band, out) in zip(bands, filled) {
-            let y0 = band.row * ctb, y1 = min(y0 + ctb, sps.height)
-            for c in 0..<planes.count {
-                let start = bandRows(c, y0, y1).lowerBound * widths[c]
-                planes[c].samples.replaceSubrange(start ..< start + out[c].count, with: out[c])
-            }
-        }
+        planes = sizes.indices.map { c in HEVCPlane(width: widths[c], height: heights[c], log2Rows: log2s[c], bands: filled.map { $0.0[c] }) }
+        return filled.count { $0.1 }
     }
 
     /// The picture's metadata alone (for the workers: no samples to share).
@@ -126,37 +130,6 @@ extension HEVCPictureState {
         var s = self
         s.planes = []
         return s
-    }
-
-    /// `bandRows` for a state without planes.
-    func bandRows(_ c: Int, _ y0: Int, _ y1: Int, heights: [Int]) -> Range<Int> {
-        let sh = c == 0 ? 1 : sps.subHeightC
-        return (y0 / sh) ..< min(heights[c], (y1 + sh - 1) / sh)
-    }
-
-    /// A PU's predicted samples into planes (or bands) whose first rows are `rowBase`.
-    static func put(_ dst: inout [[UInt16]], _ job: HEVCMCJob, _ pred: [UInt16], _ sh: HEVCMCShared, widths: [Int], heights: [Int], rowBase: [Int]) {
-        let ps = pred.span
-        var base = 0
-        let jx = Int(job.x), jy = Int(job.y), jw = Int(job.w), jh = Int(job.h)
-        for c in 0..<sh.comps {
-            let chroma = c > 0
-            let cx = chroma ? jx / sh.subW : jx, cy = chroma ? jy / sh.subH : jy
-            let cw = chroma ? jw / sh.subW : jw, ch = chroma ? jh / sh.subH : jh
-            let pw = widths[c], ph = heights[c], rb = rowBase[c]
-            do {
-                var d = dst[c].mutableSpan
-                let rw = min(cw, pw - cx)
-                var j = 0
-                while j < ch && cy + j < ph {
-                    var i = 0
-                    let row = (cy + j - rb) * pw + cx, src = base + j * cw
-                    while i < rw { d[row + i] = ps[src + i]; i += 1 }
-                    j += 1
-                }
-            }
-            base += cw * ch
-        }
     }
 
     /// Adds a residual block (clipped) to a plane (or band) whose first row is `rowBase`.
@@ -178,25 +151,115 @@ extension HEVCPictureState {
         }
     }
 
-    /// A slice's intra steps in decoding order (their residuals computed up front in
-    /// parallel: they do not depend on any sample).
-    mutating func reconstructIntra(_ s: HEVCSliceWork, geometry g: HEVCGeometry) {
-        var intraJobs: [HEVCResidualJob] = []
-        for case .residual(let job) in s.intraSteps { intraJobs.append(job) }
-        let pool = s.coeffs
-        let intraResiduals = hevcParallel(intraJobs, state: { [Int32]() }) { HEVCResidualJob.residual($1, pool, &$0) }
-        var next = 0
-        for step in s.intraSteps {
-            switch step {
-            case .predict(let c, let x, let y, let l, let m, let rs, let ts):
-                predictIntra(cIdx: c, x: x, y: y, log2Size: l, mode: m, pps: s.pps, geometry: g, sliceAddrRs: s.sliceAddrRs, ctbRs: rs, ctbTs: ts)
-            case .residual(let job):
-                add(job, intraResiduals[next])
-                next += 1
-            case .pcm(let x, let y, let l, let samples):
-                writePCM(x: x, y: y, log2Size: l, samples)
+    /// Every slice's intra steps, a CTB row per worker as a wavefront. Intra prediction reads
+    /// its own CTB row and the row of samples just above it, of CTBs up to one to the right, so
+    /// a row runs as soon as the row above has finished those: each CTB's last row of samples
+    /// goes to the row below by value once the CTB is done (nothing mutable is shared). Within
+    /// a row the steps go in CTB order: decoding order but for tiles, and a step reads nothing
+    /// of a CTB to its right in its row, nor of another tile.
+    mutating func reconstructIntra(_ slices: [HEVCSliceWork], geometry g: HEVCGeometry) {
+        let wc = g.widthCtbs, rows = g.heightCtbs
+        let log2Ctb = sps.log2CtbSize, sw = sps.subWidthC, sh = sps.subHeightC
+        var rowSteps = [[HEVCIntraRowStep]](repeating: [], count: rows)
+        var any = false
+        for (k, s) in slices.enumerated() {
+            for step in s.intraSteps {
+                let xL: Int, yL: Int
+                switch step {
+                case .predict(let c, let x, let y, _, _, _, _): (xL, yL) = c == 0 ? (x, y) : (x * sw, y * sh)
+                case .residual(let j): (xL, yL) = j.cIdx == 0 ? (j.x, j.y) : (j.x * sw, j.y * sh)
+                case .pcm(let x, let y, _, _): (xL, yL) = (x, y)
+                }
+                rowSteps[min(rows - 1, yL >> log2Ctb)].append(HEVCIntraRowStep(slice: k, ctbX: min(wc - 1, xL >> log2Ctb), step: step))
+                any = true
             }
         }
+        guard any, planes.count > 0, planes[0].bands.count == rows else { return }
+        if g.colBd.count > 2 {
+            // Tiles: decoding order runs tile by tile; CTB order within each row, stably.
+            for r in 0..<rows { rowSteps[r] = rowSteps[r].enumerated().sorted { ($0.element.ctbX, $0.offset) < ($1.element.ctbX, $1.offset) }.map(\.element) }
+        }
+        let layout = withoutSamples()
+        let comps = planes.count
+        let widths = planes.map(\.width), heights = planes.map(\.height), log2s = planes.map(\.log2Rows)
+        let ctbW = (0..<comps).map { c in c == 0 ? 1 << log2Ctb : (1 << log2Ctb) / sw }
+        let ppss = slices.map(\.pps), sliceAddrs = slices.map(\.sliceAddrRs), pools = slices.map(\.coeffs)
+        // The bands move to their rows' workers and back: each is written by one worker only.
+        var all: [[[UInt16]]] = Array(repeating: [], count: comps)
+        for c in 0..<comps { swap(&all[c], &planes[c].bands) }
+        let store = Mutex<[[[UInt16]]]>([])
+        store.withLock { swap(&$0, &all) }
+        let channels = (0..<rows).map { _ in HEVCRowChannel<HEVCSampleEdge>() }
+        let counter = HEVCRowCounter()
+        let steps = rowSteps
+        DispatchQueue.concurrentPerform(iterations: rows) { _ in
+            var work: [Int32] = []
+            var top = widths.map { [UInt16](repeating: 0, count: $0) }
+            while true {
+                let r = counter.next.wrappingAdd(1, ordering: .relaxed).oldValue
+                guard r < rows else { break }
+                var mine = store.withLock { s in
+                    (0..<comps).map { c in
+                        var b: [UInt16] = []
+                        swap(&b, &s[c][r])
+                        return b
+                    }
+                }
+                let base = log2s.map { r << $0 }
+                let above = r > 0 ? channels[r - 1] : nil, own = channels[r]
+                var published = 0, received = 0
+                /// The last row of CTBs [published, x), finished, for the row below.
+                func publish(upTo x: Int) {
+                    guard x > published, r + 1 < rows else { published = max(published, x); return }
+                    var edges: [HEVCSampleEdge] = []
+                    edges.reserveCapacity(x - published)
+                    for cx in published..<x {
+                        var e = HEVCSampleEdge()
+                        for c in 0..<comps {
+                            let w = widths[c], x0 = cx * ctbW[c], x1 = min(w, x0 + ctbW[c])
+                            let band = mine[c]
+                            let last = (band.count / w - 1) * w
+                            let src = band.span
+                            for i in x0..<x1 { e.samples[HEVCSampleEdge.offset(c) + i - x0] = src[last + i] }
+                        }
+                        edges.append(e)
+                    }
+                    own.publish(contentsOf: edges)
+                    published = x
+                }
+                for st in steps[r] {
+                    let x = st.ctbX
+                    publish(upTo: x)
+                    if let above, received < min(x + 2, wc) {
+                        let need = min(x + 2, wc)
+                        if let edges = above.take(received ..< need, of: wc) {
+                            for (k, e) in edges.enumerated() {
+                                let cx = received + k
+                                for c in 0..<comps {
+                                    let x0 = cx * ctbW[c], x1 = min(widths[c], x0 + ctbW[c])
+                                    for i in x0..<x1 { top[c][i] = e.samples[HEVCSampleEdge.offset(c) + i - x0] }
+                                }
+                            }
+                        }
+                        received = need
+                    }
+                    switch st.step {
+                    case .predict(let c, let x, let y, let l, let m, let rs, let ts):
+                        layout.predictIntra(cIdx: c, x: x, y: y, log2Size: l, mode: m, pps: ppss[st.slice], geometry: g, sliceAddrRs: sliceAddrs[st.slice],
+                                            ctbRs: rs, ctbTs: ts, band: &mine[c], top: top[c], rowBase: base[c], width: widths[c], height: heights[c])
+                    case .residual(let job):
+                        let res = HEVCResidualJob.residual(job, pools[st.slice], &work)
+                        Self.addBlock(&mine[job.cIdx], job, res, width: widths[job.cIdx], height: heights[job.cIdx], rowBase: base[job.cIdx])
+                    case .pcm(let x, let y, let l, let samples):
+                        Self.writePCM(x: x, y: y, log2Size: l, samples, bands: &mine, widths: widths, heights: heights, rowBase: base, sps: layout.sps)
+                    }
+                }
+                publish(upTo: wc)
+                own.end()
+                store.withLock { s in for c in 0..<comps { swap(&mine[c], &s[c][r]) } }
+            }
+        }
+        store.withLock { s in for c in 0..<comps { swap(&planes[c].bands, &s[c]) } }
     }
 
     /// z-scan availability (6.4.1) of the luma location (xN, yN) for a block at (xC, yC), in
@@ -211,13 +274,15 @@ extension HEVCPictureState {
         return predMode[i4(xN, yN)] != 255
     }
 
-    /// 8.4.4.2: reference samples (with availability and substitution), filtering, prediction.
-    mutating func predictIntra(cIdx: Int, x: Int, y: Int, log2Size: Int, mode: Int, pps: HEVCPPS, geometry g: HEVCGeometry,
-                               sliceAddrRs: Int, ctbRs: Int, ctbTs: Int) {
+    /// 8.4.4.2: reference samples (with availability and substitution), filtering, prediction,
+    /// in a band: `band` holds plane cIdx's rows from `rowBase` (the block's CTB row), `top` the
+    /// row just above them (all a block reads outside its CTB row: what lies below is decoded
+    /// later, so unavailable).
+    func predictIntra(cIdx: Int, x: Int, y: Int, log2Size: Int, mode: Int, pps: HEVCPPS, geometry g: HEVCGeometry,
+                      sliceAddrRs: Int, ctbRs: Int, ctbTs: Int, band: inout [UInt16], top: [UInt16], rowBase: Int, width pw: Int, height ph: Int) {
         let n = 1 << log2Size
         let sw = cIdx == 0 ? 1 : sps.subWidthC, sh = cIdx == 0 ? 1 : sps.subHeightC
         let bitDepth = cIdx == 0 ? sps.bitDepthLuma : sps.bitDepthChroma
-        let pw = planes[cIdx].width, ph = planes[cIdx].height
         let xL = x * sw, yL = y * sh
         let constrained = pps.constrainedIntraPred
         // Order of 8.4.4.2.2: p[−1][2n−1] … p[−1][−1], then p[0][−1] … p[2n−1][−1].
@@ -226,21 +291,35 @@ extension HEVCPictureState {
         var avail = InlineArray<129, Bool>(repeating: false)
         var any = false
         do {
-            let src = planes[cIdx].samples
-            let sp = src.span
+            let sp = band.span, tp = top.span
+            // Availability is the same for every sample of a 4x4 luma unit (z-scan order, CTB,
+            // prediction mode are all per unit): checked once per unit along each side.
+            var lastUnit = (Int.min, Int.min), lastOk = false
             func ok(_ xs: Int, _ ys: Int) -> Bool {
                 let xn = xs * sw, yn = ys * sh
-                guard available(g, sliceAddrRs: sliceAddrRs, ctbRs: ctbRs, ctbTs: ctbTs, xL, yL, xn, yn) else { return false }
-                if constrained && predMode[i4(xn, yn)] != 1 { return false }
-                return true
+                let unit = (xn >> 2, yn >> 2)
+                if unit == lastUnit { return lastOk }
+                lastUnit = unit
+                lastOk = available(g, sliceAddrRs: sliceAddrRs, ctbRs: ctbRs, ctbTs: ctbTs, xL, yL, xn, yn) && !(constrained && predMode[i4(xn, yn)] != 1)
+                return lastOk
             }
             for k in 0..<(2 * n) {
                 let ys = y + 2 * n - 1 - k
-                if ok(x - 1, ys) { avail[k] = true; samples[k] = Int32(sp[x - 1 + ys * pw]); any = true }
+                if ok(x - 1, ys) { avail[k] = true; samples[k] = Int32(sp[x - 1 + (ys - rowBase) * pw]); any = true }
             }
-            if ok(x - 1, y - 1) { avail[2 * n] = true; samples[2 * n] = Int32(sp[x - 1 + (y - 1) * pw]); any = true }
+            // The row above: in the band, or the band above's last.
+            let inBand = y - 1 >= rowBase, above = (y - 1 - rowBase) * pw
+            if ok(x - 1, y - 1) {
+                avail[2 * n] = true
+                samples[2 * n] = Int32(inBand ? sp[x - 1 + above] : tp[x - 1])
+                any = true
+            }
             for k in 0..<(2 * n) {
-                if ok(x + k, y - 1) { avail[2 * n + 1 + k] = true; samples[2 * n + 1 + k] = Int32(sp[x + k + (y - 1) * pw]); any = true }
+                if ok(x + k, y - 1) {
+                    avail[2 * n + 1 + k] = true
+                    samples[2 * n + 1 + k] = Int32(inBand ? sp[x + k + above] : tp[x + k])
+                    any = true
+                }
             }
         }
         if !any {
@@ -253,51 +332,64 @@ extension HEVCPictureState {
             }
             for k in 1..<count where !avail[k] { samples[k] = samples[k - 1] }
         }
-        var left = HEVCIntraPred.Refs(repeating: 0), top = HEVCIntraPred.Refs(repeating: 0)
+        var left = HEVCIntraPred.Refs(repeating: 0), topRefs = HEVCIntraPred.Refs(repeating: 0)
         left[0] = samples[2 * n]
-        top[0] = samples[2 * n]
+        topRefs[0] = samples[2 * n]
         for i in 0..<(2 * n) {
             left[1 + i] = samples[2 * n - 1 - i]
-            top[1 + i] = samples[2 * n + 1 + i]
+            topRefs[1 + i] = samples[2 * n + 1 + i]
         }
         let filterAllowed = cIdx == 0 || sps.chromaArrayType == 3
         if filterAllowed && !sps.intraSmoothingDisabled {
-            HEVCIntraPred.filter(left: &left, top: &top, log2Size: log2Size, mode: mode, isLuma: true, strongSmoothing: sps.strongIntraSmoothing && cIdx == 0,
+            HEVCIntraPred.filter(left: &left, top: &topRefs, log2Size: log2Size, mode: mode, isLuma: true, strongSmoothing: sps.strongIntraSmoothing && cIdx == 0,
                                  bitDepth: bitDepth)
         }
         var pred = HEVCIntraPred.Block(repeating: 0)
-        HEVCIntraPred.predict(left: left, top: top, log2Size: log2Size, mode: mode, isLuma: cIdx == 0, bitDepth: bitDepth, into: &pred)
+        HEVCIntraPred.predict(left: left, top: topRefs, log2Size: log2Size, mode: mode, isLuma: cIdx == 0, bitDepth: bitDepth, into: &pred)
         let w = min(n, pw - x), h = min(n, ph - y)
-        var dst = take(cIdx)
-        do {
-            var d = dst.mutableSpan
-            for j in 0..<h {
-                let row = x + (y + j) * pw
-                for i in 0..<w { d[row + i] = UInt16(pred[i + j * n]) }
-            }
+        var d = band.mutableSpan
+        for j in 0..<h {
+            let row = x + (y + j - rowBase) * pw
+            for i in 0..<w { d[row + i] = UInt16(pred[i + j * n]) }
         }
-        restore(cIdx, dst)
     }
 
-    /// PCM samples of a coding block.
-    mutating func writePCM(x x0: Int, y y0: Int, log2Size: Int, _ samples: [UInt16]) {
+    /// PCM samples of a coding block, into its CTB row's bands.
+    static func writePCM(x x0: Int, y y0: Int, log2Size: Int, _ samples: [UInt16], bands: inout [[UInt16]], widths: [Int], heights: [Int],
+                         rowBase: [Int], sps: HEVCSPS) {
         let n = 1 << log2Size
         var k = 0
-        for y in 0..<n { for x in 0..<n { planes[0][x0 + x, y0 + y] = samples[k]; k += 1 } }
-        if sps.chromaArrayType != 0 {
+        func put(_ c: Int, _ cx: Int, _ cy: Int, _ cw: Int, _ ch: Int) {
+            let w = widths[c]
+            for y in 0..<ch {
+                for x in 0..<cw {
+                    if cx + x < w && cy + y < heights[c] && k < samples.count { bands[c][cx + x + (cy + y - rowBase[c]) * w] = samples[k] }
+                    k += 1
+                }
+            }
+        }
+        put(0, x0, y0, n, n)
+        if sps.chromaArrayType != 0 && bands.count == 3 {
             let cw = n / sps.subWidthC, ch = n / sps.subHeightC, cx = x0 / sps.subWidthC, cy = y0 / sps.subHeightC
-            for c in 1...2 { for y in 0..<ch { for x in 0..<cw { planes[c][cx + x, cy + y] = samples[k]; k += 1 } } }
+            put(1, cx, cy, cw, ch)
+            put(2, cx, cy, cw, ch)
         }
     }
+}
 
-    /// Adds a residual block (clipped) to the samples.
-    mutating func add(_ job: HEVCResidualJob, _ r: [Int32]) {
-        let c = job.cIdx
-        let w = planes[c].width, h = planes[c].height
-        var dst = take(c)
-        Self.addBlock(&dst, job, r, width: w, height: h, rowBase: 0)
-        restore(c, dst)
-    }
+/// An intra step with its slice and CTB column, in its CTB row's list.
+struct HEVCIntraRowStep: Sendable {
+    var slice: Int
+    var ctbX: Int
+    var step: HEVCIntraStep
+}
+
+/// The last row of samples of one CTB in every plane (luma, then Cb and Cr), for intra
+/// prediction in the CTB row below.
+struct HEVCSampleEdge: Sendable {
+    var samples = InlineArray<128, UInt16>(repeating: 0)
+    /// Where plane c's samples start (a 64-sample CTB has 32 chroma samples per row).
+    @inline(__always) static func offset(_ c: Int) -> Int { c == 0 ? 0 : c == 1 ? 64 : 96 }
 }
 
 /// One CTB row's inter work.
@@ -307,6 +399,8 @@ struct HEVCInterBand: Sendable {
         var job: HEVCMCJob
     }
     var row: Int
+    /// Whether the row has intra blocks, and whether all its CTBs were decoded.
+    var intra = false, decoded = false
     var mc: [MC] = []
     struct Residual: Sendable {
         var slice: Int
@@ -329,9 +423,15 @@ final class HEVCReconStage: Sendable {
         var frames: [HEVCFrame] = []
     }
     let queue = DispatchQueue(label: "org.signalsafe.hevc.reconstruct", qos: .userInitiated)
+    /// Output (cropping, packing) runs behind reconstruction, in order, on a queue of its own.
+    let outputQueue = DispatchQueue(label: "org.signalsafe.hevc.output", qos: .userInitiated)
+    /// At most this many reconstructed pictures wait for output.
+    let outputSlots = DispatchSemaphore(value: 2)
     let store = Mutex(Store())
     /// At most this many parsed pictures wait for reconstruction (bounds the memory).
     let slots = DispatchSemaphore(value: 2)
+    /// Bands shared with a reference picture so far (static content).
+    let sharedBands = Atomic<Int>(0)
 
     /// Queues a parsed picture.
     func submit(_ work: HEVCPictureWork) {
@@ -353,19 +453,24 @@ final class HEVCReconStage: Sendable {
 
     func reconstruct(_ work: HEVCPictureWork) -> [HEVCPlane] {
         var st = work.state
-        st.planes = HEVCPictureState.greyPlanes(st.sps)
         var slices = work.slices
         for k in slices.indices { slices[k].mc.planes = slices[k].mc.refIds.map { $0.map { planes($0, sps: st.sps) } } }
-        st.reconstruct(slices, geometry: work.geometry)
+        sharedBands.add(st.reconstruct(slices, geometry: work.geometry), ordering: .relaxed)
         if let pps = work.pps { HEVCLoopFilter.apply(&st, geometry: work.geometry, pps: pps) }
         return st.planes
     }
 
-    /// Queues the output of picture `id` (after its reconstruction: the queue is serial).
+    /// Queues the output of picture `id` (after its reconstruction: the queue is serial), made
+    /// on the output queue while the next picture reconstructs.
     func output(_ id: Int, sps: HEVCSPS, poc: Int, pts: Int64, packed: HEVCDecoder.PackedOutput) {
         queue.async { [self] in
-            let f = Self.frame(planes(id, sps: sps), sps: sps, poc: poc, pts: pts, packed: packed)
-            store.withLock { $0.frames.append(f) }
+            let p = planes(id, sps: sps)
+            outputSlots.wait()
+            outputQueue.async { [self] in
+                let f = Self.frame(p, sps: sps, poc: poc, pts: pts, packed: packed)
+                store.withLock { $0.frames.append(f) }
+                outputSlots.signal()
+            }
         }
     }
 
@@ -384,7 +489,61 @@ final class HEVCReconStage: Sendable {
     }
 
     /// Waits until everything queued has run.
-    func wait() { queue.sync {} }
+    func wait() {
+        queue.sync {}
+        outputQueue.sync {}
+    }
+
+    /// A plane's rectangle (each row from its band).
+    static func cropRows(_ bands: borrowing Span<[UInt16]>, _ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int) -> [UInt16] {
+        var out = [UInt16](repeating: 0, count: cw * ch)
+        let l = p.log2Rows, mask = (1 << l) - 1
+        var o = out.mutableSpan
+        for y in 0..<ch {
+            let yy = y0 + y, row = x0 + (yy & mask) * p.width, d = y * cw
+            let r = bands[yy >> l].span.extracting(row ..< row + cw)
+            var k = 0
+            for i in d ..< d + cw { o[i] = r[k]; k += 1 }
+        }
+        return out
+    }
+
+    /// The same rounded to 8 bits.
+    static func cropRows8(_ bands: borrowing Span<[UInt16]>, _ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int, _ bitDepth: Int) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: cw * ch)
+        let shift = UInt16(bitDepth - 8), round: UInt16 = shift > 0 ? 1 << (shift - 1) : 0
+        let l = p.log2Rows, mask = (1 << l) - 1
+        var o = out.mutableSpan
+        for y in 0..<ch {
+            let yy = y0 + y, row = x0 + (yy & mask) * p.width, d = y * cw
+            let r = bands[yy >> l].span.extracting(row ..< row + cw)
+            var k = 0
+            if shift == 0 {
+                // 8-bit samples are in range already.
+                for i in d ..< d + cw { o[i] = UInt8(truncatingIfNeeded: r[k]); k += 1 }
+            } else {
+                for i in d ..< d + cw { o[i] = UInt8(min(255, (r[k] &+ round) >> shift)); k += 1 }
+            }
+        }
+        return out
+    }
+
+    /// The same as little-endian 16-bit bytes.
+    static func cropRows16(_ bands: borrowing Span<[UInt16]>, _ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: 2 * cw * ch)
+        let l = p.log2Rows, mask = (1 << l) - 1
+        var o = out.mutableSpan
+        for y in 0..<ch {
+            let yy = y0 + y, row = x0 + (yy & mask) * p.width, d = 2 * y * cw
+            let r = bands[yy >> l].span.extracting(row ..< row + cw)
+            for x in 0..<cw {
+                let v = r[x]
+                o[d + 2 * x] = UInt8(truncatingIfNeeded: v)
+                o[d + 2 * x + 1] = UInt8(truncatingIfNeeded: v >> 8)
+            }
+        }
+        return out
+    }
 
     /// The cropped frame of a picture's samples (or rounded to 8 bits: the planes in parallel).
     static func frame(_ planes: [HEVCPlane], sps s: HEVCSPS, poc: Int, pts: Int64, packed: HEVCDecoder.PackedOutput) -> HEVCFrame {
@@ -392,48 +551,16 @@ final class HEVCReconStage: Sendable {
         let ct = s.conformanceWindow.top * s.subHeightC, cb = s.conformanceWindow.bottom * s.subHeightC
         let w = s.width - cl - cr, h = s.height - ct - cb
         func crop(_ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int) -> [UInt16] {
-            var out = [UInt16](repeating: 0, count: cw * ch)
-            let src = p.samples
-            let sp = src.span
-            do {
-                var o = out.mutableSpan
-                for y in 0..<ch {
-                    let row = x0 + (y0 + y) * p.width, d = y * cw
-                    for x in 0..<cw { o[d + x] = sp[row + x] }
-                }
-            }
-            return out
+            let all = p.bands
+            return cropRows(all.span, p, x0, y0, cw, ch)
         }
         @Sendable func crop8(_ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int, _ bitDepth: Int) -> [UInt8] {
-            var out = [UInt8](repeating: 0, count: cw * ch)
-            let shift = UInt16(bitDepth - 8), round: UInt16 = shift > 0 ? 1 << (shift - 1) : 0
-            let src = p.samples
-            let sp = src.span
-            do {
-                var o = out.mutableSpan
-                for y in 0..<ch {
-                    let row = x0 + (y0 + y) * p.width, d = y * cw
-                    for x in 0..<cw { o[d + x] = UInt8(min(255, (sp[row + x] &+ round) >> shift)) }
-                }
-            }
-            return out
+            let all = p.bands
+            return cropRows8(all.span, p, x0, y0, cw, ch, bitDepth)
         }
         @Sendable func crop16(_ p: HEVCPlane, _ x0: Int, _ y0: Int, _ cw: Int, _ ch: Int) -> [UInt8] {
-            var out = [UInt8](repeating: 0, count: 2 * cw * ch)
-            let src = p.samples
-            let sp = src.span
-            do {
-                var o = out.mutableSpan
-                for y in 0..<ch {
-                    let row = x0 + (y0 + y) * p.width, d = 2 * y * cw
-                    for x in 0..<cw {
-                        let v = sp[row + x]
-                        o[d + 2 * x] = UInt8(truncatingIfNeeded: v)
-                        o[d + 2 * x + 1] = UInt8(truncatingIfNeeded: v >> 8)
-                    }
-                }
-            }
-            return out
+            let all = p.bands
+            return cropRows16(all.span, p, x0, y0, cw, ch)
         }
         var f = HEVCFrame(width: w, height: h, bitDepth: s.bitDepthLuma, chromaFormat: s.chromaFormatIdc, y: [], u: [], v: [], poc: poc,
                           pts: pts, fullRange: s.videoFullRange, colourPrimaries: s.colourPrimaries,

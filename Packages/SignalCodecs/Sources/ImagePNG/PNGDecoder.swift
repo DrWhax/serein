@@ -74,10 +74,11 @@ public enum PNGDecoder {
                 swap(&prior, &line)
             }
             let palette = file.palette, transparency = file.transparency
+            let unfiltered = rows
             let rgba = ParallelRows.build(rows: h, rowLength: 4 * w, chunk: 32, zero: UInt8(0)) { range, out in
                 var pixels = [UInt8](repeating: 0, count: w * 4)
                 for y in range {
-                    let l = Array(rows[(y * rb)..<((y + 1) * rb)])
+                    let l = Array(unfiltered[(y * rb)..<((y + 1) * rb)])
                     expand(l, count: w, header: header, palette: palette, transparency: transparency, into: &pixels)
                     let o = (y - range.lowerBound) * 4 * w
                     for i in 0..<(4 * w) { out[o + i] = pixels[i] }

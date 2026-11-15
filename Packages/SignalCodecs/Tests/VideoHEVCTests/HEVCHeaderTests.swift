@@ -41,7 +41,7 @@ struct HarnessError: Error, CustomStringConvertible {
 }
 
 @Suite struct HEVCHeaderTests {
-    static let fixtures = ["intra8_nolf", "intra8", "intra10", "ipb8", "ipb10", "scaling8", "tiles8", "vt10", "intra10_nolf", "intra8big_nolf",
+    static let fixtures = ["intra8_nolf", "intra8", "intra10", "ipb8", "ipb10", "scaling8", "tiles8", "vt10", "wpp_slices8", "static8", "intra10_nolf", "intra8big_nolf",
                            "lossless_nolf", "scaling_intra_nolf"]
 
     @Test func headersOfFile() throws {

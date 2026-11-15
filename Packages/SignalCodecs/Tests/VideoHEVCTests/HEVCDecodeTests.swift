@@ -28,6 +28,7 @@ extension HEVCFixture {
 
 /// framemd5's hash: Y, U, V planes packed (8-bit samples as bytes, deeper as 16-bit LE).
 func md5(_ f: HEVCFrame) -> String {
+    if f.y.isEmpty && !f.packedY.isEmpty { return Insecure.MD5.hash(data: f.packedY + f.packedU + f.packedV).map { String($0, radix: 16).leftPadded(2) }.joined() }
     var bytes: [UInt8] = []
     for plane in [f.y, f.u, f.v] {
         for s in plane {
@@ -56,8 +57,48 @@ extension String {
         #expect((d.tileParallelSegments > 0) == parallel, "\(name): \(d.tileParallelSegments) parallel segments")
     }
 
+    /// WPP slice segments with entry points parse row by row in parallel: x265's (one slice, or
+    /// two per picture: the second's first row takes its neighbours above from the picture),
+    /// VideoToolbox's; without WPP they stay serial. All are checked bit-exact below.
+    @Test(arguments: [("intra10", 3), ("intra8big_nolf", 3), ("ipb8", 12), ("ipb10", 12), ("vt10", 10), ("wpp_slices8", 16), ("intra8", 0), ("tiles8", 0)])
+    func rowsParseAsWavefront(_ name: String, _ segments: Int) throws {
+        let f = try HEVCFixture(name)
+        let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+        var frames: [HEVCFrame] = []
+        for (i, s) in f.samples().enumerated() { frames += d.decode(sample: ByteSlice(s), pts: Int64(i)) }
+        frames += d.flush()
+        #expect(d.errorCount == 0 && !frames.isEmpty)
+        #expect(d.wavefrontSegments == segments, "\(name): \(d.wavefrontSegments) wavefront segments")
+    }
+
+    /// A frozen picture with a small box moving across its top rows: the rows below it are
+    /// copies of the same position in their references, so their samples are shared, not
+    /// copied (checked bit-exact below, with the box's rows reconstructed as usual).
+    @Test func staticRowsAreShared() throws {
+        let f = try HEVCFixture("static8")
+        let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+        var frames: [HEVCFrame] = []
+        for (i, s) in f.samples().enumerated() { frames += d.decode(sample: ByteSlice(s), pts: Int64(i)) }
+        frames += d.flush()
+        #expect(d.errorCount == 0 && frames.count == 12)
+        #expect(d.sharedBands > 0, "\(d.sharedBands) shared bands")
+    }
+
+    /// The CABAC tables written as literals are what rangeTabLPS and transIdxLPS (9.3.4.3.2)
+    /// give, by whole context state.
+    @Test func cabacTablesMatchTheStandard() {
+        for st in 0..<128 {
+            let p = st >> 1, mps = st & 1
+            for q in 0..<4 { #expect(HEVCCabacTables.lps[st << 2 | q] == HEVCCtx.rangeTabLPS[p * 4 + q]) }
+            #expect(Int(HEVCCabacTables.nextMPS[st]) == min(p + 1, 62) << 1 | mps)
+            #expect(Int(HEVCCabacTables.nextLPS[st]) == Int(HEVCCtx.transIdxLPS[p]) << 1 | (p == 0 ? 1 - mps : mps))
+        }
+    }
+
     @Test(arguments: ["intra8_nolf", "intra10_nolf", "intra8big_nolf", "lossless_nolf", "scaling_intra_nolf", "intra8", "intra10",
-                       "ipb8", "ipb10", "scaling8", "tiles8", "vt10", "kvz_tiles", "kvz_tiles_lf", "kvz_tileslices"]) func intraBitExact(_ name: String) throws {
+                       "ipb8", "ipb10", "scaling8", "tiles8", "vt10", "wpp_slices8", "static8", "kvz_tiles", "kvz_tiles_lf", "kvz_tileslices"]) func intraBitExact(_ name: String) throws {
         let f = try HEVCFixture(name)
         let (frames, errors) = try f.decodeAll()
         let expected = try f.expectedMD5s()
@@ -98,28 +139,41 @@ extension String {
     }
 }
 
-/// Debugging aid: HEVC_MD5=<mp4>:<framemd5>:<frames> decodes a file and compares frame MD5s.
+/// Debugging aid: HEVC_MD5=<mp4>:<framemd5>:<frames> decodes a file and compares frame MD5s
+/// (with HEVC_PACKED=1, packed output as the media service asks for it; HEVC_REPEAT=n decodes
+/// it n − 1 more times first, for profiling).
 @Suite struct HEVCFileCompare {
     @Test func compareFile() throws {
         guard let spec = ProcessInfo.processInfo.environment["HEVC_MD5"] else { return }
         let parts = spec.split(separator: ":").map(String.init)
         let f = try HEVCFixture(parts[0])
+        for _ in 1..<max(1, Int(ProcessInfo.processInfo.environment["HEVC_REPEAT"] ?? "") ?? 1) {
+            let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
+                                    pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+            d.packedOutput = .eightBit
+            for (i, s) in f.samples().enumerated() { _ = d.decode(sample: ByteSlice(s), pts: Int64(i)) }
+            _ = d.flush()
+        }
         let want = String(decoding: try Data(contentsOf: URL(fileURLWithPath: parts[1])), as: UTF8.self).split(separator: "\n")
             .filter { !$0.hasPrefix("#") }.compactMap { $0.split(separator: ",").last?.trimmingCharacters(in: .whitespaces) }
         let limit = Int(parts[2]) ?? 30
         let d = try HEVCDecoder(vps: f.config.videoParameterSets.map { $0.copyBytes() }, sps: f.config.sequenceParameterSets.map { $0.copyBytes() },
                                 pps: f.config.pictureParameterSets.map { $0.copyBytes() }, nalLengthSize: f.config.nalLengthSize)
+        if ProcessInfo.processInfo.environment["HEVC_PACKED"] != nil { d.packedOutput = .eightBit }
+        d.wavefrontThreads = Int(ProcessInfo.processInfo.environment["HEVC_WF_THREADS"] ?? "") ?? 0
         var frames: [HEVCFrame] = []
-        let start = ContinuousClock.now
-        for (i, s) in f.samples().enumerated() {
+        let samples = f.samples()
+        let start = ContinuousClock.now, cpu0 = clock()
+        for (i, s) in samples.enumerated() {
             frames += d.decode(sample: ByteSlice(s), pts: Int64(i))
             if frames.count >= limit { break }
         }
         if frames.count < limit { frames += d.flush() }
         let elapsed = ContinuousClock.now - start
+        let cpu = Double(clock() - cpu0) / Double(CLOCKS_PER_SEC)
         var firstBad: Int?
         for (i, (fr, w)) in zip(frames.prefix(limit), want).enumerated() where md5(fr) != w { firstBad = i; break }
-        print("file: \(min(frames.count, limit)) frames in \(elapsed), errors \(d.errorCount), \(frames.first.map { "\($0.width)x\($0.height) \($0.bitDepth)-bit" } ?? ""), first mismatch: \(firstBad.map(String.init) ?? "none")")
+        print("file: \(min(frames.count, limit)) frames in \(elapsed) (CPU \((cpu * 100).rounded() / 100) s), errors \(d.errorCount), \(frames.first.map { "\($0.width)x\($0.height) \($0.bitDepth)-bit" } ?? ""), first mismatch: \(firstBad.map(String.init) ?? "none")")
     }
 }
 

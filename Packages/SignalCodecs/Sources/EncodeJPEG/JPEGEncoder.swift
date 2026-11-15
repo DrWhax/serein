@@ -76,7 +76,7 @@ public enum JPEGEncoder {
             let rows = mcuRows * vs[c] * 8
             let plane = planes[c]
             // Source rows padded (expand_bottom_edge) to the row group, columns to stride*factor.
-            @inline(__always) func src(_ x: Int, _ y: Int) -> Int {
+            @inline(__always) @Sendable func src(_ x: Int, _ y: Int) -> Int {
                 Int(plane[min(y, H - 1) * W + min(x, W - 1)])
             }
             let fx = hmax / hs[c], fy = vmax / vs[c]

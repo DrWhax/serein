@@ -39,6 +39,20 @@ gen ipb10         136x72 12 yuv420p10le -c:v libx265 -x265-params "$x:bframes=3:
 gen scaling8      64x64   6 yuv420p     -c:v libx265 -x265-params "$x:scaling-list=default:bframes=2"
 gen tiles8        256x128 4 yuv420p     -c:v libx265 -x265-params "$x:no-wpp=1:bframes=0" -x265-params "$x:no-wpp=1"
 gen vt10          192x112 10 yuv420p10le -c:v hevc_videotoolbox -profile:v main10 -b:v 400k
+# Two WPP slices per picture of 16x16 CTBs: the second's first row takes its neighbours
+# above from the picture, the rest from the wavefront.
+gen wpp_slices8   256x192 8 yuv420p     -c:v libx265 -x265-params "ctu=16:$x:slices=2:bframes=2:ref=2"
+# A frozen picture with a 24x24 box moving across its top rows (x265, 32x32 CTBs): the
+# rows below the box copy their references exactly, and are shared rather than copied.
+gen_static() {   # name size frames encoder-args…
+  name=$1 size=$2 frames=$3; shift 3
+  ffmpeg -hide_banner -loglevel error -f lavfi \
+    -i "testsrc2=size=$size:rate=30,trim=end_frame=1,loop=loop=$((frames - 1)):size=1:start=0,setpts=N/30/TB[b];color=c=red:s=24x24:r=30[box];[b][box]overlay=x=8+16*n:y=8:shortest=1" \
+    -frames:v "$frames" -pix_fmt yuv420p "$@" -tag:v hvc1 -movflags +faststart -y "$out/$name.mp4"
+  ffmpeg -hide_banner -loglevel error -i "$out/$name.mp4" -f framemd5 -pix_fmt yuv420p -y "$out/$name.framemd5"
+  ffmpeg -hide_banner -i "$out/$name.mp4" -c copy -bsf:v trace_headers -f null - 2>&1 | python3 -I "$root/Tools/hevc-trace-golden.py" > "$out/$name.headers.json"
+}
+gen_static static8 256x192 12 -c:v libx265 -x265-params "$x:ctu=32:bframes=2:ref=2"
 gen_kvz kvz_tiles     320x192 3 -p 1 --tiles 3x2 --no-wpp
 gen_kvz kvz_tiles_lf  416x240 2 -p 1 --tiles 4x3 --no-wpp --sao full
 gen_kvz kvz_tileslices 320x192 2 -p 1 --tiles 2x2 --no-wpp --slices tiles

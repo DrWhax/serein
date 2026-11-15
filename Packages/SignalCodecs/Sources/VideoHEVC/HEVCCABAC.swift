@@ -164,57 +164,160 @@ enum HEVCCtx {
     ]
 }
 
-/// The engine's tables as fixed-size values, indexed by the whole context state
-/// (pStateIdx << 1 | valMps): no branches for the transitions, and no Array subscripts (the
-/// optimiser left those out of line in the large parsing functions).
-struct HEVCCabacTables {
+/// The engine's tables as literals (static data: no lazy initialisation to check per bin),
+/// indexed by the whole context state (pStateIdx << 1 | valMps): no branches for the
+/// transitions. Derived from rangeTabLPS and transIdxLPS (HEVCDecodeTests checks them).
+enum HEVCCabacTables {
     /// codIRangeLPS at [state << 2 | qRangeIdx].
-    var lps = InlineArray<512, UInt8>(repeating: 0)
+    static let lps: InlineArray<512, UInt8> = [
+        128, 176, 208, 240, 128, 176, 208, 240, 128, 167, 197, 227, 128, 167, 197, 227, 128, 158, 187, 216, 128, 158, 187, 216, 123, 150, 178, 205, 123, 150, 178, 205,
+        116, 142, 169, 195, 116, 142, 169, 195, 111, 135, 160, 185, 111, 135, 160, 185, 105, 128, 152, 175, 105, 128, 152, 175, 100, 122, 144, 166, 100, 122, 144, 166,
+        95, 116, 137, 158, 95, 116, 137, 158, 90, 110, 130, 150, 90, 110, 130, 150, 85, 104, 123, 142, 85, 104, 123, 142, 81, 99, 117, 135, 81, 99, 117, 135,
+        77, 94, 111, 128, 77, 94, 111, 128, 73, 89, 105, 122, 73, 89, 105, 122, 69, 85, 100, 116, 69, 85, 100, 116, 66, 80, 95, 110, 66, 80, 95, 110,
+        62, 76, 90, 104, 62, 76, 90, 104, 59, 72, 86, 99, 59, 72, 86, 99, 56, 69, 81, 94, 56, 69, 81, 94, 53, 65, 77, 89, 53, 65, 77, 89,
+        51, 62, 73, 85, 51, 62, 73, 85, 48, 59, 69, 80, 48, 59, 69, 80, 46, 56, 66, 76, 46, 56, 66, 76, 43, 53, 63, 72, 43, 53, 63, 72,
+        41, 50, 59, 69, 41, 50, 59, 69, 39, 48, 56, 65, 39, 48, 56, 65, 37, 45, 54, 62, 37, 45, 54, 62, 35, 43, 51, 59, 35, 43, 51, 59,
+        33, 41, 48, 56, 33, 41, 48, 56, 32, 39, 46, 53, 32, 39, 46, 53, 30, 37, 43, 50, 30, 37, 43, 50, 29, 35, 41, 48, 29, 35, 41, 48,
+        27, 33, 39, 45, 27, 33, 39, 45, 26, 31, 37, 43, 26, 31, 37, 43, 24, 30, 35, 41, 24, 30, 35, 41, 23, 28, 33, 39, 23, 28, 33, 39,
+        22, 27, 32, 37, 22, 27, 32, 37, 21, 26, 30, 35, 21, 26, 30, 35, 20, 24, 29, 33, 20, 24, 29, 33, 19, 23, 27, 31, 19, 23, 27, 31,
+        18, 22, 26, 30, 18, 22, 26, 30, 17, 21, 25, 28, 17, 21, 25, 28, 16, 20, 23, 27, 16, 20, 23, 27, 15, 19, 22, 25, 15, 19, 22, 25,
+        14, 18, 21, 24, 14, 18, 21, 24, 14, 17, 20, 23, 14, 17, 20, 23, 13, 16, 19, 22, 13, 16, 19, 22, 12, 15, 18, 21, 12, 15, 18, 21,
+        12, 14, 17, 20, 12, 14, 17, 20, 11, 14, 16, 19, 11, 14, 16, 19, 11, 13, 15, 18, 11, 13, 15, 18, 10, 12, 15, 17, 10, 12, 15, 17,
+        10, 12, 14, 16, 10, 12, 14, 16, 9, 11, 13, 15, 9, 11, 13, 15, 9, 11, 12, 14, 9, 11, 12, 14, 8, 10, 12, 14, 8, 10, 12, 14,
+        8, 9, 11, 13, 8, 9, 11, 13, 7, 9, 11, 12, 7, 9, 11, 12, 7, 9, 10, 12, 7, 9, 10, 12, 7, 8, 10, 11, 7, 8, 10, 11,
+        6, 8, 9, 11, 6, 8, 9, 11, 6, 7, 9, 10, 6, 7, 9, 10, 6, 7, 8, 9, 6, 7, 8, 9, 2, 2, 2, 2, 2, 2, 2, 2,
+    ]
     /// The state after an MPS / an LPS.
-    var nextMPS = InlineArray<128, UInt8>(repeating: 0)
-    var nextLPS = InlineArray<128, UInt8>(repeating: 0)
-    /// Renormalisation shift after an LPS, by codIRangeLPS >> 3.
-    var renorm = InlineArray<32, UInt8>(repeating: 0)
-
-    static let shared: HEVCCabacTables = {
-        var t = HEVCCabacTables()
-        for s in 0..<128 {
-            let p = s >> 1, mps = s & 1
-            for q in 0..<4 { t.lps[s << 2 | q] = HEVCCtx.rangeTabLPS[p * 4 + q] }
-            t.nextMPS[s] = UInt8(min(p + 1, 62) << 1 | mps)
-            t.nextLPS[s] = UInt8(Int(HEVCCtx.transIdxLPS[p]) << 1 | (p == 0 ? 1 - mps : mps))
-        }
-        for i in 0..<32 { t.renorm[i] = HEVCCABAC.renormTable[i] }
-        return t
-    }()
+    static let nextMPS: InlineArray<128, UInt8> = [
+        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+        34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65,
+        66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
+        98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 124, 125, 124, 125,
+    ]
+    static let nextLPS: InlineArray<128, UInt8> = [
+        1, 0, 0, 1, 2, 3, 4, 5, 4, 5, 8, 9, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 18, 19, 22, 23, 22, 23, 24, 25,
+        26, 27, 26, 27, 30, 31, 30, 31, 32, 33, 32, 33, 36, 37, 36, 37, 38, 39, 38, 39, 42, 43, 42, 43, 44, 45, 44, 45, 46, 47, 48, 49,
+        48, 49, 50, 51, 52, 53, 52, 53, 54, 55, 54, 55, 56, 57, 58, 59, 58, 59, 60, 61, 60, 61, 60, 61, 62, 63, 64, 65, 64, 65, 66, 67,
+        66, 67, 66, 67, 68, 69, 68, 69, 70, 71, 70, 71, 70, 71, 72, 73, 72, 73, 72, 73, 74, 75, 74, 75, 74, 75, 76, 77, 76, 77, 126, 127,
+    ]
 }
 
-/// The arithmetic decoder with a 16-bit window refilled a byte at a time (the same arithmetic
-/// as 9.3.4.3: ivlOffset is `value` >> 7 relative to `range` << 7; `bitsNeeded` counts the
-/// window bits not yet supplied, −8 … −1).
-struct HEVCCABAC {
+/// The arithmetic decoder's registers (9.3.4.3) with a 16-bit window refilled a byte at a
+/// time (ivlOffset is `value` >> 7 relative to `range` << 7; `bitsNeeded` counts the window
+/// bits not yet supplied, −8 … −1), and the bytes. Apart from the contexts (passed in): moved
+/// into a local for a block's bins, the optimiser keeps it in registers.
+struct HEVCArith {
     let bytes: [UInt8]
     var pos: Int
     let end: Int
     var range: UInt32 = 510
     var value: UInt32 = 0
     var bitsNeeded = -8
+
+    init(bytes: [UInt8], pos: Int, end: Int) {
+        self.bytes = bytes
+        self.pos = pos
+        self.end = end
+    }
+
+    /// A placeholder, to swap a real one out (moving it: no reference counting).
+    init() {
+        bytes = []
+        pos = 0
+        end = 0
+    }
+
+    @inline(__always) mutating func nextByte() -> UInt32 {
+        let p = pos
+        pos = p &+ 1
+        return p < end ? UInt32(bytes.span[p]) : 0
+    }
+
+    /// 9.3.4.3.2 without data-dependent branches: MPS / LPS by selects, renormalisation by
+    /// counting leading zeros (codIRange back into [256, 510]); only the byte refill branches.
+    @inline(__always) mutating func decision(_ ctx: Int, _ state: inout InlineArray<157, UInt8>) -> Int {
+        let st = Int(state[ctx]) & 127
+        let lps = UInt32(HEVCCabacTables.lps[(st &<< 2 | Int((range &>> 6) & 3)) & 511])
+        let rMPS = range &- lps
+        let scaled = rMPS &<< 7
+        let isLPS = value >= scaled
+        state[ctx] = isLPS ? HEVCCabacTables.nextLPS[st] : HEVCCabacTables.nextMPS[st]
+        value = isLPS ? value &- scaled : value
+        let r = isLPS ? lps : rMPS
+        // r ≥ 6 (codIRangeLPS), so the shift is 0 … 6.
+        let shift = UInt32(truncatingIfNeeded: r.leadingZeroBitCount &- 23) & 7
+        range = r &<< shift
+        value = value &<< shift
+        bitsNeeded &+= Int(shift)
+        if bitsNeeded >= 0 {
+            value |= nextByte() &<< UInt32(truncatingIfNeeded: bitsNeeded)
+            bitsNeeded &-= 8
+        }
+        return (st & 1) ^ (isLPS ? 1 : 0)
+    }
+
+    @inline(__always) mutating func bypass() -> Int {
+        value = value &<< 1
+        bitsNeeded &+= 1
+        if bitsNeeded >= 0 {
+            bitsNeeded = -8
+            value |= nextByte()
+        }
+        let scaled = range &<< 7
+        if value >= scaled { value &-= scaled; return 1 }
+        return 0
+    }
+
+    /// `n` bypass bins, most significant first, at most 8 at a time.
+    @inline(__always) mutating func bypassBits(_ n: Int) -> Int {
+        var v = 0, left = n
+        while left > 8 {
+            v = v &<< 8 | bypassChunk(8)
+            left &-= 8
+        }
+        return left > 0 ? v &<< left | bypassChunk(left) : v
+    }
+
+    /// `n` (1 … 8) bypass bins at once: shifted in together (one refill at most), they are the
+    /// binary digits of the offset's quotient by the scaled range, which is what `n` single bins
+    /// come to while the offset stays below the range (libde265 does the same). A corrupt
+    /// stream may break that; the quotient is then capped at n ones, as single bins would decode.
+    @inline(__always) mutating func bypassChunk(_ n: Int) -> Int {
+        value = value &<< UInt32(truncatingIfNeeded: n)
+        bitsNeeded &+= n
+        if bitsNeeded >= 0 {
+            value |= nextByte() &<< UInt32(truncatingIfNeeded: bitsNeeded)
+            bitsNeeded &-= 8
+        }
+        let scaled = range &<< 7
+        let all = UInt32(1) &<< UInt32(truncatingIfNeeded: n) &- 1
+        let v = min(value / scaled, all)
+        value &-= v &* scaled
+        return Int(v)
+    }
+}
+
+/// The arithmetic decoder of a slice segment: its registers (and bytes) and context states.
+struct HEVCCABAC {
+    var arith: HEVCArith
     /// pStateIdx << 1 | valMps per context (inline storage: no copy-on-write per bin).
     var state = InlineArray<157, UInt8>(repeating: 0)
     /// StatCoeff (persistent Rice adaptation, 9.3.2.2): all zero without the range extension.
     var statCoeff = [0, 0, 0, 0]
 
-    static let renormTable: [UInt8] = [6, 5, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-
     /// Engine over bytes [start, end) of the RBSP.
     init(rbsp: [UInt8], start: Int, end: Int) {
-        bytes = rbsp
-        pos = start
-        self.end = min(end, rbsp.count)
+        arith = HEVCArith(bytes: rbsp, pos: start, end: min(end, rbsp.count))
+    }
+
+    /// An empty engine, to swap a real one out of a struct (moving it: no reference counting).
+    init() {
+        arith = HEVCArith()
+        statCoeff = []
     }
 
     /// The equivalent bit position of the 9.3.4.3 decoder (bits consumed into ivlOffset).
-    var bitPos: Int { pos * 8 + bitsNeeded + 1 }
+    var bitPos: Int { arith.pos * 8 + arith.bitsNeeded + 1 }
 
     /// 9.3.2.2: every context from its initValue at SliceQpY.
     mutating func initContexts(initType: Int, qp sliceQp: Int) {
@@ -229,81 +332,39 @@ struct HEVCCABAC {
         statCoeff = [0, 0, 0, 0]
     }
 
-    @inline(__always) mutating func nextByte() -> UInt32 {
-        guard pos < end else { pos += 1; return 0 }
-        let b = UInt32(bytes.span[pos])
-        pos += 1
-        return b
-    }
-
     /// 9.3.2.5: (re)starts the arithmetic decoder at the current byte.
     mutating func startEngine() {
-        range = 510
-        value = nextByte() << 8
-        value |= nextByte()
-        bitsNeeded = -8
+        arith.range = 510
+        arith.value = arith.nextByte() << 8
+        arith.value |= arith.nextByte()
+        arith.bitsNeeded = -8
     }
 
     /// Restarts at a new entry point (byte offset into the RBSP).
     mutating func restart(at byte: Int) {
-        pos = byte
+        arith.pos = byte
         startEngine()
     }
 
-    /// 9.3.4.3.2 without data-dependent branches: MPS / LPS by selects, renormalisation by
-    /// counting leading zeros (codIRange back into [256, 510]); only the byte refill branches.
-    @inline(__always) mutating func decision(_ ctx: Int) -> Int {
-        let st = Int(state[ctx])
-        let lps = UInt32(HEVCCabacTables.shared.lps[st << 2 | Int((range >> 6) & 3)])
-        let rMPS = range &- lps
-        let scaled = rMPS << 7
-        let isLPS = value >= scaled
-        let next = isLPS ? HEVCCabacTables.shared.nextLPS[st] : HEVCCabacTables.shared.nextMPS[st]
-        state[ctx] = next
-        value = isLPS ? value &- scaled : value
-        let r = isLPS ? lps : rMPS
-        let shift = UInt32(truncatingIfNeeded: r.leadingZeroBitCount &- 23)
-        range = r << shift
-        value <<= shift
-        bitsNeeded &+= Int(shift)
-        if bitsNeeded >= 0 {
-            value |= nextByte() << UInt32(bitsNeeded)
-            bitsNeeded -= 8
-        }
-        return (st & 1) ^ (isLPS ? 1 : 0)
-    }
+    @inline(__always) mutating func decision(_ ctx: Int) -> Int { arith.decision(ctx, &state) }
 
-    @inline(__always) mutating func bypass() -> Int {
-        value <<= 1
-        bitsNeeded += 1
-        if bitsNeeded >= 0 {
-            bitsNeeded = -8
-            value |= nextByte()
-        }
-        let scaled = range << 7
-        if value >= scaled { value -= scaled; return 1 }
-        return 0
-    }
+    @inline(__always) mutating func bypass() -> Int { arith.bypass() }
 
     /// `n` bypass bins, most significant first.
-    @inline(__always) mutating func bypassBits(_ n: Int) -> Int {
-        var v = 0
-        for _ in 0 ..< n { v = v << 1 | bypass() }
-        return v
-    }
+    @inline(__always) mutating func bypassBits(_ n: Int) -> Int { arith.bypassBits(n) }
 
     /// end_of_slice_segment_flag, end_of_subset_one_bit, pcm_flag (9.3.4.3.5).
     mutating func terminate() -> Int {
-        range -= 2
-        let scaled = range << 7
-        if value >= scaled { return 1 }
+        arith.range -= 2
+        let scaled = arith.range << 7
+        if arith.value >= scaled { return 1 }
         if scaled < (256 << 7) {
-            range = scaled >> 6
-            value <<= 1
-            bitsNeeded += 1
-            if bitsNeeded == 0 {
-                bitsNeeded = -8
-                value |= nextByte()
+            arith.range = scaled >> 6
+            arith.value <<= 1
+            arith.bitsNeeded += 1
+            if arith.bitsNeeded == 0 {
+                arith.bitsNeeded = -8
+                arith.value |= arith.nextByte()
             }
         }
         return 0
@@ -321,11 +382,11 @@ struct HEVCCABAC {
         var v = 0
         for _ in 0 ..< n {
             let byte = rawBit >> 3
-            let b = byte < end ? Int(bytes[byte] >> UInt8(7 - (rawBit & 7))) & 1 : 0
+            let b = byte < arith.end ? Int(arith.bytes[byte] >> UInt8(7 - (rawBit & 7))) & 1 : 0
             v = v << 1 | b
             rawBit += 1
         }
-        pos = (rawBit + 7) >> 3
+        arith.pos = (rawBit + 7) >> 3
         return v
     }
 }

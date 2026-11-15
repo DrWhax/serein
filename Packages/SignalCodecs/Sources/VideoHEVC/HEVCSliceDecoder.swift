@@ -58,6 +58,12 @@ struct HEVCSliceDecoder {
     var startTs: Int? = nil
     var startEntry = 0
     var stopAtTileEnd = false
+    /// Wavefront-parallel parsing (HEVCDecoder.decodeRowsInParallel): the channels to the rows
+    /// above and below; stop at the end of the CTB row (and whether it did).
+    var rowLink: HEVCRowLink? = nil
+    var aboveTaken = 0
+    var stopAtRowEnd = false
+    var stoppedAtRowEnd = false
 
     let qpBdOffsetY: Int, qpBdOffsetC: Int
     /// Scratch for one transform block (32x32 at most): levels / scaled coefficients, the
@@ -143,6 +149,19 @@ struct HEVCSliceDecoder {
             let xCtb = (ctbAddrRs % geom.widthCtbs) << sps.log2CtbSize, yCtb = (ctbAddrRs / geom.widthCtbs) << sps.log2CtbSize
             let tileStart = ctbAddrTs == 0 || geom.tileId[ctbAddrTs] != geom.tileId[ctbAddrTs - 1]
             let rowStartInTile = geom.colBd.contains(ctbAddrRs % geom.widthCtbs)
+            // A wavefront row: the CTBs above up to the one above-right are decoded first, and
+            // their edges (with the contexts saved after the second) taken into the band.
+            if let above = rowLink?.above {
+                let need = min(ctbAddrRs % geom.widthCtbs + 2, geom.widthCtbs)
+                if aboveTaken < need {
+                    guard let edges = above.take(aboveTaken..<need, of: geom.widthCtbs) else { throw .malformed("the row above ended early") }
+                    for e in edges {
+                        pic.putAbove(e)
+                        if let w = e.wpp { wppState = w.state; wppStat = w.stat }
+                    }
+                    aboveTaken = need
+                }
+            }
             // WPP: the first CTB of a row takes the contexts saved after the second CTB above.
             if pps.entropyCodingSync && rowStartInTile && ctbAddrTs != geom.rsToTs[header.segmentAddress] || (pps.entropyCodingSync && rowStartInTile && header.dependentSliceSegment && ctbAddrRs == header.segmentAddress) {
                 let xTR = xCtb + sps.ctbSize, yTR = yCtb - sps.ctbSize
@@ -182,6 +201,9 @@ struct HEVCSliceDecoder {
                 if x - tileColStart == 1 || (tileWidth == 1 && x == tileColStart) {
                     wppState = cabac.state
                     wppStat = cabac.statCoeff
+                    rowLink?.own.publish(pic.edge(ctbAddrRs, wpp: HEVCWppState(state: cabac.state, stat: cabac.statCoeff)))
+                } else {
+                    rowLink?.own.publish(pic.edge(ctbAddrRs))
                 }
             }
             ctbAddrTs += 1
@@ -199,6 +221,12 @@ struct HEVCSliceDecoder {
                 if stopAtTileEnd && nextTileStart {
                     endState = cabac.state
                     endStat = cabac.statCoeff
+                    return
+                }
+                if stopAtRowEnd && nextRowStart {
+                    endState = cabac.state
+                    endStat = cabac.statCoeff
+                    stoppedAtRowEnd = true
                     return
                 }
                 entry += 1
@@ -248,7 +276,7 @@ struct HEVCSliceDecoder {
             if s.type != 0 {
                 let bitDepth = c == 0 ? sps.bitDepthLuma : sps.bitDepthChroma
                 let cMax = (1 << (min(bitDepth, 10) - 5)) - 1
-                var abs = [Int32](repeating: 0, count: 4)
+                var abs = InlineArray<4, Int32>(repeating: 0)
                 for i in 0..<4 {
                     var v = 0
                     while v < cMax && cabac.bypass() == 1 { v += 1 }
@@ -259,13 +287,13 @@ struct HEVCSliceDecoder {
                     s.bandPosition = cabac.bypassBits(5)
                     s.offsets = abs
                 } else {
-                    s.offsets = [abs[0], abs[1], -abs[2], -abs[3]]
+                    s.offsets = abs
+                    s.offsets[2] = -abs[2]
+                    s.offsets[3] = -abs[3]
                     if c == 0 { s.eoClass = cabac.bypassBits(2) }
                     if c == 1 { s.eoClass = cabac.bypassBits(2) }
                 }
-                // log2SaoOffsetScale is 0 without the range extension.
-                let shift = Int32(0)
-                s.offsets = s.offsets.map { $0 << shift }
+                // log2SaoOffsetScale is 0 without the range extension: the offsets as read.
             }
             pic.sao[c][ctbAddrRs] = s
         }
@@ -556,10 +584,15 @@ struct HEVCSliceDecoder {
 
     /// Transform and prediction block edges on the 8x8 deblocking grid's 4x4 units.
     mutating func markEdges(_ x: Int, _ y: Int, _ w: Int, _ h: Int, tu: Bool) {
-        let ey = tu ? \HEVCPicture.tuEdgeH : \HEVCPicture.puEdgeH
-        let ex = tu ? \HEVCPicture.tuEdgeV : \HEVCPicture.puEdgeV
-        for yy in stride(from: y, to: min(y + h, sps.height), by: 4) { pic[keyPath: ex][pic.i4(x, yy)] = 1 }
-        for xx in stride(from: x, to: min(x + w, sps.width), by: 4) { pic[keyPath: ey][pic.i4(xx, y)] = 1 }
+        // The block's left column and top row of the grid (one access per array, not a key
+        // path per unit).
+        if tu {
+            pic.fill(&pic.tuEdgeV, x, y, 1, h, 1)
+            pic.fill(&pic.tuEdgeH, x, y, w, 1, 1)
+        } else {
+            pic.fill(&pic.puEdgeV, x, y, 1, h, 1)
+            pic.fill(&pic.puEdgeH, x, y, w, 1, 1)
+        }
     }
 
     // MARK: reconstruction

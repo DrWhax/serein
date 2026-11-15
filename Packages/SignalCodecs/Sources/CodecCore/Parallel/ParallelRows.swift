@@ -9,10 +9,11 @@ public import Synchronization
 public enum ParallelRows {
     /// `rows` rows of `rowLength` elements: `fill(range, &chunk)` writes rows `range` into
     /// `chunk` (range.count · rowLength elements, initially `zero`). Chunks are about
-    /// `chunk` rows; a single chunk runs on the calling thread.
+    /// `chunk` rows; a single chunk runs on the calling thread. `fill` runs on several threads
+    /// at once.
     @inlinable
     public static func build<T: Sendable>(rows: Int, rowLength: Int, chunk: Int, zero: T,
-                                          _ fill: (Range<Int>, inout [T]) -> Void) -> [T] {
+                                          _ fill: @Sendable (Range<Int>, inout [T]) -> Void) -> [T] {
         guard rows > 0, rowLength > 0 else { return [] }
         let size = max(1, chunk)
         let chunks = (rows + size - 1) / size

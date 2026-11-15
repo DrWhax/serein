@@ -5,22 +5,24 @@
 
 import CodecCore
 
-/// One slice's references: pictures, POCs, long-term flags; the collocated picture.
-final class HEVCInterContext {
-    let refs: [[HEVCPicture]]
+/// One slice's references: picture ids, POCs, long-term flags; the collocated picture. Values
+/// only, so the rows of a wavefront parse share it (HEVCDecoder.decodeRowsInParallel).
+final class HEVCInterContext: Sendable {
+    /// [list][refIdx] → picture id.
+    let refIds: [[Int]]
     let refPoc: [[Int]]
     let refLongTerm: [[Bool]]
     let currPoc: Int
-    let colPic: HEVCPicture?
+    let col: HEVCColocated?
     let noBackwardPred: Bool
     let weights: HEVCPredWeight?
 
     init(refs: [[HEVCPicture]], refLongTerm: [[Bool]], currPoc: Int, colPic: HEVCPicture?, weights: HEVCPredWeight?) {
-        self.refs = refs
+        refIds = refs.map { $0.map(\.id) }
         refPoc = refs.map { $0.map(\.poc) }
         self.refLongTerm = refLongTerm
         self.currPoc = currPoc
-        self.colPic = colPic
+        col = colPic.map(HEVCColocated.init)
         noBackwardPred = refs.allSatisfy { $0.allSatisfy { $0.poc <= currPoc } }
         self.weights = weights
     }
@@ -76,9 +78,10 @@ final class HEVCInterContext {
                     pred = d.cabac.decision(HEVCCtx.interPredIdc + 4)
                 }
             }
-            var refIdx = [-1, -1]
-            var mvd = [(0, 0), (0, 0)]
-            var mvpFlag = [0, 0]
+            // Per list (inline: no allocation per PU).
+            var refIdx = InlineArray<2, Int>(repeating: -1)
+            var mvdX = InlineArray<2, Int>(repeating: 0), mvdY = InlineArray<2, Int>(repeating: 0)
+            var mvpFlag = InlineArray<2, Int>(repeating: 0)
             for l in 0..<2 where (l == 0 && pred != 1) || (l == 1 && pred != 0) {
                 refIdx[l] = 0
                 let n = hd.numRefIdxActive[l]
@@ -91,13 +94,14 @@ final class HEVCInterContext {
                     }
                     refIdx[l] = v
                 }
-                if l == 1 && hd.mvdL1Zero && pred == 2 { mvd[1] = (0, 0) } else { mvd[l] = try mvdCoding(&d) }
+                if !(l == 1 && hd.mvdL1Zero && pred == 2) { (mvdX[l], mvdY[l]) = try mvdCoding(&d) }
                 mvpFlag[l] = d.cabac.decision(HEVCCtx.mvpFlag)
             }
             motion = HEVCMotion()
             for l in 0..<2 where refIdx[l] >= 0 {
-                let mvp = amvp(d, x, y, w, h, cb: cb, partIdx: partIdx, list: l, refIdx: refIdx[l])[mvpFlag[l]]
-                let mx = Int16(truncatingIfNeeded: mvp.0 + mvd[l].0), my = Int16(truncatingIfNeeded: mvp.1 + mvd[l].1)
+                let candidates = amvp(d, x, y, w, h, cb: cb, partIdx: partIdx, list: l, refIdx: refIdx[l])
+                let mvp = mvpFlag[l] == 0 ? candidates.0 : candidates.1
+                let mx = Int16(truncatingIfNeeded: mvp.0 + mvdX[l]), my = Int16(truncatingIfNeeded: mvp.1 + mvdY[l])
                 if l == 0 { motion.refIdx.0 = Int8(refIdx[0]); motion.mv.0 = mx; motion.mv.1 = my }
                 else { motion.refIdx.1 = Int8(refIdx[1]); motion.mv.2 = mx; motion.mv.3 = my }
             }
@@ -158,7 +162,7 @@ final class HEVCInterContext {
         let parMrg = d.pps.log2ParallelMergeLevel
         if parMrg > 2 && cb.s == 8 { x = cb.x; y = cb.y; w = cb.s; h = cb.s; partIdx = 0 }
         let singleMCL = parMrg > 2 && cb.s == 8
-        var list: [HEVCMotion] = []
+        var list = HEVCMergeList()
         func spatial(_ xN: Int, _ yN: Int) -> HEVCMotion? {
             if (x >> parMrg) == (xN >> parMrg) && (y >> parMrg) == (yN >> parMrg) { return nil }
             guard availablePB(d, cb: cb, x, y, w: w, h: h, partIdx: partIdx, xN, yN) else { return nil }
@@ -167,9 +171,9 @@ final class HEVCInterContext {
         let pm = singleMCL ? 0 : partMode
         // availableN (after the partition rules) and availableFlagN (after pruning), 8.5.3.2.3.
         var a1 = spatial(x - 1, y + h - 1)
-        if partIdx == 1 && [2, 6, 7].contains(pm) { a1 = nil }
+        if partIdx == 1 && (pm == 2 || pm == 6 || pm == 7) { a1 = nil }
         var b1 = spatial(x + w - 1, y - 1)
-        if partIdx == 1 && [1, 4, 5].contains(pm) { b1 = nil }
+        if partIdx == 1 && (pm == 1 || pm == 4 || pm == 5) { b1 = nil }
         let b0 = spatial(x + w, y - 1), a0 = spatial(x - 1, y + h), b2 = spatial(x - 1, y - 1)
         func same(_ u: HEVCMotion?, _ v: HEVCMotion?) -> Bool { u != nil && v != nil && u! == v! }
         let fA1 = a1
@@ -177,8 +181,12 @@ final class HEVCInterContext {
         let fB0 = same(b1, b0) ? nil : b0
         let fA0 = same(a1, a0) ? nil : a0
         var fB2 = same(a1, b2) || same(b1, b2) ? nil : b2
-        if [fA0, fA1, fB0, fB1].allSatisfy({ $0 != nil }) { fB2 = nil }
-        for c in [fA1, fB1, fB0, fA0, fB2] { if let c { list.append(c) } }
+        if fA0 != nil && fA1 != nil && fB0 != nil && fB1 != nil { fB2 = nil }
+        if let c = fA1 { list.append(c) }
+        if let c = fB1 { list.append(c) }
+        if let c = fB0 { list.append(c) }
+        if let c = fA0 { list.append(c) }
+        if let c = fB2 { list.append(c) }
         // Temporal (refIdx 0).
         if list.count < d.header.maxNumMergeCand && d.header.temporalMvpEnabled {
             var m = HEVCMotion()
@@ -189,10 +197,9 @@ final class HEVCInterContext {
         // Combined bi-predictive (B).
         let numOrig = list.count
         if d.header.type == .b && numOrig > 1 && numOrig < d.header.maxNumMergeCand {
-            let l0Idx = [0, 1, 0, 2, 1, 2, 0, 3, 1, 3, 2, 3], l1Idx = [1, 0, 2, 0, 2, 1, 3, 0, 3, 1, 3, 2]
             var combIdx = 0
             while combIdx < numOrig * (numOrig - 1) && list.count < d.header.maxNumMergeCand {
-                let c0 = list[l0Idx[combIdx]], c1 = list[l1Idx[combIdx]]
+                let c0 = list[Self.combL0[combIdx]], c1 = list[Self.combL1[combIdx]]
                 if c0.refIdx.0 >= 0 && c1.refIdx.1 >= 0
                     && (refPoc[0][Int(c0.refIdx.0)] != refPoc[1][Int(c1.refIdx.1)] || c0.mv.0 != c1.mv.2 || c0.mv.1 != c1.mv.3) {
                     var m = HEVCMotion()
@@ -219,6 +226,10 @@ final class HEVCInterContext {
         return m
     }
 
+    /// Table 8-6: the candidates combined into bi-predictive merge candidates, by combIdx.
+    static let combL0: InlineArray<12, Int> = [0, 1, 0, 2, 1, 2, 0, 3, 1, 3, 2, 3]
+    static let combL1: InlineArray<12, Int> = [1, 0, 2, 0, 2, 1, 3, 0, 3, 1, 3, 2]
+
     // MARK: AMVP (8.5.3.2.6, 8.5.3.2.7)
 
     func scale(_ mv: (Int, Int), td tdRaw: Int, tb tbRaw: Int) -> (Int, Int) {
@@ -233,7 +244,9 @@ final class HEVCInterContext {
         return (s(mv.0), s(mv.1))
     }
 
-    func amvp(_ d: HEVCSliceDecoder, _ x: Int, _ y: Int, _ w: Int, _ h: Int, cb: (x: Int, y: Int, s: Int), partIdx: Int, list X: Int, refIdx: Int) -> [(Int, Int)] {
+    /// The two motion vector predictor candidates (mvpLX for mvp_lX_flag 0 and 1).
+    func amvp(_ d: HEVCSliceDecoder, _ x: Int, _ y: Int, _ w: Int, _ h: Int, cb: (x: Int, y: Int, s: Int), partIdx: Int, list X: Int,
+              refIdx: Int) -> ((Int, Int), (Int, Int)) {
         let Y = 1 - X
         let targetPoc = refPoc[X][refIdx], targetLT = refLongTerm[X][refIdx]
         func mvOf(_ m: HEVCMotion, _ l: Int) -> (Int, Int) { l == 0 ? (Int(m.mv.0), Int(m.mv.1)) : (Int(m.mv.2), Int(m.mv.3)) }
@@ -249,40 +262,50 @@ final class HEVCInterContext {
         }
         // Second pass: any picture of the same long-term-ness, scaled when both short-term.
         func scaled(_ m: HEVCMotion) -> (Int, Int)? {
-            for l in [X, Y] where ref(m, l) >= 0 && refLongTerm[l][ref(m, l)] == targetLT {
+            for k in 0..<2 {
+                let l = k == 0 ? X : Y
+                guard ref(m, l) >= 0 && refLongTerm[l][ref(m, l)] == targetLT else { continue }
                 let mv = mvOf(m, l)
                 if targetLT { return mv }
                 return scale(mv, td: currPoc - refPoc[l][ref(m, l)], tb: currPoc - targetPoc)
             }
             return nil
         }
-        let aN = [avail(x - 1, y + h), avail(x - 1, y + h - 1)]
-        let isScaled = aN.contains { $0 != nil }
+        // A0, A1 and B0, B1, B2 (no arrays: this runs per PU and list).
+        let a0 = avail(x - 1, y + h), a1 = avail(x - 1, y + h - 1)
+        let isScaled = a0 != nil || a1 != nil
         var mvA: (Int, Int)?
-        for m in aN { if mvA == nil, let m { mvA = samePicture(m) } }
-        if mvA == nil { for m in aN { if mvA == nil, let m { mvA = scaled(m) } } }
-        let bN = [avail(x + w, y - 1), avail(x + w - 1, y - 1), avail(x - 1, y - 1)]
+        if let m = a0 { mvA = samePicture(m) }
+        if mvA == nil, let m = a1 { mvA = samePicture(m) }
+        if mvA == nil, let m = a0 { mvA = scaled(m) }
+        if mvA == nil, let m = a1 { mvA = scaled(m) }
+        let b0 = avail(x + w, y - 1), b1 = avail(x + w - 1, y - 1), b2 = avail(x - 1, y - 1)
         var mvB: (Int, Int)?
-        for m in bN { if mvB == nil, let m { mvB = samePicture(m) } }
+        if let m = b0 { mvB = samePicture(m) }
+        if mvB == nil, let m = b1 { mvB = samePicture(m) }
+        if mvB == nil, let m = b2 { mvB = samePicture(m) }
         if !isScaled && mvB != nil && mvA == nil { mvA = mvB }
         if !isScaled {
             mvB = nil
-            for m in bN { if mvB == nil, let m { mvB = scaled(m) } }
+            if let m = b0 { mvB = scaled(m) }
+            if mvB == nil, let m = b1 { mvB = scaled(m) }
+            if mvB == nil, let m = b2 { mvB = scaled(m) }
         }
-        var out: [(Int, Int)] = []
-        if let a = mvA { out.append(a) }
-        if let b = mvB, !(mvA.map { $0 == b } ?? false) { out.append(b) }
-        if out.count < 2 && d.header.temporalMvpEnabled, let t = temporal(d, x, y, w, h, list: X, refIdx: refIdx) {
-            out.append((Int(t.0), Int(t.1)))
+        // mvpListLX: A, then B unless equal to A, then the temporal candidate, then zeros.
+        var first: (Int, Int)? = mvA, second: (Int, Int)?
+        if let b = mvB, !(mvA.map { $0 == b } ?? false) {
+            if first == nil { first = b } else { second = b }
         }
-        while out.count < 2 { out.append((0, 0)) }
-        return Array(out.prefix(2))
+        if second == nil && d.header.temporalMvpEnabled, let t = temporal(d, x, y, w, h, list: X, refIdx: refIdx) {
+            if first == nil { first = (Int(t.0), Int(t.1)) } else { second = (Int(t.0), Int(t.1)) }
+        }
+        return (first ?? (0, 0), second ?? (0, 0))
     }
 
     // MARK: temporal (8.5.3.2.8, 8.5.3.2.9)
 
     func temporal(_ d: HEVCSliceDecoder, _ x: Int, _ y: Int, _ w: Int, _ h: Int, list X: Int, refIdx: Int) -> (Int16, Int16)? {
-        guard let col = colPic else { return nil }
+        guard let col else { return nil }
         let sps = d.sps
         let xBr = x + w, yBr = y + h
         if (y >> sps.log2CtbSize) == (yBr >> sps.log2CtbSize) && yBr < sps.height && xBr < sps.width,
@@ -293,11 +316,11 @@ final class HEVCInterContext {
         return collocated(col, (xC >> 4) << 4, (yC >> 4) << 4, list: X, refIdx: refIdx, d: d)
     }
 
-    func collocated(_ col: HEVCPicture, _ x: Int, _ y: Int, list X: Int, refIdx: Int, d: HEVCSliceDecoder) -> (Int16, Int16)? {
+    func collocated(_ col: HEVCColocated, _ x: Int, _ y: Int, list X: Int, refIdx: Int, d: HEVCSliceDecoder) -> (Int16, Int16)? {
         let k = col.i4(x, y)
         guard col.predMode[k] == 0 || col.predMode[k] == 2 else { return nil }
         let m = col.motion[k]
-        let ctb = (x >> col.sps.log2CtbSize) + (y >> col.sps.log2CtbSize) * col.sps.widthCtbs
+        let ctb = (x >> col.log2CtbSize) + (y >> col.log2CtbSize) * col.widthCtbs
         let slice = Int(col.ctbSliceIndex[ctb])
         guard col.sliceRefPocs.indices.contains(slice) else { return nil }
         var listCol: Int
@@ -318,115 +341,200 @@ final class HEVCInterContext {
 
     // MARK: motion compensation (8.5.3.3)
 
-    static let lumaFilter: [[Int32]] = [[0, 0, 0, 64, 0, 0, 0, 0], [-1, 4, -10, 58, 17, -5, 1, 0], [-1, 4, -11, 40, 40, -11, 4, -1], [0, 1, -5, 17, 58, -10, 4, -1]]
-    static let chromaFilter: [[Int32]] = [[0, 64, 0, 0], [-2, 58, 10, -2], [-4, 54, 16, -2], [-6, 46, 28, -4], [-4, 36, 36, -4], [-4, 28, 46, -6],
-                                          [-2, 16, 54, -4], [-2, 10, 58, -2]]
-
-    /// predSamplesLX (14-bit intermediate) of one component: the reference window (clamped at
-    /// the picture edges) is copied once, then filtered without bounds clamping.
-    static func interpolate(_ ref: HEVCPlane, x xPb: Int, y yPb: Int, w: Int, h: Int, mvx: Int, mvy: Int, chroma: Bool, bitDepth: Int,
-                            into outArr: inout [Int32], win winArr: inout [Int32], tmp tmpArr: inout [Int32]) {
-        let fracBits = chroma ? 3 : 2, taps = chroma ? 4 : 8, half = chroma ? 1 : 3
-        let xFrac = mvx & ((1 << fracBits) - 1), yFrac = mvy & ((1 << fracBits) - 1)
-        let xInt = xPb + (mvx >> fracBits) - half, yInt = yPb + (mvy >> fracBits) - half
-        let fxA = chroma ? Self.chromaFilter[xFrac] : Self.lumaFilter[xFrac], fyA = chroma ? Self.chromaFilter[yFrac] : Self.lumaFilter[yFrac]
-        let shift1 = Int32(min(4, bitDepth - 8)), shift3 = Int32(max(2, 14 - bitDepth))
-        let rw = ref.width, rh = ref.height
-        let ww = w + taps - 1, wh = h + taps - 1
-        if winArr.count < ww * wh { winArr = [Int32](repeating: 0, count: ww * wh) }
-        if outArr.count < w * h { outArr = [Int32](repeating: 0, count: w * h) }
-        do {
-            let srcArr = ref.samples
-            let src = srcArr.span
-            var win = winArr.mutableSpan
-            let inside = xInt >= 0 && yInt >= 0 && xInt + ww <= rw && yInt + wh <= rh
-            var j = 0
-            while j < wh {
-                let sy = inside ? yInt + j : max(0, min(rh - 1, yInt + j))
-                var i = 0
-                let row = sy * rw, d = j * ww
-                if inside {
-                    let base = row + xInt
-                    while i < ww { win[d + i] = Int32(src[base + i]); i += 1 }
-                } else {
-                    while i < ww { win[d + i] = Int32(src[row + max(0, min(rw - 1, xInt + i))]); i += 1 }
-                }
-                j += 1
+    /// The filter taps of a fractional position (luma 8, chroma 4 and zeros).
+    @inline(__always) static func taps(_ frac: Int, chroma: Bool) -> InlineArray<8, Int32> {
+        if chroma {
+            switch frac {
+            case 1: return [-2, 58, 10, -2, 0, 0, 0, 0]
+            case 2: return [-4, 54, 16, -2, 0, 0, 0, 0]
+            case 3: return [-6, 46, 28, -4, 0, 0, 0, 0]
+            case 4: return [-4, 36, 36, -4, 0, 0, 0, 0]
+            case 5: return [-4, 28, 46, -6, 0, 0, 0, 0]
+            case 6: return [-2, 16, 54, -4, 0, 0, 0, 0]
+            case 7: return [-2, 10, 58, -2, 0, 0, 0, 0]
+            default: return [0, 64, 0, 0, 0, 0, 0, 0]
             }
         }
-        let win = winArr.span
-        let fx = fxA.span, fy = fyA.span
-        if xFrac == 0 && yFrac == 0 {
-            var out = outArr.mutableSpan
-            var j = 0
-            while j < h {
-                let src = half + (j + half) * ww, dst = j * w
-                var i = 0
-                while i < w { out[dst + i] = win[src + i] << shift3; i += 1 }
-                j += 1
-            }
-        } else if yFrac == 0 {
-            var out = outArr.mutableSpan
-            var j = 0
-            while j < h { Self.filter(&out, j * w, win, (j + half) * ww, step: 1, fx, taps, w, shift1); j += 1 }
-        } else if xFrac == 0 {
-            var out = outArr.mutableSpan
-            var j = 0
-            while j < h { Self.filter(&out, j * w, win, half + j * ww, step: ww, fy, taps, w, shift1); j += 1 }
-        } else {
-            if tmpArr.count < w * wh { tmpArr = [Int32](repeating: 0, count: w * wh) }
-            do {
-                var tmp = tmpArr.mutableSpan
-                var j = 0
-                while j < wh { Self.filter(&tmp, j * w, win, j * ww, step: 1, fx, taps, w, shift1); j += 1 }
-            }
-            let tmp = tmpArr.span
-            var out = outArr.mutableSpan
-            var j = 0
-            while j < h { Self.filter(&out, j * w, tmp, j * w, step: w, fy, taps, w, 6); j += 1 }
+        switch frac {
+        case 1: return [-1, 4, -10, 58, 17, -5, 1, 0]
+        case 2: return [-1, 4, -11, 40, 40, -11, 4, -1]
+        case 3: return [0, 1, -5, 17, 58, -10, 4, -1]
+        default: return [0, 0, 0, 64, 0, 0, 0, 0]
         }
     }
 
-    /// One row of an n-tap filter: dst[d + i] = (Σ c[t]·src[s + t·step + i]) >> shift. Eight
-    /// pixels at a time in SIMD lanes (read from the spans after one bounds check each, which
-    /// the compiler turns into vector loads), the rest one by one: the same integer operations
-    /// in the same order, so the same result.
-    @inline(__always)
-    static func filter(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: Span<Int32>, _ s: Int, step: Int, _ c: Span<Int32>, _ n: Int, _ w: Int,
-                       _ shift: Int32) {
-        var i = 0
-        let shifts = SIMD8<Int32>(repeating: shift)
-        while i + 8 <= w {
-            var acc = SIMD8(repeating: c[0]) &* HEVCLanes.load8(src, s + i)
-            var t = 1
-            while t < n {
-                acc &+= SIMD8(repeating: c[t]) &* HEVCLanes.load8(src, s + t * step + i)
-                t += 1
+    /// predSamplesLX (14-bit intermediate) of one component, read from the window of reference
+    /// samples it needs (the block and the filter's reach): row by row from the reference's
+    /// bands when the window is inside the picture, else from a copy clamped at its edges.
+    static func interpolate(_ src: borrowing Span<[UInt16]>, _ ref: HEVCRefGeometry, x xPb: Int, y yPb: Int, w: Int, h: Int, mvx: Int, mvy: Int,
+                            chroma: Bool, bitDepth: Int, into outArr: inout [Int32], win winArr: inout [Int32], tmp tmpArr: inout [Int32]) {
+        let fracBits = chroma ? 3 : 2, n = chroma ? 4 : 8, half = chroma ? 1 : 3
+        let xFrac = mvx & ((1 << fracBits) - 1), yFrac = mvy & ((1 << fracBits) - 1)
+        let xInt = xPb + (mvx >> fracBits) - half, yInt = yPb + (mvy >> fracBits) - half
+        let ww = w + n - 1, wh = h + n - 1
+        let rw = ref.width, rh = ref.height
+        if outArr.count < w * h { outArr = [Int32](repeating: 0, count: w * h) }
+        if xFrac != 0 && yFrac != 0 && tmpArr.count < w * wh { tmpArr = [Int32](repeating: 0, count: w * wh) }
+        let fx = taps(xFrac, chroma: chroma), fy = taps(yFrac, chroma: chroma)
+        let shift1 = Int32(min(4, bitDepth - 8)), shift3 = Int32(max(2, 14 - bitDepth))
+        if xInt >= 0 && yInt >= 0 && xInt + ww <= rw && yInt + wh <= rh {
+            filterBands(src, ref, x: xInt, y: yInt, w: w, h: h, xFrac: xFrac, yFrac: yFrac, n: n, half: half, fx: fx, fy: fy,
+                        shift1: shift1, shift3: shift3, into: &outArr, tmp: &tmpArr)
+            return
+        }
+        if winArr.count < ww * wh { winArr = [Int32](repeating: 0, count: ww * wh) }
+        do {
+            var win = winArr.mutableSpan
+            for j in 0..<wh {
+                let yy = max(0, min(rh - 1, yInt + j))
+                let band = src[yy >> ref.log2Rows].span, row = (yy & ref.rowMask) * rw, d = j * ww
+                for i in 0..<ww { win[d + i] = Int32(band[row + max(0, min(rw - 1, xInt + i))]) }
             }
-            HEVCLanes.store8(&dst, d + i, acc &>> shifts)
-            i += 8
         }
-        guard i < w else { return }
-        let from = i
-        let c0 = c[0]
-        while i < w { dst[d + i] = c0 &* src[s + i]; i += 1 }
-        var t = 1
-        while t < n {
-            let ct = c[t], b = s + t * step
-            i = from
-            while i < w { dst[d + i] &+= ct &* src[b + i]; i += 1 }
-            t += 1
+        filterWindow(winArr.span, base: 0, stride: ww, w: w, h: h, xFrac: xFrac, yFrac: yFrac, n: n, half: half, fx: fx, fy: fy,
+                     shift1: shift1, shift3: shift3, into: &outArr, tmp: &tmpArr)
+    }
+
+    /// The four cases of 8.5.3.3.3 on a window whose first sample is `src[base]`, rows `stride`
+    /// apart: full sample (scaled), horizontal or vertical only, or horizontal into `tmp` (all
+    /// the rows the vertical pass reads) then vertical.
+    @inline(__always)
+    static func filterWindow<T: FixedWidthInteger & BitwiseCopyable>(_ src: Span<T>, base: Int, stride: Int, w: Int, h: Int, xFrac: Int, yFrac: Int,
+                                                                     n: Int, half: Int, fx: InlineArray<8, Int32>, fy: InlineArray<8, Int32>,
+                                                                     shift1: Int32, shift3: Int32, into outArr: inout [Int32], tmp tmpArr: inout [Int32]) {
+        if xFrac == 0 && yFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h {
+                let r = src.extracting(base + (j + half) * stride + half ..< base + (j + half) * stride + half + w)
+                var k = 0
+                for i in j * w ..< j * w + w { out[i] = Int32(truncatingIfNeeded: r[k]) &<< shift3; k += 1 }
+            }
+        } else if yFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h { filterRow(&out, j * w, src, base + (j + half) * stride, step: 1, fx, n: n, w: w, shift: shift1) }
+        } else if xFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h { filterRow(&out, j * w, src, base + j * stride + half, step: stride, fy, n: n, w: w, shift: shift1) }
+        } else {
+            do {
+                var tmp = tmpArr.mutableSpan
+                for j in 0..<(h + n - 1) { filterRow(&tmp, j * w, src, base + j * stride, step: 1, fx, n: n, w: w, shift: shift1) }
+            }
+            let tmp = tmpArr.span
+            var out = outArr.mutableSpan
+            for j in 0..<h { filterRow(&out, j * w, tmp, j * w, step: w, fy, n: n, w: w, shift: 6) }
         }
-        i = from
-        while i < w { dst[d + i] >>= shift; i += 1 }
+    }
+
+    /// `filterWindow` on a window (from (x, y)) inside the reference, each row read from its
+    /// band: the vertical taps of one output row may span two bands.
+    @inline(__always)
+    static func filterBands(_ src: borrowing Span<[UInt16]>, _ g: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, xFrac: Int, yFrac: Int,
+                            n: Int, half: Int, fx: InlineArray<8, Int32>, fy: InlineArray<8, Int32>, shift1: Int32, shift3: Int32,
+                            into outArr: inout [Int32], tmp tmpArr: inout [Int32]) {
+        let l = g.log2Rows, mask = g.rowMask, rw = g.width
+        if xFrac == 0 && yFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h {
+                let yy = y + half + j, s = (yy & mask) * rw + x + half
+                let r = src[yy >> l].span.extracting(s ..< s + w)
+                var k = 0
+                for i in j * w ..< j * w + w { out[i] = Int32(truncatingIfNeeded: r[k]) &<< shift3; k += 1 }
+            }
+        } else if yFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h {
+                let yy = y + half + j
+                filterRow(&out, j * w, src[yy >> l].span, (yy & mask) * rw + x, step: 1, fx, n: n, w: w, shift: shift1)
+            }
+        } else if xFrac == 0 {
+            var out = outArr.mutableSpan
+            for j in 0..<h { filterColumns(&out, j * w, src, g, y: y + j, x: x + half, fy, n: n, w: w, shift: shift1) }
+        } else {
+            do {
+                var tmp = tmpArr.mutableSpan
+                for j in 0..<(h + n - 1) {
+                    let yy = y + j
+                    filterRow(&tmp, j * w, src[yy >> l].span, (yy & mask) * rw + x, step: 1, fx, n: n, w: w, shift: shift1)
+                }
+            }
+            let tmp = tmpArr.span
+            var out = outArr.mutableSpan
+            for j in 0..<h { filterRow(&out, j * w, tmp, j * w, step: w, fy, n: n, w: w, shift: 6) }
+        }
+    }
+
+    /// One row of an n-tap filter: dst[d + i] = (Σ c[t]·src[s + t·step + i]) >> shift.
+    @inline(__always)
+    static func filterRow<T: FixedWidthInteger & BitwiseCopyable>(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: borrowing Span<T>, _ s: Int, step: Int,
+                                                                  _ c: InlineArray<8, Int32>, n: Int, w: Int, shift: Int32) {
+        let r0 = src.extracting(s ..< s + w), r1 = src.extracting(s + step ..< s + step + w)
+        let r2 = src.extracting(s + 2 * step ..< s + 2 * step + w), r3 = src.extracting(s + 3 * step ..< s + 3 * step + w)
+        if n == 4 {
+            filterTaps(&dst, d, r0, r1, r2, r3, r0, r0, r0, r0, c, n: 4, w: w, shift: shift)
+            return
+        }
+        let r4 = src.extracting(s + 4 * step ..< s + 4 * step + w), r5 = src.extracting(s + 5 * step ..< s + 5 * step + w)
+        let r6 = src.extracting(s + 6 * step ..< s + 6 * step + w), r7 = src.extracting(s + 7 * step ..< s + 7 * step + w)
+        filterTaps(&dst, d, r0, r1, r2, r3, r4, r5, r6, r7, c, n: 8, w: w, shift: shift)
+    }
+
+    /// The vertical taps of one output row, rows y … y + n − 1 of the reference (from x), each
+    /// from its band.
+    @inline(__always)
+    static func filterColumns(_ dst: inout MutableSpan<Int32>, _ d: Int, _ src: borrowing Span<[UInt16]>, _ g: HEVCRefGeometry, y: Int, x: Int,
+                              _ c: InlineArray<8, Int32>, n: Int, w: Int, shift: Int32) {
+        let l = g.log2Rows, mask = g.rowMask, rw = g.width
+        let o0 = (y & mask) * rw + x, o1 = ((y + 1) & mask) * rw + x, o2 = ((y + 2) & mask) * rw + x, o3 = ((y + 3) & mask) * rw + x
+        let r0 = src[y >> l].span.extracting(o0 ..< o0 + w), r1 = src[(y + 1) >> l].span.extracting(o1 ..< o1 + w)
+        let r2 = src[(y + 2) >> l].span.extracting(o2 ..< o2 + w), r3 = src[(y + 3) >> l].span.extracting(o3 ..< o3 + w)
+        if n == 4 {
+            filterTaps(&dst, d, r0, r1, r2, r3, r0, r0, r0, r0, c, n: 4, w: w, shift: shift)
+            return
+        }
+        let o4 = ((y + 4) & mask) * rw + x, o5 = ((y + 5) & mask) * rw + x, o6 = ((y + 6) & mask) * rw + x, o7 = ((y + 7) & mask) * rw + x
+        let r4 = src[(y + 4) >> l].span.extracting(o4 ..< o4 + w), r5 = src[(y + 5) >> l].span.extracting(o5 ..< o5 + w)
+        let r6 = src[(y + 6) >> l].span.extracting(o6 ..< o6 + w), r7 = src[(y + 7) >> l].span.extracting(o7 ..< o7 + w)
+        filterTaps(&dst, d, r0, r1, r2, r3, r4, r5, r6, r7, c, n: 8, w: w, shift: shift)
+    }
+
+    /// dst[d + i] = (Σ c[t]·r_t[i]) >> shift over the first n rows. Each tap's row is a span of
+    /// its own and the loop runs over the destination's indices, so bounds are checked once per
+    /// row and the compiler vectorises; the sums wrap like the filter's 32-bit arithmetic, so
+    /// their order does not change the result.
+    @inline(__always)
+    static func filterTaps<T: FixedWidthInteger & BitwiseCopyable>(_ dst: inout MutableSpan<Int32>, _ d: Int, _ r0: borrowing Span<T>, _ r1: borrowing Span<T>,
+                                                                   _ r2: borrowing Span<T>, _ r3: borrowing Span<T>, _ r4: borrowing Span<T>,
+                                                                   _ r5: borrowing Span<T>, _ r6: borrowing Span<T>, _ r7: borrowing Span<T>,
+                                                                   _ c: InlineArray<8, Int32>, n: Int, w: Int, shift: Int32) {
+        let c0 = c[0], c1 = c[1], c2 = c[2], c3 = c[3]
+        var k = 0
+        if n == 4 {
+            for i in d ..< d + w {
+                let v = c0 &* Int32(truncatingIfNeeded: r0[k]) &+ c1 &* Int32(truncatingIfNeeded: r1[k])
+                    &+ c2 &* Int32(truncatingIfNeeded: r2[k]) &+ c3 &* Int32(truncatingIfNeeded: r3[k])
+                dst[i] = v &>> shift
+                k += 1
+            }
+            return
+        }
+        let c4 = c[4], c5 = c[5], c6 = c[6], c7 = c[7]
+        for i in d ..< d + w {
+            let a = c0 &* Int32(truncatingIfNeeded: r0[k]) &+ c1 &* Int32(truncatingIfNeeded: r1[k])
+                &+ c2 &* Int32(truncatingIfNeeded: r2[k]) &+ c3 &* Int32(truncatingIfNeeded: r3[k])
+            let b = c4 &* Int32(truncatingIfNeeded: r4[k]) &+ c5 &* Int32(truncatingIfNeeded: r5[k])
+                &+ c6 &* Int32(truncatingIfNeeded: r6[k]) &+ c7 &* Int32(truncatingIfNeeded: r7[k])
+            dst[i] = (a &+ b) &>> shift
+            k += 1
+        }
     }
 
     /// The prediction of one PU, recorded (P/B slices reconstruct after parsing, in parallel)
     /// or made now.
     func motionCompensate(_ d: inout HEVCSliceDecoder, _ x: Int, _ y: Int, _ w: Int, _ h: Int, _ m: HEVCMotion) {
         var job = HEVCMCJob(x: Int32(x), y: Int32(y), w: Int32(w), h: Int32(h), refIdx: (-1, -1), mv: m.mv)
-        if m.refIdx.0 >= 0 && refs[0].indices.contains(Int(m.refIdx.0)) { job.refIdx.0 = m.refIdx.0 }
-        if m.refIdx.1 >= 0 && refs[1].indices.contains(Int(m.refIdx.1)) { job.refIdx.1 = m.refIdx.1 }
+        if m.refIdx.0 >= 0 && refIds[0].indices.contains(Int(m.refIdx.0)) { job.refIdx.0 = m.refIdx.0 }
+        if m.refIdx.1 >= 0 && refIds[1].indices.contains(Int(m.refIdx.1)) { job.refIdx.1 = m.refIdx.1 }
         d.mcJobs.append(job)
     }
 
@@ -436,7 +544,7 @@ final class HEVCInterContext {
         var ws = [Int32](repeating: 0, count: 2 * 16 * 3), os = ws
         if weighted, let wt = weights {
             for l in 0..<2 {
-                for r in 0..<min(16, refs[l].count) {
+                for r in 0..<min(16, refIds[l].count) {
                     if wt.luma[l].indices.contains(r) {
                         ws[(l * 16 + r) * 3] = Int32(wt.luma[l][r].w)
                         os[(l * 16 + r) * 3] = Int32(wt.luma[l][r].o)
@@ -450,71 +558,266 @@ final class HEVCInterContext {
                 }
             }
         }
-        return HEVCMCShared(refIds: refs.map { $0.map(\.id) }, planes: [], weightW: ws, weightO: os, weighted: weighted,
+        return HEVCMCShared(refIds: refIds, planes: [], weightW: ws, weightO: os, weighted: weighted,
                             lumaLog2Denom: weights?.lumaLog2Denom ?? 0, chromaLog2Denom: weights?.chromaLog2Denom ?? 0,
                             comps: sps.chromaArrayType != 0 ? 3 : 1, subW: sps.subWidthC, subH: sps.subHeightC,
                             bitDepthLuma: sps.bitDepthLuma, bitDepthChroma: sps.bitDepthChroma)
     }
 
-    /// 8.5.3.3: the predicted samples of a job, Y then Cb then Cr (raster in each component's
-    /// block, chroma at `job.chromaOffset`).
-    static func predict(_ job: HEVCMCJob, _ sh: HEVCMCShared, _ scratch: inout HEVCMCScratch) -> [UInt16] {
-        let jw = Int(job.w), jh = Int(job.h), jx = Int(job.x), jy = Int(job.y)
-        let cwC = jw / sh.subW, chC = jh / sh.subH
-        var out = [UInt16](repeating: 0, count: jw * jh + (sh.comps > 1 ? 2 * cwC * chC : 0))
-        // The lists used, first (L0 before L1), as (list, refIdx, mvx, mvy).
-        var used: [(l: Int, r: Int, mvx: Int, mvy: Int)] = []
-        if job.refIdx.0 >= 0 { used.append((0, Int(job.refIdx.0), Int(job.mv.0), Int(job.mv.1))) }
-        if job.refIdx.1 >= 0 { used.append((1, Int(job.refIdx.1), Int(job.mv.2), Int(job.mv.3))) }
-        if used.isEmpty { return out }
-        let bi = used.count > 1
-        var base = 0
-        for c in 0..<sh.comps {
-            let chroma = c > 0
-            let bitDepth = chroma ? sh.bitDepthChroma : sh.bitDepthLuma
-            let cx = chroma ? jx / sh.subW : jx, cy = chroma ? jy / sh.subH : jy
-            let cw = chroma ? cwC : jw, ch = chroma ? chC : jh
-            let n = cw * ch
-            defer { base += n }
-            let u0 = used[0]
-            interpolate(sh.planes[u0.l][u0.r][c], x: cx, y: cy, w: cw, h: ch, mvx: u0.mvx, mvy: u0.mvy, chroma: chroma, bitDepth: bitDepth,
-                        into: &scratch.pred0, win: &scratch.win, tmp: &scratch.tmp)
-            if bi {
-                let u1 = used[1]
-                interpolate(sh.planes[u1.l][u1.r][c], x: cx, y: cy, w: cw, h: ch, mvx: u1.mvx, mvy: u1.mvy, chroma: chroma, bitDepth: bitDepth,
-                            into: &scratch.pred1, win: &scratch.win, tmp: &scratch.tmp)
-            }
-            let maxV = Int32((1 << bitDepth) - 1)
-            let shift1 = Int32(14 - bitDepth)
-            let p0 = scratch.pred0.span, p1 = scratch.pred1.span
-            var o = out.mutableSpan
-            if sh.weighted {
-                let log2WD = Int32(chroma ? sh.chromaLog2Denom : sh.lumaLog2Denom) + shift1
-                let k0 = (used[0].l * 16 + used[0].r) * 3 + c
-                let w0 = sh.weightW[k0], o0 = sh.weightO[k0]
-                if !bi {
-                    for i in 0..<n {
-                        let p = p0[i]
-                        let v = log2WD >= 1 ? ((p * w0 + (1 << (log2WD - 1))) >> log2WD) + o0 : p * w0 + o0
-                        o[base + i] = UInt16(max(0, min(maxV, v)))
+    /// 8.5.3.3 for a band's jobs, written into its planes (first rows `rowBase`). Per component,
+    /// the jobs go by the references they use: each group takes its reference samples once (a
+    /// copy per job would retain buffers every worker shares), and the band's plane is written
+    /// through one span. Prediction blocks never overlap, so the order does not matter.
+    static func predictBand(_ jobs: [HEVCInterBand.MC], _ shared: [HEVCMCShared], _ scratch: inout HEVCMCScratch, into out: inout [[UInt16]],
+                            widths: [Int], heights: [Int], rowBase: [Int]) {
+        guard let first = jobs.first else { return }
+        // The (slice, refIdxL0, refIdxL1) combinations, in order of first use.
+        var keys: [(slice: Int, r0: Int8, r1: Int8)] = []
+        for m in jobs where !keys.contains(where: { $0.slice == m.slice && $0.r0 == m.job.refIdx.0 && $0.r1 == m.job.refIdx.1 }) {
+            keys.append((m.slice, m.job.refIdx.0, m.job.refIdx.1))
+        }
+        for c in 0..<min(shared[first.slice].comps, out.count) {
+            var plane: [UInt16] = []
+            swap(&plane, &out[c])
+            do {
+                var o = plane.mutableSpan
+                let pw = widths[c], ph = heights[c], rb = rowBase[c]
+                for k in keys {
+                    let sh = shared[k.slice]
+                    let has0 = k.r0 >= 0, has1 = k.r1 >= 0
+                    guard has0 || has1 else {
+                        // No usable reference (a malformed index): zeros, as a prediction of nothing.
+                        for m in jobs where m.slice == k.slice && m.job.refIdx.0 == k.r0 && m.job.refIdx.1 == k.r1 {
+                            let (cx, cy, rw, rows) = componentRect(m.job, c: c, sh, pw: pw, ph: ph)
+                            for j in 0..<max(0, rows) { let row = (cy + j - rb) * pw + cx; for i in 0..<max(0, rw) { o[row + i] = 0 } }
+                        }
+                        continue
                     }
-                } else {
-                    let k1 = (used[1].l * 16 + used[1].r) * 3 + c
-                    let w1 = sh.weightW[k1], o1 = sh.weightO[k1]
-                    for i in 0..<n {
-                        let v = (p0[i] * w0 + p1[i] * w1 + ((o0 + o1 + 1) << log2WD)) >> (log2WD + 1)
-                        o[base + i] = UInt16(max(0, min(maxV, v)))
+                    // The lists used: the first (L0 before L1), and L1 when bi-predicting.
+                    let pa = sh.planes[has0 ? 0 : 1][Int(has0 ? k.r0 : k.r1)][c]
+                    let pb = has0 && has1 ? sh.planes[1][Int(k.r1)][c] : pa
+                    let a = pa.bands.span, b = pb.bands.span
+                    let ga = HEVCRefGeometry(pa), gb = HEVCRefGeometry(pb)
+                    for m in jobs where m.slice == k.slice && m.job.refIdx.0 == k.r0 && m.job.refIdx.1 == k.r1 {
+                        predictComponent(m.job, c: c, sh, a, ga, b, gb, &scratch, into: &o, pw: pw, ph: ph, rowBase: rb)
                     }
                 }
-            } else if !bi {
-                let off = shift1 > 0 ? Int32(1) << (shift1 - 1) : 0
-                for i in 0..<n { o[base + i] = UInt16(max(0, min(maxV, (p0[i] + off) >> shift1))) }
-            } else {
-                let shift2 = Int32(15 - bitDepth), off = Int32(1) << (shift2 - 1)
-                for i in 0..<n { o[base + i] = UInt16(max(0, min(maxV, (p0[i] + p1[i] + off) >> shift2))) }
+            }
+            swap(&plane, &out[c])
+        }
+    }
+
+    /// A band whose every sample is a copy of the same position in its references: every CTB
+    /// decoded, all blocks inter without a residual, each vector zero (full samples) and no
+    /// weighting, from pictures whose band (of each plane) holds the same samples. Its
+    /// prediction is then that band itself, shared rather than copied (a static screen region
+    /// stays one buffer from picture to picture); nil otherwise. Each reference picture is
+    /// checked once (equal arrays sharing a buffer compare at once).
+    static func sharedBand(_ band: HEVCInterBand, _ shared: [HEVCMCShared], widths: [Int], heights: [Int], log2Rows: [Int]) -> [[UInt16]]? {
+        guard band.decoded, !band.intra, band.residuals.isEmpty, !band.mc.isEmpty else { return nil }
+        for m in band.mc {
+            let j = m.job
+            let has0 = j.refIdx.0 >= 0, has1 = j.refIdx.1 >= 0
+            guard has0 || has1, !has0 || (j.mv.0 == 0 && j.mv.1 == 0), !has1 || (j.mv.2 == 0 && j.mv.3 == 0) else { return nil }
+        }
+        var candidate: [[UInt16]] = []
+        var checked: [Int] = []
+        for m in band.mc {
+            let sh = shared[m.slice]
+            guard !sh.weighted else { return nil }
+            for l in 0..<2 {
+                let r = Int(l == 0 ? m.job.refIdx.0 : m.job.refIdx.1)
+                guard r >= 0 else { continue }
+                guard sh.refIds.indices.contains(l), sh.refIds[l].indices.contains(r), sh.planes.indices.contains(l), sh.planes[l].indices.contains(r)
+                else { return nil }
+                let id = sh.refIds[l][r]
+                guard !checked.contains(id) else { continue }
+                checked.append(id)
+                let planes = sh.planes[l][r]
+                guard planes.count == widths.count else { return nil }
+                for c in planes.indices {
+                    let p = planes[c]
+                    guard p.width == widths[c], p.height == heights[c], p.log2Rows == log2Rows[c], p.bands.indices.contains(band.row) else { return nil }
+                    if candidate.count < planes.count {
+                        candidate.append(p.bands[band.row])
+                    } else if p.bands[band.row] != candidate[c] {
+                        return nil
+                    }
+                }
             }
         }
-        return out
+        return candidate.count == widths.count ? candidate : nil
+    }
+
+    /// Component `c` of a job's block, clipped to the plane: x, y, width, rows.
+    @inline(__always) static func componentRect(_ job: HEVCMCJob, c: Int, _ sh: HEVCMCShared, pw: Int, ph: Int) -> (Int, Int, Int, Int) {
+        let chroma = c > 0
+        let cx = chroma ? Int(job.x) / sh.subW : Int(job.x), cy = chroma ? Int(job.y) / sh.subH : Int(job.y)
+        let cw = chroma ? Int(job.w) / sh.subW : Int(job.w), ch = chroma ? Int(job.h) / sh.subH : Int(job.h)
+        return (cx, cy, min(cw, pw - cx), min(ch, ph - cy))
+    }
+
+    /// Component `c` of one job from its first reference `a` (and L1's `b` when bi-predicting,
+    /// each with its own size: a corrupt stream may mix picture sizes). Vectors all at full
+    /// samples, without weighting, are the reference samples themselves (one list) or their
+    /// rounded average (two): the 14-bit intermediate's shifts cancel exactly, so the samples
+    /// are copied without interpolating.
+    @inline(__always)
+    static func predictComponent(_ job: HEVCMCJob, c: Int, _ sh: HEVCMCShared, _ a: borrowing Span<[UInt16]>, _ ra: HEVCRefGeometry,
+                                 _ b: borrowing Span<[UInt16]>, _ rb1: HEVCRefGeometry, _ scratch: inout HEVCMCScratch, into o: inout MutableSpan<UInt16>,
+                                 pw: Int, ph: Int, rowBase rb: Int) {
+        let has0 = job.refIdx.0 >= 0
+        let l0 = has0 ? 0 : 1, r0 = has0 ? Int(job.refIdx.0) : Int(job.refIdx.1)
+        let mx0 = has0 ? Int(job.mv.0) : Int(job.mv.2), my0 = has0 ? Int(job.mv.1) : Int(job.mv.3)
+        let bi = has0 && job.refIdx.1 >= 0
+        let r1 = Int(job.refIdx.1), mx1 = Int(job.mv.2), my1 = Int(job.mv.3)
+        let chroma = c > 0
+        let bitDepth = chroma ? sh.bitDepthChroma : sh.bitDepthLuma
+        let cw = chroma ? Int(job.w) / sh.subW : Int(job.w), ch = chroma ? Int(job.h) / sh.subH : Int(job.h)
+        let (cx, cy, rw, rows) = componentRect(job, c: c, sh, pw: pw, ph: ph)
+        guard rw > 0, rows > 0 else { return }
+        let fracBits = chroma ? 3 : 2, mask = (1 << fracBits) - 1
+        if !sh.weighted && (mx0 | my0) & mask == 0 && (!bi || (mx1 | my1) & mask == 0) {
+            let ga = ra.displaced(mx0 >> fracBits, my0 >> fracBits)
+            if bi {
+                let gb = rb1.displaced(mx1 >> fracBits, my1 >> fracBits)
+                averageFullSample(a, ga, b, gb, x: cx, y: cy, w: rw, h: rows, into: &o, width: pw, rowBase: rb)
+            } else {
+                copyFullSample(a, ga, x: cx, y: cy, w: rw, h: rows, into: &o, width: pw, rowBase: rb)
+            }
+            return
+        }
+        interpolate(a, ra, x: cx, y: cy, w: cw, h: ch, mvx: mx0, mvy: my0, chroma: chroma, bitDepth: bitDepth,
+                    into: &scratch.pred0, win: &scratch.win, tmp: &scratch.tmp)
+        if bi {
+            interpolate(b, rb1, x: cx, y: cy, w: cw, h: ch, mvx: mx1, mvy: my1, chroma: chroma, bitDepth: bitDepth,
+                        into: &scratch.pred1, win: &scratch.win, tmp: &scratch.tmp)
+        }
+        let maxV = Int32((1 << bitDepth) - 1)
+        let shift1 = Int32(14 - bitDepth)
+        let p0 = scratch.pred0.span, p1 = scratch.pred1.span
+        if sh.weighted {
+            let log2WD = Int32(chroma ? sh.chromaLog2Denom : sh.lumaLog2Denom) + shift1
+            let k0 = (l0 * 16 + r0) * 3 + c
+            let w0 = sh.weightW[k0], o0 = sh.weightO[k0]
+            if !bi {
+                for j in 0..<rows {
+                    let row = (cy + j - rb) * pw + cx, src = j * cw
+                    for i in 0..<rw {
+                        let p = p0[src + i]
+                        let v = log2WD >= 1 ? ((p * w0 + (1 << (log2WD - 1))) >> log2WD) + o0 : p * w0 + o0
+                        o[row + i] = UInt16(max(0, min(maxV, v)))
+                    }
+                }
+            } else {
+                let k1 = (16 + r1) * 3 + c
+                let w1 = sh.weightW[k1], o1 = sh.weightO[k1]
+                for j in 0..<rows {
+                    let row = (cy + j - rb) * pw + cx, src = j * cw
+                    for i in 0..<rw {
+                        let v = (p0[src + i] * w0 + p1[src + i] * w1 + ((o0 + o1 + 1) << log2WD)) >> (log2WD + 1)
+                        o[row + i] = UInt16(max(0, min(maxV, v)))
+                    }
+                }
+            }
+        } else if !bi {
+            let off = shift1 > 0 ? Int32(1) << (shift1 - 1) : 0
+            for j in 0..<rows {
+                let row = (cy + j - rb) * pw + cx, s0 = p0.extracting(j * cw ..< j * cw + rw)
+                var k = 0
+                for i in row ..< row + rw { o[i] = UInt16(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ off) &>> shift1))); k += 1 }
+            }
+        } else {
+            let shift2 = Int32(15 - bitDepth), off = Int32(1) << (shift2 - 1)
+            for j in 0..<rows {
+                let row = (cy + j - rb) * pw + cx, s0 = p0.extracting(j * cw ..< j * cw + rw), s1 = p1.extracting(j * cw ..< j * cw + rw)
+                var k = 0
+                for i in row ..< row + rw { o[i] = UInt16(truncatingIfNeeded: max(0, min(maxV, (s0[k] &+ s1[k] &+ off) &>> shift2))); k += 1 }
+            }
+        }
+    }
+
+    /// The full-sample prediction of a block from one reference (clamped at its edges,
+    /// 8.5.3.3.3.1): its samples. Rows inside the reference are spans of their own (from their
+    /// bands), written by iterating the destination's indices: bounds are checked once per row
+    /// and the copy vectorises.
+    @inline(__always)
+    static func copyFullSample(_ a: borrowing Span<[UInt16]>, _ ga: HEVCRefGeometry, x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<UInt16>,
+                               width pw: Int, rowBase rb: Int) {
+        let inside = ga.inside(x, y, w, h)
+        for j in 0..<h {
+            let row = (y + j - rb) * pw + x
+            if inside {
+                let s = ga.offset(x, y + j)
+                let ar = a[ga.band(y + j)].span.extracting(s ..< s + w)
+                var k = 0
+                for i in row ..< row + w { d[i] = ar[k]; k += 1 }
+            } else {
+                for i in 0..<w {
+                    let (ba, sa) = ga.clamped(x + i, y + j)
+                    d[row + i] = a[ba][sa]
+                }
+            }
+        }
+    }
+
+    /// The same from two references: the rounded mean, (a + b + 1) >> 1 (what
+    /// ((a << s) + (b << s) + (1 << s)) >> (s + 1) of the 14-bit intermediates comes to).
+    @inline(__always)
+    static func averageFullSample(_ a: borrowing Span<[UInt16]>, _ ga: HEVCRefGeometry, _ b: borrowing Span<[UInt16]>, _ gb: HEVCRefGeometry,
+                                  x: Int, y: Int, w: Int, h: Int, into d: inout MutableSpan<UInt16>, width pw: Int, rowBase rb: Int) {
+        let inside = ga.inside(x, y, w, h) && gb.inside(x, y, w, h)
+        for j in 0..<h {
+            let row = (y + j - rb) * pw + x
+            if inside {
+                let sa = ga.offset(x, y + j), sb = gb.offset(x, y + j)
+                let ar = a[ga.band(y + j)].span.extracting(sa ..< sa + w), br = b[gb.band(y + j)].span.extracting(sb ..< sb + w)
+                var k = 0
+                for i in row ..< row + w { d[i] = (ar[k] &+ br[k] &+ 1) >> 1; k += 1 }
+            } else {
+                for i in 0..<w {
+                    let (ba, ia) = ga.clamped(x + i, y + j), (bb, ib) = gb.clamped(x + i, y + j)
+                    d[row + i] = (a[ba][ia] &+ b[bb][ib] &+ 1) >> 1
+                }
+            }
+        }
+    }
+}
+
+/// A reference component's size and bands, and a full-sample displacement (dx, dy) into it.
+struct HEVCRefGeometry {
+    let width: Int, height: Int, log2Rows: Int
+    var dx = 0, dy = 0
+
+    init(_ p: HEVCPlane) {
+        width = p.width
+        height = p.height
+        log2Rows = p.log2Rows
+    }
+
+    var rowMask: Int { (1 << log2Rows) - 1 }
+
+    /// The same, displaced by (dx, dy).
+    @inline(__always) func displaced(_ dx: Int, _ dy: Int) -> HEVCRefGeometry {
+        var g = self
+        g.dx = dx
+        g.dy = dy
+        return g
+    }
+
+    /// Whether block (x, y, w, h), displaced, lies inside the reference.
+    @inline(__always) func inside(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
+        x + dx >= 0 && y + dy >= 0 && x + dx + w <= width && y + dy + h <= height
+    }
+
+    /// The band of row y, displaced (inside the reference), and the index of (x, y) in it.
+    @inline(__always) func band(_ y: Int) -> Int { (y + dy) >> log2Rows }
+    @inline(__always) func offset(_ x: Int, _ y: Int) -> Int { ((y + dy) & rowMask) * width + x + dx }
+
+    /// The band and index of (x, y), displaced and clamped to the reference.
+    @inline(__always) func clamped(_ x: Int, _ y: Int) -> (Int, Int) {
+        let yy = max(0, min(height - 1, y + dy))
+        return (yy >> log2Rows, (yy & rowMask) * width + max(0, min(width - 1, x + dx)))
     }
 }
 
@@ -560,4 +863,18 @@ enum HEVCLanes {
         d[i] = v[0]; d[i + 1] = v[1]; d[i + 2] = v[2]; d[i + 3] = v[3]
         d[i + 4] = v[4]; d[i + 5] = v[5]; d[i + 6] = v[6]; d[i + 7] = v[7]
     }
+}
+
+/// mergeCandList (at most 5: MaxNumMergeCand), inline.
+struct HEVCMergeList {
+    private var items = InlineArray<5, HEVCMotion>(repeating: HEVCMotion())
+    private(set) var count = 0
+
+    @inline(__always) mutating func append(_ m: HEVCMotion) {
+        guard count < 5 else { return }
+        items[count] = m
+        count += 1
+    }
+
+    @inline(__always) subscript(_ i: Int) -> HEVCMotion { items[i] }
 }
