@@ -441,4 +441,158 @@ import Testing
             #expect(order == [Int64(first), Int64(second)])
         }
     }
+
+    // MARK: upstream's limits and story rules
+
+    private func dispatch(_ c: LinkedClient, _ content: Signalservice_Content, from sender: String? = nil, timestamp: UInt64) async throws -> [ReceiveEvent] {
+        let d = MessageReceiver.Decrypted(sender: sender ?? c.aliceAci, senderDevice: 1, content: content, sealed: true, groupId: nil)
+        let e = envelope(c, type: .unidentifiedSender, content: Data(), timestamp: timestamp)
+        return try await c.database.pool.write { db in try c.receiver.dispatch(d, envelope: e, db) }
+    }
+
+    /// processDataMessage and #handleDataMessage: a body past 2 KiB, unknown flags and a legacy
+    /// end-session drop the message, as does one with nothing to show; past 32 attachments,
+    /// the first preview and the first quoted attachment are ignored.
+    @Test func messagesAreHeldToUpstreamLimits() async throws {
+        try await LinkedClient.with { c in
+            func text(_ body: String, _ change: (inout Signalservice_DataMessage) -> Void = { _ in }) async throws -> UInt64 {
+                let t = TestClock.next()
+                var content = textContent(body, timestamp: t)
+                change(&content.dataMessage)
+                _ = try await dispatch(c, content, timestamp: t)
+                return t
+            }
+            let long = String(repeating: "é", count: 1025), edge = String(repeating: "b", count: 2048)
+            _ = try await text(long)
+            _ = try await text(edge)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = ?", [long]) == 0)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = ?", [edge]) == 1)
+            _ = try await text("end session") { $0.flags = 1 }
+            _ = try await text("unknown flag") { $0.flags = 8 }
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE body IN ('end session', 'unknown flag')") == 0)
+            let quoteOnly = try await text("") { $0.quote.id = 1; $0.quote.authorAci = c.aliceAci; $0.quote.text = "quoted" }
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE sent_at = ?", [Int64(quoteOnly)]) == 0)
+
+            func pointer(_ i: Int) -> Signalservice_AttachmentPointer {
+                var a = Signalservice_AttachmentPointer()
+                a.cdnKey = "key\(i)"
+                a.cdnNumber = 2
+                a.key = Data(repeating: 1, count: 64)
+                a.digest = Data(repeating: 2, count: 32)
+                a.size = 10
+                a.contentType = "application/pdf"
+                return a
+            }
+            _ = try await text("many") { $0.attachments = (0..<40).map(pointer) }
+            #expect(try await count(c, "SELECT count(*) FROM message_attachments WHERE messageId = (SELECT id FROM messages WHERE body = 'many')") == 32)
+            _ = try await text("https://signal.org/a https://signal.org/b") { m in
+                for url in ["https://signal.org/a", "https://signal.org/b"] {
+                    var p = Signalservice_Preview()
+                    p.url = url
+                    p.title = "title"
+                    m.preview.append(p)
+                }
+                m.quote.id = 1
+                m.quote.authorAci = c.aliceAci
+                m.quote.text = "quoted"
+                m.quote.attachments = (0..<3).map { _ in
+                    var q = Signalservice_DataMessage.Quote.QuotedAttachment()
+                    q.contentType = "image/png"
+                    return q
+                }
+            }
+            let previews = try await count(c, "SELECT json_array_length(json -> '$.preview') FROM messages WHERE body = 'https://signal.org/a https://signal.org/b'")
+            let quoted = try await count(c, "SELECT json_array_length(json -> '$.quote.attachments') FROM messages WHERE body = 'https://signal.org/a https://signal.org/b'")
+            #expect(previews == 1)
+            #expect(quoted == 1)
+        }
+    }
+
+    /// #decryptAndProcess and findStoryMessage: no stories or story replies while stories are
+    /// off; 1:1 ones only from someone we share our profile with; a reply belongs to one of our
+    /// stories only if its sender was sent that story.
+    @Test func storiesAndRepliesFollowUpstreamRules() async throws {
+        try await LinkedClient.with { c in
+            func sharing(_ on: Bool) async throws {
+                try await c.database.pool.write { db in
+                    let id = try MessageStore.privateConversation(db, serviceId: c.aliceAci)
+                    try db.execute(sql: "UPDATE conversations SET json = json_set(json, '$.profileSharing', json(?)) WHERE id = ?",
+                                   arguments: [on ? "true" : "false", id])
+                }
+            }
+            func story(_ text: String) async throws {
+                let t = TestClock.next()
+                var content = Signalservice_Content()
+                content.storyMessage.textAttachment.text = text
+                _ = try await dispatch(c, content, timestamp: t)
+            }
+            func reply(_ body: String, to sentAt: UInt64) async throws {
+                let t = TestClock.next()
+                var content = textContent(body, timestamp: t)
+                content.dataMessage.storyContext.authorAci = c.account.aci
+                content.dataMessage.storyContext.sentTimestamp = sentAt
+                _ = try await dispatch(c, content, timestamp: t)
+            }
+            /// nil: no such message; .some(nil): a message that is not a story reply.
+            func storyIdOf(_ body: String) async throws -> String?? {
+                try await c.database.pool.read { db -> String?? in
+                    guard try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE body = ?", arguments: [body]) ?? 0 > 0 else { return nil }
+                    return .some(try String.fetchOne(db, sql: "SELECT storyId FROM messages WHERE body = ?", arguments: [body]))
+                }
+            }
+            // Our story, sent to bob alone.
+            let bob = UUID().uuidString.lowercased()
+            let ourStoryAt = TestClock.next()
+            let ourStory = try await c.database.pool.write { db -> String in
+                let ours = try MessageStore.privateConversation(db, serviceId: c.account.aci)
+                var s = Signalservice_StoryMessage()
+                s.textAttachment.text = "our story"
+                s.allowsReplies = true
+                let bobConversation = try MessageStore.privateConversation(db, serviceId: bob)
+                return try #require(try StoryStore.insert(db, .init(conversationId: ours, source: c.account.aci, sourceDevice: 1, sentAt: ourStoryAt,
+                                                                     serverTimestamp: nil, serverGuid: nil, story: s, outgoing: true,
+                                                                     sendState: [bobConversation: ["status": "Sent"]])))
+            }
+
+            try await sharing(false)
+            try await story("from a stranger")
+            try await reply("reply from a stranger", to: ourStoryAt)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE type = 'story' AND sourceServiceId = ?", [c.aliceAci]) == 0)
+            #expect(try await storyIdOf("reply from a stranger") == nil)
+
+            try await sharing(true)
+            try await reply("not sent our story", to: ourStoryAt)
+            #expect(try await storyIdOf("not sent our story") == .some(nil))   // a plain message, not a story reply
+            try await c.database.pool.write { db in
+                let alice = try MessageStore.privateConversation(db, serviceId: c.aliceAci)
+                try db.execute(sql: "UPDATE messages SET json = json_set(json, '$.sendStateByConversationId.' || ?, json('{\"status\":\"Sent\"}')) WHERE id = ?",
+                               arguments: [alice, ourStory])
+            }
+            try await reply("sent our story", to: ourStoryAt)
+            #expect(try await storyIdOf("sent our story") == .some(ourStory))
+            try await story("from a friend")
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE type = 'story' AND sourceServiceId = ?", [c.aliceAci]) == 1)
+
+            try await c.database.pool.write { db in try Items.set(db, "hasStoriesDisabled", true) }
+            try await story("stories are off")
+            try await reply("reply while stories are off", to: ourStoryAt)
+            #expect(try await count(c, "SELECT count(*) FROM messages WHERE type = 'story' AND sourceServiceId = ?", [c.aliceAci]) == 1)
+            #expect(try await storyIdOf("reply while stories are off") == nil)
+        }
+    }
+
+    /// A blocked group is dropped before its group is fetched (upstream isGroupBlocked comes
+    /// first): its messages neither wait for a refresh nor bring the group in.
+    @Test func aBlockedGroupIsNotFetchedForItsMessages() async throws {
+        try await LinkedClient.with { c in
+            let masterKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+            let t = TestClock.next()
+            await #expect(throws: GroupRefreshNeeded.self) { try await dispatch(c, groupContent("unknown group", masterKey: masterKey, timestamp: t), timestamp: t) }
+            try await c.database.pool.write { db in
+                try BlockedList.groups.save(db, [(id: try GroupKeys(masterKey: masterKey).groupId.base64EncodedString(), blockedAt: MessageStore.now())])
+            }
+            #expect(try await dispatch(c, groupContent("blocked group", masterKey: masterKey, timestamp: t), timestamp: t).isEmpty)
+            #expect(try await count(c, "SELECT count(*) FROM conversations WHERE type = 'group'") == 0)
+        }
+    }
 }

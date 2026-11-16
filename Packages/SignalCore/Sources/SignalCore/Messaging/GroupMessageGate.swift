@@ -37,6 +37,9 @@ extension MessageReceiver {
                           groupRefreshed: Bool) throws -> (conversationId: String, groupId: Data)? {
         guard g.masterKey.count == 32 else { throw ReceiveError.invalidEnvelope("bad group master key") }
         let keys = try GroupKeys(masterKey: g.masterKey)
+        // A blocked group is dropped before anything else (upstream `isGroupBlocked` in
+        // MessageReceiver): it is not refreshed, nor its change applied, for its messages.
+        if try BlockedList.groups.blockedAt(db, keys.groupId.base64EncodedString()).blocked { return nil }
         let stored = try GroupStore.find(db, groupId: keys.groupId)
         // `isFirstUpdate || revision > existingRevision`
         let behind = stored?.state.map { Int(g.revision) > $0.revision } ?? true
@@ -53,5 +56,37 @@ extension MessageReceiver {
     static func mayPost(_ sender: String, in state: GroupV2State, ourAci: String) -> Bool {
         guard state.isMember(ourAci), state.isMember(sender), !state.terminated else { return false }
         return !state.announcementsOnly || state.isAdmin(sender)
+    }
+}
+
+// What upstream drops before a message reaches its handler, and the limits processDataMessage
+// puts on what it carries (MessageReceiver #decryptAndProcess, #handleDataMessage,
+// #handleEditMessage, #handleStoryMessage; textsecure/processDataMessage.preload.ts).
+enum InboundLimits {
+    /// `MAX_MESSAGE_BODY_BYTE_LENGTH`: a longer body travels as a long-text attachment, so a
+    /// message, edit or story reply with one is dropped ("Dropping too-long message").
+    static let maxBodyBytes = 2 << 10
+    /// `ATTACHMENT_MAX`: the attachments past these are ignored.
+    static let maxAttachments = 32
+    /// `DataMessage.Flags` that processDataMessage knows; any other bit drops the message
+    /// ("Unknown flags in message").
+    static let knownFlags: UInt32 = 1 | ConversationState.expirationTimerUpdateFlag | ConversationState.profileKeyUpdateFlag
+    static let endSessionFlag: UInt32 = 1
+
+    static func bodyTooLong(_ body: String) -> Bool { body.utf8.count > maxBodyBytes }
+
+    /// `getStoriesBlocked`: stories are off on this account.
+    static func storiesDisabled(_ db: Database) throws -> Bool { try Items.get(db, "hasStoriesDisabled", as: Bool.self) == true }
+
+    /// The sender's private conversation shares our profile (`profileSharing`): 1:1 stories and
+    /// story replies come only from them ("Dropping story message - !profileSharing for sender").
+    static func sharesProfile(_ db: Database, sender: String) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT json ->> '$.profileSharing' FROM conversations WHERE type = 'private' AND serviceId = ?",
+                          arguments: [sender]) ?? false
+    }
+
+    /// `isMessageEmpty` for an incoming chat message as it is stored: nothing to show.
+    static func isEmpty(_ m: Signalservice_DataMessage) -> Bool {
+        m.body.isEmpty && m.attachments.isEmpty && m.contact.isEmpty && !m.hasSticker && !m.hasPollCreate && !m.isViewOnce
     }
 }

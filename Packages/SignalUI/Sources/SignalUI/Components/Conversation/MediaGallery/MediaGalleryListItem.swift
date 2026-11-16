@@ -255,7 +255,7 @@ public struct LinkPreviewItem: View {
                 let _ = (run.underline = true)
                 // The url (body-medium) sets the first line box to 18px.
                 CSSText(runs: [run], style: CSSTextStyle(AxoType.bodyMedium), wrap: .truncate, color: .labelSecondary)
-                CSSText(runs: [Emojify.run("\(authorTitle) · \(preview.domain ?? "")")], style: CSSTextStyle(AxoType.bodySmall), wrap: .wrap,
+                CSSText(runs: [Emojify.run("\(bidiIsolate(authorTitle)) · \(preview.domain ?? "")")], style: CSSTextStyle(AxoType.bodySmall), wrap: .wrap,
                         color: .labelSecondary)
             }
         }
@@ -284,7 +284,7 @@ public struct GalleryContactListItem: View {
     }
 
     public var body: some View {
-        MediaGalleryListItem(attachment: avatar, message: message, title: "\(name) · \(authorTitle)", readyLabel: i18n("icu:startDownload"),
+        MediaGalleryListItem(attachment: avatar, message: message, title: "\(bidiIsolate(name)) · \(bidiIsolate(authorTitle))", readyLabel: i18n("icu:startDownload"),
                              onClick: onClick, showMessage: showMessage) {
             ListAvatar(data: ConversationAvatarData(title: name, color: AxoTokens.Avatar.allColorNames[0],
                                                     image: avatar?.hasUrl == true ? avatar?.image : nil), size: 36)

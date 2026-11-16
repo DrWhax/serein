@@ -139,7 +139,7 @@ struct CallingParticipantListItem: View {
                         if isMe {
                             CSSText(i18n("icu:you"), style: nameStyle, wrap: .truncate, color: white)
                         } else if p.isInSystemContacts {
-                            CSSInlineTail(p.conversation.title + " ", style: nameStyle) {
+                            CSSInlineTail(bidiIsolate(p.conversation.title) + " ", style: nameStyle) {
                                 SignalIcon("v3/person/person-circle-compact", size: 14, color: AxoColor(light: LegacyColor.gray25, dark: LegacyColor.gray25))
                                     .frame(width: 14, height: 14).padding(.leading, 13 * 0.3)
                             }

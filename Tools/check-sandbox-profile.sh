@@ -6,8 +6,9 @@
 #     processes, preferences or network), the link-preview fetcher and the GIF service HTTPS to
 #     the web but no user files, writes, processes, other programs' Mach services (the
 #     pasteboard) or connections to this machine, the
-#     calling service UDP and the audio input but no user files, writes, processes or
-#     connections to this machine, the voice-note service the audio input and nothing else,
+#     calling service UDP and the audio input but no user files, writes, processes, other
+#     programs' Mach services (the pasteboard), HTTPS of its own or connections to this machine,
+#     the voice-note service the audio input and nothing else,
 #     and the app (Serein.sb) its container and the network but no programs, no home directory
 #     and no microphone (the audio probes open the microphone for half a second and keep
 #     nothing; the check that only the two services hear it needs this terminal to have the
@@ -219,11 +220,12 @@ system = {"read a system file", "read /etc/hosts"}
 mach = "look up a Mach service"
 # Only the two services with the microphone may hear it (when this terminal may); the web
 # services and the app run the audio input but hear silence.
-# Of the services, only the calling service may look up the Mach services of other programs (the
-# pasteboard stands for them): the web services and the voice-note encoder name the few theirs need.
+# No service may look up the Mach services of other programs (the pasteboard stands for them):
+# the web services, the voice-note encoder and the calling service name the few theirs need. The
+# calling service has no TLS of its own (its HTTP goes through the app), so trustd is not one.
 may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalMessageParser": {online}, "SignalVoiceNoteEncoder": system | {hear},
        "SignalLinkPreviewFetcher": system | {"send udp", audio}, "SignalGifSearch": system | {"send udp", audio},
-       "SignalCalling": system | {mach, hear, "https to the web"},
+       "SignalCalling": system | {hear},
        "Serein": system | udp | {mach, audio, "open an IOKit device", "tcp to 127.0.0.1", "send udp to 127.0.0.1", "list /Users", "write preferences"}}
 
 seen, bad = {p: {} for p in must}, []

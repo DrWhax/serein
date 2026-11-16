@@ -38,6 +38,8 @@ public struct ConversationDetailsInfo: Sendable, Equatable {
     public var groupDescription: String?
     /// The chat's own unread-reminders choice (nil: the account's, `getShowUnreadReminders`).
     public var showUnreadReminders: Bool?
+    /// The header's same-name warning (`getContactSpoofingWarningSelector`).
+    public var contactSpoofing: ContactSpoofingCheck?
 }
 
 extension ConversationQueries {
@@ -66,7 +68,8 @@ extension ConversationQueries {
                 return members.contains(serviceId) ? (g["id"], name) : nil
             }.sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }.map(\.0)
         }
-        return ConversationDetailsInfo(
+        let ourAci = (try Items.get(db, "uuid_id") as String?)?.split(separator: ".").first.map(String.init)
+        var info = ConversationDetailsInfo(
             conversationId: conversationId, isGroup: isGroup, serviceId: serviceId, masterKey: stored?.keys.masterKey,
             muteExpiresAt: (json["muteExpiresAt"] as? NSNumber)?.int64Value, expireTimer: timer.seconds.map(Int.init),
             isBlocked: blocked, isArchived: flag("isArchived") ?? false, isPinned: ((try Items.get(db, "pinnedConversationIds") as [String]?) ?? []).contains(conversationId),
@@ -80,6 +83,8 @@ extension ConversationQueries {
                 || ((json["name"] as? String) ?? "").isEmpty == false && !isGroup,
             isGroupNameVerified: isGroup && GroupNames.isVerified(name: json["name"] as? String, hash: json["groupVerifiedNameHash"] as? String),
             showUnreadReminders: flag("showUnreadReminders"))
+        if let ourAci { info.contactSpoofing = try ContactSpoofing.check(db, conversationId: conversationId, ourAci: ourAci) }
+        return info
     }
 }
 

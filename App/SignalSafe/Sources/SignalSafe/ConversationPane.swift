@@ -37,7 +37,7 @@ struct ConversationPane: View {
         let index = Dictionary(messages.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
         return VStack(spacing: 0) {
             ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, outgoingCallButtonStyle: callButtonStyle,
-                               actions: headerActions) { EmptyView() }
+                               contactSpoofingWarning: spoofingWarning, collidingAvatars: collidingAvatars, actions: headerActions) { EmptyView() }
             if session.activeAudioMessageId != nil {
                 // While audio plays (in this chat or another) the mini-player takes the pinned bar's place.
                 AudioMiniPlayer(session: session, i18n: i18n)
@@ -305,6 +305,26 @@ struct ConversationPane: View {
         return h
     }
 
+    /// `getRenderableContactSpoofingWarning`: a message request named like a contact we talk
+    /// to (until dismissed), or group members sharing a name not all acknowledged.
+    var spoofingWarning: ContactSpoofingWarning? {
+        guard let check = session.details?.contactSpoofing, check.isRenderable else { return nil }
+        switch check {
+        case .directConversationWithSameTitle: return .directConversationWithSameTitle
+        case .multipleGroupMembersWithSameTitle(let collisions, _):
+            return .multipleGroupMembersWithSameTitle(sharedNames: collisions.count, conversationIds: collisions.keys.sorted().flatMap { collisions[$0] ?? [] })
+        }
+    }
+
+    /// CollidingAvatars: the two first people sharing the one shared name.
+    var collidingAvatars: [ConversationAvatarData] {
+        guard case .multipleGroupMembersWithSameTitle(_, let ids)? = spoofingWarning else { return [] }
+        return ids.prefix(2).compactMap { session.conversation($0) }.map { c in
+            let image = session.avatarImage(c.avatar)
+            return ConversationAvatarData(title: c.title, color: c.color, image: image, hasAvatar: image != nil)
+        }
+    }
+
     /// The header's menu and buttons.
     /// `getOutgoingCallButtonStyle`: none for Note to Self, unaccepted or left chats; both for
     /// direct chats; video (or Join while a call is up) for groups.
@@ -339,6 +359,8 @@ struct ConversationPane: View {
         a.onMarkUnread = { session.setMarkedUnread(true) }
         a.onSelectModeEnter = { session.selectedMessageIds = [] }
         a.onSearchInConversation = { session.startConversationSearch() }
+        a.onReviewNameCollision = { session.reviewNameCollision() }
+        a.onAcknowledgeNameCollisions = { session.acknowledgeNameCollisions() }
         let callId = conversation.id
         a.onOutgoingAudioCall = { session.openCallLobby(callId, video: false) }
         a.onOutgoingVideoCall = { session.openCallLobby(callId, video: true) }

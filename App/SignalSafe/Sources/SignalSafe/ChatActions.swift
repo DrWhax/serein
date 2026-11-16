@@ -31,6 +31,28 @@ import SignalUI
         }
     }
 
+    // MARK: same-name warnings (upstream ContactSpoofingReviewDialog)
+
+    /// `reviewConversationNameCollision`: opens the review with the people the warning is about.
+    func reviewNameCollision() {
+        guard let check = details?.contactSpoofing, let id = selectedConversationId, let db = clientDatabase else { return }
+        let ids: [String] = switch check {
+        case .directConversationWithSameTitle(let safe): [id, safe]
+        case .multipleGroupMembersWithSameTitle(let collisions, _): collisions.keys.sorted().flatMap { collisions[$0] ?? [] }
+        }
+        Task { [weak self] in
+            guard let people = try? await db.spoofingCandidates(conversationIds: ids) else { return }
+            self?.nameCollisionReview = people
+        }
+    }
+
+    /// `acknowledgeGroupMemberNameCollisions`
+    func acknowledgeNameCollisions() {
+        guard case .multipleGroupMembersWithSameTitle(let collisions, _)? = details?.contactSpoofing, let id = selectedConversationId,
+              let db = clientDatabase else { return }
+        Task { try? await db.acknowledgeNameCollisions(conversationId: id, collisions: collisions) }
+    }
+
     // MARK: panels
 
     func pushPanel(_ name: String) {

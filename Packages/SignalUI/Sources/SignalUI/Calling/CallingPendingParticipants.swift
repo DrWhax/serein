@@ -88,7 +88,7 @@ public struct CallingPendingParticipants: View {
                                            color: p.conversation.color, image: p.conversation.avatar.map { AnyView(PixelImage($0, fit: .cover)) },
                                            hasAvatar: p.conversation.avatar != nil)
                                     if p.isInSystemContacts {
-                                        CSSInlineTail(p.conversation.title + " ", style: nameStyle) { Self.contactIcon }
+                                        CSSInlineTail(bidiIsolate(p.conversation.title) + " ", style: nameStyle) { Self.contactIcon }
                                     } else {
                                         CSSText(p.conversation.title, style: nameStyle, wrap: .truncate, color: Self.white)
                                     }

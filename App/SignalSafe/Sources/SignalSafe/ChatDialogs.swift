@@ -11,8 +11,55 @@ struct ChatDialogs: View {
     @Bindable var session: SignalSession
     let i18n: Localizer
 
+    /// ContactSpoofingReviewDialog for the open chat's warning: accept, block, delete or report
+    /// the look-alike, or (a group admin) remove a member.
+    @ViewBuilder func nameCollisionReview(_ people: [ContactSpoofingCandidate], _ check: ContactSpoofingCheck, conversationId: String) -> some View {
+        let byId = Dictionary(people.map { ($0.conversationId, $0) }, uniquingKeysWith: { a, _ in a })
+        let candidate = { (id: String) -> ContactSpoofingReviewDialog.Candidate? in
+            guard let p = byId[id] else { return nil }
+            var c = ContactSpoofingReviewDialog.Candidate(
+                id: id, conversation: ContactSpoofingPerson(title: p.title, profileName: p.profileName, phoneNumber: p.e164, color: p.color,
+                                                            avatar: session.avatarImage(p.avatar)),
+                isSignalConnection: p.isSignalConnection, sharedGroupNames: p.sharedGroupNames)
+            c.isBlocked = p.isBlocked
+            return c
+        }
+        let kind: ContactSpoofingReviewDialog.Kind? = switch check {
+        case .directConversationWithSameTitle(let safe):
+            candidate(conversationId).flatMap { lookalike in candidate(safe).map { .directConversationWithSameTitle(possiblyUnsafe: lookalike, safe: $0) } }
+        case .multipleGroupMembersWithSameTitle(let collisions, _):
+            .multipleGroupMembersWithSameTitle(
+                areWeAdmin: session.details?.group?.isAdmin(session.ourAci ?? "") ?? false,
+                addFromInviteLinkNeedsApproval: session.details?.group?.accessControl.addFromInviteLink == GroupAccess.administrator,
+                collisions: collisions.keys.sorted().map { title in (title: title, members: (collisions[title] ?? []).compactMap(candidate)) })
+        }
+        let close = { session.nameCollisionReview = nil }
+        let respond = { (id: String, response: MessageRequestResponse) in
+            close()
+            session.respond(id, response)
+        }
+        if let kind {
+            ContactSpoofingReviewDialog(
+                kind: kind, acceptConversation: { respond($0, .accept) }, reportSpam: { respond($0, .spam) },
+                blockAndReportSpam: { respond($0, .blockAndSpam) }, blockConversation: { respond($0, .block) },
+                deleteConversation: { respond($0, .delete) },
+                removeMember: { id in
+                    close()
+                    if let aci = byId[id]?.serviceId { session.removeMember(aci) }
+                },
+                showContactModal: { id in
+                    close()
+                    session.contactModalId = id
+                },
+                onClose: close)
+        }
+    }
+
     var body: some View {
         if let review = session.identityReview { IdentityReviewDialog(session: session, review: review) }
+        if let people = session.nameCollisionReview, let check = session.details?.contactSpoofing, let id = session.selectedConversationId {
+            AxoBaseDialog.Host { nameCollisionReview(people, check, conversationId: id) }
+        }
         if let sheet = session.safetyNumberSheet { SafetyNumberSheetDialog(session: session, sheet: sheet, i18n: i18n) }
         if let id = session.customTimerFor {
             AxoBaseDialog.Host {

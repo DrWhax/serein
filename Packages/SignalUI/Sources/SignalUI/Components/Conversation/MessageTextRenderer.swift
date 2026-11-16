@@ -10,6 +10,7 @@
 
 import SignalText
 import SwiftUI
+import SignalI18n
 
 /// `RenderLocation`
 public enum RenderLocation: Sendable { case conversationList, quote, mediaEditor, pinnedMessagesBar, searchResult, storyViewer, timeline }
@@ -138,12 +139,13 @@ public enum MessageTextRenderer {
             if case let .mention(_, conversationID, name) = m.kind {
                 if c.disableLinks {
                     // <bdi>@<Emojify/></bdi>
-                    var r = CSSTextRun("@" + name, fontName: fontName, color: color)
+                    var r = CSSTextRun(bidiIsolate("@" + name), fontName: fontName, color: color)
                     r.emojify = true
                     decorate(&r)
                     result.append(r)
                 } else {
-                    var r = CSSTextRun.inlineBlock("@" + name, mentionBox(c.direction, invisible: invisible), fontName: fontName, color: color)
+                    // An inline-block (its own bidi paragraph upstream): isolated likewise.
+                    var r = CSSTextRun.inlineBlock(bidiIsolate("@" + name), mentionBox(c.direction, invisible: invisible), fontName: fontName, color: color)
                     r.emojify = true
                     decorate(&r)
                     if !invisible { r.action = MessageTextAction.mention(conversationID: conversationID).encoded }

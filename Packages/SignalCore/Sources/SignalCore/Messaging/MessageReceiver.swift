@@ -450,6 +450,17 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 throw ReceiveError.invalidEnvelope("story=true on a message that is not a story send, group story reply or delete")
             }
         }
+        // Stories and story replies: none while stories are off; 1:1 ones only from someone we
+        // share our profile with (upstream #decryptAndProcess).
+        if !fromOurDevice {
+            let data: Signalservice_DataMessage? = if case .dataMessage(let m) = c.content { m } else { nil }
+            let story: Signalservice_StoryMessage? = if case .storyMessage(let s) = c.content { s } else { nil }
+            if story != nil || data?.hasStoryContext == true {
+                if try InboundLimits.storiesDisabled(db) { return events }
+                let isGroup = data?.hasGroupV2 == true || story?.hasGroup == true
+                if !isGroup, try !InboundLimits.sharesProfile(db, sender: d.sender) { return events }
+            }
+        }
         // Nothing from a blocked sender is processed (the sender key above is, as upstream).
         if !fromOurDevice, try BlockedList.serviceIds.blockedAt(db, d.sender).blocked { return events }
 
@@ -475,14 +486,16 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             let n = try MessageStore.applyReceipt(db, kind: kind, from: d.sender, timestamps: r.timestamp)
             events.append(.receipt(kind: kind, sender: d.sender, timestamps: r.timestamp, updatedMessages: n))
         case .typingMessage(let t):
-            // `onTyping`: not in a group we or the sender are not members of, or a terminated one.
+            // `onTyping`: not in a group we or the sender are not members of, a terminated one,
+            // or a blocked one.
             if t.hasGroupID {
                 guard let state = try GroupStore.find(db, groupId: t.groupID)?.state, state.isMember(account.aci), state.isMember(d.sender),
-                      !state.terminated else { return events }
+                      !state.terminated, try !BlockedList.groups.blockedAt(db, t.groupID.base64EncodedString()).blocked else { return events }
             }
             events.append(.typing(sender: d.sender, started: t.action == .started, timestamp: t.timestamp, groupId: t.hasGroupID ? t.groupID : nil))
         case .editMessage(let edit):
             guard edit.hasDataMessage else { throw ReceiveError.invalidEnvelope("EditMessage without dataMessage") }
+            if InboundLimits.bodyTooLong(edit.dataMessage.body) { return events }
             let conversation: String
             if edit.dataMessage.hasGroupV2 && edit.dataMessage.groupV2.hasMasterKey {
                 // An edit only finds its target in a group we have: none is created for it.
@@ -533,6 +546,9 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         guard m.timestamp == e.clientTimestamp || !e.hasClientTimestamp else {
             throw ReceiveError.invalidEnvelope("timestamp mismatch \(m.timestamp) != \(e.clientTimestamp)")
         }
+        // Dropped (the sender key it carried is kept): unknown flags (processDataMessage), a
+        // legacy end-session (whose body and attachments upstream clears), a body past 2 KiB.
+        if m.flags & ~InboundLimits.knownFlags != 0 || m.flags & InboundLimits.endSessionFlag != 0 || InboundLimits.bodyTooLong(m.body) { return [] }
         if try MessageStore.find(db, author: d.sender, sentAt: m.timestamp) != nil { return [] }   // duplicate
         let conversation: String
         var groupId: Data? = nil
@@ -568,7 +584,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         }
         // A reply or reaction to a story (storyContext).
         var storyId: String? = nil
-        switch try storyReplyTarget(m, isGroup: isGroupMessage, db) {
+        switch try storyReplyTarget(m, isGroup: isGroupMessage, conversationId: conversation, sender: d.sender, db) {
         case .drop: return events
         case .story(let id): storyId = id
         case .none: break
@@ -591,6 +607,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             // A pin also makes a message of its own (the notification), others none.
             return events + [.other(kind: "modifier:\(m.timestamp)", sender: d.sender)]
         }
+        // `isMessageEmpty`: nothing to show (a quote or preview alone, say) is not stored.
+        if InboundLimits.isEmpty(m) { return events }
         var extra: [String: Any] = [:]
         if m.isViewOnce { extra["isViewOnce"] = true }
         if m.hasPollCreate, let poll = MessageModifiers.pollJSON(m.pollCreate) { extra["poll"] = poll }
@@ -610,7 +628,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         if let storyId { try db.execute(sql: "UPDATE messages SET storyId = ? WHERE id = ?", arguments: [storyId, id]) }
         if mentionsMe { try db.execute(sql: "UPDATE messages SET mentionsMe = 1 WHERE id = ?", arguments: [id]) }
         try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
-                                                  attachments: m.attachments)
+                                                  attachments: Array(m.attachments.prefix(InboundLimits.maxAttachments)))
         if m.hasQuote {
             try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
                                                       attachments: Self.quoteThumbnails(m.quote), type: .quote)
@@ -735,6 +753,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                    string: sent.hasDestinationServiceID ? sent.destinationServiceID : nil)
             if sent.hasEditMessage, sent.editMessage.hasDataMessage {
                 let em = sent.editMessage.dataMessage
+                if InboundLimits.bodyTooLong(em.body) { return [.sync(kind: "sentEdit", senderDevice: d.senderDevice)] }
                 let conv = em.hasGroupV2 && em.groupV2.hasMasterKey ? try MessageStore.groupConversation(db, masterKey: em.groupV2.masterKey).id
                     : try destination.map { try MessageStore.privateConversation(db, serviceId: $0) } ?? ""
                 let ctx = ModifierContext(sender: account.aci, timestamp: em.timestamp, serverTimestamp: 0, conversationId: conv, source: .sync)
@@ -743,7 +762,11 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                            ourAci: account.aci)
                 return [.sync(kind: "sentEdit", senderDevice: d.senderDevice)]
             }
-            if sent.hasStoryMessage || (!sent.hasMessage && !sent.storyMessageRecipients.isEmpty) { return try handleSentStory(sent, d, db) }
+            if sent.hasStoryMessage || (!sent.hasMessage && !sent.storyMessageRecipients.isEmpty) {
+                // Stories off: our other devices' stories and recipient updates are dropped too.
+                if try InboundLimits.storiesDisabled(db) { return [.sync(kind: "sentStory", senderDevice: d.senderDevice)] }
+                return try handleSentStory(sent, d, db)
+            }
             guard sent.hasMessage else { return [.sync(kind: "sent", senderDevice: d.senderDevice)] }
             let m = sent.message
             let conversation: String
@@ -785,7 +808,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             }
             try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing",
                                            body: m.body, m.preview)
-            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), attachments: m.attachments)
+            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
+                                                      attachments: Array(m.attachments.prefix(InboundLimits.maxAttachments)))
             if let contact = m.contact.first, contact.hasAvatar, contact.avatar.hasAvatar {
                 try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
                                                           attachments: [contact.avatar.avatar], type: .contact)
@@ -831,7 +855,8 @@ extension MessageReceiver {
     /// The quote's reference (`quote`: id = the quoted message's timestamp, its author and text).
     static func quoteJSON(_ q: Signalservice_DataMessage.Quote) -> [String: Any]? {
         guard let author = serviceIdString(binary: q.hasAuthorAciBinary ? q.authorAciBinary : nil, string: q.hasAuthorAci ? q.authorAci : nil) else { return nil }
-        let attachments: [[String: Any]] = q.attachments.map { a in
+        // processQuote keeps the first quoted attachment.
+        let attachments: [[String: Any]] = q.attachments.prefix(1).map { a in
             var o: [String: Any] = ["contentType": a.contentType]
             if a.hasFileName { o["fileName"] = a.fileName }
             return o
