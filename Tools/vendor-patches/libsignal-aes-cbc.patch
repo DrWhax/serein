@@ -24,6 +24,50 @@ index a7d6fef7b..4d134b1f2 100644
  #[bridge_fn(node = false)]
  fn Aes256GcmEncryption_New(
      key: &[u8],
+diff --git a/swift/Sources/LibSignalClient/Aes256Cbc.swift b/swift/Sources/LibSignalClient/Aes256Cbc.swift
+new file mode 100644
+index 000000000..82d46d4e9
+--- /dev/null
++++ b/swift/Sources/LibSignalClient/Aes256Cbc.swift
+@@ -0,0 +1,38 @@
++//
++// Copyright 2026 SignalSafe. SPDX-License-Identifier: AGPL-3.0-only
++// (SignalSafe addition: exposes signal_crypto's AES-256-CBC to Swift.)
++//
++
++import Foundation
++import SignalFfi
++
++/// AES-256-CBC with PKCS#7 padding. Not authenticated: callers must verify a MAC
++/// over the IV and ciphertext before decrypting.
++public enum Aes256Cbc {
++    public static let keyLength = 32
++    public static let ivLength = 16
++
++    public static func encrypt<K: ContiguousBytes, I: ContiguousBytes, P: ContiguousBytes>(
++        _ plaintext: P, key: K, iv: I
++    ) throws -> Data {
++        try key.withUnsafeBorrowedBuffer { k in
++            try iv.withUnsafeBorrowedBuffer { v in
++                try plaintext.withUnsafeBorrowedBuffer { p in
++                    try invokeFnReturningData { signal_aes256_cbc_encrypt($0, k, v, p) }
++                }
++            }
++        }
++    }
++
++    public static func decrypt<K: ContiguousBytes, I: ContiguousBytes, C: ContiguousBytes>(
++        _ ciphertext: C, key: K, iv: I
++    ) throws -> Data {
++        try key.withUnsafeBorrowedBuffer { k in
++            try iv.withUnsafeBorrowedBuffer { v in
++                try ciphertext.withUnsafeBorrowedBuffer { c in
++                    try invokeFnReturningData { signal_aes256_cbc_decrypt($0, k, v, c) }
++                }
++            }
++        }
++    }
++}
 diff --git a/swift/Sources/SignalFfi/signal_ffi.h b/swift/Sources/SignalFfi/signal_ffi.h
 index 4bcd7adf4..7dfbaf902 100644
 --- a/swift/Sources/SignalFfi/signal_ffi.h
