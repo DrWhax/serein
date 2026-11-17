@@ -8,8 +8,8 @@
 ; call signalling the app passes in), sends and receives the call's media over UDP and TCP, and
 ; plays and records the call's audio. It holds no keys, messages or files of the user: the app
 ; hands it only what a call needs. Its HTTP goes through the app (to the SFU only), so it needs
-; no TLS of its own; DNS (ICE server names), the network stack and the audio system need their
-; system services, so Mach lookups stay as App Sandbox allows them.
+; no TLS of its own; of other programs' Mach services it looks up only the audio system's, TCC's
+; (the microphone permission) and DNS (TURN server names).
 ; Tools/check-sandbox-profile.sh runs a probe service under these rules, and the real service
 ; places a call between two of its endpoints.
 ;
@@ -32,6 +32,14 @@
 ; Registers no Mach services.
 (deny mach-register (global-name-regex #".*"))
 (deny mach-register (local-name-regex #".*"))
+; No other programs' Mach services but the audio HAL, the audio session, tccd (the microphone
+; permission, asked on the app's behalf) and DNS (mDNSResponder). The pasteboard, Launch
+; Services, preferences, the network extensions, CoreMediaIO's camera extensions and the rest
+; are denied; the start-up lookups that fail (directory helper, container manager,
+; opendirectory, DiskArbitration, coreservicesd) are not needed. Found by denying every lookup
+; during the check's call and reading the sandbox's denials from `log stream`.
+(deny mach-lookup (require-all (global-name-regex #".*") (require-not (global-name "com.apple.audio.audiohald")) (require-not (global-name "com.apple.audio.AudioSession")) (require-not (global-name "com.apple.tccd")) (require-not (global-name "com.apple.tccd.system")) (require-not (global-name "com.apple.dnssd.service"))))
+(deny mach-lookup (local-name-regex #".*"))
 ; WebRTC's sockets: UDP bound to a port of its own (App Sandbox's client entitlement allows
 ; connecting out, not binding), and the replies and the peer's media received on it. No TCP
 ; listening: TCP is only ever outgoing (TURN over TCP or TLS).

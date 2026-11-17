@@ -9,6 +9,7 @@
 
 import Foundation
 import SwiftUI
+import SignalI18n
 
 public enum AxoChatItem {
     /// `<AxoChatItem.Root>`
@@ -180,7 +181,8 @@ public enum AxoChatItem {
 
     /// The sender prefix of a description: `span.font-semibold.text-primary`.
     public static func sender(_ name: String, scheme: ColorScheme) -> AxoInlinePiece {
-        .styled(name + ": ", weight: 600, color: AxoColor.labelPrimary.value(for: scheme))
+        // <UserText>: the name's directional controls stay inside it.
+        .styled(bidiIsolate(name) + ": ", weight: 600, color: AxoColor.labelPrimary.value(for: scheme))
     }
 
     /// `<AxoChatItem.OutgoingStatus>`: ms-1.5 mt-0.5, a 14pt glyph (leading-none),

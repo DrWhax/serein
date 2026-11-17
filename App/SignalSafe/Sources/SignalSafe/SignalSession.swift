@@ -293,6 +293,8 @@ import SignalUI
     var pendingScrollMessageId: String?
     /// The custom-duration dialogs: the chat they are for.
     var customTimerFor: String?
+    /// ContactSpoofingReviewDialog: the people it shows, while it is open.
+    var nameCollisionReview: [ContactSpoofingCandidate]?
     var customMuteFor: String?
     /// AddGroupMembersModal / EditConversationAttributesModal, and their request state.
     var isAddingMembers = false

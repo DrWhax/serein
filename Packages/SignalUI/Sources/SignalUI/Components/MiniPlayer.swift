@@ -97,7 +97,7 @@ public struct MiniPlayer: View {
         case .paused: (.play, i18n("icu:MessageAudio--play"))
         case .loading: (.computing, i18n("icu:MessageAudio--pending"))
         }
-        var runs = [Emojify.run(title), .inlineBlock("·", CSSInlineBlock(paddingInline: 5))]
+        var runs = [Emojify.run(bidiIsolate(title)), .inlineBlock("·", CSSInlineBlock(paddingInline: 5))]
         if let duration { runs.append(CSSTextRun(durationToPlaybackText(state == .loading ? duration : currentTime))) }
         return HStack(spacing: 18) {
             PlaybackButton(mod: mod, variant: .mini, incoming: true, attachment: nil, label: label) {

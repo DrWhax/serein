@@ -121,12 +121,13 @@ extension MessageReceiver {
     /// A reply or reaction to a story: the story it belongs to, or nil to drop it.
     enum StoryReplyTarget { case none, story(id: String), drop }
 
-    func storyReplyTarget(_ m: Signalservice_DataMessage, isGroup: Bool, _ db: Database) throws -> StoryReplyTarget {
+    func storyReplyTarget(_ m: Signalservice_DataMessage, isGroup: Bool, conversationId: String, sender: String, _ db: Database) throws -> StoryReplyTarget {
         guard m.hasStoryContext else { return .none }
         let ctx = m.storyContext
         guard let author = Self.serviceIdString(binary: ctx.hasAuthorAciBinary ? ctx.authorAciBinary : nil, string: ctx.hasAuthorAci ? ctx.authorAci : nil)
         else { return isGroup ? .drop : .none }
-        guard let story = try StoryStore.find(db, author: author, sentAt: ctx.sentTimestamp) else {
+        guard let story = try repliedStory(db, author: author, sentAt: ctx.sentTimestamp, replyConversation: conversationId, sender: sender, isGroup: isGroup)
+        else {
             // "message in group but no matching story": dropped; 1:1 replies stay plain messages.
             return isGroup ? .drop : .none
         }
@@ -134,6 +135,29 @@ extension MessageReceiver {
             guard let l = try StoryDistributionLists.list(db, id: list), l.allowsReplies else { return .drop }
         }
         return .story(id: story.id)
+    }
+
+    /// `findStoryMessage`: the story `author` sent at `sentAt` that this reply may refer to. It
+    /// is in the reply's conversation, or one of ours (`isStoryAMatch`); one of ours only if the
+    /// replier was sent it, and for a 1:1 reply only if they may reply to it.
+    func repliedStory(_ db: Database, author: String, sentAt: UInt64, replyConversation: String, sender: String, isGroup: Bool) throws
+        -> (id: String, distributionListId: String?)? {
+        let ours = try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [account.aci])
+        let senderConversation = try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [sender])
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, conversationId, storyDistributionListId, json FROM messages WHERE type = 'story' AND sourceServiceId = ? AND sent_at = ?
+            """, arguments: [author, Int64(sentAt)])
+        for row in rows {
+            let conversation: String = row["conversationId"]
+            guard conversation == replyConversation || conversation == ours else { continue }
+            if author == account.aci {
+                let states = try MessageStore.jsonObject(row["json"])["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
+                guard let senderConversation, let state = states[senderConversation] else { continue }
+                if !isGroup, state["isAllowedToReplyToStory"] as? Bool == false { continue }
+            }
+            return (row["id"], row["storyDistributionListId"])
+        }
+        return nil
     }
 
     /// A group story reply follows its story's timer (it disappears with it).

@@ -24,7 +24,8 @@ extension MessageStore {
                               _ previews: [Signalservice_Preview], isStory: Bool = false) throws -> Int {
         guard !previews.isEmpty else { return 0 }
         let urls = LinkPreviewRules.findLinks(body)
-        let valid = previews.filter { LinkPreviewRules.isValidLinkPreview(url: $0.url, urlsInBody: urls, isStory: isStory) }
+        // processPreview keeps the first preview.
+        let valid = previews.prefix(1).filter { LinkPreviewRules.isValidLinkPreview(url: $0.url, urlsInBody: urls, isStory: isStory) }
         guard !valid.isEmpty else { return 0 }
         try updateJSON(db, messageId: messageId) { json in
             json["preview"] = valid.map { p in

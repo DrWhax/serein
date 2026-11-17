@@ -37,6 +37,14 @@ import Testing
         #expect(i18n("k", ["name": "Ann"], bidi: .none) == "Hello Ann")
     }
 
+    /// `bidiIsolate` on its own (names drawn in one line with other text): an override inside
+    /// is closed, a stray closer dropped, and the whole isolated.
+    @Test func bidiIsolateBalancesAndIsolates() {
+        #expect(bidiIsolate("Eve") == "\u{2068}Eve\u{2069}")
+        #expect(bidiIsolate("Eve\u{202E}") == "\u{2068}Eve\u{202E}\u{202C}\u{2069}")
+        #expect(bidiIsolate("a\u{2069}b\u{2067}") == "\u{2068}ab\u{2067}\u{2069}\u{2069}")
+    }
+
     @Test func bidiHandling() {
         let catalog = MessageCatalog(messages: ["en": ["k": "Hi {name}!"]])
         let i18n = Localizer(locale: "en", catalog: catalog)

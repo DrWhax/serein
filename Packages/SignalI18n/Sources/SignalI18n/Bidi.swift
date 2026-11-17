@@ -12,6 +12,12 @@ public enum BidiHandling: Sendable, Hashable {
     case none
 }
 
+/// `bidiIsolate` (ts/util/unicodeBidi.std.ts), as upstream's `<UserText>` wraps a name, title or
+/// file name drawn in one line with other text: FIRST STRONG ISOLATE, the text with its
+/// directional controls balanced, POP DIRECTIONAL ISOLATE. A right-to-left override in a profile
+/// name cannot then reverse the message preview or mention text after it.
+public func bidiIsolate(_ text: String) -> String { Bidi.isolate(text) }
+
 enum Bidi {
     static let lri: Unicode.Scalar = "\u{2066}", rli: Unicode.Scalar = "\u{2067}"
     static let fsi: Unicode.Scalar = "\u{2068}", pdi: Unicode.Scalar = "\u{2069}"
