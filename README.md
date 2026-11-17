@@ -86,18 +86,15 @@ Pages are fetched directly from the site, as Signal Desktop does. Unlike Signal 
 ## Building
 
 ```sh
-git submodule update --init
-Tools/apply-vendor-patches.sh
-CARGO_BUILD_TARGET=aarch64-apple-darwin vendor/libsignal/swift/build_ffi.sh --release
-vendor/ringrtc/bin/fetch-artifact --platform mac-arm64 --release
-Tools/build-ringrtc-ffi.sh
 SIGNALSAFE_SIGN_IDENTITY=<codesign identity> Tools/build-app.sh
 open App/SignalSafe/.build/Serein.app
 ```
 
+`build-app.sh` handles submodule initialisation, vendor patches, and the Rust builds (libsignal FFI and RingRTC) automatically. On each run it checks for new upstream releases of libsignal and ringrtc and prompts to bump; in non-interactive environments (CI) the check is skipped.
+
 After “Delete all data”, Serein launches a fresh instance and shuts down the old one. Quit requests allow asynchronous client cleanup to finish before terminating, including when the request comes from the delete-and-relaunch task.
 
-The submodules point at the upstream projects, unchanged. Serein's changes to them are patches in `Tools/vendor-patches`, which `apply-vendor-patches.sh` applies (`build-app.sh` applies them again, which does nothing if they are already in):
+The submodules point at the upstream projects, unchanged. Serein's changes to them are patches in `Tools/vendor-patches`, which `apply-vendor-patches.sh` applies (`build-app.sh` runs this automatically):
 
 | Patch | Change |
 |---|---|

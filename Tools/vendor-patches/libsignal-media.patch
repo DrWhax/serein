@@ -12,7 +12,7 @@ index bc076d4b8..0969cf091 100644
                  .linkedLibrary("stdc++", .when(platforms: [.linux])),
              ] + extraLinkerSettingsForUseAsLocalDependency
 diff --git a/swift/Sources/LibSignalClient/Media.swift b/swift/Sources/LibSignalClient/Media.swift
-index b2babb875..7ead90c9e 100644
+index b2babb875..c9fb9064b 100644
 --- a/swift/Sources/LibSignalClient/Media.swift
 +++ b/swift/Sources/LibSignalClient/Media.swift
 @@ -8,6 +8,23 @@
@@ -39,26 +39,6 @@ index b2babb875..7ead90c9e 100644
  /// "Sanitize" an MP4 input.
  ///
  /// Currently the sanitizer always performs the following functions:
-@@ -15,8 +32,8 @@ import SignalFfi
- /// - Return all presentation metadata present in the input as a self-contained contiguous byte array.
- /// - Find and return a pointer to the span in the input containing the (contiguous) media data.
- ///
--/// “Presentation” metadata means any metadata which is required by an MP4 player to play the file. “Self-contained and
--/// contiguous” means that the returned metadata can be concatenated with the media data to form a valid MP4 file.
-+/// "Presentation" metadata means any metadata which is required by an MP4 player to play the file. "Self-contained and
-+/// contiguous" means that the returned metadata can be concatenated with the media data to form a valid MP4 file.
- ///
- /// The original metadata may or may not need to be modified in order to perform these functions. In the case that the
- /// original metadata does not need to be modified, the returned sanitized metadata will be null to prevent needless data
-@@ -26,7 +43,7 @@ import SignalFfi
- ///
- /// The sanitizer does not currently support:
- ///
--/// - “Fragmented” MP4 files, which are mostly used for adaptive-bitrate streaming.
-+/// - "Fragmented" MP4 files, which are mostly used for adaptive-bitrate streaming.
- /// - Discontiguous media data, i.e. media data (mdat) boxes interspersed with presentation metadata (moov).
- /// - Media data references (dref) pointing to separate files.
- /// - Any similar format, e.g. Quicktime File Format (mov) or the legacy MP4 version 1, which does not contain the "isom"
 @@ -43,41 +60,24 @@ import SignalFfi
  ///  - `SignalError.invalidMediaInput` If the input could not be parsed because it was invalid.
  ///  - `SignalError.unsupportedMediaInput` If the input could not be parsed because it's unsupported in some way.

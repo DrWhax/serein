@@ -11,6 +11,7 @@ pkg="$root/App/SignalSafe"
 # --- Check upstream Signal dependencies for new releases ---
 check_signal_dep() {
   dir=$1 name=$2
+  [ -t 0 ] || return 0
   git -C "$root/$dir" fetch --tags --quiet origin 2>/dev/null || return 0
   current=$(git -C "$root/$dir" describe --tags --exact-match HEAD 2>/dev/null || echo "unknown")
   latest=$(git -C "$root/$dir" tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
