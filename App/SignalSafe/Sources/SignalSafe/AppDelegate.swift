@@ -21,6 +21,7 @@ import SwiftUI
     var window: NSWindow?
     var isQuitting = false
     var drainingForQuit = false
+    var readyToQuit = false
     var badgeTask: Task<Void, Never>?
     lazy var notifications = SystemNotifications(i18n: i18n)
 
@@ -170,18 +171,23 @@ import SwiftUI
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if readyToQuit { return .terminateNow }
         isQuitting = true
-        guard !drainingForQuit else { return .terminateLater }
+        guard !drainingForQuit else { return .terminateCancel }
         drainingForQuit = true
         // The client shuts down before the process goes (upstream does so before quitting): the
         // job queue's handler is cancelled and has ended, with its database work, downloads and
         // timers have stopped, the connection is closed. At most a few seconds; then quit
         // regardless.
-        Task { @MainActor [session] in
+        Task { @MainActor in
             await session.shutdownClient(timeout: .seconds(3))
-            sender.reply(toApplicationShouldTerminate: true)
+            readyToQuit = true
+            sender.terminate(nil)
         }
-        return .terminateLater
+        // Do not enter AppKit's terminateLater nested loop: when termination was requested
+        // by a main-actor task (delete-and-relaunch), it prevents the shutdown task running.
+        // Return to the executor, then request termination again after shutdown.
+        return .terminateCancel
     }
 
     /// macOS: closing the main window hides it; the app keeps running (upstream `close` handler).
