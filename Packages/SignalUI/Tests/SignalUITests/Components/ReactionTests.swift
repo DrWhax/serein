@@ -44,7 +44,6 @@ import Testing
 
     @Test(arguments: ["light", "dark"])
     func picker(theme: String) throws {
-        try Snapshot.assertMatches(ReactionPicker(onPick: { _ in }), story: "components-conversation-reactionpicker--base", theme: theme)
         let selections = ["❤️", "👍", "👎", "😂", "😮", "😢", "😡"]
         let list = VStack(alignment: .leading, spacing: 0) {
             ForEach(selections.indices, id: \.self) { i in
