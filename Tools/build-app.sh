@@ -7,13 +7,32 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 pkg="$root/App/SignalSafe"
-# Serein's changes to the submodules (SQLCipher for GRDB; libsignal's AES-CBC bridge and
-# media sanitizers) live in Tools/vendor-patches; applying them is idempotent.
+
+# --- Check upstream Signal dependencies for new releases ---
+check_signal_dep() {
+  dir=$1 name=$2
+  git -C "$root/$dir" fetch --tags --quiet origin 2>/dev/null || return 0
+  current=$(git -C "$root/$dir" describe --tags --exact-match HEAD 2>/dev/null || echo "unknown")
+  latest=$(git -C "$root/$dir" tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  [ -z "$latest" ] && return 0
+  [ "$current" = "$latest" ] && return 0
+  printf "build-app: %s has a new release: %s -> %s. Bump? [y/N] " "$name" "$current" "$latest"
+  read -r answer </dev/tty
+  case "$answer" in [yY]*) ;; *) echo "build-app: keeping $name at $current"; return 0;; esac
+  git -C "$root/$dir" reset --hard HEAD 2>/dev/null || true
+  git -C "$root/$dir" clean -fd 2>/dev/null || true
+  git -C "$root/$dir" checkout "$latest"
+  echo "build-app: $name updated to $latest"
+}
+# Initialise submodules (in case a fresh clone), then check for upstream updates.
+git -C "$root" submodule update --init
+check_signal_dep vendor/libsignal libsignal
+check_signal_dep vendor/ringrtc  ringrtc
 "$root/Tools/apply-vendor-patches.sh" >/dev/null
-for lib in vendor/libsignal/target/aarch64-apple-darwin/release/libsignal_ffi.a \
-           Packages/SignalRingRTC/rust/target/aarch64-apple-darwin/release/libsignal_ringrtc.dylib; do
-  [ -f "$root/$lib" ] || { echo "build-app: $lib is missing; see README.md, Building" >&2; exit 1; }
-done
+# Build the upstream Rust libraries (libsignal FFI and RingRTC).
+CARGO_BUILD_TARGET=aarch64-apple-darwin "$root/vendor/libsignal/swift/build_ffi.sh" --release
+"$root/vendor/ringrtc/bin/fetch-artifact" --platform mac-arm64 --release
+"$root/Tools/build-ringrtc-ffi.sh"
 cd "$pkg"
 swift build -c release
 products="$pkg/.build/out/Products/Release"

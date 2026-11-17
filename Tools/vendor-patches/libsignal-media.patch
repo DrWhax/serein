@@ -1,18 +1,18 @@
 diff --git a/Package.swift b/Package.swift
-index 2d9d5c1..b3e2019 100644
+index bc076d4b8..0969cf091 100644
 --- a/Package.swift
 +++ b/Package.swift
-@@ -37,7 +37,7 @@ let package = Package(
+@@ -55,7 +55,7 @@ let package = Package(
              name: "LibSignalClient",
              dependencies: ["SignalFfi"],
              path: "swift/Sources/LibSignalClient",
 -            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")],
 +            swiftSettings: [.enableExperimentalFeature("StrictConcurrency"), .define("SIGNAL_MEDIA_SUPPORTED")],
              linkerSettings: [
-                 .linkedLibrary("stdc++", .when(platforms: [.linux]))
-             ]
+                 .linkedLibrary("stdc++", .when(platforms: [.linux])),
+             ] + extraLinkerSettingsForUseAsLocalDependency
 diff --git a/swift/Sources/LibSignalClient/Media.swift b/swift/Sources/LibSignalClient/Media.swift
-index b2babb8..c9fb906 100644
+index b2babb875..7ead90c9e 100644
 --- a/swift/Sources/LibSignalClient/Media.swift
 +++ b/swift/Sources/LibSignalClient/Media.swift
 @@ -8,6 +8,23 @@
@@ -39,6 +39,26 @@ index b2babb8..c9fb906 100644
  /// "Sanitize" an MP4 input.
  ///
  /// Currently the sanitizer always performs the following functions:
+@@ -15,8 +32,8 @@ import SignalFfi
+ /// - Return all presentation metadata present in the input as a self-contained contiguous byte array.
+ /// - Find and return a pointer to the span in the input containing the (contiguous) media data.
+ ///
+-/// “Presentation” metadata means any metadata which is required by an MP4 player to play the file. “Self-contained and
+-/// contiguous” means that the returned metadata can be concatenated with the media data to form a valid MP4 file.
++/// "Presentation" metadata means any metadata which is required by an MP4 player to play the file. "Self-contained and
++/// contiguous" means that the returned metadata can be concatenated with the media data to form a valid MP4 file.
+ ///
+ /// The original metadata may or may not need to be modified in order to perform these functions. In the case that the
+ /// original metadata does not need to be modified, the returned sanitized metadata will be null to prevent needless data
+@@ -26,7 +43,7 @@ import SignalFfi
+ ///
+ /// The sanitizer does not currently support:
+ ///
+-/// - “Fragmented” MP4 files, which are mostly used for adaptive-bitrate streaming.
++/// - "Fragmented" MP4 files, which are mostly used for adaptive-bitrate streaming.
+ /// - Discontiguous media data, i.e. media data (mdat) boxes interspersed with presentation metadata (moov).
+ /// - Media data references (dref) pointing to separate files.
+ /// - Any similar format, e.g. Quicktime File Format (mov) or the legacy MP4 version 1, which does not contain the "isom"
 @@ -43,41 +60,24 @@ import SignalFfi
  ///  - `SignalError.invalidMediaInput` If the input could not be parsed because it was invalid.
  ///  - `SignalError.unsupportedMediaInput` If the input could not be parsed because it's unsupported in some way.
@@ -143,10 +163,10 @@ index b2babb8..c9fb906 100644
 +
  #endif
 diff --git a/swift/Sources/SignalFfi/signal_ffi.h b/swift/Sources/SignalFfi/signal_ffi.h
-index 5039eda..9f7ecc0 100644
+index 7dfbaf902..03afc9628 100644
 --- a/swift/Sources/SignalFfi/signal_ffi.h
 +++ b/swift/Sources/SignalFfi/signal_ffi.h
-@@ -7203,6 +7203,40 @@ SignalFfiError* signal_zk_credential_public_key_check_valid_contents(
+@@ -7382,6 +7382,40 @@ SignalFfiError* signal_zk_credential_public_key_check_valid_contents(
  );
  typedef SignalBytestringArray SignalStringArray;
  typedef SignalConstPointerFfiSyncInputStreamStruct SignalConstPointerFfiInputStreamStruct;
@@ -188,10 +208,10 @@ index 5039eda..9f7ecc0 100644
  typedef SignalFfiKyberPreKeyStoreStruct SignalKyberPreKeyStore;
  typedef SignalFfiPreKeyStoreStruct SignalPreKeyStore;
 diff --git a/swift/build_ffi.sh b/swift/build_ffi.sh
-index 72e189d..3f28431 100755
+index 9185daff6..cb026e61e 100755
 --- a/swift/build_ffi.sh
 +++ b/swift/build_ffi.sh
-@@ -104,6 +104,8 @@ export CFLAGS_aarch64_apple_ios_macabi="--target=arm64-apple-ios-macabi ${CFLAGS
+@@ -103,6 +103,8 @@ export CFLAGS_aarch64_apple_ios_macabi="--target=arm64-apple-ios-macabi ${CFLAGS
  export CFLAGS_x86_64_apple_ios_macabi="--target=x86_64-apple-ios-macabi ${CFLAGS:-}"
  
  FEATURES=()

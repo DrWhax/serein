@@ -1,5 +1,5 @@
 diff --git a/rust/bridge/shared/testing/src/lib.rs b/rust/bridge/shared/testing/src/lib.rs
-index 7502154..ffb7986 100644
+index 7502154b8..ffb7986f8 100644
 --- a/rust/bridge/shared/testing/src/lib.rs
 +++ b/rust/bridge/shared/testing/src/lib.rs
 @@ -25,7 +25,7 @@ pub mod convert;
@@ -12,7 +12,7 @@ index 7502154..ffb7986 100644
  pub mod protocol;
  pub mod types;
 diff --git a/rust/bridge/shared/testing/src/net.rs b/rust/bridge/shared/testing/src/net.rs
-index 9691291..5b99616 100644
+index 96912912f..5b99616c2 100644
 --- a/rust/bridge/shared/testing/src/net.rs
 +++ b/rust/bridge/shared/testing/src/net.rs
 @@ -180,6 +180,39 @@ fn TESTING_ConnectionManager_newLocalOverride(
@@ -56,7 +56,7 @@ index 9691291..5b99616 100644
  fn TESTING_ConnectionManager_isUsingProxy(manager: &ConnectionManager) -> i32 {
      match manager.is_using_proxy() {
 diff --git a/swift/Sources/LibSignalClient/Net.swift b/swift/Sources/LibSignalClient/Net.swift
-index f3a4c42..7ca7a58 100644
+index f3a4c42dd..7ca7a5839 100644
 --- a/swift/Sources/LibSignalClient/Net.swift
 +++ b/swift/Sources/LibSignalClient/Net.swift
 @@ -74,6 +74,27 @@ public class Net {
@@ -88,10 +88,10 @@ index f3a4c42..7ca7a58 100644
      ///
      /// Sets a server to be used to proxy all new outgoing connections. The proxy can be
 diff --git a/swift/Sources/SignalFfi/signal_ffi_testing.h b/swift/Sources/SignalFfi/signal_ffi_testing.h
-index 73ac0a1..833892c 100644
+index 6c1bca811..a82a58686 100644
 --- a/swift/Sources/SignalFfi/signal_ffi_testing.h
 +++ b/swift/Sources/SignalFfi/signal_ffi_testing.h
-@@ -1938,6 +1938,16 @@ SignalFfiError* signal_testing_confirm_totp_key_tests(
+@@ -1997,6 +1997,16 @@ SignalFfiError* signal_testing_confirm_totp_key_tests(
  SignalFfiError* signal_testing_confirm_username_tests(
    SignalOwnedBufferOfGrpcTestCaseBridgedFfi* out
  );

@@ -1,5 +1,5 @@
 diff --git a/swift/Sources/LibSignalClient/ChatListener.swift b/swift/Sources/LibSignalClient/ChatListener.swift
-index 0c6fd43..a3deafd 100644
+index 0c6fd43c3..a3deafdda 100644
 --- a/swift/Sources/LibSignalClient/ChatListener.swift
 +++ b/swift/Sources/LibSignalClient/ChatListener.swift
 @@ -26,7 +26,7 @@ public protocol ChatConnectionListener: ConnectionEventsListener<AuthenticatedCh
