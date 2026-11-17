@@ -95,6 +95,8 @@ SIGNALSAFE_SIGN_IDENTITY=<codesign identity> Tools/build-app.sh
 open App/SignalSafe/.build/Serein.app
 ```
 
+After “Delete all data”, Serein launches a fresh instance and shuts down the old one. Quit requests allow asynchronous client cleanup to finish before terminating, including when the request comes from the delete-and-relaunch task.
+
 The submodules point at the upstream projects, unchanged. Serein's changes to them are patches in `Tools/vendor-patches`, which `apply-vendor-patches.sh` applies (`build-app.sh` applies them again, which does nothing if they are already in):
 
 | Patch | Change |
