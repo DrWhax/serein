@@ -3,7 +3,7 @@
 // reaction bar over a message. The preferred emoji (48px emoji drawn at 28/48 in 40px round
 // buttons; the selected one on a 20% wash), then "More" (a 28px grey circle with the more
 // icon) or, when the selected reaction is not a preferred one, that reaction. Hovering or
-// focusing an emoji grows it to 42/48 and lifts it. The first button takes focus on open.
+// focusing an emoji grows it to 42/48 and lifts it. Opening alone highlights no emoji.
 //
 // The "More" button opens the Fun emoji picker (ported with the composer, step 5).
 
@@ -120,7 +120,7 @@ public struct ReactionPickerPickerEmojiButton: View {
         .scaleEffect(dimmed ? 0.9 : 1)
         .animation(reduceMotion ? nil : .timingCurve(0.16, 1, 0.3, 1, duration: 0.4), value: big)
         .onHover { hovered = $0 }
-        .focusable()
+        .focusable(interactions: .activate)
         .focusEffectDisabled()
         .focused(focus.$focused)
         .onChange(of: focus.focused) { if !focus.focused { focus.autoFocusConsumed = true } }
@@ -148,9 +148,9 @@ public struct ReactionPicker: View {
     @Environment(\.i18n) var i18n
 
     /// - Parameters:
-    ///   - autoFocus: the first button takes focus when the picker opens.
+    ///   - autoFocus: opt in to highlighting the first button when the picker opens.
     ///   - onMore: opens the full emoji picker (FunEmojiPicker).
-    public init(preferredReactionEmoji: [String] = ReactionEmoji.defaultPreferred, selected: String? = nil, autoFocus: Bool = true,
+    public init(preferredReactionEmoji: [String] = ReactionEmoji.defaultPreferred, selected: String? = nil, autoFocus: Bool = false,
                 onPick: @escaping (String) -> Void, onMore: @escaping () -> Void = {}, onClose: (() -> Void)? = nil) {
         self.preferredReactionEmoji = preferredReactionEmoji
         self.selected = selected
