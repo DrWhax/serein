@@ -23,7 +23,10 @@ check_signal_dep() {
   git -C "$root/$dir" reset --hard HEAD 2>/dev/null || true
   git -C "$root/$dir" clean -fd 2>/dev/null || true
   git -C "$root/$dir" checkout "$latest"
-  echo "build-app: $name updated to $latest"
+  # Stage the new submodule commit: otherwise the next run's `git submodule update` puts the
+  # old one back (and stops on the generated FFI headers the build leaves changed).
+  git -C "$root" add "$dir"
+  echo "build-app: $name updated to $latest (staged; commit it with the build that uses it)"
 }
 # Initialise submodules (in case a fresh clone), then check for upstream updates.
 git -C "$root" submodule update --init
