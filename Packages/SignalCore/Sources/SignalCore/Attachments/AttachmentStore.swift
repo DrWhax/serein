@@ -83,6 +83,36 @@ public struct AttachmentStore: Sendable {
         return removed
     }
 
+    /// The files of deleted attachment rows (`serein_pendingFileDeletes`), each removed unless
+    /// another row still refers to it (upstream `maybeDeleteAttachmentFile`). Returns how many
+    /// files went.
+    @discardableResult
+    public func deletePendingFiles(_ db: Database) throws -> Int {
+        var removed = 0
+        for path in try String.fetchAll(db, sql: "SELECT path FROM serein_pendingFileDeletes") {
+            if try !Self.isReferenced(db, path) {
+                if (try? url(path)).map({ FileManager.default.fileExists(atPath: $0.path) }) == true { removed += 1 }
+                try? delete(path)       // a path not of our shape names no file of ours
+            }
+            try db.execute(sql: "DELETE FROM serein_pendingFileDeletes WHERE path = ?", arguments: [path])
+        }
+        return removed
+    }
+
+    /// Whether any attachment row, sticker, avatar or pending download refers to `path`.
+    static func isReferenced(_ db: Database, _ path: String) throws -> Bool {
+        try Int.fetchOne(db, sql: """
+            SELECT 1 FROM message_attachments WHERE path = ?1
+            UNION ALL SELECT 1 FROM message_attachments WHERE thumbnailPath = ?1
+            UNION ALL SELECT 1 FROM message_attachments WHERE screenshotPath = ?1
+            UNION ALL SELECT 1 FROM message_attachments WHERE downloadPath = ?1
+            UNION ALL SELECT 1 FROM stickers WHERE path = ?1
+            UNION ALL SELECT 1 FROM conversations WHERE json ->> '$.avatar.path' = ?1 OR json ->> '$.profileAvatar.path' = ?1
+            UNION ALL SELECT 1 FROM attachment_downloads WHERE attachmentJson ->> '$.path' = ?1
+            LIMIT 1
+            """, arguments: [path]) != nil
+    }
+
     public func delete(_ relativePath: String) throws {
         let u = try url(relativePath)
         if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) }

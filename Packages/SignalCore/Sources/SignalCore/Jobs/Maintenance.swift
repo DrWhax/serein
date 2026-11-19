@@ -1,5 +1,5 @@
 // Periodic housekeeping that upstream runs as services: expiring messages
-// (expiringMessagesDeletionService), expired pins (pinnedMessagesCleanupService), orphaned
+// (expiringMessagesDeletionService; their files go right after, PendingFileDeleter), expired pins (pinnedMessagesCleanupService), orphaned
 // attachment files (cleanupOrphanedAttachments) and the weekly key-transparency self check
 // (CheckScheduler, `lastKeyTransparencySelfCheck`).
 
@@ -43,6 +43,9 @@ public actor Maintenance {
             try MessageModifiers.expirePins(db, now: now)
             // Messages we asked to be resent and that did not come within the hour.
             try RetryPlaceholders.expire(db, now: now)
+            // Files of deleted rows not yet removed (PendingFileDeleter runs after each commit;
+            // this catches those left when the app quit in between).
+            if let files = self.store { try files.deletePendingFiles(db) }
             return (e, try store?.deleteOrphans(db) ?? 0)
         }
         var ranKT = false

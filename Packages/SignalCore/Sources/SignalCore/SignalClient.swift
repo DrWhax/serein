@@ -248,6 +248,8 @@ public actor SignalClient {
         })
         let keyTransparency = KeyTransparencyService(account: account, database: database, socket: socket)
         let maintenance = Maintenance(database: database, store: store, keyTransparency: keyTransparency)
+        // A deleted message's attachment files go as soon as its rows do.
+        PendingFileDeleter.install(pool: database.pool, store: store)
         session = Session(account: account, jobs: jobs, messenger: messenger, receiver: receiver, profiles: profiles, storage: storage,
                           groups: groups, stickers: stickers, downloads: downloads, attachmentStore: store, http: http,
                           discovery: ContactDiscovery(net: net, database: database, socket: socket),

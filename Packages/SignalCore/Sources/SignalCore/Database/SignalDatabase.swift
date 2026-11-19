@@ -45,6 +45,19 @@ public final class SignalDatabase: Sendable {
             try db.execute(sql: "ALTER TABLE attachment_downloads ADD COLUMN leaseId TEXT NOT NULL DEFAULT ''")
             try db.execute(sql: "UPDATE attachment_downloads SET leaseId = lower(hex(randomblob(16)))")
         }
+        // The files of deleted attachment rows (an expired, deleted or erased message), deleted
+        // right after the transaction (upstream cleanupAllMessageAttachmentFiles) by
+        // AttachmentStore.deletePendingFiles, unless something else still refers to them.
+        m.registerMigration("serein-pending-file-deletes") { db in
+            try db.execute(sql: "CREATE TABLE serein_pendingFileDeletes (path TEXT PRIMARY KEY NOT NULL)")
+            try db.execute(sql: """
+                CREATE TRIGGER serein_message_attachments_files AFTER DELETE ON message_attachments BEGIN
+                    INSERT OR IGNORE INTO serein_pendingFileDeletes (path)
+                    SELECT p FROM (SELECT OLD.path AS p UNION SELECT OLD.thumbnailPath UNION SELECT OLD.screenshotPath
+                                   UNION SELECT OLD.downloadPath) WHERE p IS NOT NULL;
+                END
+                """)
+        }
         return m
     }
 
