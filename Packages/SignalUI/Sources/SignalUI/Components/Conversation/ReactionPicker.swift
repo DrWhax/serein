@@ -7,6 +7,7 @@
 //
 // The "More" button opens the Fun emoji picker (ported with the composer, step 5).
 
+import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -51,8 +52,12 @@ public struct ReactionPickerPicker<Content: View>: View {
             .padding(.vertical, 3)
             .padding(.horizontal, 7)
             .padding(1)     // the border box
-            .background(Capsule().fill(AxoColor(light: LegacyColor.white, dark: LegacyColor.gray75)))
-            .overlay(Capsule().strokeBorder(AxoColor(light: LegacyColor.blackAlpha05, dark: LegacyColor.gray80), lineWidth: 1))
+            // The border sits under the buttons: a hovered emoji lifts past the bar's edge and
+            // is drawn over the border, not cut by it.
+            .background {
+                Capsule().fill(AxoColor(light: LegacyColor.white, dark: LegacyColor.gray75))
+                Capsule().strokeBorder(AxoColor(light: LegacyColor.blackAlpha05, dark: LegacyColor.gray80), lineWidth: 1)
+            }
             .cssBoxShadow(Self.shadow, in: Capsule())
             .environment(\.reactionPickerStyle, pickerStyle)
             .environment(\.reactionPickerSomethingSelected, isSomethingSelected)
@@ -73,6 +78,10 @@ public struct ReactionPickerPickerEmojiButton: View {
     let autoFocus: Bool
     let onClick: () -> Void
     private var focus = AxoFocusState()
+    /// `:focus-visible`: the focus came from the keyboard (Tab, or the picker opened from the
+    /// keyboard). Opening the picker with the mouse puts focus on the first button too, but
+    /// that shows nothing.
+    @State private var keyboardFocused = false
     @State private var hovered = false
     @Environment(\.reactionPickerStyle) var style
     @Environment(\.reactionPickerSomethingSelected) var somethingSelected
@@ -87,7 +96,7 @@ public struct ReactionPickerPickerEmojiButton: View {
     }
 
     public var body: some View {
-        let focusVisible = focus.visible(autoFocus: autoFocus)
+        let focusVisible = keyboardFocused || (autoFocus && !focus.autoFocusConsumed)
         let big = style == .picker ? (hovered || focusVisible) : isSelected
         let scale: CGFloat = big ? 42.0 / 48 : 28.0 / 48
         // `scale(s) translateY(-16px)`: the lift is in the scaled space.
@@ -123,9 +132,23 @@ public struct ReactionPickerPickerEmojiButton: View {
         .focusable(interactions: .activate)
         .focusEffectDisabled()
         .focused(focus.$focused)
-        .onChange(of: focus.focused) { if !focus.focused { focus.autoFocusConsumed = true } }
+        .onChange(of: focus.focused) {
+            keyboardFocused = focus.focused && Self.lastInputWasKeyboard
+            if !focus.focused { focus.autoFocusConsumed = true }
+        }
+        .zIndex(big ? 1 : 0)     // the grown emoji is drawn over its neighbours
         .accessibilityLabel(title ?? emoji)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+extension ReactionPickerPickerEmojiButton {
+    /// Chromium's focus-visible heuristic: the last input event was a key press.
+    @MainActor static var lastInputWasKeyboard: Bool {
+        switch NSApp?.currentEvent?.type {
+        case .keyDown?, .keyUp?, .flagsChanged?: true
+        default: false
+        }
     }
 }
 
