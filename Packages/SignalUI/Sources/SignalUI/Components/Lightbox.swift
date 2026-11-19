@@ -6,8 +6,8 @@
 // A video item plays through its `player` (VideoView, Metal) when it has one: it starts on
 // show, GIFs and view-once videos loop without controls (view-once shows the time in the
 // footer), others get the controls (play/pause, time, seek). Without a player it shows
-// `image` (a still frame; black until then). Not ported yet: zoom and pan, the spring
-// animations, and the incremental-download toast.
+// `image` (a still frame; black until then). An image zooms and pans (LightboxZoom.swift).
+// Not ported yet: the spring animations and the incremental-download toast.
 
 import SignalI18n
 import SwiftUI
@@ -78,6 +78,9 @@ public struct Lightbox<Children: View>: View {
     @Environment(\.i18n) var i18n
     @Environment(\.titleBarDragAreaHeight) var dragAreaHeight
     @FocusState private var closeFocused: Bool
+    /// The image's zoom (1: fitted); back to fitted for another item.
+    @State private var zoom: CGFloat = 1
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     public init(media: [LightboxMediaItem], selectedIndex: Int = 0, isViewOnce: Bool = false, header: LightboxHeaderInfo? = nil,
                 hasPrevMessage: Bool = false, hasNextMessage: Bool = false, closeLightbox: @escaping () -> Void = {},
@@ -126,6 +129,12 @@ public struct Lightbox<Children: View>: View {
                 if selectedIndex < media.count - 1 || hasNextMessage { onNextAttachment() }
                 return .handled
             }
+            .onKeyPress(characters: ["=", "+", "-", "0"], phases: .down) { press in
+                guard press.modifiers.contains(.command), current?.kind == .image, current?.image != nil else { return .ignored }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { zoom = LightboxZoomableImage.keyZoom(zoom, press.characters) }
+                return .handled
+            }
+            .onChange(of: selectedIndex) { zoom = 1 }
             .onAppear { closeFocused = true }
         }
     }
@@ -192,10 +201,7 @@ public struct Lightbox<Children: View>: View {
                 if let image = current.image {
                     // __zoomable-container: margin-inline 40px, the image contained; Chromium
                     // paints it into its rect rounded outward to device pixels.
-                    PixelImage(image, fit: .contain, snapsOutward: true)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.horizontal, 40)
-                        .accessibilityLabel(i18n("icu:lightboxImageAlt"))
+                    LightboxZoomableImage(image: image, label: i18n("icu:lightboxImageAlt"), close: closeLightbox, zoom: $zoom)
                 } else {
                     unsupported("alert-outline", label: i18n("icu:lightboxImageAlt"))
                 }
