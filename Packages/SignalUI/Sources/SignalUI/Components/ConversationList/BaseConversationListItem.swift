@@ -23,6 +23,12 @@ public struct ConversationAvatarData {
     public var placeholderGradient: (start: RGBA, end: RGBA)?
     public var noteToSelf: Bool
     public var searchResult: Bool
+    /// Fetches the image when the row is shown (a long list, e.g. compose: the rows off screen
+    /// never decode theirs, and a decoded one redraws only its own row). Used without `image`.
+    public var loadImage: (@MainActor () -> RGBAImage?)?
+
+    /// `image`, else the one `loadImage` has (read in the view that draws it).
+    @MainActor public var resolvedImage: RGBAImage? { image ?? loadImage?() }
 
     public init(title: String, conversationType: AvatarConversationType = .direct, color: String? = nil, image: RGBAImage? = nil,
                 hasAvatar: Bool = false, placeholderGradient: (start: RGBA, end: RGBA)? = nil, noteToSelf: Bool = false,
@@ -45,7 +51,7 @@ struct ListAvatar: View {
 
     var body: some View {
         Avatar(strings: AvatarStrings(i18n: i18n), title: data.title, size: size, conversationType: data.conversationType,
-               color: data.color ?? "A200", image: data.image.map { AnyView(PixelImage($0, fit: .cover)) }, hasAvatar: data.hasAvatar,
+               color: data.color ?? "A200", image: data.resolvedImage.map { AnyView(PixelImage($0, fit: .cover)) }, hasAvatar: data.hasAvatar,
                placeholderGradient: data.placeholderGradient ?? AxoTokens.Avatar.gradient(hash: 0), noteToSelf: data.noteToSelf,
                searchResult: data.searchResult)
     }

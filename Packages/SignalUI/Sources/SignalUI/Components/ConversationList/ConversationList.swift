@@ -100,24 +100,28 @@ public struct ConversationList: View {
     static let scrollbarGutter: CGFloat = 11
 
     public var body: some View {
-        let content = VStack(spacing: 0) {
-            ForEach(rows.indices, id: \.self) { i in
-                row(rows[i]).frame(height: rows[i].height, alignment: .top)
-            }
+        let items = ForEach(rows.indices, id: \.self) { i in
+            row(rows[i]).frame(height: rows[i].height, alignment: .top)
         }
-        .padding(.top, hasDialogPadding ? 8 : 0)
-        .padding(.leading, extendsToEdges ? 0 : Self.leadingInset)
-        .padding(.trailing, extendsToEdges ? Self.scrollbarGutter : Self.trailingInset)
-        .environment(\.conversationListWidthBreakpoint, breakpoint)
         Group {
             if isStatic || !scrollable {
-                AxoDialog.TopAligned { content }.clipShape(Rectangle())
+                AxoDialog.TopAligned { inset(VStack(spacing: 0) { items }) }.clipShape(Rectangle())
             } else {
-                ScrollView { LazyVStack(spacing: 0) { content } }.scrollIndicators(.automatic)
+                // The rows straight in the LazyVStack (react-virtualized): only those on screen
+                // are built, so a long contact list opens and scrolls without laying out all.
+                ScrollView { inset(LazyVStack(spacing: 0) { items }) }.scrollIndicators(.automatic)
             }
         }
         .frame(width: width, height: height)
         .accessibilityElement(children: .contain)
+    }
+
+    func inset(_ stack: some View) -> some View {
+        stack
+            .padding(.top, hasDialogPadding ? 8 : 0)
+            .padding(.leading, extendsToEdges ? 0 : Self.leadingInset)
+            .padding(.trailing, extendsToEdges ? Self.scrollbarGutter : Self.trailingInset)
+            .environment(\.conversationListWidthBreakpoint, breakpoint)
     }
 
     func row(_ row: ConversationListRow) -> some View { ConversationListRowView(row: row, actions: actions) }

@@ -350,9 +350,11 @@ struct RootView: View {
 
     func isMe(_ c: ConversationSummary) -> Bool { c.kind == .private && c.serviceId != nil && c.serviceId == session.ourAci }
     func title(_ c: ConversationSummary) -> String { isMe(c) ? i18n("icu:noteToSelf") : c.title }
+    /// A compose row's avatar: its picture is decoded when the row comes on screen, not for
+    /// every contact when the list is built.
     func avatar(_ c: ConversationSummary) -> ConversationAvatarData {
-        var a = ConversationAvatarData(title: title(c), conversationType: c.kind == .group ? .group : .direct, color: c.color,
-                                       image: isMe(c) ? nil : session.avatarImage(c.avatar))
+        var a = ConversationAvatarData(title: title(c), conversationType: c.kind == .group ? .group : .direct, color: c.color)
+        if !isMe(c), let file = c.avatar { a.loadImage = { [session] in session.avatarImage(file) } }
         a.noteToSelf = isMe(c)
         return a
     }

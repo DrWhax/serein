@@ -73,7 +73,7 @@ public struct LeftPaneChooseGroupMembersHelper: LeftPaneHelper {
                 ContactPills(count: selectedContacts.count) {
                     ForEach(selectedContacts, id: \.id) { c in
                         ContactPill(id: c.id, title: c.title, color: c.avatar.color ?? "A200",
-                                    image: c.avatar.image.map { AnyView(PixelImage($0, fit: .cover)) },
+                                    image: c.avatar.resolvedImage.map { AnyView(PixelImage($0, fit: .cover)) },
                                     avatarStrings: AvatarStrings(i18n: i18n), removeLabel: i18n("icu:ContactPill--remove"),
                                     onClickRemove: ctx.removeSelectedContact)
                     }
