@@ -526,6 +526,8 @@ struct ConversationPane: View {
         }
         p.deletedForEveryone = m.isDeleted
         p.isPinned = m.isPinned
+        p.displayLimit = session.messageDisplayLimits[m.id]
+        p.messageExpanded = { [session] limit in session.messageDisplayLimits[m.id] = limit }
         // Mentions ("@name", the member's current name) and styles.
         p.bodyRanges = m.bodyRanges.map { r in
             switch r.kind {

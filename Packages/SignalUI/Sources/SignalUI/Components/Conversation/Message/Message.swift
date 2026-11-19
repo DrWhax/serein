@@ -71,6 +71,8 @@ public struct MessageProps {
     public var contactLabel: ContactLabel?
     public var textPending = false
     public var displayLimit: Int?
+    /// `messageExpanded(id, displayLimit)`: "Read more" asks for a longer `displayLimit`.
+    public var messageExpanded: ((Int) -> Void)?
     public var isSignalConversation = false
     /// `quote` (its direction and bubble colour come from the message, as `#renderQuote` passes them).
     public var quote: QuoteModel?
@@ -840,7 +842,7 @@ public struct Message: View {
                 MessageBodyReadMore(text: text, bodyRanges: props.bodyRanges, direction: props.direction, displayLimit: props.displayLimit,
                                     renderLocation: .timeline, textAttachment: MessageBodyTextAttachment(pending: props.textPending, canDownload: props.textCanDownload),
                                     style: style, linkColor: textColor, metadataSpacer: spacer,
-                                    alignment: MessageBody.firstStrongDirection(text) == .rightToLeft ? .end : .start, messageExpanded: { _ in },
+                                    alignment: MessageBody.firstStrongDirection(text) == .rightToLeft ? .end : .start, messageExpanded: { props.messageExpanded?($0) },
                                     kickOffBodyDownload: props.kickOffBodyDownload)
             }
         }

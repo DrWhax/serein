@@ -202,6 +202,9 @@ import SignalUI
     var isCreatingPoll = false
     /// The message whose edit history is shown (EditHistoryMessagesModal).
     var editHistoryMessageId: String?
+    /// How much of a long message body is shown, by message, after "Read more"
+    /// (upstream `messageExpanded`: `displayLimit` in the conversation state).
+    var messageDisplayLimits: [String: Int] = [:]
     /// ⌘⇧E: the message whose reaction picker to toggle, and a counter so each press counts.
     var reactionPickerMessageId: String?
     var reactionPickerCount = 0
