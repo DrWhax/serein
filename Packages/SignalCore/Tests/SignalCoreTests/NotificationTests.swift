@@ -119,6 +119,29 @@ import Testing
         }
     }
 
+    /// A bare photo: its attachment is in message_attachments, not the JSON. The notification
+    /// and the chat list's last message both read it as a photo ("📷 Photo"), not empty text.
+    @Test func photoWithoutCaptionIsAPhoto() async throws {
+        try await LinkedClient.with { c in
+            let (id, _) = try await c.receiveFromAlice("caption", withProfileKey: true)
+            let aci = c.account.aci
+            try await c.database.pool.write { db in
+                let conv: String = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id])!
+                var json = try MessageStore.jsonObject(String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [id]) ?? "{}")
+                json["body"] = nil
+                let data = try JSONSerialization.data(withJSONObject: json)
+                try db.execute(sql: "UPDATE messages SET body = NULL, json = ? WHERE id = ?", arguments: [String(decoding: data, as: UTF8.self), id])
+                try MessageAttachments.upsert(db, .init(messageId: id, type: .attachment, order: 0), conversationId: conv, sentAt: 1, receivedAt: 1,
+                                              messageType: "incoming", MessageAttachment(contentType: "image/jpeg", size: 10))
+                try MessageAttachments.updateMessageFlags(db, messageId: id)
+            }
+            let pending = try await c.database.pool.read { db in try NotificationPolicy.pending(db, messageId: id, ourAci: aci) }
+            #expect(pending?.content == .photo && pending?.text == "" && pending?.body == "📷 Photo")
+            let last = try await c.database.pool.read { db in try ConversationQueries.inbox(db) }.first { $0.lastMessage?.id == id }?.lastMessage
+            #expect(last?.content == .photo)
+        }
+    }
+
     @Test func settingsDefaults() async throws {
         let (db, _) = try LinkedClient.temporaryDatabase()
         let s = try await db.pool.read { try NotificationSettings.load($0) }

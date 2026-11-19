@@ -35,10 +35,32 @@ public enum NotificationContent {
                 body = p.body
             } else if case .reaction(let emoji) = p.kind {
                 body = i18n("icu:notificationReactionMessage", ["sender": .string(sender), "emoji": .string(emoji), "message": .string(p.body)])
-            } else {
+            } else if p.content == .text {
                 body = p.body
+            } else {
+                body = messageText(p.text, content: p.content, i18n: i18n)
             }
             return (title, body)
+        }
+    }
+
+    /// getNotificationTextForMessage: the text, or "{emoji} {text}" for what the message
+    /// carries ("📷 Photo", or "📷 caption"). The chat list's last message uses it too.
+    public static func messageText(_ text: String, content: MessageContentKind, i18n: Localizer) -> String {
+        func with(_ emoji: String, _ key: String) -> String {
+            i18n("icu:message--getNotificationText--text-with-emoji", ["emoji": .string(emoji), "text": .string(text.isEmpty ? i18n(key) : text)])
+        }
+        switch content {
+        case .text: return text
+        case .gif: return with("🎡", "icu:message--getNotificationText--gif")
+        case .photo: return with("📷", "icu:message--getNotificationText--photo")
+        case .video: return with("🎥", "icu:message--getNotificationText--video")
+        case .voiceMessage: return with("🎤", "icu:message--getNotificationText--voice-message")
+        case .audio: return with("🔈", "icu:message--getNotificationText--audio-message")
+        case .file: return with("📎", "icu:message--getNotificationText--file")
+        case .sticker(let emoji):
+            return emoji.map { i18n("icu:message--getNotificationText--text-with-emoji", ["emoji": .string($0), "text": .string(i18n("icu:message--getNotificationText--stickers"))]) }
+                ?? i18n("icu:message--getNotificationText--stickers")
         }
     }
 }

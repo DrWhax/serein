@@ -1,6 +1,7 @@
 import AppKit
 import SignalCore
 import SignalI18n
+import SignalSafeSystem
 import SignalUI
 import SwiftUI
 
@@ -456,23 +457,9 @@ struct RootView: View {
 
     /// getNotificationTextForMessage: the body, or "{emoji} {text}" for what the message carries.
     static func previewText(_ m: TimelineMessage, _ i18n: Localizer) -> String {
-        func with(_ emoji: String, _ key: String) -> String {
-            i18n("icu:message--getNotificationText--text-with-emoji", ["emoji": .string(emoji), "text": .string(m.body.isEmpty ? i18n(key) : m.body)])
-        }
         // A poll: "Poll: {question}" (upstream's poll preview).
         if let poll = m.poll { return i18n("icu:Poll--preview", ["pollQuestion": .string(poll.question)]) }
-        switch m.content {
-        case .text: return m.body
-        case .gif: return with("🎡", "icu:message--getNotificationText--gif")
-        case .photo: return with("📷", "icu:message--getNotificationText--photo")
-        case .video: return with("🎥", "icu:message--getNotificationText--video")
-        case .voiceMessage: return with("🎤", "icu:message--getNotificationText--voice-message")
-        case .audio: return with("🔈", "icu:message--getNotificationText--audio-message")
-        case .file: return with("📎", "icu:message--getNotificationText--file")
-        case .sticker(let emoji):
-            return emoji.map { i18n("icu:message--getNotificationText--text-with-emoji", ["emoji": .string($0), "text": .string(i18n("icu:message--getNotificationText--stickers"))]) }
-                ?? i18n("icu:message--getNotificationText--stickers")
-        }
+        return NotificationContent.messageText(m.body, content: m.content, i18n: i18n)
     }
 
     static func listStatus(_ s: TimelineMessage.Status) -> LastMessageStatus {

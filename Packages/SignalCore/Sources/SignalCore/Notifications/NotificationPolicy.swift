@@ -83,12 +83,19 @@ public struct PendingNotification: Sendable, Hashable {
     public var senderName: String?
     /// Set for a group: "sender in group".
     public var groupTitle: String?
+    /// The message text, else (English) what it carries ("📷 Photo").
     public var body: String
+    /// What the message carries, for the localized "{emoji} {text}" (getNotificationTextForMessage).
+    public var content: MessageContentKind
+    /// The message's own text (a caption; empty for a bare photo).
+    public var text: String
     public var isExpiringMessage: Bool
     public var sentAt: UInt64
 
     public init(kind: Kind, conversationId: String, messageId: String, storyId: String? = nil, senderName: String?, groupTitle: String? = nil,
-                body: String, isExpiringMessage: Bool = false, sentAt: UInt64) {
+                body: String, content: MessageContentKind = .text, text: String? = nil, isExpiringMessage: Bool = false, sentAt: UInt64) {
+        self.content = content
+        self.text = text ?? body
         self.kind = kind
         self.conversationId = conversationId
         self.messageId = messageId
@@ -152,9 +159,11 @@ public enum NotificationPolicy {
         let sender: String? = try (row["sourceServiceId"] as String?).flatMap { aci in
             try Row.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ?", arguments: [aci]).flatMap { try title(MessageStore.jsonObject($0["json"])) }
         }
+        let content = try MessageContentKind.of(db, messageId: messageId, json: json)
         return PendingNotification(kind: .message, conversationId: conversationId, messageId: messageId, storyId: isGroup ? storyId : nil,
                                    senderName: sender, groupTitle: isGroup ? (conv.json["name"] as? String) : nil,
-                                   body: notificationText(json), isExpiringMessage: (row["expireTimer"] as Int? ?? 0) > 0,
+                                   body: notificationText(json, content: content), content: content, text: json["body"] as? String ?? "",
+                                   isExpiringMessage: (row["expireTimer"] as Int? ?? 0) > 0,
                                    sentAt: UInt64(row["sent_at"] as Int64))
     }
 
@@ -167,15 +176,20 @@ public enum NotificationPolicy {
     }
 
     /// `getNotificationTextForMessage`, the simple cases: the body, else what it carries.
-    static func notificationText(_ json: [String: Any]) -> String {
+    /// The attachments are in message_attachments (`content`), not the JSON.
+    static func notificationText(_ json: [String: Any], content: MessageContentKind) -> String {
         if let body = json["body"] as? String, !body.isEmpty { return body }
         if let reaction = json["storyReaction"] as? [String: Any], let emoji = reaction["emoji"] as? String { return emoji }
-        if json["sticker"] != nil { return "Sticker" }
-        if let attachments = json["attachments"] as? [[String: Any]], let first = attachments.first {
-            let type = first["contentType"] as? String ?? ""
-            return type.hasPrefix("image/") ? "📷 Photo" : type.hasPrefix("video/") ? "🎥 Video" : type.hasPrefix("audio/") ? "🎤 Voice message" : "📎 File"
+        switch content {
+        case .text: return ""
+        case .sticker: return "Sticker"
+        case .gif: return "🎡 GIF"
+        case .photo: return "📷 Photo"
+        case .video: return "🎥 Video"
+        case .voiceMessage: return "🎤 Voice Message"
+        case .audio: return "🔈 Audio Message"
+        case .file: return "📎 File"
         }
-        return ""
     }
 
     /// The dock badge: unread messages (or chats) in countable chats, marked-unread chats as 1

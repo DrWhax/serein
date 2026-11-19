@@ -204,7 +204,7 @@ public struct TimelineAttachment: Sendable, Equatable {
 }
 
 /// getNotificationDataForMessage's attachment and sticker cases (ts/util/…preload.ts).
-public enum MessageContentKind: Sendable, Equatable {
+public enum MessageContentKind: Sendable, Hashable {
     case text, gif, photo, video, voiceMessage, audio, file
     case sticker(emoji: String?)
 
@@ -213,12 +213,29 @@ public enum MessageContentKind: Sendable, Equatable {
                                                    "image/vnd.microsoft.icon", "image/ico", "image/icon", "image/x-icon", "image/apng", "image/png"]
     static let supportedVideoTypes: Set<String> = ["video/mp4", "video/ogg", "video/webm"]
 
+    /// From the message JSON alone (attachments inlined there, as in older rows).
     static func of(_ json: [String: Any]) -> MessageContentKind {
+        let first = (json["attachments"] as? [[String: Any]])?.first
+        return of(json, firstAttachment: first.map { ($0["contentType"] as? String ?? "", $0["flags"] as? Int ?? 0) })
+    }
+
+    /// The message's kind, its attachments read from message_attachments (where they are
+    /// kept; the JSON has none), else from the JSON.
+    static func of(_ db: Database, messageId: String, json: [String: Any]) throws -> MessageContentKind {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT contentType, flags FROM message_attachments
+            WHERE messageId = ? AND editHistoryIndex = -1 AND attachmentType = 'attachment' ORDER BY orderInMessage LIMIT 1
+            """, arguments: [messageId])
+        guard let row else { return of(json) }
+        return of(json, firstAttachment: (row["contentType"] ?? "", row["flags"] ?? 0))
+    }
+
+    /// Upstream reads the first attachment only.
+    static func of(_ json: [String: Any], firstAttachment: (contentType: String, flags: Int)?) -> MessageContentKind {
         if let sticker = json["sticker"] as? [String: Any] { return .sticker(emoji: sticker["emoji"] as? String) }
-        guard let attachments = json["attachments"] as? [[String: Any]], let first = attachments.first else { return .text }
-        // Upstream reads the first attachment only.
-        let type = (first["contentType"] as? String ?? "").lowercased()
-        let flags = first["flags"] as? Int ?? 0
+        guard let first = firstAttachment else { return .text }
+        let type = first.contentType.lowercased()
+        let flags = first.flags
         // Attachment flags: VOICE_MESSAGE = 1, GIF = 8.
         if type == "image/gif" || flags & 8 != 0 { return .gif }
         if supportedImageTypes.contains(type) { return .photo }
@@ -256,7 +273,13 @@ public enum ConversationQueries {
         let last = lastMessage ? try Row.fetchOne(db, sql: """
             SELECT \(messageColumns) FROM messages WHERE conversationId = ? AND type IN ('incoming', 'outgoing')
             ORDER BY received_at DESC, sent_at DESC LIMIT 1
-            """, arguments: [id]).map(message) : nil
+            """, arguments: [id]).map { row in
+                var m = message(row)
+                if m.hasAttachments {
+                    m.content = try MessageContentKind.of(db, messageId: m.id, json: (try? MessageStore.jsonObject(row["json"] ?? "{}")) ?? [:])
+                }
+                return m
+            } : nil
         return ConversationSummary(
             id: id, kind: kind, title: title(row, json: json, kind: kind),
             color: json["color"] as? String ?? avatarColor(serviceId: row["serviceId"], e164: row["e164"], groupId: row["groupId"]), serviceId: row["serviceId"],
@@ -388,6 +411,9 @@ public enum ConversationQueries {
                     .filter { $0.0.type == .attachment && $0.0.editHistoryIndex == -1 }
                     .sorted { $0.0.order < $1.0.order }
                     .map { TimelineAttachment(location: $0.0, attachment: $0.1) }
+                if let first = m.attachments.first?.attachment, m.sticker == nil {
+                    m.content = MessageContentKind.of([:], firstAttachment: (first.contentType, first.flags ?? 0))
+                }
                 return m
             }
     }
@@ -601,8 +627,8 @@ extension ConversationQueries {
                     .min { $0.0.order < $1.0.order }?.1
                 let outgoing = (row["type"] as String?) == "outgoing"
                 return PinnedMessageSummary(pinId: row["pinId"], messageId: id, outgoing: outgoing, author: outgoing ? nil : row["sourceServiceId"],
-                                            body: row["body"] ?? "", content: MessageContentKind.of(json), isViewOnce: json["isViewOnce"] as? Bool ?? false,
-                                            pollQuestion: (json["poll"] as? [String: Any])?["question"] as? String, attachment: first)
+                                            body: row["body"] ?? "", content: MessageContentKind.of(json, firstAttachment: first.map { ($0.contentType, $0.flags ?? 0) }),
+                                            isViewOnce: json["isViewOnce"] as? Bool ?? false, pollQuestion: (json["poll"] as? [String: Any])?["question"] as? String, attachment: first)
             }
     }
 }
