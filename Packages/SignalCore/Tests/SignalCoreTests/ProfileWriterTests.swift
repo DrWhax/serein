@@ -15,8 +15,8 @@ struct Refused: Error {}
 @Suite struct ProfileWriterTests {
     static let aci = "9d0652a3-dcc3-4d11-975f-74d61598733f"
 
-    static func profile(given: String? = "Ada", avatar: String? = "profiles/abc") throws -> Profile {
-        var p = Profile(serviceId: aci, givenName: given, familyName: "Lovelace", about: "Counting", aboutEmoji: "🧮", avatarPath: avatar,
+    static func profile(given: String? = "Ada", avatar: String? = "profiles/abc") throws -> SignalCore.Profile {
+        var p = SignalCore.Profile(serviceId: aci, givenName: given, familyName: "Lovelace", about: "Counting", aboutEmoji: "🧮", avatarPath: avatar,
                         identityKey: IdentityKeyPair.generate().identityKey, sealedSender: .disabled, capabilities: [:])
         p.paymentAddress = "c2VydmVyLWhlbGQ="
         p.visibleBadgeIds = ["BOOST"]
