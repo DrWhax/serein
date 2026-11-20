@@ -88,4 +88,33 @@ import Testing
         #expect(session.pasteAttachments(pb))
         #expect(session.staged.map(\.fileName) == ["photo.png"] && session.staged.first?.data == Self.png)
     }
+
+    @Test func aPromisedImageIsStagedFromTheDeliveryQueue() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("promised.png")
+        try Self.png.write(to: file)
+        let session = SignalSession()
+        session.selectedConversationId = "chat"
+        let reader = session.promisedFileReader(in: dir)
+        let queue = OperationQueue()
+        // Exercise the actual AppKit reader on a background operation queue, as in a drag.
+        // NSFilePromiseReceiver itself requires an active AppKit dragging session.
+        await withCheckedContinuation { continuation in
+            queue.addOperation {
+                #expect(!Thread.isMainThread)
+                reader(file, nil)
+                continuation.resume()
+            }
+        }
+
+        let deadline = ContinuousClock.now + .seconds(5)
+        while session.staged.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.staged.map(\.fileName) == ["promised.png"])
+        #expect(session.staged.first?.data == Self.png)
+        #expect(session.staged.first?.contentType == "image/png")
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
 }

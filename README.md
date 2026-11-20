@@ -124,6 +124,13 @@ Tools/lint-codecs.sh                      # memory-safety and isolation rules
 Tools/check-sandbox-profile.sh            # the Seatbelt profiles and peer checks, after build-app.sh
 ```
 
+The app's attachment-drop regression runs with
+`swift test --package-path App/SignalSafe --filter AttachmentDropTests`. Promised-file
+callbacks are explicitly `@Sendable`: reading and removing the delivered file runs on
+AppKit's background delivery queue, and staging hops to the main actor. The regression
+invokes the production reader on a background operation queue and checks the staged
+image bytes, type, name and file removal; it does not simulate a native drag gesture.
+
 `Tools/check-sandbox-profile.sh` does three things:
 - It runs a probe under each profile and checks what the probe may and may not do.
 - It runs the real services from the built app on test media, a voice note, a live link preview and a Giphy search.

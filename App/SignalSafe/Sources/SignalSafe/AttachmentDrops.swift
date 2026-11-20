@@ -81,17 +81,24 @@ struct DroppedFile: Sendable, Equatable {
         guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)) != nil else { return false }
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
+        let reader = promisedFileReader(in: folder)
         for promise in promises {
-            promise.receivePromisedFiles(atDestination: folder, options: [:], operationQueue: queue) { [weak self] url, error in
-                let file = error == nil ? Self.readDelivered(url, in: folder) : nil
-                try? FileManager.default.removeItem(at: url)
-                Task { @MainActor in
-                    guard let self else { return }
-                    guard let file else { return Self.trace("drop: promised file refused or not delivered") }
-                    self.stage(file.data, contentType: file.contentType, fileName: file.fileName)
-                }
-            }
+            promise.receivePromisedFiles(atDestination: folder, options: [:], operationQueue: queue, reader: reader)
         }
         return true
+    }
+
+    /// AppKit invokes this on its delivery queue. Sendable prevents inherited main-actor
+    /// isolation, which would trap at callback entry before the Task can hop back.
+    func promisedFileReader(in folder: URL) -> @Sendable (URL, (any Error)?) -> Void {
+        { @Sendable [weak self] url, error in
+            let file = error == nil ? Self.readDelivered(url, in: folder) : nil
+            try? FileManager.default.removeItem(at: url)
+            Task { @MainActor in
+                guard let self else { return }
+                guard let file else { return Self.trace("drop: promised file refused or not delivered") }
+                self.stage(file.data, contentType: file.contentType, fileName: file.fileName)
+            }
+        }
     }
 }
