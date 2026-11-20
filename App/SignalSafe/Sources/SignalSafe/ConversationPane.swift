@@ -28,7 +28,7 @@ struct ConversationPane: View {
         conversationContent
             // Files dropped on the chat are staged as attachments (upstream's drop zone): a
             // file, or one a browser or Photos promises (AttachmentDrops.swift).
-            .onDrop(of: [.fileURL, .image, .audiovisualContent, .data], isTargeted: nil) { _ in session.stageDropped() }
+            .onDrop(of: [.fileURL, .image, .audiovisualContent, .data], isTargeted: nil) { session.stageDropped($0) }
     }
 
     var conversationContent: some View {

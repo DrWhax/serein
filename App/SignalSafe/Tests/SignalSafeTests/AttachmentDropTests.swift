@@ -1,6 +1,6 @@
-// Dropped files and images become attachments. A file a drag's source delivers (a browser's or
-// Photos' file promise) is read only if it is a regular file with one link, directly in the
-// folder we gave it: never a link to one of our own files.
+// Dropped files and images become attachments. Native composer promises are confined to the
+// folder we gave their source. Chat drops consume SwiftUI's providers without requesting
+// the promise again or deleting the provider's source file.
 
 import AppKit
 import Foundation
@@ -116,5 +116,43 @@ import Testing
         #expect(session.staged.first?.data == Self.png)
         #expect(session.staged.first?.contentType == "image/png")
         #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func swiftUIFilePromiseIsStagedWithoutRequestingThePasteboardAgain() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("browser.png")
+        try Self.png.write(to: file)
+        let provider = NSItemProvider()
+        // Browser drags also carry a page URL; the image representation must win.
+        provider.registerDataRepresentation(forTypeIdentifier: "public.url", visibility: .all) { completion in
+            completion(Data("https://example.com/".utf8), nil)
+            return nil
+        }
+        provider.registerFileRepresentation(forTypeIdentifier: "public.png", fileOptions: [], visibility: .all) { completion in
+            completion(file, false, nil)
+            return nil
+        }
+        let session = SignalSession()
+        session.selectedConversationId = "chat"
+        #expect(session.stageDropped([provider]))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while session.staged.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.staged.map(\.fileName) == ["browser.png"])
+        #expect(session.staged.first?.data == Self.png)
+        #expect(session.staged.first?.contentType == "image/png")
+        #expect(try Data(contentsOf: file) == Self.png)
+    }
+
+    @Test func swiftUIFileURLIsReadAsAnAttachmentNotURLBytes() async throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("finder.png")
+        try Self.png.write(to: file)
+        let provider = NSItemProvider(item: file as NSURL, typeIdentifier: "public.file-url")
+        #expect(await SignalSession.readDroppedProvider(provider)
+            == DroppedFile(data: Self.png, contentType: "image/png", fileName: "finder.png"))
     }
 }

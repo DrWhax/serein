@@ -126,10 +126,17 @@ Tools/check-sandbox-profile.sh            # the Seatbelt profiles and peer check
 
 The app's attachment-drop regression runs with
 `swift test --package-path App/SignalSafe --filter AttachmentDropTests`. Promised-file
-callbacks are explicitly `@Sendable`: reading and removing the delivered file runs on
-AppKit's background delivery queue, and staging hops to the main actor. The regression
-invokes the production reader on a background operation queue and checks the staged
-image bytes, type, name and file removal; it does not simulate a native drag gesture.
+callbacks in the native composer are explicitly `@Sendable`: reading and removing the
+delivered file runs on AppKit's background delivery queue, and staging hops to the main
+actor. Chat drops consume SwiftUI's item providers instead of requesting the same file
+promise again; SwiftUI owns that delivery and its cache. Tests cover background callback
+staging, provider-backed images, Finder file URLs and file ownership. They do not simulate
+a native drag gesture.
+
+Staged images have a white remove cross on a dark circular background so it stays
+visible over bright previews. `swift test --package-path Packages/SignalUI --filter
+AttachmentRemovalTests` renders a native attachment rail and clicks its remove button,
+checking contrast and that only the chosen image is removed without opening the editor.
 
 `Tools/check-sandbox-profile.sh` does three things:
 - It runs a probe under each profile and checks what the probe may and may not do.
