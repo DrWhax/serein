@@ -206,7 +206,10 @@ public struct ConversationImage: View {
             }
             if o.closeButton {
                 SwiftUI.Button { onClickClose?() } label: {
-                    SignalIcon("v3/x/x-compact", size: 16, color: AxoColor(LegacyColor.white)).frame(width: 16, height: 16)
+                    SignalIcon("v3/x/x-compact", size: 16, color: AxoColor(LegacyColor.white))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(AxoColor(LegacyColor.blackAlpha80)))
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(i18n("icu:remove-attachment"))
