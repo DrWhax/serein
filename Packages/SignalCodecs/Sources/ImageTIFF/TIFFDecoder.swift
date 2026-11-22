@@ -1,10 +1,15 @@
 // The classic, strip-based TIFF bitmaps written to the macOS pasteboard by AppKit.
 // Read the first image directory only. Its pixels are interleaved unsigned RGB or
 // grayscale samples, optionally with alpha. Ignore profiles, thumbnails and metadata.
+//
+// `layout` (the directory, the raster's description and every strip, checked before any
+// pixel is read) and `pixels` are modelled in Verification/Codecs (`TIFF.lean`): an accepted
+// layout's strips lie in the input and hold exactly width × height pixels, so `PixelBuffer`'s
+// size precondition holds. Tools/verify-codecs.sh compares them with the model.
 public import CodecCore
 
 public enum TIFFDecoder {
-    private enum Order {
+    enum Order {
         case little, big
 
         func short(_ c: inout ByteCursor) throws(ParseFailure) -> Int {
@@ -78,7 +83,19 @@ public enum TIFFDecoder {
         }
     }
 
+    /// The first directory's raster: what the pixels are and the strips that hold them.
+    struct Layout {
+        let order: Order
+        let width: Int, height: Int, photometric: Int, samples: Int, bits: Int, extra: Int
+        let strips: [ByteSlice]
+    }
+
     public static func decode(_ bytes: [UInt8], limits: DecodeLimits = .default) throws(ParseFailure) -> PixelBuffer {
+        let raster = try layout(bytes, limits: limits)
+        return PixelBuffer(width: raster.width, height: raster.height, rgba: try pixels(raster))
+    }
+
+    static func layout(_ bytes: [UInt8], limits: DecodeLimits) throws(ParseFailure) -> Layout {
         let input = ByteSlice(bytes)
         let invalid = input.cursor().fail("TIFF.raster", .invalid("unsupported bitmap layout"))
         guard input.count <= limits.maxInputBytes else { throw input.cursor().fail("TIFF", .limitExceeded("input size")) }
@@ -112,10 +129,16 @@ public enum TIFFDecoder {
             try cursor.skip(offsets[strip])
             strips.append(try cursor.bytes(sizes[strip]))
         }
+        return Layout(order: dir.order, width: width, height: height, photometric: photo, samples: samples, bits: bits[0],
+                      extra: extra, strips: strips)
+    }
 
+    static func pixels(_ raster: Layout) throws(ParseFailure) -> [UInt8] {
+        let photo = raster.photometric, samples = raster.samples, extra = raster.extra
+        let colors = photo == 2 ? 3 : 1
         func sample(_ c: inout ByteCursor) throws(ParseFailure) -> UInt8 {
-            if bits[0] == 8 { return try c.u8() }
-            return try UInt8(dir.order.short(&c) >> 8)
+            if raster.bits == 8 { return try c.u8() }
+            return try UInt8(raster.order.short(&c) >> 8)
         }
         func straight(_ value: UInt8, alpha: UInt8) -> UInt8 {
             guard extra == 1, alpha < 255 else { return value }
@@ -123,8 +146,8 @@ public enum TIFFDecoder {
             return UInt8(clamping: (Int(value) * 255 + Int(alpha) / 2) / Int(alpha))
         }
         var rgba: [UInt8] = []
-        rgba.reserveCapacity(width * height * 4)
-        for strip in strips {
+        rgba.reserveCapacity(raster.width * raster.height * 4)
+        for strip in raster.strips {
             var c = strip.cursor()
             while !c.isAtEnd {
                 let first = try sample(&c)
@@ -139,6 +162,6 @@ public enum TIFFDecoder {
                 rgba.append(alpha)
             }
         }
-        return PixelBuffer(width: width, height: height, rgba: rgba)
+        return rgba
     }
 }

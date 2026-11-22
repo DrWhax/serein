@@ -1,14 +1,17 @@
 import Codecs.Model
 import Codecs.Props
 import Codecs.Trace
+import Codecs.TIFF
 
 /-!
 # The oracle executable
 
-* `oracle grammar | cursor | boxes | bits`: cases on stdin (see `Trace.lean`).
+* `oracle grammar | cursor | boxes | bits | tiff`: cases on stdin (see `Trace.lean`).
 * `oracle explore <seed> <cases> <size>`: random grammars on random bytes (regions, length
   prefixes, repetitions with any counts and limits, choices), and random box streams; that reads
-  stay in their regions, budgets hold and boxes stay in their containers, for every run.
+  stay in their regions, budgets hold and boxes stay in their containers, for every run. Then
+  random TIFF bitmaps (a tenth as many), right and broken: that strips stay in the input, pixels
+  are exactly width × height, and the budget and limits hold, for every accepted one.
 -/
 
 open Codecs
@@ -86,6 +89,96 @@ def explore (seed count size : Nat) : IO Unit := do
   IO.println (if budgetOk then "OK budget" else "FAIL budget")
   IO.println (if boxesOk then "OK boxes-within" else "FAIL boxes-within")
 
+/-! ## Random TIFF bitmaps -/
+
+/-- `v` in `k` bytes, in the file's byte order. -/
+def bytesOf (big : Bool) (k v : Nat) : List Nat :=
+  let le := (List.range k).map fun i => v / 256 ^ i % 256
+  if big then le.reverse else le
+
+/-- A bitmap: the header, the strip data, the directory (entries `(tag, type, values)`), then
+the values longer than four bytes. -/
+def tiffFile (big : Bool) (fields : List (Nat × Nat × List Nat)) (data : List Nat) : List Nat :=
+  let ifd := 8 + data.length
+  let after := ifd + 2 + 12 * fields.length + 4
+  let (entries, longer) := fields.foldl (init := (([] : List Nat), ([] : List Nat))) fun (entries, longer) (tag, type, vs) =>
+    let raw := vs.flatMap (bytesOf big (if type == 3 then 2 else 4))
+    let inline := raw.length ≤ 4
+    let slot := if inline then raw ++ List.replicate (4 - raw.length) 0 else bytesOf big 4 (after + longer.length)
+    (entries ++ bytesOf big 2 tag ++ bytesOf big 2 type ++ bytesOf big 4 vs.length ++ slot, if inline then longer else longer ++ raw)
+  (if big then [0x4d, 0x4d] else [0x49, 0x49]) ++ bytesOf big 2 42 ++ bytesOf big 4 ifd ++ data ++
+    bytesOf big 2 fields.length ++ entries ++ [0, 0, 0, 0] ++ longer
+
+def randomTIFF (r : Rng) : List Nat × Rng := Id.run do
+  let mut r := r
+  let (big, r1) := r.below 2; r := r1
+  let (w, r1) := r.below 6; r := r1
+  let (h, r1) := r.below 6; r := r1
+  let (photo, r1) := r.below 4; r := r1
+  let (extraSample, r1) := r.below 2; r := r1
+  let (wide, r1) := r.below 3; r := r1
+  let (extra, r1) := r.below 4; r := r1
+  let (rows, r1) := r.below (h + 2); r := r1
+  let w := w + 1
+  let h := h + 1
+  let colors := if photo == 2 then 3 else 1
+  let samples := colors + extraSample
+  let bits := if wide == 2 then 16 else 8
+  let stride := w * samples * (bits / 8)
+  let count := if rows == 0 then 1 else 1 + (h - 1) / rows
+  let mut data : List Nat := []
+  for _ in [0:stride * h] do
+    let (b, r1) := r.below 256; r := r1
+    data := data ++ [b]
+  let offsets := (List.range count).map fun i => 8 + i * rows * stride
+  let sizes := (List.range count).map fun i => stride * min rows (h - i * rows)
+  let (short, r1) := r.below 2; r := r1
+  let mut fields : List (Nat × Nat × List Nat) :=
+    [(256, 3 + short, [w]), (257, 4 - short, [h]), (258, 3, List.replicate samples bits), (262, 3, [photo]),
+     (273, 3 + short, offsets), (277, 3, [samples]), (278, 3, [rows]), (279, 4, sizes)]
+  if extraSample == 1 || extra == 3 then fields := fields ++ [(338, 3, [extra % 3])]
+  -- Breakage: a field dropped, repeated, of another type, or with a value changed.
+  let (k, r1) := r.below 10; r := r1
+  let (i, r1) := r.below fields.length; r := r1
+  match k with
+  | 0 => fields := fields.eraseIdx i
+  | 1 => fields := fields ++ [fields.getD i (0, 0, [])]
+  | 2 => fields := fields.modify i fun (t, _, vs) => (t, 5, vs)
+  | 3 => fields := fields.modify i fun (t, ty, vs) => (t, ty, vs.map (· + 1))
+  | 4 => fields := fields ++ [(259, 3, [5])]
+  | _ => pure ()
+  let mut bs := tiffFile (big == 1) fields data
+  let (k, r1) := r.below 8; r := r1
+  if k == 0 then
+    let (at', r1) := r.below bs.length; r := r1
+    let (v, r1) := r.below 256; r := r1
+    bs := bs.set at' v
+  if k == 1 then
+    let (n, r1) := r.below (bs.length + 1); r := r1
+    bs := bs.take n
+  return (bs, r)
+
+def exploreTIFF (seed count : Nat) : IO Unit := do
+  let mut r : Rng := ⟨UInt64.ofNat (seed + 1)⟩
+  let mut ok := true
+  let mut accepted := 0
+  for _ in [0:count] do
+    let (bs, r1) := randomTIFF r
+    let (d, r2) := r1.below 40
+    let (p, r3) := r2.below 2000
+    r := r3
+    let lim : TIFF.Limits := ⟨d + 1, p + 1, 1 <<< 20⟩
+    match TIFF.layout bs lim with
+    | .ok L =>
+      accepted := accepted + 1
+      let within := L.strips.all fun s => s.1 + s.2 ≤ bs.length
+      let exact := (TIFF.pixels bs L).length == 4 * (L.width * L.height)
+      let budget := L.samples ≤ 4 && L.strips.length ≤ lim.maxDimension
+      let dims := 0 < L.width && 0 < L.height && L.width ≤ d + 1 && L.height ≤ d + 1 && L.width * L.height ≤ p + 1
+      if !(within && exact && budget && dims) then ok := false
+    | .error _ => pure ()
+  IO.println (if ok then s!"OK tiff: {accepted} of {count} bitmaps accepted" else "FAIL tiff")
+
 def forLines (f : String → Option String) : IO UInt32 := do
   let stdin ← IO.getStdin
   repeat
@@ -104,5 +197,9 @@ def main (args : List String) : IO UInt32 := do
   | ["cursor"] => forLines cursorAnswer
   | ["boxes"] => forLines boxesAnswer
   | ["bits"] => forLines bitsAnswer
-  | ["explore", seed, count, size] => explore seed.toNat! count.toNat! size.toNat!; return 0
-  | _ => IO.eprintln "usage: oracle grammar | cursor | boxes | bits | explore <seed> <cases> <size>"; return 2
+  | ["tiff"] => forLines tiffAnswer
+  | ["explore", seed, count, size] =>
+    explore seed.toNat! count.toNat! size.toNat!
+    exploreTIFF seed.toNat! (count.toNat! / 10)
+    return 0
+  | _ => IO.eprintln "usage: oracle grammar | cursor | boxes | bits | tiff | explore <seed> <cases> <size>"; return 2

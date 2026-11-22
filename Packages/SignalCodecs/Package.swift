@@ -82,7 +82,7 @@ let package = Package(
 
         .testTarget(name: "CodecCoreTests", dependencies: ["CodecCore"], swiftSettings: memorySafety),
         // Production against the Lean model in Verification/Codecs (Tools/verify-codecs.sh).
-        .testTarget(name: "CodecConformanceTests", dependencies: ["CodecCore", "ContainerMP4"], swiftSettings: memorySafety),
+        .testTarget(name: "CodecConformanceTests", dependencies: ["CodecCore", "ContainerMP4", "ImageTIFF"], swiftSettings: memorySafety),
         .testTarget(name: "AudioMP3Tests", dependencies: ["AudioMP3", "CodecCore"], swiftSettings: memorySafety),
         .testTarget(name: "VideoHEVCTests", dependencies: ["VideoHEVC", "ContainerMP4", "CodecCore"], resources: [.copy("Resources")],
                     swiftSettings: memorySafety),

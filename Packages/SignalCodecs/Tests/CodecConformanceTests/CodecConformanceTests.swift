@@ -1,7 +1,8 @@
 // Codec components: production SignalCodecs against the Lean model in Verification/Codecs —
 // `ByteCursor` reads, the grammar combinators (random grammars built from `Grammar` and `Parser` on
 // random bytes), `BoxGrammar.children` (random box streams: sizes right and wrong, largesize,
-// size 0, uuid, truncated mdat, the box budget) and `MSBBitReader` (both policies).
+// size 0, uuid, truncated mdat, the box budget), `MSBBitReader` (both policies) and
+// `TIFFDecoder` (random bitmaps, right and broken: the layout, its strips and the pixels).
 //
 // Run through Tools/verify-codecs.sh, or set SEREIN_CODECS_ORACLE to the oracle executable.
 
@@ -9,6 +10,7 @@ import Foundation
 import Testing
 import CodecCore
 @testable import ContainerMP4
+@testable import ImageTIFF
 
 enum CodecsOracle {
     static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -296,5 +298,96 @@ struct CodecConformanceTests {
             swift.append(out.joined(separator: " "))
         }
         compareLines(lines, model: try CodecsOracle.call("bits", lines), swift: swift)
+    }
+
+    /// TIFF bitmaps: right ones (both byte orders, grey and RGB, 8 and 16 bits, each kind of
+    /// alpha, several strips, SHORT and LONG fields, values in the entry and after it) and broken
+    /// ones (fields missing, repeated, of another type or count; unsupported values; sizes off by
+    /// one; offsets out of the input; dimensions over the limits; corrupt or truncated bytes).
+    @Test func randomTIFFs() throws {
+        var r = Mix(s: 107)
+        var lines: [String] = [], swift: [String] = []
+        for _ in 0..<Self.count {
+            let big = r.coin()
+            func put(_ k: Int, _ v: Int) -> [UInt8] {
+                let le = (0..<k).map { UInt8(truncatingIfNeeded: v >> (8 * $0)) }
+                return big ? le.reversed() : le
+            }
+            let w = 1 + r.below(6), h = 1 + r.below(6)
+            let photo = r.coin(8) ? 3 + r.below(3) : r.below(3)
+            let colors = photo == 2 ? 3 : 1
+            let samples = colors + (r.coin(8) ? 2 : r.below(2))
+            let bits = r.coin(3) ? 16 : (r.coin(12) ? 4 : 8)
+            let rows = r.coin(30) ? 0 : (r.coin(4) ? h + r.below(3) : 1 + r.below(h))
+            let stride = w * samples * max(bits / 8, 1)
+            let count = rows == 0 ? 1 : 1 + (h - 1) / rows
+            let data = (0..<(stride * h)).map { _ in UInt8(r.below(256)) }
+            var offsets = (0..<count).map { 8 + $0 * rows * stride }
+            var sizes = (0..<count).map { stride * min(rows, h - $0 * rows) }
+            if r.coin(10) { offsets[r.below(count)] = r.coin() ? 1 << 20 : 8 + data.count }
+            if r.coin(10) { sizes[r.below(count)] += r.coin() ? 1 : -1 }
+            var fields: [(tag: Int, type: Int, values: [Int])] = [
+                (256, r.coin() ? 3 : 4, [r.coin(20) ? 50 + r.below(100) : w]),
+                (257, r.coin() ? 3 : 4, [r.coin(20) ? 50 + r.below(100) : h]),
+                (258, 3, r.coin(15) ? (0..<samples).map { $0 == 1 ? 16 : 8 } : Array(repeating: bits, count: samples)),
+                (262, 3, [photo]),
+                (273, r.coin() ? 3 : 4, offsets),
+                (277, 3, [samples]),
+                (279, r.coin() ? 3 : 4, sizes),
+            ]
+            if rows != h || r.coin() { fields.append((278, r.coin() ? 3 : 4, [rows])) }
+            if samples > colors || r.coin(6) { fields.append((338, 3, [r.coin(6) ? 3 : r.below(3)])) }
+            if r.coin(4) { fields.append((339, 3, Array(repeating: r.coin(6) ? 2 : 1, count: samples))) }
+            for (tag, unsupported) in [(259, 5), (317, 2), (274, 3), (266, 2), (284, 2)] where r.coin(8) {
+                fields.append((tag, 3, [r.coin(3) ? unsupported : 1]))
+            }
+            if r.coin(6) { fields.append((270, 2, [1, 2, 3])) }    // an unknown tag: skipped
+            switch r.below(18) {
+            case 0: fields.remove(at: r.below(fields.count))
+            case 1: fields.append(fields[r.below(fields.count)])
+            case 2: fields[r.below(fields.count)].type = 5
+            case 3: fields[r.below(fields.count)].values.append(1)
+            case 4: fields[r.below(fields.count)].values = []
+            case 5: fields.swapAt(r.below(fields.count), r.below(fields.count))
+            default: break
+            }
+            // Header, strip data, values longer than four bytes, then the directory and the next
+            // directory's offset (last, so that a cut can take just that).
+            var entries: [UInt8] = [], longer: [UInt8] = []
+            for f in fields {
+                let raw = f.values.flatMap { put(f.type == 3 ? 2 : 4, $0) }
+                entries += put(2, f.tag) + put(2, f.type) + put(4, f.values.count)
+                if raw.count <= 4 {
+                    entries += raw + Array(repeating: 0, count: 4 - raw.count)
+                } else {
+                    entries += put(4, 8 + data.count + longer.count)
+                    longer += raw
+                }
+            }
+            var bytes: [UInt8] = (big ? [0x4D, 0x4D] : [0x49, 0x49]) + put(2, 42) + put(4, 8 + data.count + longer.count)
+            bytes += data + longer + put(2, fields.count) + entries + [0, 0, 0, 0]
+            switch r.below(10) {
+            case 0: bytes[r.below(bytes.count)] = UInt8(r.below(256))
+            case 1: bytes = Array(bytes.prefix(r.below(bytes.count + 1)))
+            case 2: bytes.removeLast(1 + r.below(4))
+            default: break
+            }
+            var limits = DecodeLimits()
+            if r.coin(4) { limits.maxDimension = 1 + r.below(8) }
+            if r.coin(4) { limits.maxPixels = 1 + r.below(40) }
+            limits.maxInputBytes = r.coin(10) ? r.below(bytes.count + 1) : bytes.count + r.below(100)
+            lines.append("\(hex(bytes)) | \(limits.maxDimension) \(limits.maxPixels) \(limits.maxInputBytes)")
+            do throws(ParseFailure) {
+                let raster = try TIFFDecoder.layout(bytes, limits: limits)
+                let px = try TIFFDecoder.pixels(raster)
+                let hash = px.reduce(UInt64(0)) { ($0 &* 31 &+ UInt64($1)) & 0xFFFF_FFFF }
+                let strips = raster.strips.map { "\($0.lowerBound)+\($0.count)" }.joined(separator: ",")
+                swift.append("ok:\(raster.order == .big ? "be" : "le"):\(raster.width)x\(raster.height):\(raster.photometric):"
+                    + "\(raster.samples):\(raster.bits):\(raster.extra):\(strips):px\(px.count):\(hash)")
+            } catch {
+                swift.append(failCode(error))
+            }
+        }
+        compareLines(lines, model: try CodecsOracle.call("tiff", lines), swift: swift)
     }
 }
