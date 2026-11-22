@@ -42,6 +42,7 @@ import Testing
         // The image fails to load: the tile stays with no picture.
         try Snapshot.assertMatches(Self.list([Self.draft("image/jpeg", "tina-rolf-269345-unsplash.jpg", url: "/fixtures/this-image-does-not-exist.jpg")]),
                                    story: c + "staged-image-that-fails-to-load", theme: theme)
+        try Snapshot.assertMatches(Self.list([Self.tina, Self.video, Self.gif]), story: c + "multiple-visual-attachments", theme: theme)
         try Snapshot.assertMatches(Self.list([Self.tina, Self.draft("text/plain", "lorem-ipsum.txt", url: "/fixtures/lorem-ipsum.txt"),
                                               Self.draft("audio/mp3", "incompetech-com-Agnus-Dei-X.mp3", url: "/fixtures/incompetech-com-Agnus-Dei-X.mp3"),
                                               Self.video, Self.gif]),
@@ -85,7 +86,9 @@ import Testing
         }
     }
 
-    @Test func visibleCloseButtonRemovesOnlyItsImage() async throws {
+    /// Upstream's close button (16 pt, 4 pt in from the tile's top-right corner) removes only
+    /// its own image, without opening the image editor.
+    @Test func closeButtonRemovesOnlyItsImage() async throws {
         let draft = Draft()
         let host = NSHostingView(rootView: Composer(draft: draft))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 160),
@@ -96,21 +99,10 @@ import Testing
         defer { window.close() }
         try await Task.sleep(for: .milliseconds(100))
         host.layoutSubtreeIfNeeded()
-        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        if ProcessInfo.processInfo.environment["SNAPSHOT_ARTIFACTS"] != nil {
-            try FileManager.default.createDirectory(at: Snapshot.failuresDir, withIntermediateDirectories: true)
-            try #require(bitmap.representation(using: .png, properties: [:]))
-                .write(to: Snapshot.failuresDir.appendingPathComponent("attachment-removal.png"))
-        }
-        // The 120pt tiles are centered in the 142pt rail, below its 12pt top inset.
-        let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
-        let backing = try #require(bitmap.colorAt(x: Int(116 * scale), y: Int(31 * scale))?.usingColorSpace(.sRGB))
-        let cross = try #require(bitmap.colorAt(x: Int(116 * scale), y: Int(39 * scale))?.usingColorSpace(.sRGB))
-        #expect(backing.redComponent < 0.5, "The close control must contrast with a white image")
-        #expect(cross.redComponent > 0.8, "The cross must remain visible on its dark backing")
+        // The first 120 pt tile spans x 12…132 and y 23…143 from the top: its button's centre
+        // is 12 pt in from that corner (window coordinates count y from the bottom).
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: 116, y: 121),
+            let event = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: 120, y: 160 - 35),
                 modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
             window.sendEvent(event)

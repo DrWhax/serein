@@ -1,6 +1,7 @@
 // Dropped files and images become attachments. Native composer promises are confined to the
 // folder we gave their source. Chat drops consume SwiftUI's providers without requesting
-// the promise again or deleting the provider's source file.
+// the promise again or deleting the provider's source file. Neither reads a symbolic link a
+// drag's source wrote to one of our own files.
 
 import AppKit
 import Foundation
@@ -154,5 +155,23 @@ import Testing
         let provider = NSItemProvider(item: file as NSURL, typeIdentifier: "public.file-url")
         #expect(await SignalSession.readDroppedProvider(provider)
             == DroppedFile(data: Self.png, contentType: "image/png", fileName: "finder.png"))
+    }
+
+    /// NSItemProvider hands over its own copy of what the drag's source wrote, and copies a
+    /// symbolic link as a link: one to our own files is refused. (A hard link is copied as a
+    /// plain file with one link, so only the composer's folder can tell it apart.)
+    @Test func aProviderFileThatIsASymbolicLinkIsRefused() async throws {
+        let dir = try folder(), elsewhere = try folder()
+        defer { for d in [dir, elsewhere] { try? FileManager.default.removeItem(at: d) } }
+        let secret = elsewhere.appendingPathComponent("db.sqlite")
+        try Data("secret".utf8).write(to: secret)
+        let link = dir.appendingPathComponent("cat.png")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: secret)
+        let provider = NSItemProvider()
+        provider.registerFileRepresentation(forTypeIdentifier: "public.png", fileOptions: [], visibility: .all) { completion in
+            completion(link, false, nil)
+            return nil
+        }
+        #expect(await SignalSession.readDroppedProvider(provider) == nil)
     }
 }

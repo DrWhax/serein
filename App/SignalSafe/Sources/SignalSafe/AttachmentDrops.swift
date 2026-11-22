@@ -1,11 +1,15 @@
 // Files and images dropped on a chat or its composer become attachments (upstream's drop
 // zone). Finder files are read where they are. Chat drops consume SwiftUI's item providers:
 // SwiftUI already receives browser/Photos file promises into its own cache, so requesting
-// them again from the drag pasteboard would compete with that delivery.
+// them again from the drag pasteboard would compete with that delivery. The native composer
+// receives promises into a fresh folder of ours.
 //
-// The native composer receives promises into a fresh folder of ours. A source-supplied file
-// is read only if it is a regular file with one link directly in that folder, opened without
-// following a link: a source cannot hand us a link to our database or keys to stage for sending.
+// Either way the file was written by the drag's source, so it is read only if it is a regular
+// file with one link, opened without following a link (in the composer's case, directly in our
+// folder): a source cannot hand us a link to our database or keys to stage for sending. In the
+// chat's case we see NSItemProvider's copy: it keeps a symbolic link a link, which is refused,
+// but copies a hard link as a plain file. Making a hard link to one of our files needs access
+// to our container in the first place.
 
 import AppKit
 import Foundation
@@ -37,12 +41,18 @@ struct DroppedFile: Sendable, Equatable {
         UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 
-    /// A file a drag's source delivered into `folder`: read only if it is a regular file with
-    /// one link, directly in `folder` (after resolving links), opened without following a link.
+    /// A file a drag's source delivered into `folder`: read only if it is directly in `folder`
+    /// (after resolving links), and then as `readSourceWritten` reads it.
     nonisolated static func readDelivered(_ url: URL, in folder: URL) -> DroppedFile? {
         let parent = url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
         guard parent.path == folder.resolvingSymlinksInPath().standardizedFileURL.path else { return nil }
-        let path = parent.appendingPathComponent(url.lastPathComponent).path
+        return readSourceWritten(parent.appendingPathComponent(url.lastPathComponent))
+    }
+
+    /// A file a drag's source wrote: read only if it is a regular file with one link, opened
+    /// without following a link, at most `maxAttachmentBytes`.
+    nonisolated static func readSourceWritten(_ url: URL) -> DroppedFile? {
+        let path = url.path
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               attrs[.type] as? FileAttributeType == .typeRegular,
               (attrs[.referenceCount] as? NSNumber)?.intValue == 1,
@@ -92,8 +102,9 @@ struct DroppedFile: Sendable, Equatable {
         else { return nil }
         return await withCheckedContinuation { continuation in
             provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
-                // This copy belongs to NSItemProvider and expires when the callback returns.
-                continuation.resume(returning: error == nil ? url.flatMap { readDropped($0) } : nil)
+                // This copy belongs to NSItemProvider and expires when the callback returns. It
+                // keeps a symbolic link the source wrote a link, which is refused.
+                continuation.resume(returning: error == nil ? url.flatMap { readSourceWritten($0) } : nil)
             }
         }
     }
