@@ -204,7 +204,7 @@ extension MediaRequest {
     public var input: Data? {
         switch self {
         case .stickerImage(let b), .displayImage(let b, _), .displayAnimation(let b, _), .imageInfo(let b), .thumbnail(let b, _), .scaleForSending(let b, _, _),
-             .stripMetadata(let b, _), .convertHEIC(let b), .audioSummary(let b), .decodeAudio(let b, _, _), .videoInfo(let b),
+             .stripMetadata(let b, _), .convertHEIC(let b), .convertTIFF(let b), .audioSummary(let b), .decodeAudio(let b, _, _), .videoInfo(let b),
              .posterFrame(let b), .openVideo(let b): return b
         case .startVoiceNote, .appendVoiceNote, .finishVoiceNote, .cancelVoiceNote, .recordVoiceNote, .voiceNoteProgress, .videoFrames, .seekVideo,
              .closeVideo: return nil
@@ -221,7 +221,7 @@ extension MediaRequest {
             return .seconds(120)
         case .displayImage, .thumbnail, .stickerImage, .stripMetadata, .posterFrame, .videoFrames, .decodeAudio:
             return .seconds(15)
-        case .scaleForSending, .convertHEIC, .audioSummary, .finishVoiceNote, .displayAnimation:
+        case .scaleForSending, .convertHEIC, .convertTIFF, .audioSummary, .finishVoiceNote, .displayAnimation:
             return .seconds(30)
         }
     }

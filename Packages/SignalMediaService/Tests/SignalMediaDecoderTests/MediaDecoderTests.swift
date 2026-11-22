@@ -22,20 +22,27 @@ import Testing
         #expect(MediaDecoder.sniff([1, 2, 3]) == nil)
     }
 
-    @Test @MainActor func nativeClipboardTIFFPreviewsAndScalesThroughXPC() async throws {
+    /// A pasted TIFF bitmap becomes a PNG of the same pixels through the service. That is the
+    /// only request that reads TIFF: received TIFF stays a file, as upstream shows it.
+    @Test @MainActor func clipboardTIFFConvertsToPNGThroughXPCAndIsNeverDisplayed() async throws {
         let pixels = PixelBuffer(width: 3, height: 1, rgba: [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 0, 0])
         let native = try #require(NSBitmapImageRep(data: Data(PNGEncoder.encode(pixels))))
         let tiff = try #require(native.tiffRepresentation)
         let listener = XPCServer.anonymous(requirement: nil, MediaXPCHandler())
         defer { listener.cancel() }
         let client = MediaXPCClient(timeout: .seconds(20), decoder: .endpoint(listener.endpoint))
-        let preview = try await client.displayImage(tiff, maxDimension: 512)
+        let png = try await client.convertTIFF(tiff)
+        #expect(png.width == 3 && png.height == 1 && MediaDecoder.sniff(Array(png.data)) == .png)
+        let preview = try await client.displayImage(png.data, maxDimension: 512)
         #expect(preview.width == 3 && preview.height == 1 && preview.rgba == Data(pixels.rgba))
+        await #expect(throws: (any Error).self) { try await client.convertTIFF(Data(tiff.prefix(12))) }
 
-        let outgoing = try await client.scaleForSending(tiff, contentType: "image/tiff", level: .one)
-        #expect(outgoing.contentType == "image/png")
-        #expect(try await client.displayImage(outgoing.data, maxDimension: 512) == preview)
-        await #expect(throws: (any Error).self) { try await client.displayImage(Data(tiff.prefix(12)), maxDimension: 512) }
+        let d = MediaDecoder()
+        await #expect(throws: MediaProcessingError.unsupportedFormat) { try await d.displayImage(tiff, maxDimension: 512) }
+        await #expect(throws: MediaProcessingError.unsupportedFormat) { try await d.imageInfo(tiff) }
+        await #expect(throws: MediaProcessingError.unsupportedFormat) { try await d.thumbnail(tiff, size: 150) }
+        await #expect(throws: MediaProcessingError.unsupportedFormat) { try await d.scaleForSending(tiff, contentType: "image/tiff", level: .one) }
+        await #expect(throws: MediaProcessingError.unsupportedFormat) { try await d.convertTIFF(png.data) }
     }
 
     @Test func littleEndianTIFFChecksStripBoundsAndPixelLimit() throws {
@@ -60,11 +67,12 @@ import Testing
             return Data(bytes)
         }
 
-        let image = try MediaDecoder.decode(bitmap()).0
+        let image = try MediaDecoder.decode(bitmap(), allowTIFF: true).0
         #expect(image.width == 2 && image.height == 2)
         #expect(image.rgba == [10, 10, 10, 255, 20, 20, 20, 255, 30, 30, 30, 255, 40, 40, 40, 255])
-        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(lastStrip: .max)) }
-        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(width: .max)) }
+        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(lastStrip: .max), allowTIFF: true) }
+        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(width: .max), allowTIFF: true) }
+        #expect(throws: MediaProcessingError.unsupportedFormat) { try MediaDecoder.decode(bitmap()) }
     }
 
     @Test func imageInfo() async throws {

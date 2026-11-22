@@ -190,6 +190,30 @@ public struct ConvertedImage: Codable, Equatable, Sendable {
     }
 }
 
+/// A pasted TIFF bitmap (what AppKit puts on the pasteboard) re-encoded as PNG for the draft:
+/// Chromium hands upstream a pasted image as PNG. Lossless: the pixels are the bitmap's.
+public struct PastedImage: Codable, Equatable, Sendable {
+    public var data: Foundation.Data
+    public var width: Int
+    public var height: Int
+
+    public init(data: Foundation.Data, width: Int, height: Int) {
+        self.data = data
+        self.width = width
+        self.height = height
+    }
+
+    static let pngSignature = Foundation.Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    static let pngEnd = Foundation.Data([0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82])
+
+    /// A PNG (signature … IEND) of plausible size and dimensions.
+    public func validated() throws -> PastedImage {
+        guard (1...16384).contains(width), (1...16384).contains(height), data.count >= 20, data.count <= 256 << 20,
+              data.prefix(8) == Self.pngSignature, data.suffix(12) == Self.pngEnd else { throw MediaProcessingError.invalidResult }
+        return self
+    }
+}
+
 /// What a link-preview page says about itself (`parseMetadata`): raw strings, bounded.
 public struct LinkPreviewHTML: Codable, Equatable, Sendable {
     public static let maxLength = 4096
@@ -278,6 +302,10 @@ public protocol MediaProcessing: Sendable {
     /// only request that decodes HEVC images: received HEIC is never displayed (upstream shows
     /// it as a file), so display / thumbnail / info refuse it.
     func convertHEIC(_ bytes: Data) async throws -> ConvertedImage
+    /// The composer's conversion of a pasted TIFF bitmap to PNG. The only request that decodes
+    /// TIFF: received TIFF is never displayed (upstream shows it as a file), so display /
+    /// thumbnail / info / scaling refuse it.
+    func convertTIFF(_ bytes: Data) async throws -> PastedImage
     /// The file without its metadata (Exif / XMP / IPTC / comments in images, user data and
     /// times in videos); throws when it cannot be parsed or its type has no stripper.
     func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data

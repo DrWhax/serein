@@ -12,7 +12,7 @@ import Testing
     static let requests: [MediaRequest] = [
         .stickerImage(Data([1, 2, 3])), .displayImage(Data([4]), maxDimension: 800), .imageInfo(Data()),
         .thumbnail(Data([5, 6]), size: 150), .scaleForSending(Data([7]), contentType: "image/jpeg", level: .two),
-        .stripMetadata(Data([8]), contentType: "image/png"), .convertHEIC(Data([9])), .audioSummary(Data([10])),
+        .stripMetadata(Data([8]), contentType: "image/png"), .convertHEIC(Data([9])), .convertTIFF(Data([9, 9])), .audioSummary(Data([10])),
         .decodeAudio(Data([11]), startFrame: 4800, maxFrames: 96000), .startVoiceNote(sampleRate: 48000),
         .appendVoiceNote(id, samples: [0, -1, 0.5, .infinity, -.zero]), .finishVoiceNote(id), .cancelVoiceNote(id),
         .videoInfo(Data([12])), .posterFrame(Data([13])), .openVideo(Data([14])), .videoFrames(id, count: 8, fit: nil),

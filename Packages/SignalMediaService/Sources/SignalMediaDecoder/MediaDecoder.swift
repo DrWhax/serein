@@ -1,7 +1,8 @@
 // MediaProcessing over SignalCodecs: the service side. Formats are sniffed from the bytes
 // (never trusted from a content type); every decoder runs with its default limits. AVIF is
 // displayed like the other image types (upstream's isImageTypeSupported lists it); HEIC is
-// decoded only by convertHEIC, the sending side's conversion to JPEG.
+// decoded only by convertHEIC, the sending side's conversion to JPEG, and TIFF only by
+// convertTIFF, the composer's conversion of a pasted bitmap to PNG.
 
 import Blurhash
 import CodecCore
@@ -46,10 +47,11 @@ public struct MediaDecoder: MediaProcessing {
     }
 
     /// The decoded image (its still frame) and whether it animates. HEIC only with `allowHEIC`
-    /// (the sending side's conversion); everywhere else it is an unsupported format.
-    public static func decode(_ bytes: Data, allowHEIC: Bool = false) throws -> (PixelBuffer, animated: Bool) {
+    /// (the sending side's conversion), TIFF only with `allowTIFF` (a pasted bitmap's);
+    /// everywhere else they are unsupported formats.
+    public static func decode(_ bytes: Data, allowHEIC: Bool = false, allowTIFF: Bool = false) throws -> (PixelBuffer, animated: Bool) {
         let b = Array(bytes)
-        guard let format = sniff(b), format != .heic || allowHEIC else { throw MediaProcessingError.unsupportedFormat }
+        guard let format = sniff(b), format != .heic || allowHEIC, format != .tiff || allowTIFF else { throw MediaProcessingError.unsupportedFormat }
         do {
             switch format {
             case .avif: return (try HEIFDecoder.decode(b, codecs: [.av1]).image, false)
@@ -227,6 +229,13 @@ public struct MediaDecoder: MediaProcessing {
         var (image, _) = try Self.decode(bytes, allowHEIC: true)
         for i in stride(from: 3, to: image.rgba.count, by: 4) { image.rgba[i] = 255 }
         return ConvertedImage(data: Data(JPEGEncoder.encode(image, quality: ConvertedImage.quality)), width: image.width, height: image.height)
+    }
+
+    /// A pasted TIFF bitmap as PNG, every pixel kept (alpha included).
+    public func convertTIFF(_ bytes: Data) async throws -> PastedImage {
+        guard Self.sniff(Array(bytes)) == .tiff else { throw MediaProcessingError.unsupportedFormat }
+        let (image, _) = try Self.decode(bytes, allowTIFF: true)
+        return PastedImage(data: Data(PNGEncoder.encode(image)), width: image.width, height: image.height)
     }
 
     public func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data {

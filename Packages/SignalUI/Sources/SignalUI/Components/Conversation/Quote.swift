@@ -64,7 +64,7 @@ enum QuoteMIME {
     static let longMessage = "text/x-signal-plain"
     static let gif = "image/gif"
     static let supportedImages: Set<String> = ["image/avif", "image/bmp", "image/gif", "image/jpeg", "image/webp", "image/x-xbitmap",
-                                               "image/vnd.microsoft.icon", "image/ico", "image/icon", "image/x-icon", "image/apng", "image/png", "image/tiff"]
+                                               "image/vnd.microsoft.icon", "image/ico", "image/icon", "image/x-icon", "image/apng", "image/png"]
     static let supportedVideos: Set<String> = ["video/mp4", "video/ogg", "video/webm"]
     static func isImage(_ t: String) -> Bool { supportedImages.contains(t) }
     static func isVideo(_ t: String) -> Bool { supportedVideos.contains(t) }

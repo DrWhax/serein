@@ -66,13 +66,6 @@ struct DroppedFile: Sendable, Equatable {
 
     // MARK: pasteboards
 
-    /// Whether a pasteboard holds something to attach: files, file promises, or PNG/JPEG data.
-    nonisolated static func hasAttachments(_ pasteboard: NSPasteboard) -> Bool {
-        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-            || pasteboard.canReadObject(forClasses: [NSFilePromiseReceiver.self], options: nil)
-            || pasteboard.availableType(from: [.png, NSPasteboard.PasteboardType("public.jpeg")]) != nil
-    }
-
     /// SwiftUI has already called in file promises into its own cache. Consume its providers
     /// rather than requesting the same promises again with a different destination.
     func stageDropped(_ providers: [NSItemProvider]) -> Bool {

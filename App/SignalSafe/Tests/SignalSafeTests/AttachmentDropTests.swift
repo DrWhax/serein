@@ -112,7 +112,10 @@ import Testing
         #expect(editor.readablePasteboardTypes.contains(.tiff))
         #expect(editor.readSelection(from: pb))
         #expect(editor.string == "caption")
+        // Staged as the pasted bitmap, with no file name: `stage` has the media service convert
+        // it to PNG (`convertTIFF`, tested through XPC in MediaDecoderTests).
         #expect(session.staged.map(\.contentType) == ["image/tiff"])
+        #expect(session.staged.map(\.fileName) == [""])
         #expect(session.staged.map(\.data) == [tiff])
     }
 
@@ -147,6 +150,31 @@ import Testing
         session.selectedConversationId = "chat"
         #expect(session.pasteAttachments(pb))
         #expect(session.staged.map(\.fileName) == ["image.png", "finder.png"])
+    }
+
+    /// A copied Finder item that cannot be attached (a folder, a file over the limit) is not
+    /// replaced by its item's image, which is the file's icon.
+    @Test func aFinderFileThatCannotBeAttachedIsNotPastedAsItsIcon() throws {
+        let dir = try folder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let large = dir.appendingPathComponent("large.mov")
+        FileManager.default.createFile(atPath: large.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: large)
+        try handle.truncate(atOffset: UInt64(SignalSession.maxAttachmentBytes) + 1)
+        try handle.close()
+        for url in [dir, large] {
+            let item = NSPasteboardItem()
+            item.setString(url.absoluteString, forType: .fileURL)
+            item.setData(Self.png, forType: .png)
+            let pb = NSPasteboard.withUniqueName()
+            defer { pb.releaseGlobally() }
+            pb.writeObjects([item])
+            let session = SignalSession()
+            session.selectedConversationId = "chat"
+            #expect(session.pasteAttachments(pb), "\(url.lastPathComponent)")
+            #expect(session.staged.isEmpty, "\(url.lastPathComponent)")
+            if case .unableToLoadAttachment = session.toast {} else { Issue.record("no toast for \(url.lastPathComponent)") }
+        }
     }
 
     @Test func aPromisedImageIsStagedFromTheDeliveryQueue() async throws {
