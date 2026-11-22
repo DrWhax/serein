@@ -36,6 +36,7 @@ let package = Package(
     products: [
         .library(name: "CodecCore", targets: ["CodecCore"]),
         .library(name: "ImagePNG", targets: ["ImagePNG"]),
+        .library(name: "ImageTIFF", targets: ["ImageTIFF"]),
         .library(name: "ImageGIF", targets: ["ImageGIF"]),
         .library(name: "ImageBMP", targets: ["ImageBMP"]),
         .library(name: "Blurhash", targets: ["Blurhash"]),
@@ -57,6 +58,7 @@ let package = Package(
     targets: [
         .target(name: "CodecCore", swiftSettings: strict),
         .target(name: "ImagePNG", dependencies: ["CodecCore"], swiftSettings: strict),
+        .target(name: "ImageTIFF", dependencies: ["CodecCore"], swiftSettings: strict),
         .target(name: "ImageGIF", dependencies: ["CodecCore"], swiftSettings: strict),
         .target(name: "ImageBMP", dependencies: ["CodecCore", "ImagePNG"], swiftSettings: strict),
         .target(name: "Blurhash", dependencies: ["CodecCore"], swiftSettings: strict),

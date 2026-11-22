@@ -305,7 +305,7 @@ public struct CompositionArea: View {
                     .environment(\.composerKeys, ComposerKeys(
                         // `hasDraft` (text, attachments, a quote) keeps ↑ for the caret.
                         arrowUp: m.draftAttachments.isEmpty && m.quote == nil && !m.isEditingMessage ? actions.onEditLastMessage : nil,
-                        escape: escapeAction, paste: actions.onPaste))
+                        escape: escapeAction, paste: m.isEditingMessage || m.isDisabled ? nil : actions.onPaste))
                     .padding(.horizontal, 6)
                     .frame(maxWidth: .infinity)
                     .layoutPriority(1)

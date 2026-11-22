@@ -15,6 +15,7 @@ import ImageGIF
 import ImageHEIF
 import ImageJPEG
 import ImagePNG
+import ImageTIFF
 import ImageWebP
 import MediaXPCInterface
 import MetadataStrip
@@ -22,7 +23,7 @@ import MetadataStrip
 public struct MediaDecoder: MediaProcessing {
     public init() {}
 
-    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico, avif, heic }
+    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico, avif, heic, tiff }
 
     public static func sniff(_ b: [UInt8]) -> Format? {
         // HEIF: an ftyp, then whatever codec the primary item uses (brands only hint at it).
@@ -38,6 +39,7 @@ public struct MediaDecoder: MediaProcessing {
         if starts([0xFF, 0xD8, 0xFF]) { return .jpeg }
         if starts(Array("GIF87a".utf8)) || starts(Array("GIF89a".utf8)) { return .gif }
         if starts(Array("RIFF".utf8)), starts(Array("WEBP".utf8), at: 8) { return .webp }
+        if starts([0x49, 0x49, 42, 0]) || starts([0x4D, 0x4D, 0, 42]) { return .tiff }
         if starts([0x42, 0x4D]) { return .bmp }
         if starts([0x00, 0x00, 0x01, 0x00]) { return .ico }
         return nil
@@ -56,6 +58,7 @@ public struct MediaDecoder: MediaProcessing {
             case .jpeg: return (try JPEGDecoder.decode(b), false)
             case .gif: return still(try GIFDecoder.decode(b))
             case .webp: return still(try WebPDecoder.decode(b))
+            case .tiff: return (try TIFFDecoder.decode(b), false)
             case .bmp: return (try BMPDecoder.decode(b), false)
             case .ico: return (try ICODecoder.decode(b), false)
             }

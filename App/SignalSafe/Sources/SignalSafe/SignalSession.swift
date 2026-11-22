@@ -1176,23 +1176,46 @@ import SignalUI
         return true
     }
 
-    /// ⌘V in the composer (`handlePaste`), or a drop on it: files on the pasteboard, files
-    /// promised by the drag's source (a browser's image, Photos), or an image (PNG or JPEG
-    /// bytes; other image types would need ImageIO, so they are left alone).
+    /// Attach one representation of each copied image. Finder files keep their names, and a
+    /// browser's unavailable file URL can fall back to its promise or its inline image bytes.
     func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            // A promise's placeholder URL is not a file yet: then the promise is taken instead.
-            if !urls.map({ stage($0) }).contains(true) { _ = receivePromisedFiles(pasteboard) }
-            return true
-        }
-        if receivePromisedFiles(pasteboard) { return true }
-        for (type, mime, ext) in [(NSPasteboard.PasteboardType.png, "image/png", "png"), (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "jpg")] {
-            if let data = pasteboard.data(forType: type), data.count <= Self.maxAttachmentBytes {
-                stage(data, contentType: mime, fileName: "image.\(ext)")
-                return true
+        guard selectedConversationId != nil, editingMessageId == nil else { return false }
+        // The fallback class keeps one object per pasteboard item, so a Finder URL and an
+        // inline image can be pasted together, in order. AppKit opens file URLs with scope.
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self, NSPasteboardItem.self],
+                                             options: [.urlReadingFileURLsOnly: true]) ?? []
+        let files = objects.map { ($0 as? URL).flatMap(Self.readDropped) }
+        if !files.contains(where: { $0 != nil }), receivePromisedFiles(pasteboard) { return true }
+
+        var handled = false
+        for (index, item) in (pasteboard.pasteboardItems ?? []).enumerated() {
+            if files.indices.contains(index), let file = files[index] {
+                stage(file.data, contentType: file.contentType, fileName: file.fileName)
+                handled = true
+                continue
             }
+            let types = ComposerAttachmentPasteboard.imageTypes.filter { item.types.contains(NSPasteboard.PasteboardType($0.identifier)) }
+            guard !types.isEmpty else { continue }
+            handled = true
+            guard let image = Self.pastedImage(item, types: types) else {
+                toast = .unableToLoadAttachment
+                continue
+            }
+            stage(image.data, contentType: image.contentType, fileName: image.fileName)
         }
-        return false
+        return handled
+    }
+
+    private static func pastedImage(_ item: NSPasteboardItem, types: [UTType]) -> DroppedFile? {
+        for type in types {
+            guard let data = item.data(forType: NSPasteboard.PasteboardType(type.identifier)), !data.isEmpty,
+                  data.count <= maxAttachmentBytes, let mime = type.preferredMIMEType,
+                  let ext = type.preferredFilenameExtension else { continue }
+            // Clipboard TIFF is re-encoded for sending. Let the final MIME type supply its extension.
+            let name = type == .tiff ? "" : "image.\(type == .jpeg ? "jpg" : ext)"
+            return DroppedFile(data: data, contentType: mime, fileName: name)
+        }
+        return nil
     }
 
     func stage(_ data: Data, contentType type: String, fileName: String) {
@@ -1214,7 +1237,13 @@ import SignalUI
                 staged[i].fileName = ""
                 shownData = converted.data
             }
-            guard let shown = try? await media.displayImage(shownData, maxDimension: 512) else { return }
+            guard let shown = try? await media.displayImage(shownData, maxDimension: 512) else {
+                if type == "image/tiff", fileName.isEmpty, let index = staged.firstIndex(where: { $0.id == item.id }) {
+                    staged.remove(at: index)
+                    toast = .unableToLoadAttachment
+                }
+                return
+            }
             if let i = staged.firstIndex(where: { $0.id == item.id }) {
                 staged[i].preview = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
                 staged[i].width = shown.originalWidth

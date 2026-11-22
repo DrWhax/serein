@@ -1,3 +1,4 @@
+import AppKit
 import CodecCore
 import EncodePNG
 import Foundation
@@ -19,6 +20,51 @@ import Testing
         #expect(MediaDecoder.sniff(Array("GIF89a".utf8)) == .gif)
         #expect(MediaDecoder.sniff(Array("RIFF\0\0\0\0WEBP".utf8)) == .webp)
         #expect(MediaDecoder.sniff([1, 2, 3]) == nil)
+    }
+
+    @Test @MainActor func nativeClipboardTIFFPreviewsAndScalesThroughXPC() async throws {
+        let pixels = PixelBuffer(width: 3, height: 1, rgba: [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 0, 0])
+        let native = try #require(NSBitmapImageRep(data: Data(PNGEncoder.encode(pixels))))
+        let tiff = try #require(native.tiffRepresentation)
+        let listener = XPCServer.anonymous(requirement: nil, MediaXPCHandler())
+        defer { listener.cancel() }
+        let client = MediaXPCClient(timeout: .seconds(20), decoder: .endpoint(listener.endpoint))
+        let preview = try await client.displayImage(tiff, maxDimension: 512)
+        #expect(preview.width == 3 && preview.height == 1 && preview.rgba == Data(pixels.rgba))
+
+        let outgoing = try await client.scaleForSending(tiff, contentType: "image/tiff", level: .one)
+        #expect(outgoing.contentType == "image/png")
+        #expect(try await client.displayImage(outgoing.data, maxDimension: 512) == preview)
+        await #expect(throws: (any Error).self) { try await client.displayImage(Data(tiff.prefix(12)), maxDimension: 512) }
+    }
+
+    @Test func littleEndianTIFFChecksStripBoundsAndPixelLimit() throws {
+        // Two grayscale rows, one strip each. SHORT arrays of two fit inside their IFD entries.
+        func bitmap(width: UInt16 = 2, lastStrip: UInt16 = 10) -> Data {
+            var bytes: [UInt8] = [0x49, 0x49, 42, 0, 12, 0, 0, 0, 10, 20, 30, 40]
+            func short(_ n: UInt16) { bytes += [UInt8(truncatingIfNeeded: n), UInt8(n >> 8)] }
+            let fields: [(UInt16, [UInt16])] = [
+                (256, [width]), (257, [2]), (258, [8]), (262, [1]),
+                (273, [8, lastStrip]), (278, [1]), (279, [2, 2]),
+            ]
+            short(UInt16(fields.count))
+            for (tag, values) in fields {
+                short(tag)
+                short(3)
+                short(UInt16(values.count))
+                short(0)
+                short(values[0])
+                short(values.count == 2 ? values[1] : 0)
+            }
+            bytes += [0, 0, 0, 0]
+            return Data(bytes)
+        }
+
+        let image = try MediaDecoder.decode(bitmap()).0
+        #expect(image.width == 2 && image.height == 2)
+        #expect(image.rgba == [10, 10, 10, 255, 20, 20, 20, 255, 30, 30, 30, 255, 40, 40, 40, 255])
+        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(lastStrip: .max)) }
+        #expect(throws: (any Error).self) { try MediaDecoder.decode(bitmap(width: .max)) }
     }
 
     @Test func imageInfo() async throws {
