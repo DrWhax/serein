@@ -12,6 +12,17 @@
 import AppKit
 import SignalI18n
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Encoded images the composer can pass to the media service, in order of preference.
+public enum ComposerAttachmentPasteboard {
+    public static let imageTypes: [UTType] = [
+        .gif, .webP, .png, .jpeg, UTType(mimeType: "image/avif"), .heic, .heif, .bmp, .ico, .tiff,
+    ].compactMap { $0 }
+
+    static let attachmentTypes = [.fileURL] + imageTypes.map { NSPasteboard.PasteboardType($0.identifier) }
+        + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+}
 
 /// A mention in the draft (`DraftBodyRange` with `mentionAci`): `length` characters at
 /// `start` stand for "@" + `replacementText`.
@@ -278,6 +289,7 @@ struct ComposerTextView: NSViewRepresentable {
         let tv = PlaceholderTextView(frame: .zero, textContainer: container)
         tv.placeholder = placeholder
         tv.delegate = context.coordinator
+        tv.pasteAttachments = keys.paste
         // Rich text for mention pills and styles; pastes stay plain (PlaceholderTextView.paste).
         tv.isRichText = true
         tv.importsGraphics = false
@@ -457,26 +469,35 @@ final class PlaceholderTextView: NSTextView {
     var pasteAttachments: ((NSPasteboard) -> Bool)?
 
     override func paste(_ sender: Any?) {
-        if let pasteAttachments, pasteAttachments(NSPasteboard.general) { return }
+        guard isEditable else { return }
+        if let pasteAttachments, pasteAttachments(.general) { return }
         pasteAsPlainText(sender)
     }
 
-    // Files and images dropped on the composer are attached as pasted ones are, not inserted as
-    // text: files, file promises (a browser's image, Photos), PNG or JPEG data.
-
-    static func isAttachmentDrag(_ pb: NSPasteboard) -> Bool {
-        pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-            || pb.canReadObject(forClasses: [NSFilePromiseReceiver.self], options: nil)
-            || pb.availableType(from: [.png, NSPasteboard.PasteboardType("public.jpeg")]) != nil
+    // AppKit validates Edit → Paste against the text view's readable types.
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        let types = super.readablePasteboardTypes
+        guard pasteAttachments != nil else { return types }
+        let attachments = ComposerAttachmentPasteboard.attachmentTypes
+        return attachments + types.filter { !attachments.contains($0) }
     }
 
-    func takesDrag(_ sender: NSDraggingInfo) -> Bool { pasteAttachments != nil && Self.isAttachmentDrag(sender.draggingPasteboard) }
+    override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        if isEditable, ComposerAttachmentPasteboard.attachmentTypes.contains(type), let pasteAttachments {
+            return pasteAttachments(pasteboard)
+        }
+        return super.readSelection(from: pasteboard, type: type)
+    }
+
+    static func isAttachmentDrag(_ pb: NSPasteboard) -> Bool {
+        pb.availableType(from: ComposerAttachmentPasteboard.attachmentTypes) != nil
+    }
+
+    func takesDrag(_ sender: NSDraggingInfo) -> Bool { isEditable && pasteAttachments != nil && Self.isAttachmentDrag(sender.draggingPasteboard) }
 
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
-        let extra = [NSPasteboard.PasteboardType.fileURL, .png, NSPasteboard.PasteboardType("public.jpeg")]
-            + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
         let types = super.acceptableDragTypes
-        return types + extra.filter { !types.contains($0) }
+        return types + ComposerAttachmentPasteboard.attachmentTypes.filter { !types.contains($0) }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

@@ -200,7 +200,7 @@ for name in $services; do
   codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$pkg/.build/$name.entitlements" "$app/Contents/XPCServices/$name.xpc"
 done
 # Each process holds only its own parsers. Swift symbols name their module ($s<length><name>).
-decoders='8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|18SignalMediaDecoder'
+decoders='8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|18SignalMediaDecoder'
 web='8WebFetch|18LinkPreviewFetcher|9GifSearch'
 links() {   # binary pattern message
   if nm "$1" | grep -E "\\\$s($2)" >/dev/null; then echo "error: $3" >&2; exit 1; fi
@@ -213,7 +213,7 @@ links "$app/Contents/XPCServices/SignalGifSearch.xpc/Contents/MacOS/SignalGifSea
   "decoders, HTML parser or link-preview fetcher linked into the GIF service"
 # The voice-note encoder links the MP3 module (its encoder) and nothing else that reads media.
 links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/SignalVoiceNoteEncoder" \
-  "8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
+  "8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
   "decoders, HTML parser or web client linked into the voice-note encoder"
 # The calling service runs ringrtc and nothing else that reads data: no decoders, no web
 # client, no recorder, no SignalCore (keys, database) or libsignal.
@@ -244,7 +244,7 @@ links "$bin" "13RingRTCNative|11CallService|16VoiceNoteService" "ringrtc or the 
 if otool -L "$bin" | grep -q ringrtc || [ -e "$app/Contents/Frameworks/libsignal_ringrtc.dylib" ]; then
   echo "error: the app loads ringrtc" >&2; exit 1
 fi
-links "$app/Contents/MacOS/Serein" "9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
+links "$app/Contents/MacOS/Serein" "9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
   "decoder or web-client symbols linked into the app binary"
 # Notification and call sounds (generated WAVs; UNNotificationSound looks in Library/Sounds).
 [ -f "$pkg/Resources/Sounds/pop.wav" ] || "$root/Tools/gen-sounds.sh" >/dev/null

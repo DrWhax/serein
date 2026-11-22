@@ -1,3 +1,4 @@
 reads-within OK
 budget OK
 boxes-within OK
+tiff OK

@@ -1,7 +1,8 @@
 // MediaProcessing over SignalCodecs: the service side. Formats are sniffed from the bytes
 // (never trusted from a content type); every decoder runs with its default limits. AVIF is
 // displayed like the other image types (upstream's isImageTypeSupported lists it); HEIC is
-// decoded only by convertHEIC, the sending side's conversion to JPEG.
+// decoded only by convertHEIC, the sending side's conversion to JPEG, and TIFF only by
+// convertTIFF, the composer's conversion of a pasted bitmap to PNG.
 
 import Blurhash
 import CodecCore
@@ -15,6 +16,7 @@ import ImageGIF
 import ImageHEIF
 import ImageJPEG
 import ImagePNG
+import ImageTIFF
 import ImageWebP
 import MediaXPCInterface
 import MetadataStrip
@@ -22,7 +24,7 @@ import MetadataStrip
 public struct MediaDecoder: MediaProcessing {
     public init() {}
 
-    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico, avif, heic }
+    public enum Format: Equatable, Sendable { case png, jpeg, gif, webp, bmp, ico, avif, heic, tiff }
 
     public static func sniff(_ b: [UInt8]) -> Format? {
         // HEIF: an ftyp, then whatever codec the primary item uses (brands only hint at it).
@@ -38,16 +40,18 @@ public struct MediaDecoder: MediaProcessing {
         if starts([0xFF, 0xD8, 0xFF]) { return .jpeg }
         if starts(Array("GIF87a".utf8)) || starts(Array("GIF89a".utf8)) { return .gif }
         if starts(Array("RIFF".utf8)), starts(Array("WEBP".utf8), at: 8) { return .webp }
+        if starts([0x49, 0x49, 42, 0]) || starts([0x4D, 0x4D, 0, 42]) { return .tiff }
         if starts([0x42, 0x4D]) { return .bmp }
         if starts([0x00, 0x00, 0x01, 0x00]) { return .ico }
         return nil
     }
 
     /// The decoded image (its still frame) and whether it animates. HEIC only with `allowHEIC`
-    /// (the sending side's conversion); everywhere else it is an unsupported format.
-    public static func decode(_ bytes: Data, allowHEIC: Bool = false) throws -> (PixelBuffer, animated: Bool) {
+    /// (the sending side's conversion), TIFF only with `allowTIFF` (a pasted bitmap's);
+    /// everywhere else they are unsupported formats.
+    public static func decode(_ bytes: Data, allowHEIC: Bool = false, allowTIFF: Bool = false) throws -> (PixelBuffer, animated: Bool) {
         let b = Array(bytes)
-        guard let format = sniff(b), format != .heic || allowHEIC else { throw MediaProcessingError.unsupportedFormat }
+        guard let format = sniff(b), format != .heic || allowHEIC, format != .tiff || allowTIFF else { throw MediaProcessingError.unsupportedFormat }
         do {
             switch format {
             case .avif: return (try HEIFDecoder.decode(b, codecs: [.av1]).image, false)
@@ -56,6 +60,7 @@ public struct MediaDecoder: MediaProcessing {
             case .jpeg: return (try JPEGDecoder.decode(b), false)
             case .gif: return still(try GIFDecoder.decode(b))
             case .webp: return still(try WebPDecoder.decode(b))
+            case .tiff: return (try TIFFDecoder.decode(b), false)
             case .bmp: return (try BMPDecoder.decode(b), false)
             case .ico: return (try ICODecoder.decode(b), false)
             }
@@ -224,6 +229,13 @@ public struct MediaDecoder: MediaProcessing {
         var (image, _) = try Self.decode(bytes, allowHEIC: true)
         for i in stride(from: 3, to: image.rgba.count, by: 4) { image.rgba[i] = 255 }
         return ConvertedImage(data: Data(JPEGEncoder.encode(image, quality: ConvertedImage.quality)), width: image.width, height: image.height)
+    }
+
+    /// A pasted TIFF bitmap as PNG, every pixel kept (alpha included).
+    public func convertTIFF(_ bytes: Data) async throws -> PastedImage {
+        guard Self.sniff(Array(bytes)) == .tiff else { throw MediaProcessingError.unsupportedFormat }
+        let (image, _) = try Self.decode(bytes, allowTIFF: true)
+        return PastedImage(data: Data(PNGEncoder.encode(image)), width: image.width, height: image.height)
     }
 
     public func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data {

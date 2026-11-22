@@ -32,6 +32,7 @@ public final class MediaXPCHandler: XPCMessageHandler {
         case .scaleForSending(let b, let type, let level): return try MediaXPCWire.encode(try await d.scaleForSending(b, contentType: type, level: level))
         case .stripMetadata(let b, let type): return try MediaXPCWire.encode(try await d.stripMetadata(b, contentType: type))
         case .convertHEIC(let b): return try MediaXPCWire.encode(try await d.convertHEIC(b))
+        case .convertTIFF(let b): return try MediaXPCWire.encode(try await d.convertTIFF(b))
         case .audioSummary(let b): return try MediaXPCWire.encode(try await d.audioSummary(b))
         case .decodeAudio(let b, let start, let max): return try MediaXPCWire.encode(try await d.decodeAudio(b, startFrame: start, maxFrames: max))
         case .startVoiceNote(let rate): return try MediaXPCWire.encode(try await d.startVoiceNote(sampleRate: rate))
