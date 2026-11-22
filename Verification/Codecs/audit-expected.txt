@@ -173,7 +173,156 @@ def Codecs.BoxesWithin : Nat → Nat → List Box → Prop :=
 fun lo hi bxs =>
   (∀ (b : Box), b ∈ bxs → lo ≤ b.offset ∧ b.offset + 8 ≤ b.lo ∧ b.lo ≤ b.hi ∧ b.hi ≤ hi) ∧
     List.Pairwise (fun a b => a.hi ≤ b.offset) bxs
-106 definitions
+def Codecs.TIFF.rd : List Nat → Bool → Nat → Cursor → Except Fail (Nat × Cursor) :=
+fun bs big k c =>
+  if need c ↑k = true then Except.ok (if big = true then be bs c.pos k else le bs c.pos k, advance c k)
+  else Except.error { offset := c.pos, kind := Kind.unexpectedEnd }
+def Codecs.TIFF.entry : List Nat → Bool → TIFF.Fields → Cursor → Except Fail (TIFF.Fields × Cursor) :=
+fun bs big fs c => do
+  let __x ← TIFF.rd bs big 2 c
+  match __x with
+    | (code, c) => do
+      let __x ← TIFF.rd bs big 2 c
+      match __x with
+        | (type, c) => do
+          let __x ← TIFF.rd bs big 4 c
+          match __x with
+            | (count, c) =>
+              have slot := c.pos;
+              do
+              TIFF.check (need c 4) { offset := c.pos, kind := Kind.unexpectedEnd }
+              have c : Cursor := advance c 4
+              match TIFF.Tag.ofCode code with
+                | none => pure (fs, c)
+                | some t => do
+                  TIFF.check ((fs t).isNone && (type == 3 || type == 4) && decide (0 < count))
+                      { offset := c.pos, kind := Kind.invalid }
+                  have size : Nat := count * if (type == 3) = true then 2 else 4
+                  if size ≤ 4 then pure (fs.set t { short := type == 3, count := count, lo := slot }, c)
+                    else
+                      have voff := if big = true then be bs slot 4 else le bs slot 4;
+                      do
+                      TIFF.check (decide (voff ≤ bs.length)) { offset := 0, kind := Kind.unexpectedEnd }
+                      TIFF.check (decide (size ≤ bs.length - voff)) { offset := voff, kind := Kind.unexpectedEnd }
+                      pure (fs.set t { short := type == 3, count := count, lo := voff }, c)
+def Codecs.TIFF.entries : List Nat → Bool → Nat → TIFF.Fields → Cursor → Except Fail (TIFF.Fields × Cursor) :=
+fun bs big x x_1 x_2 =>
+  Nat.brecOn (motive := fun x => TIFF.Fields → Cursor → Except Fail (TIFF.Fields × Cursor)) x (TIFF.entries._f bs big)
+    x_1 x_2
+def Codecs.TIFF.order : Nat → Nat → Except Fail Bool :=
+fun mark pos =>
+  if (mark == 18761) = true then Except.ok false
+  else if (mark == 19789) = true then Except.ok true else Except.error { offset := pos, kind := Kind.invalid }
+def Codecs.TIFF.directory : List Nat → Except Fail TIFF.Dir :=
+fun bs => do
+  let __x ← TIFF.rd bs true 2 { start := 0, pos := 0, stop := bs.length }
+  match __x with
+    | (mark, c) => do
+      let big ← TIFF.order mark c.pos
+      let __x ← TIFF.rd bs big 2 c
+      match __x with
+        | (magic, c) => do
+          TIFF.check (magic == 42) { offset := c.pos, kind := Kind.invalid }
+          let __x ← TIFF.rd bs big 4 c
+          match __x with
+            | (off, snd) => do
+              TIFF.check (need { start := 0, pos := 0, stop := bs.length } ↑off)
+                  { offset := 0, kind := Kind.unexpectedEnd }
+              let __x ← TIFF.rd bs big 2 { start := 0, pos := off, stop := bs.length }
+              match __x with
+                | (count, e) => do
+                  let __x ← TIFF.entries bs big count (fun x => none) e
+                  match __x with
+                    | (fs, e) => do
+                      TIFF.check (need e 4) { offset := e.pos, kind := Kind.unexpectedEnd }
+                      pure { big := big, fields := fs }
+def Codecs.TIFF.values : List Nat → TIFF.Dir → TIFF.Tag → Nat → Except Fail (List Nat) :=
+fun bs d t count =>
+  match d.fields t with
+  | some f =>
+    if (f.count == count) = true then
+      Except.ok
+        (List.map
+          (fun i => if d.big = true then be bs (f.lo + i * f.width) f.width else le bs (f.lo + i * f.width) f.width)
+          (List.range count))
+    else Except.error TIFF.bad
+  | none => Except.error TIFF.bad
+def Codecs.TIFF.scalar : List Nat → TIFF.Dir → TIFF.Tag → Option Nat → Except Fail Nat :=
+fun bs d t dflt =>
+  match d.fields t, dflt with
+  | none, some v => Except.ok v
+  | x, x_1 => do
+    let vs ← TIFF.values bs d t 1
+    pure (vs.headD 0)
+def Codecs.TIFF.checkDims : TIFF.Limits → Nat → Nat → Except Fail Unit :=
+fun lim w h =>
+  if (w == 0 || h == 0) = true then Except.error TIFF.bad
+  else
+    if (decide (lim.maxDimension < w) || decide (lim.maxDimension < h) || decide (lim.maxPixels < w * h)) = true then
+      Except.error { offset := 0, kind := Kind.limit }
+    else Except.ok ()
+def Codecs.TIFF.defaults : List Nat → TIFF.Dir → Except Fail Unit :=
+fun bs d => do
+  forIn [TIFF.Tag.compression, TIFF.Tag.predictor, TIFF.Tag.orientation, TIFF.Tag.fillOrder, TIFF.Tag.planar] PUnit.unit
+      fun t __s => do
+      let v ← TIFF.scalar bs d t (some 1)
+      TIFF.check (v == 1) TIFF.bad
+      pure (ForInStep.yield PUnit.unit)
+  pure ()
+def Codecs.TIFF.unsigned : List Nat → TIFF.Dir → Nat → Except Fail Unit :=
+fun bs d samples =>
+  if (d.fields TIFF.Tag.sampleFormat).isSome = true then do
+    let formats ← TIFF.values bs d TIFF.Tag.sampleFormat samples
+    TIFF.check (formats.all fun x => x == 1) TIFF.bad
+  else Except.ok ()
+def Codecs.TIFF.strips : Nat → Nat → Nat → Nat → Nat → List (Nat × Nat) → Except Fail (List (Nat × Nat)) :=
+fun len height rows stride x x_1 =>
+  List.brecOn (motive := fun x => Nat → Except Fail (List (Nat × Nat))) x_1 (TIFF.strips._f len height rows stride) x
+def Codecs.TIFF.layout : List Nat → TIFF.Limits → Except Fail TIFF.Layout :=
+fun bs lim => do
+  TIFF.check (decide (bs.length ≤ lim.maxInput)) { offset := 0, kind := Kind.limit }
+  let d ← TIFF.directory bs
+  let width ← TIFF.scalar bs d TIFF.Tag.width none
+  let height ← TIFF.scalar bs d TIFF.Tag.height none
+  TIFF.checkDims lim width height
+  let photo ← TIFF.scalar bs d TIFF.Tag.photometric none
+  let samples ← TIFF.scalar bs d TIFF.Tag.samples (some 1)
+  have colors : Nat := if (photo == 2) = true then 3 else 1
+  TIFF.check (decide (photo ≤ 2) && (samples == colors || samples == colors + 1)) TIFF.bad
+  TIFF.defaults bs d
+  let bits ← TIFF.values bs d TIFF.Tag.bits samples
+  have b0 : Nat := bits.headD 0
+  TIFF.check ((b0 == 8 || b0 == 16) && bits.all fun x => x == b0) TIFF.bad
+  TIFF.unsigned bs d samples
+  let extra ← TIFF.scalar bs d TIFF.Tag.extraSamples (some 0)
+  TIFF.check (if colors < samples then decide (extra ≤ 2) else extra == 0) TIFF.bad
+  let rows ← TIFF.scalar bs d TIFF.Tag.rows (some height)
+  TIFF.check (decide (0 < rows)) TIFF.bad
+  have count : Nat := 1 + (height - 1) / rows
+  let offsets ← TIFF.values bs d TIFF.Tag.offsets count
+  let sizes ← TIFF.values bs d TIFF.Tag.byteCounts count
+  have stride : Nat := width * samples * (b0 / 8)
+  let ss ← TIFF.strips bs.length height rows stride 0 (offsets.zip sizes)
+  pure
+      { big := d.big, width := width, height := height, photometric := photo, samples := samples, bits := b0,
+        extra := extra, strips := ss }
+def Codecs.TIFF.pixel : List Nat → TIFF.Layout → Nat → List Nat :=
+fun bs L p =>
+  have w := L.bits / 8;
+  have first := TIFF.sample bs L p;
+  have red := if (L.photometric == 0) = true then 255 - first else first;
+  have green := if (L.colors == 3) = true then TIFF.sample bs L (p + w) else red;
+  have blue := if (L.colors == 3) = true then TIFF.sample bs L (p + 2 * w) else red;
+  have last := if L.colors < L.samples then TIFF.sample bs L (p + L.colors * w) else 255;
+  have alpha := if (L.extra == 0) = true then 255 else last;
+  [TIFF.straight L red alpha, TIFF.straight L green alpha, TIFF.straight L blue alpha, alpha]
+def Codecs.TIFF.stripPixels : List Nat → TIFF.Layout → Nat → Nat → List Nat :=
+fun bs L x x_1 => Nat.brecOn (motive := fun x => Nat → List Nat) x (TIFF.stripPixels._f bs L) x_1
+def Codecs.TIFF.pixels : List Nat → TIFF.Layout → List Nat :=
+fun bs L => List.foldr (fun s acc => TIFF.stripPixels bs L (s.snd / L.bpp) s.fst ++ acc) [] L.strips
+def Codecs.TIFF.FieldsWithin : Nat → TIFF.Fields → Prop :=
+fun len fs => ∀ (t : TIFF.Tag) (f : TIFF.Field), fs t = some f → f.lo + f.count * f.width ≤ len
+195 definitions
 Codecs.Bits 3931117990 8647086980491635263
 Codecs.Bits.exhausted 3340513931 1368928702
 Codecs.Bits.mk 3322682463 -
@@ -232,6 +381,95 @@ Codecs.R.c 216671844 4138445455
 Codecs.R.items 1276611830 3712862075
 Codecs.R.mk 3957889027 -
 Codecs.R.reads 2506316336 3353610889
+Codecs.TIFF.Dir 3931117990 10243546837271161425
+Codecs.TIFF.Dir.big 3026078641 3210197342
+Codecs.TIFF.Dir.fields 4133121104 1084648496
+Codecs.TIFF.Dir.mk 1887468971 -
+Codecs.TIFF.Field 3931117990 9471448302201745631
+Codecs.TIFF.Field.count 3556997180 1822876874
+Codecs.TIFF.Field.lo 3556997180 3555391581
+Codecs.TIFF.Field.mk 2787513273 -
+Codecs.TIFF.Field.short 331847908 1675177988
+Codecs.TIFF.Field.width 3556997180 1458686779
+Codecs.TIFF.Fields 3931117990 51767201
+Codecs.TIFF.Fields.set 3706548912 151295560
+Codecs.TIFF.FieldsWithin 1209657748 1099798251
+Codecs.TIFF.Layout 3931117990 5531850591114009234
+Codecs.TIFF.Layout.big 433648176 1569086160
+Codecs.TIFF.Layout.bits 3882625311 4204209945
+Codecs.TIFF.Layout.bpp 3882625311 4263438217
+Codecs.TIFF.Layout.colors 3882625311 647477946
+Codecs.TIFF.Layout.extra 3882625311 1913999894
+Codecs.TIFF.Layout.height 3882625311 4116277211
+Codecs.TIFF.Layout.mk 331086046 -
+Codecs.TIFF.Layout.photometric 3882625311 788888615
+Codecs.TIFF.Layout.samples 3882625311 2945418396
+Codecs.TIFF.Layout.strips 1731749626 3292987746
+Codecs.TIFF.Layout.width 3882625311 428906556
+Codecs.TIFF.Limits 3931117990 10559215888835297065
+Codecs.TIFF.Limits.maxDimension 1673801046 4086463333
+Codecs.TIFF.Limits.maxInput 1673801046 4088687636
+Codecs.TIFF.Limits.maxPixels 1673801046 3916010159
+Codecs.TIFF.Limits.mk 927562148 -
+Codecs.TIFF.Tag 3931117990 14354291343823342749
+Codecs.TIFF.Tag.bits 2901860393 -
+Codecs.TIFF.Tag.byteCounts 2901860393 -
+Codecs.TIFF.Tag.casesOn 4222572520 1221055911
+Codecs.TIFF.Tag.code 147944061 3998707072
+Codecs.TIFF.Tag.compression 2901860393 -
+Codecs.TIFF.Tag.ctorIdx 147944061 3403957031
+Codecs.TIFF.Tag.extraSamples 2901860393 -
+Codecs.TIFF.Tag.fillOrder 2901860393 -
+Codecs.TIFF.Tag.height 2901860393 -
+Codecs.TIFF.Tag.ofCode 2152036512 3676825772
+Codecs.TIFF.Tag.offsets 2901860393 -
+Codecs.TIFF.Tag.orientation 2901860393 -
+Codecs.TIFF.Tag.photometric 2901860393 -
+Codecs.TIFF.Tag.planar 2901860393 -
+Codecs.TIFF.Tag.predictor 2901860393 -
+Codecs.TIFF.Tag.rec 45226171 -
+Codecs.TIFF.Tag.rows 2901860393 -
+Codecs.TIFF.Tag.sampleFormat 2901860393 -
+Codecs.TIFF.Tag.samples 2901860393 -
+Codecs.TIFF.Tag.width 2901860393 -
+Codecs.TIFF.allTags 3566246582 1473088702
+Codecs.TIFF.bad 1351050302 3295932938
+Codecs.TIFF.check 3461099647 183482106
+Codecs.TIFF.checkDims 2257293943 3051658555
+Codecs.TIFF.defaults 3702174764 406197596
+Codecs.TIFF.directory 2889983156 3116252428
+Codecs.TIFF.entries 3193067610 2614316550
+Codecs.TIFF.entries._f 1121447584 1012130195
+Codecs.TIFF.entries.match_1 651687256 2449826510
+Codecs.TIFF.entries.match_3 1610664225 953556966
+Codecs.TIFF.entry 4125971253 2931085516
+Codecs.TIFF.entry.match_1 3871243548 3419215488
+Codecs.TIFF.entry.match_3 4032107344 808155335
+Codecs.TIFF.instDecidableEqTag 3644853421 1443936976
+Codecs.TIFF.instDecidableEqTag._proof_1 60935963 -
+Codecs.TIFF.instDecidableEqTag._proof_2 2012666331 -
+Codecs.TIFF.instReprTag.repr.match_1 1798732076 1688036063
+Codecs.TIFF.layout 79556133 21280220
+Codecs.TIFF.order 741662540 3646872545
+Codecs.TIFF.pixel 249578559 2627998169
+Codecs.TIFF.pixels 678882247 4140184926
+Codecs.TIFF.rd 917965578 1504569688
+Codecs.TIFF.sample 3524892950 153226913
+Codecs.TIFF.scalar 1761405277 2523061408
+Codecs.TIFF.scalar._sparseCasesOn_1 671113298 1965615200
+Codecs.TIFF.scalar._sparseCasesOn_2 2334663261 1385501301
+Codecs.TIFF.scalar.match_1 3050507077 3877142196
+Codecs.TIFF.straight 4212856671 1744275145
+Codecs.TIFF.stripPixels 967386529 2303469364
+Codecs.TIFF.stripPixels._f 3505470914 782810964
+Codecs.TIFF.stripPixels.match_1 3515700703 1372243868
+Codecs.TIFF.strips 392637336 3170258827
+Codecs.TIFF.strips._f 4260911178 3836271193
+Codecs.TIFF.strips.match_1 3350884102 2989212899
+Codecs.TIFF.strips.match_3 719436525 2012792683
+Codecs.TIFF.unsigned 2742906809 2512209000
+Codecs.TIFF.values 3078335927 981559728
+Codecs.TIFF.values.match_1 579805028 3331883490
 Codecs.Val 3931117990 13371557024810838520
 Codecs.Val.casesOn 78626699 2933938998
 Codecs.Val.ctorIdx 1672540452 972374723
@@ -305,6 +543,18 @@ readBits_spec : ∀ (bs : List Nat) (zeroFill : Bool) (r : Bits) (n v : Nat) (r'
       v < 2 ^ n ∧
         r'.pos ≤ 8 * bs.length ∧
           r.pos ≤ r'.pos ∧ (r'.pos = r.pos + n ∨ zeroFill = true ∧ r'.exhausted = true ∧ r'.pos = 8 * bs.length)
+@TIFF.directory_within : ∀ {bs : List Nat} {d : TIFF.Dir},
+  TIFF.directory bs = Except.ok d → TIFF.FieldsWithin bs.length d.fields
+@TIFF.tiff_dims : ∀ {bs : List Nat} {lim : TIFF.Limits} {L : TIFF.Layout},
+  TIFF.layout bs lim = Except.ok L →
+    0 < L.width ∧
+      0 < L.height ∧ L.width ≤ lim.maxDimension ∧ L.height ≤ lim.maxDimension ∧ L.width * L.height ≤ lim.maxPixels
+@TIFF.tiff_strips_within : ∀ {bs : List Nat} {lim : TIFF.Limits} {L : TIFF.Layout},
+  TIFF.layout bs lim = Except.ok L → ∀ (s : Nat × Nat), s ∈ L.strips → s.fst + s.snd ≤ bs.length
+@TIFF.tiff_pixels_exact : ∀ {bs : List Nat} {lim : TIFF.Limits} {L : TIFF.Layout},
+  TIFF.layout bs lim = Except.ok L → (TIFF.pixels bs L).length = 4 * (L.width * L.height)
+@TIFF.tiff_budget : ∀ {bs : List Nat} {lim : TIFF.Limits} {L : TIFF.Layout},
+  TIFF.layout bs lim = Except.ok L → L.samples ≤ 4 ∧ L.strips.length ≤ lim.maxDimension
 Codecs.need_spec depends on axioms: [Classical.choice, Quot.sound, propext]
 Codecs.prim_within depends on axioms: [Classical.choice, Quot.sound, propext]
 Codecs.run_within depends on axioms: [Classical.choice, Quot.sound, propext]
@@ -314,3 +564,8 @@ Codecs.children_within depends on axioms: [Classical.choice, Quot.sound, propext
 Codecs.children_budget depends on axioms: [Classical.choice, Quot.sound, propext]
 Codecs.bitsVal_lt depends on axioms: [Quot.sound, propext]
 Codecs.readBits_spec depends on axioms: [Quot.sound, propext]
+Codecs.TIFF.directory_within depends on axioms: [Quot.sound, propext]
+Codecs.TIFF.tiff_dims depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.TIFF.tiff_strips_within depends on axioms: [Quot.sound, propext]
+Codecs.TIFF.tiff_pixels_exact depends on axioms: [Classical.choice, Quot.sound, propext]
+Codecs.TIFF.tiff_budget depends on axioms: [Classical.choice, Quot.sound, propext]

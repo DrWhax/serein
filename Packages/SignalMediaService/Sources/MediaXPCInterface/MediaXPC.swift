@@ -18,6 +18,7 @@ public enum MediaRequest: Codable, Sendable {
     case scaleForSending(Data, contentType: String, level: MediaQualityLevel)
     case stripMetadata(Data, contentType: String)
     case convertHEIC(Data)
+    case convertTIFF(Data)
     case audioSummary(Data)
     case decodeAudio(Data, startFrame: Int, maxFrames: Int)
     case startVoiceNote(sampleRate: Int)
@@ -65,7 +66,7 @@ extension MediaRequest {
         case .thumbnail: return (4 << 20) + Self.small
         case .scaleForSending(let b, _, let level): return b.count + pixels(level.data.maxDimensions) + Self.small
         case .stripMetadata(let b, _): return b.count + Self.small
-        case .convertHEIC: return (256 << 20) + Self.small
+        case .convertHEIC, .convertTIFF: return (256 << 20) + Self.small
         case .decodeAudio(_, _, let frames): return min(max(frames, 0), AudioLimits.maxChunkFrames) * AudioLimits.maxChannels * 4 + Self.small
         case .finishVoiceNote: return 64 << 20
         case .posterFrame: return pixels(8192) + Self.small
@@ -238,6 +239,7 @@ public final class MediaXPCClient: MediaProcessing {
     }
     public func stripMetadata(_ bytes: Data, contentType: String) async throws -> Data { try await call(.stripMetadata(bytes, contentType: contentType), Data.self) }
     public func convertHEIC(_ bytes: Data) async throws -> ConvertedImage { try await call(.convertHEIC(bytes), ConvertedImage.self).validated() }
+    public func convertTIFF(_ bytes: Data) async throws -> PastedImage { try await call(.convertTIFF(bytes), PastedImage.self).validated() }
     public func audioSummary(_ bytes: Data) async throws -> AudioSummary { try await call(.audioSummary(bytes), AudioSummary.self).validated() }
     public func decodeAudio(_ bytes: Data, startFrame: Int, maxFrames: Int) async throws -> AudioChunk {
         try await call(.decodeAudio(bytes, startFrame: startFrame, maxFrames: maxFrames), AudioChunk.self).validated(requestedStart: startFrame, maxFrames: maxFrames)

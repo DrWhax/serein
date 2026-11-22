@@ -1,4 +1,5 @@
 import Codecs.Model
+import Codecs.TIFF
 
 /-! # Notation for the Swift rig
 
@@ -13,6 +14,9 @@ Bytes in hex. Failures as `fail:<offset>:<kind>`.
 * `boxes`: `<hex> | top count max` → `ok:<count>` and the boxes `type@offset:lo:hi`, or a failure.
 * `bits`: `<hex> | fail|zero | op …` with `b:n`, `p:n`, `a` → each value with `@position`, up to the
   first failure.
+* `tiff`: `<hex> | maxDimension maxPixels maxInput` → `ok:<be|le>:<w>x<h>:<photometric>:<samples>:
+  <bits>:<extra>:<offset>+<count>,…:px<values>:<hash>` (the RGBA values' count and a hash), or a
+  failure.
 -/
 
 namespace Codecs
@@ -146,6 +150,22 @@ def bitsAnswer (line : String) : Option String :=
       | ["a"] => r := align r; out := out ++ [s!"@{r.pos}"]
       | _ => none
     pure (" ".intercalate out)
+  | _ => none
+
+/-- A rolling hash of the RGBA values (the rig computes the same). -/
+def pxHash (vs : List Nat) : Nat := vs.foldl (fun h v => (h * 31 + v) % 4294967296) 0
+
+def tiffAnswer (line : String) : Option String :=
+  match line.splitOn " | " with
+  | [h, args] => do
+    let bs ← hexBytes h
+    let (d, p, i) ← match words args with | [a, b, c] => do pure (← a.toNat?, ← b.toNat?, ← c.toNat?) | _ => none
+    pure (match TIFF.layout bs ⟨d, p, i⟩ with
+      | .ok L =>
+        let px := TIFF.pixels bs L
+        s!"ok:{if L.big then "be" else "le"}:{L.width}x{L.height}:{L.photometric}:{L.samples}:{L.bits}:{L.extra}:" ++
+          ",".intercalate (L.strips.map fun s => s!"{s.1}+{s.2}") ++ s!":px{px.length}:{pxHash px}"
+      | .error e => failCode e)
   | _ => none
 
 end Codecs

@@ -1188,23 +1188,62 @@ import SignalUI
         return true
     }
 
-    /// ⌘V in the composer (`handlePaste`), or a drop on it: files on the pasteboard, files
-    /// promised by the drag's source (a browser's image, Photos), or an image (PNG or JPEG
-    /// bytes; other image types would need ImageIO, so they are left alone).
+    /// Attach one representation of each copied image. Finder files keep their names, and a
+    /// browser's unavailable file URL can fall back to its promise or its inline image bytes.
+    /// A Finder file that cannot be attached (a folder, one too large) never does: its item's
+    /// image is the file's icon.
     func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            // A promise's placeholder URL is not a file yet: then the promise is taken instead.
-            if !urls.map({ stage($0) }).contains(true) { _ = receivePromisedFiles(pasteboard) }
-            return true
-        }
-        if receivePromisedFiles(pasteboard) { return true }
-        for (type, mime, ext) in [(NSPasteboard.PasteboardType.png, "image/png", "png"), (NSPasteboard.PasteboardType("public.jpeg"), "image/jpeg", "jpg")] {
-            if let data = pasteboard.data(forType: type), data.count <= Self.maxAttachmentBytes {
-                stage(data, contentType: mime, fileName: "image.\(ext)")
-                return true
+        guard selectedConversationId != nil, editingMessageId == nil else { return false }
+        // The fallback class keeps one object per pasteboard item, so a Finder URL and an
+        // inline image can be pasted together, in order. AppKit opens file URLs with scope.
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self, NSPasteboardItem.self],
+                                             options: [.urlReadingFileURLsOnly: true]) ?? []
+        let urls = objects.map { $0 as? URL }
+        let files = urls.map { $0.flatMap(Self.readDropped) }
+        if !files.contains(where: { $0 != nil }), receivePromisedFiles(pasteboard) { return true }
+
+        var handled = false
+        for (index, item) in (pasteboard.pasteboardItems ?? []).enumerated() {
+            if files.indices.contains(index), let file = files[index] {
+                stage(file.data, contentType: file.contentType, fileName: file.fileName)
+                handled = true
+                continue
             }
+            if urls.indices.contains(index), let url = urls[index], Self.fileExists(url) {
+                Self.trace("paste: file unreadable or too large")
+                toast = .unableToLoadAttachment
+                handled = true
+                continue
+            }
+            let types = ComposerAttachmentPasteboard.imageTypes.filter { item.types.contains(NSPasteboard.PasteboardType($0.identifier)) }
+            guard !types.isEmpty else { continue }
+            handled = true
+            guard let image = Self.pastedImage(item, types: types) else {
+                toast = .unableToLoadAttachment
+                continue
+            }
+            stage(image.data, contentType: image.contentType, fileName: image.fileName)
         }
-        return false
+        return handled
+    }
+
+    /// Whether something is at a pasted file URL (a security-scoped one opened for the check).
+    nonisolated static func fileExists(_ url: URL) -> Bool {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private static func pastedImage(_ item: NSPasteboardItem, types: [UTType]) -> DroppedFile? {
+        for type in types {
+            guard let data = item.data(forType: NSPasteboard.PasteboardType(type.identifier)), !data.isEmpty,
+                  data.count <= maxAttachmentBytes, let mime = type.preferredMIMEType,
+                  let ext = type.preferredFilenameExtension else { continue }
+            // Clipboard TIFF becomes a PNG when it is staged (`stage`), with no file name.
+            let name = type == .tiff ? "" : "image.\(type == .jpeg ? "jpg" : ext)"
+            return DroppedFile(data: data, contentType: mime, fileName: name)
+        }
+        return nil
     }
 
     func stage(_ data: Data, contentType type: String, fileName: String) {
@@ -1212,6 +1251,9 @@ import SignalUI
         let item = StagedAttachment(data: data, contentType: type, fileName: fileName)
         staged.append(item)
         let heic = AttachmentServices.isHeic(type, fileName: fileName)
+        // A pasted TIFF bitmap (AppKit's, no file name) becomes the PNG Chromium hands upstream
+        // for a pasted image. TIFF is never displayed: a TIFF file stays a file.
+        let pastedTIFF = type == "image/tiff" && fileName.isEmpty
         guard AttachmentPolicy.isImage(type) || heic else { return }
         let media = media
         Task {
@@ -1224,6 +1266,20 @@ import SignalUI
                 staged[i].data = converted.data
                 staged[i].contentType = "image/jpeg"
                 staged[i].fileName = ""
+                shownData = converted.data
+            }
+            if pastedTIFF {
+                // A bitmap the media service cannot read is not attached.
+                guard let converted = try? await media.convertTIFF(data) else {
+                    if let i = staged.firstIndex(where: { $0.id == item.id }) {
+                        staged.remove(at: i)
+                        toast = .unableToLoadAttachment
+                    }
+                    return
+                }
+                guard let i = staged.firstIndex(where: { $0.id == item.id }) else { return }
+                staged[i].data = converted.data
+                staged[i].contentType = "image/png"
                 shownData = converted.data
             }
             guard let shown = try? await media.displayImage(shownData, maxDimension: 512) else { return }

@@ -48,6 +48,7 @@ let package = Package(
                 .product(name: "ImageGIF", package: "SignalCodecs"),
                 .product(name: "ImageWebP", package: "SignalCodecs"),
                 .product(name: "ImageBMP", package: "SignalCodecs"),
+                .product(name: "ImageTIFF", package: "SignalCodecs"),
                 .product(name: "Blurhash", package: "SignalCodecs"),
                 .product(name: "EncodePNG", package: "SignalCodecs"),
                 .product(name: "EncodeJPEG", package: "SignalCodecs"),

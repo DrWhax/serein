@@ -196,7 +196,7 @@ for name in $services; do
   codesign --force --sign "$sign" $timestamp --options runtime --entitlements "$pkg/.build/$name.entitlements" "$app/Contents/XPCServices/$name.xpc"
 done
 # Each process holds only its own parsers. Swift symbols name their module ($s<length><name>).
-general_decoders='8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|18SignalMediaDecoder'
+general_decoders='8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|18SignalMediaDecoder'
 decoders="$general_decoders|8VideoVP8|8VideoVP9"
 web='8WebFetch|18LinkPreviewFetcher|9GifSearch'
 links() {   # binary pattern message
@@ -210,7 +210,7 @@ links "$app/Contents/XPCServices/SignalGifSearch.xpc/Contents/MacOS/SignalGifSea
   "decoders, HTML parser or link-preview fetcher linked into the GIF service"
 # The voice-note encoder links the MP3 module (its encoder) and nothing else that reads media.
 links "$app/Contents/XPCServices/SignalVoiceNoteEncoder.xpc/Contents/MacOS/SignalVoiceNoteEncoder" \
-  "8VideoVP9|8VideoVP8|8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
+  "8VideoVP9|8VideoVP8|8ImagePNG|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|18SignalMediaDecoder|8HTMLMeta|$web" \
   "decoders, HTML parser or web client linked into the voice-note encoder"
 # The calling service owns the Swift calling backend and its codecs. General media decoding,
 # the web client, voice notes and SignalCore live in their respective processes.
@@ -238,7 +238,7 @@ done
 # every untrusted parse is in a service. (ImagePNG is the one exception: SignalUI's
 # BundledImage decodes our own Resources/Images.)
 links "$bin" "13RingRTCNative|11CallService|12SwiftCalling|26SwiftCallingServiceAdapter|16VoiceNoteService" "calling backend or recorder linked into the app binary"
-links "$app/Contents/MacOS/Serein" "8VideoVP9|8VideoVP8|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
+links "$app/Contents/MacOS/Serein" "8VideoVP9|8VideoVP8|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
   "decoder or web-client symbols linked into the app binary"
 # Notification and call sounds (generated WAVs; UNNotificationSound looks in Library/Sounds).
 [ -f "$pkg/Resources/Sounds/pop.wav" ] || "$root/Tools/gen-sounds.sh" >/dev/null

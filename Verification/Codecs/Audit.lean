@@ -32,6 +32,22 @@ open Codecs
 #print Good
 #print Within
 #print BoxesWithin
+#print TIFF.rd
+#print TIFF.entry
+#print TIFF.entries
+#print TIFF.order
+#print TIFF.directory
+#print TIFF.values
+#print TIFF.scalar
+#print TIFF.checkDims
+#print TIFF.defaults
+#print TIFF.unsigned
+#print TIFF.strips
+#print TIFF.layout
+#print TIFF.pixel
+#print TIFF.stripPixels
+#print TIFF.pixels
+#print TIFF.FieldsWithin
 
 
 open Lean Elab Command in
@@ -71,7 +87,7 @@ elab "#audit_closure " roots:ident* : command => do
       | _ => "-"
     logInfo m!"{c} {ci.type.hash} {v}"
 
-#audit_closure need_spec prim_within run_within region_exact run_budget children_within children_budget bitsVal_lt readBits_spec
+#audit_closure need_spec prim_within run_within region_exact run_budget children_within children_budget bitsVal_lt readBits_spec TIFF.directory_within TIFF.tiff_dims TIFF.tiff_strips_within TIFF.tiff_pixels_exact TIFF.tiff_budget
 
 #check @need_spec
 #check @prim_within
@@ -82,6 +98,11 @@ elab "#audit_closure " roots:ident* : command => do
 #check @children_budget
 #check @bitsVal_lt
 #check @readBits_spec
+#check @TIFF.directory_within
+#check @TIFF.tiff_dims
+#check @TIFF.tiff_strips_within
+#check @TIFF.tiff_pixels_exact
+#check @TIFF.tiff_budget
 
 open Lean Elab Command in
 /-- `collectAxioms` for each theorem, on one line each. -/
@@ -92,4 +113,4 @@ elab "#audit_axioms " roots:ident* : command => do
     let axs := axs.qsort (fun a b => a.toString < b.toString)
     logInfo m!"{n} depends on axioms: [{", ".intercalate (axs.toList.map toString)}]"
 
-#audit_axioms need_spec prim_within run_within region_exact run_budget children_within children_budget bitsVal_lt readBits_spec
+#audit_axioms need_spec prim_within run_within region_exact run_budget children_within children_budget bitsVal_lt readBits_spec TIFF.directory_within TIFF.tiff_dims TIFF.tiff_strips_within TIFF.tiff_pixels_exact TIFF.tiff_budget

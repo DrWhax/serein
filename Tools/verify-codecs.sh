@@ -7,9 +7,9 @@
 #      on (transitively), and the theorem statements must equal audit-expected.txt, and every
 #      theorem may depend only on propext, Classical.choice and Quot.sound;
 #   4. the explorer's verdict per property (fixed seed) must equal explore-expected.txt;
-#   5. Swift: SignalCodecs' byte cursor, parser combinators, MP4 box grammar and bit reader on
-#      random grammars, inputs and box streams, against the Lean oracle (SEREIN_CODECS_CASES,
-#      default 5000);
+#   5. Swift: SignalCodecs' byte cursor, parser combinators, MP4 box grammar, bit reader and TIFF
+#      decoder on random grammars, inputs, box streams and bitmaps, against the Lean oracle
+#      (SEREIN_CODECS_CASES, default 5000);
 #   6. mutants: each check weakened in production must make step 5 fail. Each is applied to the
 #      working tree and the file restored afterwards (also on interrupt).
 #
@@ -57,7 +57,7 @@ if [ -n "$bad" ] || [ "$total" -eq 0 ]; then
 fi
 echo "$total theorems; axioms used: propext, Classical.choice, Quot.sound; $(grep -m1 ' definitions$' "$tmp/audit") in the audited closure"
 
-echo "== 4. explorer verdicts (40000 random grammars and box streams, seed 2026)"
+echo "== 4. explorer verdicts (40000 random grammars and box streams, 4000 bitmaps, seed 2026)"
 ./.lake/build/bin/oracle explore 2026 40000 40 > "$tmp/explore-raw"
 grep -E '^(OK|FAIL)' "$tmp/explore-raw" | sed -E 's/^(OK|FAIL) ([A-Za-z0-9-]+).*/\2 \1/' > "$tmp/explore"
 if [ "${UPDATE_EXPECTED:-}" = 1 ]; then cp "$tmp/explore" explore-expected.txt; fi
@@ -102,6 +102,8 @@ slice=Packages/SignalCodecs/Sources/CodecCore/Grammar/ByteSlice.swift
 parser=Packages/SignalCodecs/Sources/CodecCore/Grammar/Parser.swift
 box=Packages/SignalCodecs/Sources/ContainerMP4/MP4Grammar.swift
 bits=Packages/SignalCodecs/Sources/CodecCore/Bits/MSBBitReader.swift
+tiff=Packages/SignalCodecs/Sources/ImageTIFF/TIFFDecoder.swift
+crash='disagree.* at step|Fatal error|unexpected signal|exited with|crashed|swiftpm-testing-helper'
 mutant "a read checks the storage, not its region" "$slice" \
   's/if n < 0 \|\| n > end - position \{/if n < 0 || n > storage.count - position {/' 'disagree.* at step|Fatal error|unexpected signal|exited with|crashed|swiftpm-testing-helper'
 mutant "a negative length is accepted" "$slice" \
@@ -144,4 +146,40 @@ mutant "zero fill gives one bit too few" "$bits" \
   's/count = n  \/\/ missing bits are zeros/count = n - 1  \/\/ missing bits are zeros/' 'disagree.* at step|Fatal error|unexpected signal|exited with|crashed|swiftpm-testing-helper'
 mutant "align drops a whole byte more" "$bits" \
   's/let drop = count % 8\n/let drop = count % 8 + (count >= 8 ? 8 : 0)\n/'
+mutant "a repeated tag is accepted" "$tiff" \
+  's/guard fields\[tag\] == nil, type == 3 \|\| type == 4, length > 0 else \{/guard type == 3 || type == 4, length > 0 else {/'
+mutant "a field of another type is accepted" "$tiff" \
+  's/guard fields\[tag\] == nil, type == 3 \|\| type == 4, length > 0 else \{/guard fields[tag] == nil, type >= 3, length > 0 else {/'
+mutant "a field without values is accepted" "$tiff" \
+  's/guard fields\[tag\] == nil, type == 3 \|\| type == 4, length > 0 else \{/guard fields[tag] == nil, type == 3 || type == 4, length >= 0 else {/'
+mutant "the next directory's offset is not required" "$tiff" \
+  's/            try entries\.skip\(4, "TIFF\.nextIFD"\)\n//'
+mutant "a field's value count is not checked" "$tiff" \
+  's/guard let field = fields\[tag\], field\.count == count else \{/guard let field = fields[tag], field.count >= count else {/'
+mutant "the input's size is not checked" "$tiff" \
+  's/guard input\.count <= limits\.maxInputBytes else/guard input.count <= limits.maxInputBytes || input.count > 0 else/'
+mutant "the dimensions are not checked against the limits" "$tiff" \
+  's/        try limits\.checkDimensions\(width: width, height: height, at: 0, rule: "TIFF\.dimensions"\)\n//'
+mutant "compressed strips are accepted" "$tiff" \
+  's/try dir\.scalar\(\.compression, default: 1\) == 1/try dir.scalar(.compression, default: 1) >= 1/'
+mutant "mixed bit depths are accepted" "$tiff" \
+  's/bits\.allSatisfy\(\{ \$0 == bits\[0\] \}\)/bits.allSatisfy({ \$0 >= 8 })/'
+mutant "signed samples are accepted" "$tiff" \
+  's/\.values\(\.sampleFormat, count: samples\)\.allSatisfy\(\{ \$0 == 1 \}\)/.values(.sampleFormat, count: samples).allSatisfy({ \$0 >= 1 })/'
+mutant "a fourth kind of extra sample is accepted" "$tiff" \
+  's/\(0\.\.\.2\)\.contains\(extra\)/(0...3).contains(extra)/'
+mutant "zero rows per strip is accepted" "$tiff" \
+  's/guard rows > 0 else \{ throw invalid \}/guard rows >= 0 else { throw invalid }/' "$crash"
+mutant "the strip count rounds down" "$tiff" \
+  's/let stripCount = 1 \+ \(height - 1\) \/ rows/let stripCount = max(1, height \/ rows)/'
+mutant "a strip's byte count is not checked" "$tiff" \
+  's/guard sizes\[strip\] == stride \* min\(rows, height - strip \* rows\) else/guard sizes[strip] >= 0, stride >= 0 else/' "$crash"
+mutant "the last strip must be whole" "$tiff" \
+  's/guard sizes\[strip\] == stride \* min\(rows, height - strip \* rows\) else/guard sizes[strip] == stride * rows, strip >= 0 else/'
+mutant "16-bit samples keep their low byte" "$tiff" \
+  's/return try UInt8\(raster\.order\.short\(&c\) >> 8\)/return try UInt8(raster.order.short(\&c) \& 0xFF)/'
+mutant "white is zero is not inverted" "$tiff" \
+  's/let red = photo == 0 \? 255 - first : first/let red = photo == 3 ? 255 - first : first/'
+mutant "associated alpha is not divided out" "$tiff" \
+  's/guard extra == 1, alpha < 255 else/guard extra == 3, alpha < 255 else/'
 echo "$killed mutants killed"
