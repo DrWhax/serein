@@ -1,7 +1,7 @@
-// ringrtc in SignalCalling.xpc, as the app sees it: the requests (in the wire format,
+// The calling engine in SignalCalling.xpc, as the app sees it: the requests (in the wire format,
 // MediaXPCInterface/Wire.swift) and `RemoteCallEndpoint`, the RingRTCEndpoint that sends them.
 //
-// The service runs WebRTC: it reads what remote peers send (RTP, ICE, call signalling) and
+// The service runs the Swift calling engine: it reads what remote peers send (RTP, ICE, call signalling) and
 // holds the network and the microphone, but no keys, messages or files. The app treats its
 // replies as hostile: every reply has a size limit, frames are checked against what was asked
 // for, and RingRTC checks what the events ask the app to do (RingRTC.swift).
@@ -24,6 +24,8 @@ import Synchronization
 public enum CallRequest: Codable, Sendable {
     /// A new endpoint with ringrtc's field-trial string; replies its id (UInt64).
     case create(fieldTrials: String)
+    /// Legacy name for the same endpoint creation request.
+    case createSwiftVoice(fieldTrials: String)
     case destroy(endpoint: UInt64)
     /// A ringrtc command as JSON; replies the result's JSON.
     case command(endpoint: UInt64, json: Data)
@@ -99,6 +101,7 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
 
     let channel: XPCChannel
     let fieldTrials: String
+    let swiftVoice: Bool
 
     struct Frame {
         var seq: UInt64
@@ -137,18 +140,20 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
     static let wantLifetime: Duration = .seconds(1)
 
     /// An endpoint in the bundled service (or, in tests, a listener's).
-    public init(fieldTrials: String, channel: XPCChannel) throws {
+    public init(fieldTrials: String, channel: XPCChannel, swiftVoice: Bool = false) throws {
         self.channel = channel
         self.fieldTrials = fieldTrials
+        self.swiftVoice = swiftVoice
         let id = try create()
         state.withLock { $0.id = id }
     }
 
     /// RingRTC on the bundled calling service, signed as XPCPeer says (`timeout` bounds each
     /// session's requests; the service's own limits are in CallXPCLimits).
-    public static func factory(_ target: XPCTarget = .service(serviceName), peer: XPCPeerRequirement? = XPCPeer.requirement(.calling)) -> RingRTCEndpointFactory {
+    public static func factory(_ target: XPCTarget = .service(serviceName), peer: XPCPeerRequirement? = XPCPeer.requirement(.calling),
+                               swiftVoice: Bool = false) -> RingRTCEndpointFactory {
         let channel = XPCChannel(target, peer: peer, timeout: createTimeout)
-        return { trials in try RemoteCallEndpoint(fieldTrials: trials, channel: channel) }
+        return { trials in try RemoteCallEndpoint(fieldTrials: trials, channel: channel, swiftVoice: swiftVoice) }
     }
 
     deinit { close() }
@@ -159,7 +164,8 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
     }
 
     func create() throws -> UInt64 {
-        do { return try call(.create(fieldTrials: fieldTrials), UInt64.self, timeout: Self.createTimeout, maxReply: 64) } catch {
+        let request: CallRequest = swiftVoice ? .createSwiftVoice(fieldTrials: fieldTrials) : .create(fieldTrials: fieldTrials)
+        do { return try call(request, UInt64.self, timeout: Self.createTimeout, maxReply: 64) } catch {
             throw RingRTCError.noEndpoint
         }
     }
@@ -237,6 +243,8 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
             }
         }
         let id = try live()
+        // The event pump can report a loss while live() is acquiring the endpoint.
+        if let generation, generation != self.generation { throw RingRTCError.lost }
         return try run(id, name, fields)
     }
 

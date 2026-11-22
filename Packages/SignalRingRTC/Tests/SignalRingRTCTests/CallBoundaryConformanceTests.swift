@@ -94,7 +94,7 @@ final class HostileCallService: XPCMessageHandler, Sendable {
     func reply(to request: XPCMessage) async throws -> XPCMessage {
         let r = try Wire.decode(CallRequest.self, try request.requirePayload(), maxBytes: maxRequestBytes)
         switch r {
-        case .create:
+        case .create, .createSwiftVoice:
             let id = state.withLock { s -> UInt64 in
                 let id = UInt64(100 + s.endpoints.count)
                 s.endpoints.append(id)
@@ -143,7 +143,8 @@ final class HostileCallService: XPCMessageHandler, Sendable {
     init(ended: @escaping (GroupCall) -> Void) { self.ended = ended }
     func requestMembershipProof(_ groupCall: GroupCall) {}
     func requestGroupMembers(_ groupCall: GroupCall) {}
-    func onLocalDeviceStateChanged(_ groupCall: GroupCall) {}
+    var localChanged: ((GroupCall) -> Void)?
+    func onLocalDeviceStateChanged(_ groupCall: GroupCall) { localChanged?(groupCall) }
     func onRemoteDeviceStatesChanged(_ groupCall: GroupCall) {}
     func onAudioLevels(_ groupCall: GroupCall) {}
     func onLowBandwidthForVideo(_ groupCall: GroupCall, recovered: Bool) {}

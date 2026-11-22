@@ -1,0 +1,13 @@
+diff --git a/backend/src/sfu.rs b/backend/src/sfu.rs
+index a3a1bb9..cddc2ef 100644
+--- a/backend/src/sfu.rs
++++ b/backend/src/sfu.rs
+@@ -734,7 +734,7 @@ impl Sfu {
+                     .config
+                     .persist_approval_for_all_users_who_join,
+                 endorsement_issuer: self.endorsement_issuer.clone(),
+-                drop_fragmentable_updates: true,
++                drop_fragmentable_updates: false,
+                 max_clients: self.config.max_clients_per_call as usize,
+             })
+         });

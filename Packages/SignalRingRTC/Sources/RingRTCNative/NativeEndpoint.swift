@@ -1,7 +1,6 @@
 // The boundary to libsignal_ringrtc (rust/src/lib.rs): commands and events as JSON, frames
 // as byte buffers, all passed as Span / MutableSpan (the header's __counted_by/__noescape
-// annotations), so nothing here is `unsafe`. Linked by the calling service
-// (SignalCalling.xpc) and by tests; never by the app.
+// annotations). The interop tests and their optional local peer use this reference engine.
 
 import CSignalRingRTC
 import Foundation
@@ -9,7 +8,7 @@ import SignalRingRTC
 import Synchronization
 
 /// One ringrtc call endpoint (`createCallEndpoint`) in this process.
-public final class NativeEndpoint: RingRTCEndpoint {
+public final class NativeEndpoint: LocalCallEndpoint {
     let id: UInt64
     /// The event buffer (one waiter at a time).
     let events = Mutex<[UInt8]>([])
@@ -24,7 +23,7 @@ public final class NativeEndpoint: RingRTCEndpoint {
     deinit { srr_endpoint_destroy(id) }
 
     /// RingRTC on an endpoint in this process.
-    public static let factory: RingRTCEndpointFactory = { trials in
+    public static let factory: LocalCallEndpointFactory = { trials in
         guard let e = NativeEndpoint(fieldTrials: trials) else { throw RingRTCError.noEndpoint }
         return e
     }

@@ -131,6 +131,7 @@ import SignalUI
     /// Calls (Calls.swift): the service, the call on screen, an incoming ring, our audio/video,
     /// picture-in-picture, the camera and its preview.
     var calling: CallingService?
+    @ObservationIgnored var callingStartupTask: Task<Void, Never>?
     var activeCall: ActiveCallState?
     var ringingCall: (conversationId: String, isVideo: Bool, callId: UInt64)?
     /// A group call ringing us (CallsExtras.swift): its ring and who rang.
@@ -155,7 +156,17 @@ import SignalUI
     /// Bumped by `releaseCallMedia()` (every way a call ends): call setup and screen-share
     /// starts still waiting note it when they begin and give up if it changed.
     @ObservationIgnored var callGeneration: UInt64 = 0
-    @ObservationIgnored var callSetupTask: Task<Void, Never>?
+    var callSetupTask: Task<Void, Never>?
+    /// From pressing Join until a call link connects or the server asks for admin approval.
+    var callLinkJoinTimeoutTask: Task<Void, Never>?
+    var localCallTestPeerState: LocalCallTestPeerState = .idle
+    var localCallTestPeerLaunchError: String?
+    var waitingForTestRoom = false
+    var localCallTestPeerDemuxId: UInt32?
+    @ObservationIgnored var localCallTestPeerTask: Task<Void, Never>?
+    @ObservationIgnored var localCallTestPeerAttempt: UUID?
+    @ObservationIgnored var automaticTestPeerRoom: String?
+    @ObservationIgnored var handledTestPeerLaunch = false
     /// The current screen share's token (nil: none). Each share gets a new one; its frame and
     /// stop callbacks carry it, so an old stream's late frame or error cannot reach a newer
     /// share or call (a call generation alone does not tell two shares in one call apart).
@@ -180,6 +191,7 @@ import SignalUI
     var callLinks: [CallLinkRecord] = []
     @ObservationIgnored var callLinksTask: Task<Void, Never>?
     var callLinkModal: CallLinkModal?
+    var isCreatingCallLink = false
     /// Text to send to chats the user picks (the forward dialog), e.g. a shared call link.
     var shareText: String?
     /// Sharing presenting: the ScreenCaptureKit sources to pick from, and the capture running.

@@ -1,8 +1,6 @@
-// What RingRTC drives: one ringrtc call endpoint, through its commands and events (JSON, as
-// rust/src/commands.rs and events.rs define them) and its video frames. The endpoint is either
-// in this process (RingRTCNative: tests, and the calling service itself) or in the calling
-// service, SignalCalling.xpc (CallXPC: the app). The app never loads ringrtc: WebRTC, its
-// network stack and the call audio run in that sandboxed process.
+// RingRTC drives one calling endpoint through JSON commands and events and video frames.
+// SignalCalling.xpc hosts the Swift implementation. Interoperability tests also exercise
+// the same interface against the pinned native implementation.
 //
 // A remote endpoint can be lost (its process crashed, or stopped answering). Its `generation`
 // then moves on: everything made on an earlier generation (calls, group call clients) is gone,
@@ -164,6 +162,15 @@ extension RingRTCEndpoint {
 
 /// Makes an endpoint with ringrtc's field-trial string (`Name/Value/…/`).
 public typealias RingRTCEndpointFactory = @Sendable (_ fieldTrials: String) throws -> any RingRTCEndpoint
+
+/// An endpoint hosted by the calling service. Commands and events use the JSON wire format
+/// directly so the service needn't decode and re-encode opaque signaling or event batches.
+public protocol LocalCallEndpoint: RingRTCEndpoint {
+    func commandJSON(_ input: [UInt8]) throws -> [UInt8]
+    func waitEventsJSON(timeoutMs: UInt32) -> [UInt8]
+}
+
+public typealias LocalCallEndpointFactory = @Sendable (_ fieldTrials: String) throws -> any LocalCallEndpoint
 
 /// The thread that drains an endpoint's events and hands each batch, in order, to the main
 /// queue (Node's event loop in upstream); a loss is handed over the same way.

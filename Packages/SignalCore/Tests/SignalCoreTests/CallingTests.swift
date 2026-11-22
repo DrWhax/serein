@@ -7,12 +7,53 @@ import GRDB
 import LibSignalClient
 import SignalProtos
 import RingRTCNative
-import SignalRingRTC
+@testable import SignalRingRTC
 import Testing
 import CryptoKit
 @testable import SignalCore
 
 @Suite(.serialized) struct CallingTests {
+    @Test func localCallLinkTestPeerAdmissionAndSFUScope() throws {
+        #expect(try LocalCallLinkTestPeer.passkey(nil, restrictions: .none) == nil)
+        #expect(throws: LocalCallLinkTestPeerError.approvalRequired) { try LocalCallLinkTestPeer.passkey(nil, restrictions: .adminApproval) }
+        #expect(throws: LocalCallLinkTestPeerError.approvalRequired) { try LocalCallLinkTestPeer.passkey(nil, restrictions: .unknown) }
+        let admin = Data(repeating: 7, count: 32)
+        #expect(try LocalCallLinkTestPeer.passkey(admin, restrictions: .adminApproval) == admin)
+        let aci = Data(repeating: 0x15, count: 16)
+        var peek = PeekInfo()
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == [])
+        peek.devices = [.init(demuxId: 16, userId: aci)]
+        peek.deviceCountIncludingPendingDevices = 1
+        peek.deviceCountExcludingPendingDevices = 1
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == [16])
+        peek.devices[0].userId = nil
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == nil)
+        peek.devices[0].userId = aci
+        peek.deviceCountIncludingPendingDevices = 2
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == nil)
+        peek.devices.append(.init(demuxId: 32, userId: aci))
+        peek.deviceCountExcludingPendingDevices = 2
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == [16, 32])
+        peek.devices[1].userId = Data(repeating: 2, count: 16)
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == nil)
+        peek.devices[1].userId = aci
+        peek.devices[1].demuxId = 16
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == nil)
+        peek.devices[1].demuxId = 0
+        #expect(LocalCallLinkTestPeer.ownDevices(peek, aci: aci) == nil)
+
+        let scope = ["Authorization": "Bearer auth.fixture", "X-Room-Id": "room", "X-Epoch": "91"]
+        let joinHeaders = scope.merging(["Content-Type": "application/json"]) { $1 }
+        let body = Data("{}".utf8)
+        #expect(LocalCallLinkTestPeer.permitsRequest(.get, scope, nil, expected: scope))
+        #expect(LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders, body, expected: scope))
+        #expect(!LocalCallLinkTestPeer.permitsRequest(.delete, scope, nil, expected: scope))
+        #expect(!LocalCallLinkTestPeer.permitsRequest(.get, scope, body, expected: scope))
+        #expect(!LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders, nil, expected: scope))
+        #expect(!LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders.merging(["X-Room-Id": "elsewhere"]) { $1 }, body, expected: scope))
+        #expect(!LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders.merging(["Cookie": "extra"]) { $1 }, body, expected: scope))
+    }
+
     @MainActor @Test func callingMessageProtoRoundTrip() {
         let m = CallingMessage(offer: OfferMessage(callId: 0xFFFF_0000_1234, type: .videoCall, opaque: Data([1, 2, 3])),
                                iceCandidates: [IceCandidateMessage(callId: 7, opaque: Data([9])), IceCandidateMessage(callId: 7, opaque: Data([8]))],
@@ -104,16 +145,23 @@ import CryptoKit
         try await LinkedClient.with { c in
             let http = HTTPClient(rootCertificatesDER: c.endpoints.rootCertificatesDER)
             let groupsAPI = GroupsAPI(http: http, endpoints: c.endpoints, credentials: c.groupCredentials)
-            let sfu = URL(string: "https://localhost:\(c.server.ready.port)/callingService")!
+            let sfu = try #require(c.endpoints.sfuURL)
             let calling = try await MainActor.run {
                 try CallingService(account: c.account, database: c.database, socket: c.socket, http: http, messenger: c.messenger, groups: groupsAPI,
                                    credentials: c.groupCredentials, config: CallingConfig(sfuURL: sfu), endpoint: NativeEndpoint.factory)
             }
 
+            // The editor can open as soon as the link and its sync job are committed.
+            await c.jobs.stopAndWait()
             let link = try await calling.createCallLink()
             #expect(link.adminKey?.isEmpty == false && !link.revoked && link.roomId.count == 64)
             let stored = try await c.database.pool.read { db in try CallLinkStore.get(db, roomId: link.roomId) }
             #expect(stored?.adminKey == link.adminKey)
+            let pending = try await c.database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT count(*) FROM jobs WHERE queueType = ?", arguments: [CallLinkUpdateSyncJob.queueType])
+            }
+            #expect(pending == 1)
+            await c.jobs.start()
             let sync = try await c.server.json("waitForSyncMessage", ["kind": "callLinkUpdate"])
             #expect((sync["callLinkUpdate"] as? [String: Any])?["rootKey"] as? String == link.rootKey.base64EncodedString())
 
@@ -203,6 +251,62 @@ private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d))
             guard ContinuousClock.now < deadline else { Issue.record("timed out: \(what)"); return }
             try await Task.sleep(for: .milliseconds(50))
         }
+    }
+
+    @Test func groupObserverLivesUntilTheEndpointEndsItsCall() async throws {
+        try await LinkedClient.with { c in try await Self.checkObserverLifetime(c) }
+    }
+
+    @MainActor private static func checkObserverLifetime(_ c: LinkedClient) async throws {
+        let service = try makeCalling(c)
+        let room = "solo"
+        func attach() throws -> GroupCall {
+            let observer = GroupObserver(service: service, conversationId: room, mode: .adhoc, keys: nil)
+            let call = try #require(service.rtc.getGroupCall(groupId: Data(repeating: 1, count: 32), sfuUrl: service.config.sfuURL.absoluteString,
+                                                             hkdfExtraInfo: Data(), audioLevelsIntervalMillis: nil, dredDuration: nil,
+                                                             svcConfig: nil, observer: observer))
+            service.callsLookup[room] = .group(call)
+            service.observers[room] = observer
+            return call
+        }
+        var joined = false
+        var ended: [CallEndReason] = []
+        service.onEvent = { [weak service] event in
+            if case .groupCallChanged(room, _) = event { joined = service?.groupCall(for: room)?.localDeviceState.joinState == .joined }
+            if case .groupCallEnded(room, let reason) = event { ended.append(reason) }
+        }
+        let call = try attach()
+        // joinCallLinkCall applies these settings before the first asynchronous connection event.
+        call.setOutgoingAudioMuted(true)
+        call.setOutgoingVideoMuted(true)
+        #expect(service.groupCall(for: room) === call)
+        call.handleConnectionStateChanged(.connecting)
+        call.handleJoinStateChanged(.joined, demuxId: 16)
+        #expect(joined)
+        let oldObserver = try #require(service.observers[room])
+        call.handleConnectionStateChanged(.notConnected)
+        call.handleEnded(.iceFailedAfterConnected, CallSummary(.null))
+        #expect(ended == [.iceFailedAfterConnected])
+        #expect(service.groupCall(for: room) == nil && service.observers[room] == nil)
+
+        let retry = try attach()
+        oldObserver.onLocalDeviceStateChanged(call)
+        oldObserver.onEnded(call, reason: .internalFailure, summary: CallSummary(.null))
+        #expect(service.groupCall(for: room) === retry)
+        #expect(ended == [.iceFailedAfterConnected])
+        // The Swift backend can send handleEnded directly, with no final connection event.
+        retry.handleEnded(.deviceExplicitlyDisconnected, CallSummary(.null))
+        #expect(service.groupCall(for: room) == nil)
+        #expect(ended == [.iceFailedAfterConnected, .deviceExplicitlyDisconnected])
+
+        let key = try CallLinkRootKey.fromBytes(Data(1...16))
+        let previous = try await service.connectCallLinkCall(roomId: room, rootKey: key, adminPasskey: nil)
+        service.endCall(conversationId: room)
+        #expect(service.groupCall(for: room) == nil)
+        let next = try await service.connectCallLinkCall(roomId: room, rootKey: key, adminPasskey: nil)
+        #expect(next !== previous)
+        #expect(service.groupCall(for: room) === next)
+        service.endCall(conversationId: room)
     }
 
     /// A hang-up at each of a direct call's setup suspensions (the recipient lookup, the

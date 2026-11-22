@@ -1,8 +1,8 @@
 // Calls in the app (upstream's calling duck and SmartCallManager over CallingClass): direct
 // audio/video calls (lobby → ring → call → hang up; incoming bar → accept / decline) and group
-// calls (lobby → join; participants' video requested and pulled from ringrtc). SignalCore's
-// CallingService does signalling, relays and call history; SignalRingRTC (ringrtc + WebRTC)
-// the media; the camera through CameraCapture, the local preview through LocalVideoModel. While
+// calls (lobby → join; participants' video requested from the Swift calling service). SignalCore's
+// CallingService handles signaling, relay configuration and call history. The XPC service handles
+// media, CameraCapture supplies the camera, and LocalVideoModel shows its preview. While
 // a call is up the display stays awake (AppModel.isCallActive).
 
 import AppKit
@@ -61,6 +61,7 @@ struct CallDevices {
 /// One group participant's video.
 @MainActor final class GroupCallVideo: CallVideoFrameSource {
     weak var calling: CallingService?
+    var onNextFrame: (() -> Void)?
     let conversationId: String
     let demuxId: UInt32
     init(calling: CallingService?, conversationId: String, demuxId: UInt32) {
@@ -69,7 +70,12 @@ struct CallDevices {
         self.demuxId = demuxId
     }
     func receiveVideoFrame(into buffer: inout [UInt8], maxWidth: Int, maxHeight: Int) -> (width: Int, height: Int)? {
-        calling?.groupCall(for: conversationId)?.receiveVideoFrame(demuxId: demuxId, into: &buffer, maxWidth: maxWidth, maxHeight: maxHeight)
+        let frame = calling?.groupCall(for: conversationId)?.receiveVideoFrame(demuxId: demuxId, into: &buffer, maxWidth: maxWidth, maxHeight: maxHeight)
+        if frame != nil, let onNextFrame {
+            self.onNextFrame = nil
+            onNextFrame()
+        }
+        return frame
     }
 }
 
@@ -108,22 +114,27 @@ extension CallingService: CallControl {
 
     /// The calling service for the linked account; its events drive the call UI.
     func startCalling() {
-        guard calling == nil, let client = signalClient else { return }
-        let sfu = Self.environment.sfuURL
-        Task { [weak self] in
+        guard calling == nil, callingStartupTask == nil, let client = signalClient else { return }
+        callingStartupTask = Task { [weak self] in
             guard let self else { return }
+            defer { callingStartupTask = nil }
             do {
-                // ringrtc runs in SignalCalling.xpc (WebRTC, the call audio, the network paths).
-                guard let service = try await client.makeCallingService(sfuURL: sfu, endpoint: RemoteCallEndpoint.factory()) else { return }
+                let endpoint = RemoteCallEndpoint.factory()
+                guard let service = try await client.makeCallingService(endpoint: endpoint) else { return }
                 await service.register()
-                service.onEvent = { [weak self] e in Task { @MainActor in self?.handleCallingEvent(e) } }
+                service.onEvent = { [weak self] e in _ = self?.enqueueCallingEvent(e) }
                 service.onCameraNeeded = { [weak self] on in Task { @MainActor in self?.setCameraSending(on) } }
+                service.rtc.handleInputDeviceChanged = { [weak self] list in self?.callDevices.microphones = Self.callDeviceList(list) }
+                service.rtc.handleOutputDeviceChanged = { [weak self] list in self?.callDevices.speakers = Self.callDeviceList(list) }
                 calling = service
                 preferredMicrophoneId = UserDefaults.standard.string(forKey: "preferredMicrophone")
                 preferredSpeakerId = UserDefaults.standard.string(forKey: "preferredSpeaker")
                 preferredCameraId = UserDefaults.standard.string(forKey: "preferredCamera")
                 applyAudioDevices()
                 Self.trace("calling: ready")
+                if CommandLine.arguments.contains("--test-call-link-stdin") {
+                    await openCurrentTestCallLink()
+                }
                 // Debugging the call UI: open a voice-call lobby (no call is placed).
                 if ProcessInfo.processInfo.environment["SIGNALSAFE_DEBUG_LOBBY"] == "1" {
                     try? await Task.sleep(for: .seconds(3))
@@ -144,6 +155,21 @@ extension CallingService: CallControl {
     }
 
     // MARK: events
+
+    func enqueueCallingEvent(_ event: CallingEvent) -> Task<Void, Never> {
+        // Group events identify the room. A queued change or end for a room we left
+        // must not act on a new attempt to join the same room.
+        let generation = callGeneration
+        return Task { [weak self] in
+            guard let self else { return }
+            switch event {
+            case .groupCallChanged, .groupCallEnded:
+                guard callGeneration == generation else { return }
+            default: break
+            }
+            handleCallingEvent(event)
+        }
+    }
 
     func handleCallingEvent(_ e: CallingEvent) {
         switch e {
@@ -195,15 +221,37 @@ extension CallingService: CallControl {
             }
         case .groupCallChanged(let id, _):
             guard activeCall?.conversationId == id, activeCall?.isLive == true else { return endStrayCall(id) }
-            if calling?.groupCall(for: id)?.localDeviceState.joinState == .joined { activeCall?.stage = .inCall }
+            if let local = calling?.groupCall(for: id)?.localDeviceState {
+                updateGroupJoinState(local.joinState, connection: local.connectionState)
+            }
             activeCall?.groupRevision += 1
             requestGroupVideo(id)
-        case .groupCallEnded(let id, _):
-            if activeCall?.conversationId == id { endCallUI() }
+        case .groupCallEnded(let id, let reason):
+            guard let a = activeCall, a.conversationId == id else { return }
+            if a.isCallLink, a.stage == .lobby || callLinkJoinTimeoutTask != nil {
+                // The previous attempt's disconnect may arrive after reopening its lobby.
+                guard reason != .deviceExplicitlyDisconnected && reason != .localHangup else { return }
+                failCallLinkJoin(id, .ended(reason))
+            } else {
+                endCallUI()
+            }
         case .groupCallAudioLevels(let id):
             if activeCall?.conversationId == id { activeCall?.groupRevision += 1 }
         default:
             handleCallExtrasEvent(e)     // CallsExtras.swift: what the screen shows, nothing of the call's lifecycle
+        }
+    }
+
+    func updateGroupJoinState(_ join: JoinState, connection: ConnectionState) {
+        if join == .joined { activeCall?.stage = .inCall }
+        if join == .joined, connection == .connected, let room = automaticTestPeerRoom, room == activeCall?.conversationId {
+            automaticTestPeerRoom = nil
+            startLocalCallTestPeer()
+        }
+        // Waiting for a person to approve a request has no connection deadline.
+        if callLinkJoinTimeoutTask != nil, join == .pending || (join == .joined && connection == .connected) {
+            callLinkJoinTimeoutTask?.cancel()
+            callLinkJoinTimeoutTask = nil
         }
     }
 
@@ -222,8 +270,13 @@ extension CallingService: CallControl {
     /// ringtone stops. A ringing incoming call is left ringing.
     func releaseCallMedia(conversationId: String?) {
         callGeneration &+= 1
+        automaticTestPeerRoom = nil
+        waitingForTestRoom = false
+        stopLocalCallTestPeer()
         callSetupTask?.cancel()
         callSetupTask = nil
+        callLinkJoinTimeoutTask?.cancel()
+        callLinkJoinTimeoutTask = nil
         stopPresenting(conversationId: conversationId)
         callControl?.hangup(excludeRinging: true)
         cameraSends = false
@@ -256,16 +309,34 @@ extension CallingService: CallControl {
 
     /// The lobby's "Start call" / "Join".
     func startCallFromLobby() {
-        guard let a = activeCall, a.isLive, callSetupTask == nil, let calling = callControl else { return }
-        applyAudioDevices()
+        guard let a = activeCall, a.isLive, callSetupTask == nil else { return }
         let audio = callLocalAudio, video = callLocalVideo
         let generation = callGeneration
-        let link = a.isCallLink ? callLinks.first(where: { $0.roomId == a.conversationId }) : nil
+        let link = a.isCallLink ? callLink(a.conversationId) : nil
+        if a.isCallLink {
+            guard a.stage == .lobby, callLinkJoinTimeoutTask == nil,
+                  calling?.groupCall(for: a.conversationId)?.localDeviceState.joinState != .pending else { return }
+            guard let link, !link.revoked else { return failCallLinkJoin(a.conversationId, .invalidLink) }
+            callLinkJoinTimeoutTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                self?.callLinkJoinTimedOut(generation)
+            }
+        } else if callControl == nil { return }
+        applyAudioDevices()
         callSetupTask = mainTasks.spawn("call.setup") { [weak self] in
             // The task may start after a hang-up or the lobby closing: then no call is asked for.
             guard self?.callGeneration == generation else { return }
             defer { if self?.callGeneration == generation { self?.callSetupTask = nil } }
             do {
+                if a.isCallLink && self?.callControl == nil {
+                    self?.startCalling()
+                    await self?.callingStartupTask?.value
+                }
+                guard self?.callGeneration == generation else { return }
+                guard let calling = self?.callControl else {
+                    self?.failCallLinkJoin(a.conversationId, .ended(.connectionFailure))
+                    return
+                }
                 var placed: UInt64?
                 if let link {
                     try await calling.joinCallLinkCall(roomId: link.roomId, rootKey: try CallLinkRootKey.fromBytes(link.rootKey), adminPasskey: link.adminKey,
@@ -281,10 +352,20 @@ extension CallingService: CallControl {
                 if self?.callGeneration != generation, let placed { calling.endCall(conversationId: a.conversationId, callId: placed) }
             } catch {
                 guard let self, self.callGeneration == generation else { return }   // already torn down
-                Self.trace("call failed: \(error)")
-                endCallUI()
+                if a.isCallLink {
+                    Self.trace("call link setup failed: \(type(of: error))")
+                    failCallLinkJoin(a.conversationId, .ended(.signalingFailure))
+                } else {
+                    Self.trace("call failed: \(error)")
+                    endCallUI()
+                }
             }
         }
+    }
+
+    func callLinkJoinTimedOut(_ generation: UInt64) {
+        guard callGeneration == generation, callLinkJoinTimeoutTask != nil, let a = activeCall, a.isCallLink else { return }
+        failCallLinkJoin(a.conversationId, .ended(.timeout))
     }
 
     func acceptCall(_ conversationId: String, video: Bool) {
@@ -471,11 +552,13 @@ extension CallingService: CallControl {
     /// The devices to choose from (ringrtc's audio devices, AVFoundation's cameras).
     func refreshCallDevices() {
         guard let rtc = calling?.rtc else { return }
-        func list(_ l: SignalRingRTC.AudioDeviceList?) -> SignalUI.AudioDeviceList {
-            SignalUI.AudioDeviceList(devices: (l?.devices ?? []).map { SignalUI.AudioDevice(name: $0.name, uniqueId: $0.uniqueId) },
-                                     defaultDevice: l?.defaultDevice.map { SignalUI.AudioDevice(name: $0.name, uniqueId: $0.uniqueId) })
-        }
-        callDevices = CallDevices(cameras: CameraCapture.devices(), microphones: list(rtc.getAudioInputs()), speakers: list(rtc.getAudioOutputs()))
+        callDevices = CallDevices(cameras: CameraCapture.devices(), microphones: Self.callDeviceList(rtc.getAudioInputs()),
+                                  speakers: Self.callDeviceList(rtc.getAudioOutputs()))
+    }
+
+    private static func callDeviceList(_ list: SignalRingRTC.AudioDeviceList?) -> SignalUI.AudioDeviceList {
+        SignalUI.AudioDeviceList(devices: (list?.devices ?? []).map { SignalUI.AudioDevice(name: $0.name, uniqueId: $0.uniqueId) },
+                                 defaultDevice: list?.defaultDevice.map { SignalUI.AudioDevice(name: $0.name, uniqueId: $0.uniqueId) })
     }
 
     func selectMicrophone(_ p: AudioDevicePref) {
@@ -507,9 +590,11 @@ extension CallingService: CallControl {
         let rtc = calling.rtc
         let mic = preferredMicrophoneId ?? rtc.getAudioInputs()?.defaultDevice?.uniqueId
         let speaker = preferredSpeakerId ?? rtc.getAudioOutputs()?.defaultDevice?.uniqueId
+        let followsDefaultMic = preferredMicrophoneId == nil
+        let followsDefaultSpeaker = preferredSpeakerId == nil
         Task {
-            if let mic { _ = try? await rtc.setAudioInputById(mic) }
-            if let speaker { _ = try? await rtc.setAudioOutputById(speaker) }
+            if let mic { _ = try? await rtc.setAudioInputById(mic, followSystemDefault: followsDefaultMic) }
+            if let speaker { _ = try? await rtc.setAudioOutputById(speaker, followSystemDefault: followsDefaultSpeaker) }
         }
     }
 

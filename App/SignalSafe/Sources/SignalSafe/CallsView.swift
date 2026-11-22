@@ -176,18 +176,31 @@ struct AppCallManager: View {
                      hasLocalAudio: session.callLocalAudio, hasLocalVideo: session.callLocalVideo,
                      // A call link that needs an admin's approval, unless it is ours (restrictions 1: adminApproval).
                      isAdhocAdminApprovalRequired: a.isCallLink && session.callLink(a.conversationId).map { !$0.isAdmin && $0.restrictions == 1 } == true,
+                     isAdhocJoinRequestPending: a.isCallLink && session.calling?.groupCall(for: a.conversationId)?.localDeviceState.joinState == .pending,
+                     isCallConnecting: session.callSetupTask != nil || session.callLinkJoinTimeoutTask != nil ||
+                         session.calling?.groupCall(for: a.conversationId)?.localDeviceState.joinState == .joining,
                      isCallFull: session.isCallFull(a.conversationId),
                      outgoingRing: a.outgoingRing,
                      localVideo: session.callLocalVideoModel, setLocalAudio: { session.setCallAudio($0) }, setLocalVideo: { session.setCallVideo($0) },
                      setOutgoingRing: { session.activeCall?.outgoingRing = $0 }, onJoinCall: { session.startCallFromLobby() },
                      onCallCanceled: { session.endCallUI() }, toggleParticipants: { participantsOpen.toggle() }, togglePip: { session.callPip.toggle() },
                      toggleSettings: { settingsOpen = $0 })
+            .overlay(alignment: .top) {
+                if session.waitingForTestRoom {
+                    Text("Waiting for the previous participant to leave…")
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.top, 58)
+                }
+            }
     }
 
     func participants(_ a: ActiveCallState, _ group: GroupCall?) -> [GroupCallRemoteParticipantInfo] {
         (group?.remoteDeviceStates ?? []).compactMap { d in
             guard let aci = SignalSession.aci(d.userId) else { return nil }
-            return GroupCallRemoteParticipantInfo(demuxId: d.demuxId, conversation: person(aci), hasRemoteAudio: d.audioMuted == false,
+            let participant = d.demuxId == session.localCallTestPeerDemuxId
+                ? CallingConversation(id: "local-test-peer", title: "RingRTC test peer") : person(aci)
+            return GroupCallRemoteParticipantInfo(demuxId: d.demuxId, conversation: participant, hasRemoteAudio: d.audioMuted == false,
                                                   hasRemoteVideo: d.videoMuted == false, mediaKeysReceived: d.mediaKeysReceived,
                                                   sharingScreen: d.sharingScreen == true, videoAspectRatio: d.videoAspectRatio ?? 1.3,
                                                   addedTime: Int64(d.addedTime))
@@ -250,6 +263,13 @@ struct AppCallManager: View {
             }
         }
         return CallScreen(model: screenModel(a, c, group), actions: actions, buttonToasts: buttonToasts, reactions: reactions)
+            .overlay(alignment: .topLeading) {
+                if session.hasLocalCallTestPeer, a.isCallLink {
+                    testPeerControl
+                        .padding(.top, 58)
+                        .padding(.leading, 16)
+                }
+            }
             .overlay {
                 if let p = pendingParticipant, let aci = p.conversation.aci {
                     AxoBaseDialog.Host {
@@ -266,6 +286,25 @@ struct AppCallManager: View {
                     }
                 }
             }
+    }
+
+    @ViewBuilder private var testPeerControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch session.localCallTestPeerState {
+            case .idle, .failed:
+                Button("Start test peer") { session.startLocalCallTestPeer() }
+                    .help("Send a moving test picture and a recorded voice from a local RingRTC peer.")
+            case .starting:
+                Button("Cancel test peer") { session.stopLocalCallTestPeer() }
+            case .running:
+                Button("Stop test peer") { session.stopLocalCallTestPeer() }
+            }
+            if case .failed(let message) = session.localCallTestPeerState {
+                Text(message).font(.caption).frame(maxWidth: 245, alignment: .leading)
+            }
+        }
+        .padding(6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// `showParticipantsList`: in the lobby, who the peek found; in the call, everyone in it and

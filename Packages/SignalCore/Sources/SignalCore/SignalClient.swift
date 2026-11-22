@@ -98,8 +98,9 @@ public actor SignalClient {
     /// The calling service for the linked account (CallingClass): ringrtc with our signalling,
     /// SFU requests, relays and group credentials. Created on the main actor (RingRTC's
     /// callbacks and the call UI live there).
-    public func makeCallingService(sfuURL: URL, fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) async throws -> CallingService? {
+    public func makeCallingService(sfuURL: URL? = nil, fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) async throws -> CallingService? {
         guard let s = session else { return nil }
+        guard let sfuURL = sfuURL ?? endpoints.sfuURL else { throw CallingError.missingSFUURL }
         let database = database, socket = socket
         return try await MainActor.run {
             try CallingService(account: s.account, database: database, socket: socket, http: s.http, messenger: s.messenger, groups: s.groups.api,

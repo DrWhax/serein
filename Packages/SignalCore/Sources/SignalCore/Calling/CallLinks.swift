@@ -4,6 +4,29 @@
 
 import Foundation
 import GRDB
+import SignalProtos
+
+/// Delivers the committed link to our other devices using the persistent job queue.
+struct CallLinkUpdateSyncJob: Codable, Sendable {
+    static let queueType = "callLinkUpdateSync"
+    let rootKey: Data
+    let adminKey: Data?
+    let timestamp: UInt64
+
+    static func insert(_ db: Database, link: CallLinkRecord, now: Int64) throws {
+        try JobQueue.insert(db, queueType: queueType, payload: Self(rootKey: link.rootKey, adminKey: link.adminKey, timestamp: UInt64(now)))
+    }
+
+    var message: Signalservice_SyncMessage {
+        var update = Signalservice_SyncMessage.CallLinkUpdate()
+        update.type = .update
+        update.rootKey = rootKey
+        if let adminKey { update.adminPasskey = adminKey }
+        var sync = Messenger.syncMessage()
+        sync.callLinkUpdate = update
+        return sync
+    }
+}
 
 public struct CallLinkRecord: Sendable, Equatable {
     /// Hex of HKDF(rootKey) (`getRoomIdFromRootKey`).

@@ -1,4 +1,4 @@
-// SignalCalling.xpc's work: ringrtc's endpoints, run for the app (CallXPC.swift has the
+// SignalCalling.xpc's work: calling endpoints, run for the app (CallXPC.swift has the
 // requests). Only the app may connect (XPCPeer), and the service ends with that session, so
 // no call outlives the app's connection and a reconnecting app always starts clean.
 //
@@ -9,12 +9,17 @@
 import CallXPC
 import Foundation
 import MediaXPCInterface
-import RingRTCNative
 import SignalRingRTC
 import Synchronization
 
 public final class CallXPCHandler: XPCMessageHandler {
-    let endpoints = Mutex<[UInt64: NativeEndpoint]>([:])
+    private struct Session {
+        var generation: UInt64 = 0
+        var endpoints: [UInt64: any LocalCallEndpoint] = [:]
+    }
+    private let session = Mutex(Session())
+    var endpointCount: Int { session.withLock { $0.endpoints.count } }
+    let makeEndpoint: LocalCallEndpointFactory
     let next = Atomic<UInt64>(1)
     let onSessionEnd: @Sendable () -> Void
     let commands = DispatchQueue(label: "signalsafe.calling.commands")
@@ -26,17 +31,27 @@ public final class CallXPCHandler: XPCMessageHandler {
 
     /// `onSessionEnd`: what happens once the app's session ends (the service exits; tests
     /// only drop the endpoints).
-    public init(onSessionEnd: @escaping @Sendable () -> Void = {}) { self.onSessionEnd = onSessionEnd }
+    public init(makeEndpoint: @escaping LocalCallEndpointFactory,
+                onSessionEnd: @escaping @Sendable () -> Void = {}) {
+        self.makeEndpoint = makeEndpoint
+        self.onSessionEnd = onSessionEnd
+    }
 
     public var maxRequestBytes: Int { CallXPCLimits.maxRequestBytes }
 
     public func sessionEnded() {
-        endpoints.withLock { $0 = [:] }
+        let endpoints = session.withLock {
+            $0.generation += 1
+            let endpoints = $0.endpoints
+            $0.endpoints = [:]
+            return endpoints
+        }
+        for endpoint in endpoints.values { endpoint.close() }
         onSessionEnd()
     }
 
-    func endpoint(_ id: UInt64) throws -> NativeEndpoint {
-        guard let e = endpoints.withLock({ $0[id] }) else { throw CallServiceError.unknownEndpoint }
+    func endpoint(_ id: UInt64) throws -> any LocalCallEndpoint {
+        guard let e = session.withLock({ $0.endpoints[id] }) else { throw CallServiceError.unknownEndpoint }
         return e
     }
 
@@ -51,16 +66,27 @@ public final class CallXPCHandler: XPCMessageHandler {
 
     func run(_ request: CallRequest) async throws -> Data {
         switch request {
-        case .create(let trials):
-            guard endpoints.withLock({ $0.count }) < Self.maxEndpoints else { throw CallServiceError.tooManyEndpoints }
-            let id = next.add(1, ordering: .relaxed).oldValue
-            let made: NativeEndpoint? = try await on(commands) { NativeEndpoint(fieldTrials: trials) }
-            guard let made else { throw RingRTCError.noEndpoint }
-            endpoints.withLock { $0[id] = made }
-            return try Wire.encode(id)
+        case .create(let trials), .createSwiftVoice(let trials):
+            let generation = session.withLock { $0.generation }
+            return try await on(commands) { [self] in
+                try session.withLock {
+                    guard $0.generation == generation else { throw CallServiceError.unknownEndpoint }
+                    guard $0.endpoints.count < Self.maxEndpoints else { throw CallServiceError.tooManyEndpoints }
+                }
+                let made = try makeEndpoint(trials)
+                let id = next.add(1, ordering: .relaxed).oldValue
+                let registered = session.withLock {
+                    guard $0.generation == generation else { return false }
+                    $0.endpoints[id] = made
+                    return true
+                }
+                guard registered else { made.close(); throw CallServiceError.unknownEndpoint }
+                return try Wire.encode(id)
+            }
         case .destroy(let id):
-            let gone = endpoints.withLock { $0.removeValue(forKey: id) }
-            // Released on the command queue, after any command already queued for it.
+            let gone = session.withLock { $0.endpoints.removeValue(forKey: id) }
+            // A blocked event wait can still own this endpoint. Stop its devices explicitly.
+            gone?.close()
             commands.async { withExtendedLifetime(gone) {} }
             return try Wire.encode(gone != nil)
         case .command(let id, let json):
@@ -71,9 +97,11 @@ public final class CallXPCHandler: XPCMessageHandler {
         case .waitEvents(let id, let ms):
             guard (0...CallXPCLimits.maxWaitMs).contains(ms) else { throw CallServiceError.badRequest }
             let e = try endpoint(id)
-            var out = try await on(events) { e.waitEventsJSON(timeoutMs: UInt32(ms)) }
-            // Larger batches than the app reads are dropped rather than sent (log floods).
-            if out.count > CallXPCLimits.maxEventsReply - 64 { out = Array("[]".utf8) }
+            let out = try await on(events) { e.waitEventsJSON(timeoutMs: UInt32(ms)) }
+            guard e.isLive, out.count <= CallXPCLimits.maxEventsReply - 64 else {
+                e.close()
+                throw CallServiceError.unknownEndpoint
+            }
             return try Wire.encode(Data(out))
         case .sendFrame(let id, let width, let height, let format, let data):
             let e = try endpoint(id)
@@ -92,14 +120,17 @@ public final class CallXPCHandler: XPCMessageHandler {
 
     /// The new frame of each wanted stream, while the reply stays within its limit (the rest
     /// come on the next request).
-    static func frames(_ e: NativeEndpoint, _ wants: [FrameWant]) -> [ReceivedFrame] {
+    static func frames(_ e: any LocalCallEndpoint, _ wants: [FrameWant]) -> [ReceivedFrame] {
         var out: [ReceivedFrame] = [], total = 0
         for w in wants {
             let size = w.maxWidth * w.maxHeight * 4
             guard total + size + 64 <= CallXPCLimits.maxFramesReply else { break }
             var buffer = [UInt8](repeating: 0, count: size)
             guard let f = e.receiveVideoFrame(demuxId: w.demuxId, maxWidth: w.maxWidth, maxHeight: w.maxHeight, into: &buffer, generation: nil) else { continue }
+            guard min(f.width, f.height) > 0, min(f.width, f.height) <= min(w.maxWidth, w.maxHeight),
+                  max(f.width, f.height) <= max(w.maxWidth, w.maxHeight) else { continue }
             let n = f.width * f.height * 4
+            guard n <= buffer.count else { continue }
             out.append(ReceivedFrame(demuxId: w.demuxId, width: f.width, height: f.height, rgba: Data(buffer[0..<n])))
             total += n + 64
         }

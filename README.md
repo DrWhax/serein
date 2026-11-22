@@ -4,7 +4,7 @@
 
 A native Signal client for macOS. Built with SwiftUI, with every image and video format decoded in Swift inside a sandbox, and a focus on security.
 
-The bits currently that's left memory unsafe is upstream's RingRTC, while it's in Rust, its a wrapper aorund WebRTC which is written in C++.
+Serein uses its strict Swift calling engine for voice, video, group calls and call links. Open the app normally to use it. Native RingRTC is a separately built reference peer for interoperability tests. [Implementation and interoperability tests](docs/swift-calling-plan.md#implementation-status)
 
 > [!WARNING]
 > **Serein is experimental software.** Do not rely on it for strong cryptography or security yet. No one has formally verified that its crypto code is implemented safely.
@@ -22,20 +22,21 @@ Serein is not affiliated with or endorsed by Signal Messenger LLC.
   - video and audio: MP4, H.264, HEVC, AAC and MP3;
   - HEIC photos you send are converted to JPEG first, as Signal Desktop does.
 - **Untrusted data stays out of the app.** Media, web pages and Giphy's API responses are handled by separate sandboxed XPC services, never by the app. Voice notes are encoded in a service of their own. See [Isolation](#isolation).
-- **Signal's libraries for the protocol.** The protocol, networking and calling come from Signal's own Rust libraries ([libsignal](https://github.com/signalapp/libsignal) and [RingRTC](https://github.com/signalapp/ringrtc)). Serein does not reimplement them.
+- **Signal’s messaging protocol.** Serein uses libsignal for messaging and networking. [libsignal](https://github.com/signalapp/libsignal)
 
 ## Isolation
 
-Serein runs as six processes. Each one runs under App Sandbox and the hardened runtime, and has its own Seatbelt profile in `Packages/SignalMediaService/Sandbox`. The profile's rules are added to the sandbox through the process's entitlements.
+Serein splits work between the app and sandboxed services. Each runs under App Sandbox and the hardened runtime, and has its own Seatbelt profile in `Packages/SignalMediaService/Sandbox`. The profile's rules are added to the sandbox through the process's entitlements.
 
 | Process | What it does | What it can reach |
 |---|---|---|
-| `Serein.app` | Interface, keys, database, Signal protocol, calls | Its own container, the network, camera, microphone, files you pick, its crash reports (read-only). It cannot start programs or send Apple events. |
+| `Serein.app` | Interface, keys, database, Signal protocol, call signaling and UI | Its own container, the network, camera, files you pick, its crash reports (read-only). It cannot start programs or send Apple events. |
+| `SignalCalling.xpc` | Runs the Swift calling engine, including call transport, codecs and audio | Outgoing network and microphone access under the calling sandbox profile. |
 | `SignalMediaDecoder.xpc` | Decodes received images, audio and video, converts HEIC | Nothing: no files, network, preferences, devices or Mach services (except the system's code-signing helper, which the peer checks need). |
 | `SignalLinkPreviewFetcher.xpc` | Fetches link-preview pages and images | HTTPS to public internet addresses only: not this machine, not your local network. No files, no writes. |
 | `SignalLinkPreviewParser.xpc` | Parses the fetched HTML | Nothing, like the decoder. It accepts HTML only from the fetcher. |
 | `SignalGifSearch.xpc` | Searches Giphy through Signal's content proxy and parses the replies | HTTPS to the web. Not this machine, not your files, no writes. |
-| `SignalVoiceNoteEncoder.xpc` | Encodes the voice notes you record to MP3 | Nothing, like the decoder. It links no decoder of received data. |
+| `SignalVoiceNoteEncoder.xpc` | Records voice notes and encodes them to MP3 | Microphone and audio system access under the voice-note sandbox profile. |
 
 **Link previews.** The app never fetches or parses a web page:
 
@@ -75,13 +76,13 @@ Pages are fetched directly from the site, as Signal Desktop does. Unlike Signal 
 - Every package and the app are compiled with Swift's strict memory safety checking (`-strict-memory-safety`), with its warnings treated as errors.
 - The codec libraries contain no `unsafe` code. `Tools/lint-codecs.sh` enforces this, along with their ban on Foundation and on Apple's media frameworks.
 
-**Not isolated yet.** Calls (RingRTC) still run in the app process. The app also records the microphone for voice notes itself and hands the samples to the encoder.
+**Calling.** The app sends commands, signaling and video frames over XPC. Each call’s network transport and media engine run inside the calling service. [Service boundary](Packages/SignalRingRTC/Sources/CallXPC)
 
 ## Requirements
 
 - macOS 27 on Apple silicon
 - Xcode 27 (Swift 6.4)
-- A Rust toolchain, to build libsignal and RingRTC
+- A Rust toolchain to build libsignal
 
 ## Building
 
@@ -90,7 +91,7 @@ SIGNALSAFE_SIGN_IDENTITY=<codesign identity> Tools/build-app.sh
 open App/SignalSafe/.build/Serein.app
 ```
 
-`build-app.sh` handles submodule initialisation, vendor patches, and the Rust builds (libsignal FFI and RingRTC) automatically. On each run it checks for new upstream releases of libsignal and ringrtc and prompts to bump; in non-interactive environments (CI) the check is skipped.
+`build-app.sh` initializes the libsignal and GRDB submodules, applies vendor patches and builds the libsignal FFI. Interactive builds check for new libsignal releases. The build verifies the signed bundle and checks the calling service’s linker map for native WebRTC and RingRTC.
 
 After “Delete all data”, Serein launches a fresh instance and shuts down the old one. Quit requests allow asynchronous client cleanup to finish before terminating, including when the request comes from the delete-and-relaunch task.
 
@@ -100,16 +101,17 @@ The submodules point at the upstream projects, unchanged. Serein's changes to th
 |---|---|
 | `grdb-sqlcipher.patch` | Builds GRDB against SQLCipher (the encrypted database), as GRDB's own instructions describe |
 | `libsignal-aes-cbc.patch` | Exposes libsignal's AES-256-CBC to Swift, so attachment encryption needs no CommonCrypto pointer code |
+| `libsignal-call-link-endorsements.patch` | Exposes libsignal’s existing call-link endorsement operations to SignalCore for sealed signaling to admitted participants |
 | `libsignal-media.patch` | Builds libsignal's media sanitizers (WebP, MP4) and their Swift API, used on outgoing stickers and media |
 | `libsignal-local-test-server.patch` | Lets the integration tests connect libsignal-net to the local mock server (tests only) |
 
-RingRTC is used unpatched. Serein's own C interface over it is `Packages/SignalRingRTC/rust`, built against the prebuilt WebRTC that `fetch-artifact` downloads and checks against RingRTC's published checksum. `build-app.sh` copies the resulting `libsignal_ringrtc.dylib` and SQLCipher into `Serein.app/Contents/Frameworks` and signs them with the app.
+For interoperability tests, `Tools/build-ringrtc-ffi.sh` builds the native reference library using Serein’s C interface and Signal’s pinned WebRTC artifact. The optional test peer has its own package in `Packages/SignalCallingInterop`. SQLCipher ships in the app’s Frameworks directory. [Calling QA](QA.md)
 
 After changing a patched file under `vendor/`, regenerate its patch (`git -C vendor/libsignal diff`, minus the other patches' changes), because changes to a submodule's files are not part of Serein's own commits.
 
 The first launch of a sandboxed build moves your existing data into the app's container. The data moved is the databases and attachments in `~/Library/Application Support/signal-safe` (and `signal-safe-staging`) plus the preferences file. They end up in `~/Library/Containers/org.signalsafe.SignalSafe`. The database key stays in your login keychain. Older, unsandboxed builds will not find the data afterwards.
 
-Screen sharing in calls uses ScreenCaptureKit. macOS asks for Screen Recording permission the first time you share; App Sandbox has no entitlement for it.
+Choose **Share screen** during a call and select what to share. Without global Screen Recording permission, Serein opens the macOS picker, which grants access to the screen, window, or app you select. If Serein already has Screen Recording permission, it shows its own list of screens and windows.
 
 Ending a call releases the camera, the microphone and screen capture, however the call ends: you hang up, close the lobby, the other side hangs up (including the hang-up that leaves the "needs permission" screen up), or the call fails. Setting up a call, starting the camera and starting a screen share all have to wait, for the database, credentials, a permission prompt or the device itself. Each step checks once its wait is over that the call it belongs to is still current, so a hang-up during setup always wins. A call the app is not showing is ended instead of left running. The tests suspend each of these waits, hang up, then let them finish and check that nothing started.
 
@@ -157,7 +159,7 @@ The link preview and Giphy search need network access.
 | `Packages/SignalText` | Link detection and the link-preview URL rules, shared by the app and the fetcher |
 | `Packages/SignalUI` | The SwiftUI interface |
 | `Packages/SignalI18n` | ICU MessageFormat runtime and the translated strings |
-| `Packages/SignalRingRTC` | C ABI and Swift wrapper over RingRTC |
+| `Packages/SignalRingRTC` | Swift calling API and engine, sandboxed XPC service, and native reference bridge for tests |
 | `Tools` | Build scripts, generators, lint and the sandbox check |
 | `Signal-Desktop` | The upstream client, used as a read-only reference |
 

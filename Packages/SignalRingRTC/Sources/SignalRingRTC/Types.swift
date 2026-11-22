@@ -36,11 +36,59 @@ public struct PeekInfo: Sendable, Equatable {
     public var deviceCountExcludingPendingDevices: Int = 0
     public var pendingUsers: [GroupCallUserId] = []
     public var callLinkState: CallLinkState?
+    private var opaqueDevices: [String?] = []
+    private var opaqueCreator: String?
+    private var opaquePending: [String] = []
+
+    static func ciphertext(_ opaque: String) -> Data? {
+        guard (2...512).contains(opaque.utf8.count), opaque.utf8.count.isMultiple(of: 2) else { return nil }
+        var raw = Data()
+        var high: UInt8?
+        for char in opaque.utf8 {
+            let digit: UInt8
+            switch char {
+            case 48...57: digit = char - 48
+            case 65...70: digit = char - 55
+            case 97...102: digit = char - 87
+            default: return nil
+            }
+            if let h = high { raw.append(h << 4 | digit); high = nil } else { high = digit }
+        }
+        return raw
+    }
+
+    /// The application owns the zkgroup credentials. Use the key of the original
+    /// request to resolve encrypted identities returned by a call-link SFU.
+    mutating func resolveMembers(_ decrypt: (Data) -> Data?) {
+        var cache: [String: Data] = [:]
+        var rejected = Set<String>()
+        func resolve(_ opaque: String?) -> Data? {
+            guard let opaque else { return nil }
+            if let known = cache[opaque] { return known }
+            guard !rejected.contains(opaque), let raw = Self.ciphertext(opaque), let aci = decrypt(raw) else { rejected.insert(opaque); return nil }
+            cache[opaque] = aci
+            return aci
+        }
+        for i in opaqueDevices.indices where devices[i].userId == nil { devices[i].userId = resolve(opaqueDevices[i]) }
+        if creator == nil { creator = resolve(opaqueCreator) }
+        var seen = Set(pendingUsers)
+        for opaque in opaquePending {
+            if let aci = resolve(opaque), seen.insert(aci).inserted { pendingUsers.append(aci) }
+        }
+        opaqueDevices = []
+        opaquePending = []
+        opaqueCreator = nil
+    }
 
     public init() {}
 
     init(_ j: JSONValue) {
         devices = j["devices"].array.map { PeekDeviceInfo(demuxId: UInt32(clamping: $0["demuxId"].int ?? 0), userId: $0["userId"].data) }
+        if j["devices"].array.contains(where: { $0["opaqueUserId"].string != nil }) {
+            opaqueDevices = j["devices"].array.map { $0["opaqueUserId"].string }
+        }
+        opaqueCreator = j["opaqueCreator"].string
+        opaquePending = j["opaquePending"].array.compactMap(\.string)
         creator = j["creator"].data
         eraId = j["eraId"].string
         maxDevices = j["maxDevices"].int

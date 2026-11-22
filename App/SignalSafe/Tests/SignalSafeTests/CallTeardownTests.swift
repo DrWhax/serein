@@ -1,6 +1,7 @@
 // Every way a call ends releases its media, including the remote hang-up that leaves the
 // "needs permission" screen up, and a camera start still waiting on permission loses to it.
 
+import ScreenCaptureKit
 import SignalCore
 import SignalRingRTC
 import SignalUI
@@ -8,6 +9,35 @@ import Testing
 @testable import SignalSafe
 
 @MainActor @Suite struct CallTeardownTests {
+    @Test(arguments: [false, true])
+    func scopedPickerCancellationAndLateSelection(hangUpWhilePicking: Bool) async {
+        let rig = CallRig(cfg: [0, 0, 0, 0])
+        let session = rig.session
+        session.activeCall = .init(conversationId: "c1", isGroup: false, stage: .inCall, directState: .accepted)
+        session.screenShareBackend.isGranted = { false }
+        session.screenShareBackend.sources = { _ in
+            Issue.record("A scoped share must not enumerate other windows")
+            return []
+        }
+        var pickerOpened = false
+        session.screenShareBackend.pickFilter = { [unowned session] _ in
+            pickerOpened = true
+            if hangUpWhilePicking {
+                session.endCallUI()
+                return SCContentFilter()
+            }
+            return nil
+        }
+        session.togglePresenting()
+        await rig.jobs.run(0)
+        #expect(pickerOpened)
+        #expect(session.screenCapture == nil)
+        #expect(session.callLinkModal == nil)
+        #expect((session.activeCall == nil) == hangUpWhilePicking)
+        #expect(!rig.jobs.entries.contains { $0.code == "present" })
+        await rig.finish()
+    }
+
     /// A session in a video call whose camera is a stand-in that counts starts and stops; its
     /// permission prompt waits for the test when `holdPrompt` is set.
     @MainActor final class Rig {

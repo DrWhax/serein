@@ -27,7 +27,7 @@ let package = Package(
                 // The client of SignalMessageParser.xpc (decrypted messages are parsed there).
                 .product(name: "MessageParsing", package: "SignalCore"),
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
-                // ringrtc's endpoint in SignalCalling.xpc (never RingRTCNative: the app does not load ringrtc).
+                // The Swift calling engine runs in SignalCalling.xpc.
                 .product(name: "CallXPC", package: "SignalRingRTC"),
                 .product(name: "MediaXPCInterface", package: "SignalMediaService"),
                 .product(name: "SignalText", package: "SignalText"),

@@ -58,6 +58,7 @@ public struct CallingConfig: Sendable {
 }
 
 public enum CallingError: Error, Equatable {
+    case missingSFUURL
     case noConversation
     case notAGroup
     case noRecipient
@@ -98,6 +99,7 @@ public final class CallingService {
     var callsLookup: [String: ActiveCall] = [:]
     /// GroupCall keeps its observer weakly.
     var observers: [String: GroupObserver] = [:]
+    var localCallLinkTestPeer: LocalCallLinkTestPeer?
     var iceServersCache: (servers: [IceServer], expires: Date)?
     var adhocProfileKeysSent = Set<String>()
     /// Upstream `#cameraEnabled`: whether the camera should send once a call is accepted.
@@ -134,6 +136,8 @@ public final class CallingService {
         wire()
     }
 
+    isolated deinit { localCallLinkTestPeer?.stop(.ended) }
+
     /// Registers the "call link refresh" job; call before `jobs.start()`.
     public func register() async {
         await messenger.jobs.register(CallLinkRefreshJob.queueType, handler: { [weak self] job in
@@ -143,7 +147,16 @@ public final class CallingService {
         })
     }
 
-    func emit(_ e: CallingEvent) { onEvent?(e) }
+    func emit(_ e: CallingEvent) {
+        if let peer = localCallLinkTestPeer {
+            switch e {
+            case .groupCallChanged(let room, _) where room == peer.roomId: peer.update()
+            case .groupCallEnded(let room, _) where room == peer.roomId: peer.stop(.ended)
+            default: break
+            }
+        }
+        onEvent?(e)
+    }
 
     // MARK: wiring
 
@@ -161,6 +174,7 @@ public final class CallingService {
         }
         rtc.handleSendCallMessage = { [weak self] recipient, data, urgency in
             guard let self, let userId = Self.uuidString(recipient) else { return }
+            if self.localCallLinkTestPeer?.handlePrimaryKey(recipient: recipient, message: data) == true { return }
             Task { @MainActor in
                 _ = await self.handleOutgoingSignaling(userId, CallingMessage(opaque: OpaqueMessage(data: data)), urgency: urgency)
             }
@@ -372,9 +386,15 @@ public final class CallingService {
     /// (stricter than upstream: ringrtc runs in the calling service, which must not use the app
     /// to reach anything else).
     func handleSendHttpRequest(requestId: UInt32, url: String, method: HttpMethod, headers: [String: String], body: Data?) {
+        forwardSFURequest(to: rtc, requestId: requestId, url: url, method: method, headers: headers, body: body)
+    }
+
+    @discardableResult
+    func forwardSFURequest(to target: RingRTC, requestId: UInt32, url: String, method: HttpMethod, headers: [String: String], body: Data?,
+                           finished: @escaping @MainActor () -> Void = {}) -> Task<Void, Never>? {
         guard let u = URL(string: url), Self.isSFU(u, config.sfuURL) else {
-            rtc.httpRequestFailed(requestId: requestId, debugInfo: "bad url")
-            return
+            target.httpRequestFailed(requestId: requestId, debugInfo: "bad url")
+            return nil
         }
         let name = switch method {
         case .get: "GET"
@@ -383,14 +403,16 @@ public final class CallingService {
         case .delete: "DELETE"
         }
         let http = self.http
-        Task { @MainActor in
+        return Task { @MainActor [weak target] in
+            defer { finished() }
             do {
+                try Task.checkCancellation()
                 let r = try await http.send(name, u, body: body, headers: headers)
-                self.rtc.receivedHttpResponse(requestId: requestId, status: r.status, body: r.body)
+                target?.receivedHttpResponse(requestId: requestId, status: r.status, body: r.body)
             } catch HTTPError.status(let code, _) {
-                self.rtc.receivedHttpResponse(requestId: requestId, status: code, body: Data())
+                target?.receivedHttpResponse(requestId: requestId, status: code, body: Data())
             } catch {
-                self.rtc.httpRequestFailed(requestId: requestId, debugInfo: "\(error)")
+                target?.httpRequestFailed(requestId: requestId, debugInfo: "\(error)")
             }
         }
     }
@@ -584,16 +606,14 @@ public final class CallingService {
         setupGeneration &+= 1
         isPresenting = false
         onCameraNeeded?(false)
-        for call in callsLookup.values {
+        for (id, call) in callsLookup {
             switch call {
             case .direct(let c):
                 c.setOutgoingAudioMuted(true)
                 c.setOutgoingVideoMuted(true)
                 if !(excludeRinging && c.state == .ringing && c.isIncoming) { rtc.hangup(c.callId) }
             case .group(let g):
-                g.setOutgoingAudioMuted(true)
-                g.setOutgoingVideoMuted(true)
-                g.disconnect()
+                observers[id]?.disconnect(g)
             }
         }
         rtc.stopMicrophoneWarmup()
@@ -608,10 +628,7 @@ public final class CallingService {
             c.setOutgoingVideoMuted(true)
             rtc.hangup(c.callId)
         case .group(let g)?:
-            g.setOutgoingAudioMuted(true)
-            g.setOutgoingVideoMuted(true)
-            g.disconnect()
-            rtc.stopMicrophoneWarmup()
+            observers[conversationId]?.disconnect(g)
         case .direct?, nil: break
         }
     }

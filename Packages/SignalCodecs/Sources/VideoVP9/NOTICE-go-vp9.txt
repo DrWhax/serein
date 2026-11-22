@@ -1,0 +1,14 @@
+go-vp9 — pure-Go VP9 video decoder.
+
+This is an original Go implementation of the VP9 decoding process, written from
+the public VP9 Bitstream & Decoding Process Specification (Google / WebM Project,
+v0.6) and informed for cross-checking by the BSD-3-Clause reference decoder
+libvpx (https://chromium.googlesource.com/webm/libvpx, © The WebM Project authors).
+
+VP9 is an open, royalty-free codec (royalty-free patent grant by Google). No
+proprietary source or disassembly was used.
+
+Reference material:
+  - VP9 Bitstream & Decoding Process Specification (public, WebM Project).
+  - libvpx (BSD-3-Clause) — used only as a behavioural reference for bit-exact
+    cross-checking of intermediate values, not copied.

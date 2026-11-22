@@ -65,7 +65,11 @@ extension CallingService {
     public func peekCallLinkCall(roomId: String, rootKey: CallLinkRootKey) async throws -> PeekInfo {
         if let p = groupCall(for: roomId)?.peekInfo { return p }
         let presentation = try await credentials.callLinkAuthPresentation(rootKey: rootKey.bytes)
-        switch await rtc.peekCallLinkCall(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation, rootKey: rootKey) {
+        let params = CallLinkSecretParams.deriveFromRootKey(rootKey.bytes)
+        let result = await rtc.peekCallLinkCall(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation, rootKey: rootKey) { encrypted in
+            try? Data(params.decrypt(UuidCiphertext(contents: encrypted)).serviceIdBinary)
+        }
+        switch result {
         case .success(let p): return p
         case .failure(let code): throw CallingError.callLinkRequestFailed(status: code)
         }
@@ -75,14 +79,22 @@ extension CallingService {
 
     var svcConfig: GroupCallSvcConfig? { config.groupSvc }
 
+    /// A same-room retry must wait for RingRTC to release the previous native client.
+    private func existingGroupCall(_ id: String, generation: UInt64) async throws -> GroupCall? {
+        if groupCall(for: id) == nil, let closing = observers[id] {
+            try await closing.waitUntilEnded()
+            try await checkSetup(generation, "group.disconnect")
+        }
+        let existing = groupCall(for: id)
+        if existing?.localDeviceState.connectionState == .notConnected { existing?.connect() }
+        return existing
+    }
+
     /// `connectGroupCall` (idempotent).
     @discardableResult
     public func connectGroupCall(conversationId: String) async throws -> GroupCall {
-        if let existing = groupCall(for: conversationId) {
-            if existing.localDeviceState.connectionState == .notConnected { existing.connect() }
-            return existing
-        }
         let generation = setupGeneration
+        if let existing = try await existingGroupCall(conversationId, generation: generation) { return existing }
         let info = try await groupInfo(conversationId: conversationId)
         try await checkSetup(generation, "group.info")
         let observer = GroupObserver(service: self, conversationId: conversationId, mode: .group, keys: info.keys)
@@ -112,19 +124,35 @@ extension CallingService {
     /// `connectCallLinkCall`
     @discardableResult
     public func connectCallLinkCall(roomId: String, rootKey: CallLinkRootKey, adminPasskey: Data?) async throws -> GroupCall {
-        if let existing = groupCall(for: roomId) {
-            if existing.localDeviceState.connectionState == .notConnected { existing.connect() }
-            return existing
-        }
         let generation = setupGeneration
+        if let existing = try await existingGroupCall(roomId, generation: generation) { return existing }
         let presentation = try await credentials.callLinkAuthPresentation(rootKey: rootKey.bytes)
         try await checkSetup(generation, "callLink.credentials")
-        let endorsementKey = try credentials.serverParams().endorsementPublicKey
+        let server = try credentials.serverParams()
+        let endorsementKey = server.endorsementPublicKey
         let observer = GroupObserver(service: self, conversationId: roomId, mode: .adhoc, keys: nil)
+        let params = CallLinkSecretParams.deriveFromRootKey(rootKey.bytes)
         guard let call = rtc.getCallLinkCall(sfuUrl: config.sfuURL.absoluteString, endorsementPublicKey: endorsementKey,
                                              authCredentialPresentation: presentation, rootKey: rootKey, adminPasskey: adminPasskey, hkdfExtraInfo: Data(),
                                              audioLevelsIntervalMillis: Self.audioLevelIntervalMillis, dredDuration: config.dredDuration,
-                                             svcConfig: svcConfig, observer: observer) else { throw CallingError.noConversation }
+                                             svcConfig: svcConfig, observer: observer, scopedLinkSignaling: true, resolveMember: { encrypted in
+                                                 try? Data(params.decrypt(UuidCiphertext(contents: encrypted)).serviceIdBinary)
+                                             }) else { throw CallingError.noConversation }
+        observer.endorsements = CallLinkEndorsements(params: params, server: server)
+        call.receiveLinkEndorsements = { [weak observer] response, members in
+            if response == nil && members.isEmpty { observer?.endorsements?.clear() }
+            else { observer?.endorsements?.receive(response, members: members) }
+        }
+        call.linkEndorsements = { [weak observer] in observer?.endorsements?.endorsements(for: $0) }
+        call.sendLinkMessage = { [weak observer, weak call] data, urgency, recipients, proofs, expiration in
+            guard let observer, let call, let scope = call.callLinkAuthorization(for: recipients) else { return }
+            // Capture the original join generation before scheduling any work.
+            let scopes = recipients.map { call.callLinkAuthorization(for: [$0]) }
+            Task {
+                await observer.sendCallLinkMessage(data, urgency: urgency, recipients: recipients, proofs: proofs,
+                                                   expiration: expiration, scope: scope, individualScopes: scopes)
+            }
+        }
         observers[roomId] = observer
         callsLookup[roomId] = .group(call)
         call.connect()
@@ -328,9 +356,10 @@ extension CallingService {
         try await database.pool.write { db in
             try CallLinkStore.insert(db, record)
             try CallHistoryStore.save(db, CallLinkStore.placeholderHistory(roomId: record.roomId, now: now))
+            try CallLinkUpdateSyncJob.insert(db, link: record, now: now)
         }
+        messenger.jobs.poke()
         emit(.historyChanged)
-        await sendCallLinkUpdateSync(record)
         return record
     }
 
@@ -340,13 +369,15 @@ extension CallingService {
         return (key, admin, try await credentials.callLinkAuthPresentation(rootKey: link.rootKey))
     }
 
-    func saveState(_ result: HttpResult<CallLinkState>, roomId: String) async throws -> CallLinkState {
+    func saveState(_ result: HttpResult<CallLinkState>, link: CallLinkRecord) async throws -> CallLinkState {
         switch result {
         case .success(let s):
             try await database.pool.write { db in
-                try CallLinkStore.updateState(db, roomId: roomId, name: s.name, restrictions: s.restrictions.rawValue, revoked: s.revoked,
+                try CallLinkStore.updateState(db, roomId: link.roomId, name: s.name, restrictions: s.restrictions.rawValue, revoked: s.revoked,
                                               expiration: Int64(s.expiration.timeIntervalSince1970 * 1000))
+                try CallLinkUpdateSyncJob.insert(db, link: link, now: MessageStore.now())
             }
+            messenger.jobs.poke()
             emit(.historyChanged)
             return s
         case .failure(let code): throw CallingError.callLinkRequestFailed(status: code)
@@ -356,20 +387,15 @@ extension CallingService {
     /// `updateCallLinkName`
     public func updateCallLinkName(_ link: CallLinkRecord, name: String) async throws -> CallLinkState {
         let (key, admin, presentation) = try await adminContext(link)
-        let s = try await saveState(await rtc.updateCallLinkName(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation,
-                                                                 linkRootKey: key, adminPasskey: admin, newName: name), roomId: link.roomId)
-        await sendCallLinkUpdateSync(link)
-        return s
+        return try await saveState(await rtc.updateCallLinkName(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation,
+                                                                 linkRootKey: key, adminPasskey: admin, newName: name), link: link)
     }
 
     /// `updateCallLinkRestrictions`
     public func updateCallLinkRestrictions(_ link: CallLinkRecord, restrictions: CallLinkRestrictions) async throws -> CallLinkState {
         let (key, admin, presentation) = try await adminContext(link)
-        let s = try await saveState(await rtc.updateCallLinkRestrictions(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation,
-                                                                         linkRootKey: key, adminPasskey: admin, restrictions: restrictions),
-                                    roomId: link.roomId)
-        await sendCallLinkUpdateSync(link)
-        return s
+        return try await saveState(await rtc.updateCallLinkRestrictions(sfuUrl: config.sfuURL.absoluteString, authCredentialPresentation: presentation,
+                                                                         linkRootKey: key, adminPasskey: admin, restrictions: restrictions), link: link)
     }
 
     /// `deleteCallLink` (on the SFU; 404 = already gone), then the local tombstone.
@@ -395,17 +421,6 @@ extension CallingService {
         case .failure(404): return nil
         case .failure(let code): throw CallingError.callLinkRequestFailed(status: code)
         }
-    }
-
-    /// `sendCallLinkUpdateSync`
-    func sendCallLinkUpdateSync(_ link: CallLinkRecord) async {
-        var update = Signalservice_SyncMessage.CallLinkUpdate()
-        update.type = .update
-        update.rootKey = link.rootKey
-        if let admin = link.adminKey { update.adminPasskey = admin }
-        var sync = Messenger.syncMessage()
-        sync.callLinkUpdate = update
-        try? await messenger.sendToSelf(sync, timestamp: UInt64(MessageStore.now()), urgent: false, messageIds: [])
     }
 
     /// The "call link refresh" job (callLinkRefreshJobQueue.run): the SFU's state for a link
@@ -459,6 +474,30 @@ final class GroupObserver: GroupCallObserver {
     let keys: GroupKeys?
     var updateMessageState = UpdateMessageState.sentNothing
     var requestingProof = false
+    private var disconnectWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private let linkDistributionId = UUID()
+    var endorsements: CallLinkEndorsements?
+
+    func sendCallLinkMessage(_ data: Data, urgency: CallMessageUrgency, recipients: [Data], proofs: [Data], expiration: Date?,
+                             scope: @escaping @Sendable () throws -> Void, individualScopes: [(@Sendable () throws -> Void)?]) async {
+        guard mode == .adhoc, let service else { return }
+        let ids = recipients.compactMap(CallingService.uuidString)
+        guard ids.count == recipients.count, !ids.contains(service.account.aci), individualScopes.count == ids.count else { return }
+        var content = Signalservice_Content()
+        content.callMessage = CallingService.proto(CallingMessage(opaque: OpaqueMessage(data: data)), urgency: urgency)
+        let payload = OutgoingPayload(content: content, timestamp: UInt64(MessageStore.now()), contentHint: .default, urgent: urgency == .handleImmediately)
+        var pending = Set(ids)
+        if proofs.count == ids.count, let expiration, let token = try? endorsements?.token(for: proofs, expiration: expiration) {
+            do {
+                pending = try await service.messenger.groupSender.sendCallLink(payload, recipients: ids, token: token, expiration: expiration,
+                                                                              distributionId: linkDistributionId, scope: scope)
+            } catch {}
+        }
+        for (id, check) in zip(ids, individualScopes) where pending.contains(id) {
+            guard let check else { continue }
+            _ = try? await service.messenger.sender.send(payload, to: id, logged: false, scope: check)
+        }
+    }
 
     init(service: CallingService, conversationId: String, mode: CallMode, keys: GroupKeys?) {
         self.service = service
@@ -532,33 +571,20 @@ final class GroupObserver: GroupCallObserver {
     }
 
     func onLocalDeviceStateChanged(_ groupCall: GroupCall) {
-        guard let service else { return }
+        guard let service, service.groupCall(for: conversationId) === groupCall else { return }
         let local = groupCall.localDeviceState
-        let era = groupCall.peekInfo?.eraId
         updateHistory(groupCall, onPeek: false)
-        if local.connectionState == .notConnected {
-            service.onCameraNeeded?(false)
-            service.rtc.stopMicrophoneWarmup()
-            service.callsLookup[conversationId] = nil
-            service.observers[conversationId] = nil
-            if service.callsLookup.isEmpty { service.isPresenting = false }
-            if updateMessageState == .sentJoin, let era {
-                updateMessageState = .sentLeft
-                if mode == .group {
-                    let id = conversationId
-                    Task { @MainActor in await service.sendGroupCallUpdate(conversationId: id, eraId: era) }
-                }
-            }
-        } else {
-            service.callsLookup[conversationId] = .group(groupCall)
+        // The mute setters notify synchronously, often before the connecting event arrives.
+        // Keep ownership of this client through all local state changes until onEnded.
+        if local.connectionState != .notConnected {
             if !local.sharingScreen { service.onCameraNeeded?(!local.videoMuted) }
-            if updateMessageState == .sentNothing, local.joinState == .joined, let era { joined(groupCall, eraId: era) }
+            if updateMessageState == .sentNothing, local.joinState == .joined, let era = groupCall.peekInfo?.eraId { joined(groupCall, eraId: era) }
         }
         service.emit(.groupCallChanged(conversationId: conversationId, mode: mode))
     }
 
     func onRemoteDeviceStatesChanged(_ groupCall: GroupCall) {
-        guard let service else { return }
+        guard let service, service.groupCall(for: conversationId) === groupCall else { return }
         service.emit(.groupCallChanged(conversationId: conversationId, mode: mode))
         if mode == .adhoc {
             let peek = groupCall.peekInfo
@@ -576,6 +602,7 @@ final class GroupObserver: GroupCallObserver {
     }
 
     func onPeekChanged(_ groupCall: GroupCall) {
+        guard service?.groupCall(for: conversationId) === groupCall else { return }
         let local = groupCall.localDeviceState
         if updateMessageState == .sentNothing, local.connectionState != .notConnected, local.joinState == .joined, let era = groupCall.peekInfo?.eraId {
             joined(groupCall, eraId: era)
@@ -584,8 +611,45 @@ final class GroupObserver: GroupCallObserver {
         service?.emit(.groupCallChanged(conversationId: conversationId, mode: mode))
     }
 
+    func waitUntilEnded() async throws {
+        guard service?.observers[conversationId] === self else { return }
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        disconnectWaiters[id] = continuation
+        defer { disconnectWaiters[id] = nil }
+        for await _ in stream {}
+        try Task.checkCancellation()
+    }
+
+    /// Retire the local call immediately. Keep its observer until RingRTC has deleted it.
+    func disconnect(_ groupCall: GroupCall) {
+        finish(groupCall, reason: .deviceExplicitlyDisconnected)
+        groupCall.setOutgoingAudioMuted(true)
+        groupCall.setOutgoingVideoMuted(true)
+        groupCall.disconnect()
+    }
+
     func onEnded(_ groupCall: GroupCall, reason: CallEndReason, summary: CallSummary) {
-        service?.emit(.groupCallEnded(conversationId: conversationId, reason: reason))
+        if service?.observers[conversationId] === self { service?.observers[conversationId] = nil }
+        for waiter in disconnectWaiters.values { waiter.finish() }
+        disconnectWaiters.removeAll()
+        finish(groupCall, reason: reason)
+    }
+
+    private func finish(_ groupCall: GroupCall, reason: CallEndReason) {
+        guard let service, service.groupCall(for: conversationId) === groupCall else { return }
+        service.callsLookup[conversationId] = nil
+        if service.callsLookup.isEmpty {
+            service.isPresenting = false
+            service.onCameraNeeded?(false)
+            service.rtc.stopMicrophoneWarmup()
+        }
+        if mode == .group, updateMessageState == .sentJoin, let era = groupCall.peekInfo?.eraId {
+            updateMessageState = .sentLeft
+            let id = conversationId
+            Task { await service.sendGroupCallUpdate(conversationId: id, eraId: era) }
+        }
+        service.emit(.groupCallEnded(conversationId: conversationId, reason: reason))
     }
 
     func onSpeechEvent(_ groupCall: GroupCall, event: SpeechEvent) { service?.emit(.suggestLowerHand(event == .lowerHandSuggestion)) }

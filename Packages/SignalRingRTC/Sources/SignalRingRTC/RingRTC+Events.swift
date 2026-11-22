@@ -2,6 +2,7 @@
 // each JSON event from the endpoint, dispatched like Service.ts.
 
 import Foundation
+import CallingWire
 
 extension RingRTC {
     func process(_ batch: [JSONValue]) {
@@ -68,27 +69,40 @@ extension RingRTC {
             if case .object(let o) = e["headers"] { for (k, v) in o { headers[k] = v.string } }
             handleSendHttpRequest(UInt32(clamping: e["requestId"].int ?? 0), e["url"].string ?? "", HttpMethod(rawValue: e["method"].int ?? 0) ?? .get, headers, e["body"].data)
         case "sendCallMessage":
-            guard let handleSendCallMessage else { logError("RingRTC.handleSendCallMessage is not set!"); return }
             let recipient = e["recipientUuid"].data ?? Data()
+            let message = e["message"].data ?? Data()
+            let urgency = CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable
+            if recipient != selfUuid, let id = try? Self.signalingRoom(in: message) {
+                let links = groupCallByClientId.values.filter { $0.linkRoomId == id }
+                if !links.isEmpty {
+                    guard links.count == 1, let link = links.first, link.callLinkAuthorization(for: [recipient]) != nil else { return }
+                    deliverLinkMessage(link, message: message, urgency: urgency, recipients: [recipient], proofs: [], expiration: nil)
+                    return
+                }
+                guard groupCallByClientId.values.contains(where: { $0.groupId == id && $0.members.contains { $0.userId == recipient } }) else { return }
+            }
+            guard let handleSendCallMessage else { logError("RingRTC.handleSendCallMessage is not set!"); return }
             guard mayMessage(recipient) else { logError("sendCallMessage: not a member or participant of a group call; dropped"); return }
-            handleSendCallMessage(recipient, e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable)
+            handleSendCallMessage(recipient, message, urgency)
         case "sendCallMessageToGroup":
             guard let handleSendCallMessageToGroup else { logError("RingRTC.handleSendCallMessageToGroup is not set!"); return }
             let groupId = e["groupId"].data ?? Data(), recipients = e["overrideRecipients"].array.compactMap(\.data)
             guard mayMessageGroup(groupId), recipients.allSatisfy(mayMessage) else { logError("sendCallMessageToGroup: not a group with a call; dropped"); return }
             handleSendCallMessageToGroup(groupId, e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable, recipients)
         case "sendCallMessageToAdhocGroup":
-            guard let handleSendCallMessageToAdhocGroup else { logError("RingRTC.handleSendCallMessageToAdhocGroup is not set!"); return }
-            let pairs = e["recipientsToEndorsements"].array.compactMap { p -> (recipientId: Data, endorsement: Data)? in
-                guard let r = p["recipientId"].data, let d = p["endorsement"].data else { return nil }
-                return (r, d)
-            }
-            guard groupCallByClientId.values.contains(where: { $0.kind == .callLink }), pairs.allSatisfy({ mayMessage($0.recipientId) }) else {
-                logError("sendCallMessageToAdhocGroup: not participants of a call link call; dropped")
-                return
-            }
-            handleSendCallMessageToAdhocGroup(e["message"].data ?? Data(), CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable,
-                                              Date(timeIntervalSince1970: (e["expirationMillis"].double ?? 0) / 1000), pairs)
+            let rows = e["recipientsToEndorsements"].array
+            guard (1...4096).contains(rows.count), let message = e["message"].data, message.count <= 8192 else { return }
+            let recipients = rows.compactMap { $0["recipientId"].data }
+            guard recipients.count == rows.count, recipients.allSatisfy({ $0.count == 16 && $0 != selfUuid }) else { return }
+            // Native RingRTC supplies no clientId on this callback. Only one joined link
+            // may vouch for the whole recipient set. A union across rooms could leak keys.
+            guard let room = try? Self.signalingRoom(in: message) else { return }
+            let rooms = groupCallByClientId.values.filter { $0.linkRoomId == room && $0.callLinkAuthorization(for: recipients) != nil }
+            guard rooms.count == 1, let g = rooms.first else { return }
+            let proofs = rows.compactMap { $0["endorsement"].data }
+            let expiration = e["expirationMillis"].double.map { Date(timeIntervalSince1970: $0 / 1000) }
+            deliverLinkMessage(g, message: message, urgency: CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable,
+                               recipients: recipients, proofs: proofs, expiration: expiration)
         case "groupCallRingUpdate":
             guard let handleGroupCallRingUpdate else { logError("RingRTC.handleGroupCallRingUpdate is not set!"); return }
             let sender = e["sender"].data ?? Data()
@@ -135,6 +149,29 @@ extension RingRTC {
             return
         }
         switch type {
+        case "receiveCallLinkEndorsements":
+            guard g.kind == .callLink, let receive = g.receiveLinkEndorsements else { return }
+            let rows = e["memberCiphertexts"].array
+            guard rows.count <= 4096 else { receive(nil, []); return }
+            let members = rows.compactMap(\.data)
+            receive(members.count == rows.count ? e["serialized"].data : nil, members)
+        case "sendCallLinkMessage":
+            let rows = e["recipientIds"].array
+            guard (1...4096).contains(rows.count), let message = e["message"].data, message.count <= 8192 else { return }
+            let recipients = rows.compactMap(\.data)
+            guard recipients.count == rows.count, recipients.allSatisfy({ $0.count == 16 && $0 != selfUuid }),
+                  g.callLinkAuthorization(for: recipients) != nil else { return }
+            guard let room = try? Self.signalingRoom(in: message), room == g.linkRoomId else { return }
+            let proofs = g.linkEndorsements?(recipients)
+            deliverLinkMessage(g, message: message, urgency: CallMessageUrgency(rawValue: e["urgency"].int ?? 0) ?? .droppable,
+                               recipients: recipients, proofs: proofs?.1 ?? [], expiration: proofs?.0)
+        case "resolveCallLinkMembers":
+            guard g.kind == .callLink, let decrypt = g.resolveLinkMember, e["ciphertexts"].array.count <= 4096 else { return }
+            let members: [JSONValue] = e["ciphertexts"].array.compactMap { value in
+                guard let opaque = value.string, let bytes = PeekInfo.ciphertext(opaque) else { return nil }
+                return .object(["opaqueUserId": value, "userId": .bytes(decrypt(bytes))])
+            }
+            g.run("setCallLinkMembers", ["members": .array(members)])
         case "requestMembershipProof": g.observer?.requestMembershipProof(g)
         case "requestGroupMembers": g.observer?.requestGroupMembers(g)
         case "handleConnectionStateChanged": g.handleConnectionStateChanged(ConnectionState(rawValue: e["connectionState"].int ?? 0) ?? .notConnected)
@@ -160,6 +197,37 @@ extension RingRTC {
             g.observer?.onObservedRemoteMute(g, sourceDemuxId: UInt32(clamping: e["sourceDemuxId"].int ?? 0), targetDemuxId: UInt32(clamping: e["targetDemuxId"].int ?? 0))
         default:
             logWarn("unknown ringrtc event \(type)")
+        }
+    }
+
+    /// The native callback has no room parameter. Recover it from the authenticated audience's
+    /// signaling.CallMessage.group_call_message.group_id, rejecting ambiguous duplicate fields.
+    private static func signalingRoom(in message: Data) throws -> Data? {
+        var reader = try CallingProtoReader(message, limit: 8192)
+        var room: Data?
+        var seenGroup = false
+        while let tag = try reader.next() {
+            guard tag.number == 1 else { try reader.skip(tag); continue }
+            guard !seenGroup else { return nil }
+            seenGroup = true
+            try reader.message(tag) { field, group in
+                guard field.number == 1 else { try group.skip(field); return }
+                guard room == nil else { throw CallingWireError.malformed }
+                room = Data(try group.bytes(field))
+            }
+        }
+        return room
+    }
+
+    private func deliverLinkMessage(_ g: GroupCall, message: Data, urgency: CallMessageUrgency, recipients: [Data], proofs: [Data], expiration: Date?) {
+        let eligible = proofs.count == recipients.count && proofs.allSatisfy { !$0.isEmpty && $0.count <= 512 }
+            && (expiration ?? .distantPast) > Date()
+        if let send = g.sendLinkMessage {
+            send(message, urgency, recipients, eligible ? proofs : [], eligible ? expiration : nil)
+        } else if eligible, let expiration, let handleSendCallMessageToAdhocGroup {
+            handleSendCallMessageToAdhocGroup(message, urgency, expiration, Array(zip(recipients, proofs)))
+        } else {
+            for recipient in recipients { handleSendCallMessage?(recipient, message, urgency) }
         }
     }
 

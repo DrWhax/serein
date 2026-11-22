@@ -14,6 +14,10 @@
 // image with VP8X must match the canvas.
 
 public import CodecCore
+public import VideoVP8
+
+public typealias VP8Decoder = VideoVP8.VP8Decoder
+public typealias VP8Frame = VideoVP8.VP8Frame
 
 public enum WebPBitstream: Sendable, Equatable {
     case lossy(ByteSlice, alpha: ByteSlice?)

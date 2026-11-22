@@ -10,13 +10,15 @@ import Security
 public struct ServiceEndpoints: Sendable {
     public var storageURL: URL
     public var cdnURLs: [Int: URL]
+    public var sfuURL: URL?
     /// DER root certificates to trust exclusively; empty means the system trust store.
     public var rootCertificatesDER: [Data]
 
-    public init(storageURL: URL, cdnURLs: [Int: URL], rootCertificatesDER: [Data]) {
+    public init(storageURL: URL, cdnURLs: [Int: URL], rootCertificatesDER: [Data], sfuURL: URL? = nil) {
         self.storageURL = storageURL
         self.cdnURLs = cdnURLs
         self.rootCertificatesDER = rootCertificatesDER
+        self.sfuURL = sfuURL
     }
 
     /// The layout Desktop's mock-server tests use: everything on one HTTPS port.
@@ -24,7 +26,7 @@ public struct ServiceEndpoints: Sendable {
         let base = URL(string: "https://localhost:\(port)")!
         return ServiceEndpoints(storageURL: base.appendingPathComponent("storageService"),
                                 cdnURLs: [0: base, 2: base, 3: base.appendingPathComponent("cdn3")],
-                                rootCertificatesDER: [rootCertificateDER])
+                                rootCertificatesDER: [rootCertificateDER], sfuURL: base.appendingPathComponent("callingService"))
     }
 }
 

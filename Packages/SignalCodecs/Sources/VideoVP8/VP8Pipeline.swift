@@ -75,6 +75,8 @@ final class VP8RowPipeline: Sendable {
 
     let width: Int, height: Int, mbW: Int, mbH: Int
     /// 0: no loop filter, 1: simple, 2: normal.
+    let references: [VP8Frame?]
+    let version: Int
     let filter: Int
     let queue = Mutex(Queue())
     /// A job, the end or a cancel was queued.
@@ -84,7 +86,9 @@ final class VP8RowPipeline: Sendable {
     let finished = DispatchSemaphore(value: 0)
     let output = Mutex<VP8Frame?>(nil)
 
-    init(width: Int, height: Int, mbW: Int, mbH: Int, filter: Int) {
+    init(width: Int, height: Int, mbW: Int, mbH: Int, filter: Int, references: [VP8Frame?], version: Int) {
+        self.references = references
+        self.version = version
         self.width = width
         self.height = height
         self.mbW = mbW
@@ -141,7 +145,7 @@ final class VP8RowPipeline: Sendable {
                 continue
             }
             slots.signal()
-            VP8Decoder.reconstructRow(job.mbY, job.row, &ws, &window, &topY, &topU, &topV)
+            VP8Decoder.reconstructRow(job.mbY, job.row, &ws, &window, &topY, &topU, &topV, references: references, version: version)
             let row = job.row
             queue.withLock { $0.spare.append(row) }
             if filter > 0 { VP8Decoder.filterRow(&window, job.mbY, job.info, simple: filter == 1) }

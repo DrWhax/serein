@@ -3,6 +3,7 @@ import CallXPC
 import Foundation
 import MediaXPCInterface
 import RingRTCNative
+import SwiftCalling
 import Testing
 import XPC
 @testable import SignalRingRTC
@@ -24,19 +25,21 @@ enum EndpointPlace: String, CaseIterable, Sendable {
         let handler: CallXPCHandler?
         var states: [CallState] = []
         var incoming: Call?
-        init(_ name: String, _ place: EndpointPlace = .inProcess) throws {
+        init(_ name: String, _ place: EndpointPlace = .inProcess,
+             backend: @escaping LocalCallEndpointFactory = NativeEndpoint.factory,
+             swiftVoice: Bool = false) throws {
             self.name = name
             switch place {
             case .inProcess:
                 listener = nil
                 handler = nil
-                rtc = try RingRTC(endpoint: NativeEndpoint.factory)
+                rtc = try RingRTC(endpoint: backend)
             case .overXPC:
-                let h = CallXPCHandler()
+                let h = CallXPCHandler(makeEndpoint: backend)
                 let l = XPCServer.anonymous(requirement: nil, h)
                 listener = l
                 handler = h
-                rtc = try RingRTC(endpoint: RemoteCallEndpoint.factory(.endpoint(l.endpoint), peer: nil))
+                rtc = try RingRTC(endpoint: RemoteCallEndpoint.factory(.endpoint(l.endpoint), peer: nil, swiftVoice: swiftVoice))
             }
         }
         isolated deinit { listener?.cancel() }
@@ -47,13 +50,19 @@ enum EndpointPlace: String, CaseIterable, Sendable {
         while !done() && Date() < end { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
-    @Test(arguments: EndpointPlace.allCases) func oneToOneCall(_ place: EndpointPlace) async throws {
+    @Test(arguments: EndpointPlace.allCases, [false, true])
+    func oneToOneCall(_ place: EndpointPlace, reencodeWithSwift: Bool) async throws {
         let a = try Side("alice", place), b = try Side("bob", place)
         let key = Data(repeating: 5, count: 33)
         for (me, other, myId) in [(a, b, DeviceId(1)), (b, a, DeviceId(2))] {
             me.rtc.handleOutgoingSignaling = { [weak other] _, message in
                 guard let other else { return false }
-                other.rtc.handleCallingMessage(message, .init(remoteUserId: me.name, remoteUuid: nil, remoteDeviceId: myId, localDeviceId: myId == 1 ? 2 : 1,
+                var outbound = message
+                if reencodeWithSwift {
+                    do { outbound = try Self.reencode(message) }
+                    catch { Issue.record("Swift could not read native signaling: \(error)"); return false }
+                }
+                other.rtc.handleCallingMessage(outbound, .init(remoteUserId: me.name, remoteUuid: nil, remoteDeviceId: myId, localDeviceId: myId == 1 ? 2 : 1,
                                                               ageSec: 0, receivedAtCounter: 0, receivedAtDate: 0, senderIdentityKey: key, receiverIdentityKey: key))
                 return true
             }
@@ -75,6 +84,25 @@ enum EndpointPlace: String, CaseIterable, Sendable {
         await Self.wait { a.states.last == .ended && b.states.last == .ended }
         #expect(a.states.last == .ended && b.states.last == .ended)
         #expect(call.endedReason == .localHangup && incoming.endedReason == .remoteHangup, "\(String(describing: call.endedReason)) \(String(describing: incoming.endedReason))")
+    }
+
+    static func reencode(_ message: CallingMessage) throws -> CallingMessage {
+        var result = message
+        if let offer = message.offer {
+            let fields = try DirectCallParameters(envelope: offer.opaque)
+            #expect(fields.publicKey?.count == 32 && fields.icePassword?.isEmpty == false)
+            result.offer?.opaque = fields.envelope()
+        }
+        if let answer = message.answer {
+            let fields = try DirectCallParameters(envelope: answer.opaque)
+            #expect(fields.publicKey?.count == 32 && fields.iceUfrag?.isEmpty == false)
+            result.answer?.opaque = fields.envelope()
+        }
+        result.iceCandidates = try message.iceCandidates?.map { candidate in
+            let update = try IceCandidateUpdate(envelope: candidate.opaque)
+            return IceCandidateMessage(callId: candidate.callId, opaque: update.envelope())
+        }
+        return result
     }
 
     /// A video call: NV12 frames sent by one side arrive at the other as RGBA.

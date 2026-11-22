@@ -1,6 +1,6 @@
 #!/bin/sh
 # Verifies the calling boundary (Verification/CallBoundary): what SignalCalling.xpc, the process
-# that runs ringrtc and reads what remote peers send, can make the app do, and how the app's
+# that runs the Swift calling engine and reads what remote peers send, can make the app do, and how the app's
 # endpoint in it is lost and replaced; and their conformance with production RingRTC and
 # RemoteCallEndpoint (Packages/SignalRingRTC), in one go:
 #   1. no `sorry`, `admit`, axioms or other escape hatches in the Lean sources;

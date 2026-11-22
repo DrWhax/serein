@@ -78,7 +78,11 @@ public final class Call {
 
     public func setCallEnded() { _state = .ended }
 
-    func run(_ name: String, _ fields: [String: JSONValue] = [:]) { _ = try? endpoint.command(name, fields, generation: generation) }
+    func run(_ name: String, _ fields: [String: JSONValue] = [:]) {
+        var fields = fields
+        fields["callId"] = .id(callId)
+        _ = try? endpoint.command(name, fields, generation: generation)
+    }
 
     public func accept() { run("accept", ["callId": .id(callId)]) }
     public func decline() { hangup() }
@@ -117,7 +121,8 @@ public final class Call {
     /// `VideoFrameSender`
     @discardableResult
     public func sendVideoFrame(width: Int, height: Int, format: VideoPixelFormat, buffer: [UInt8]) -> Bool {
-        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
+        guard state == .accepted else { return false }
+        return endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
     }
 
     /// `VideoFrameSource`: the latest remote frame as RGBA.
