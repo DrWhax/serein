@@ -1,6 +1,7 @@
 // ts/components/conversation/AttachmentList.dom.stories.tsx, StagedGenericAttachment.dom.stories.tsx
 // and StagedPlaceholderAttachment.dom.stories.tsx. (AttachmentList EmptyList renders nothing.)
 
+import AppKit
 import SwiftUI
 import Testing
 @testable import SignalUI
@@ -60,5 +61,53 @@ import Testing
         try Snapshot.assertMatches(generic("manifesto.reallylongtxt"), story: c + "long-extension", theme: theme)
         try Snapshot.assertMatches(StagedPlaceholderAttachment {}.frame(maxWidth: .infinity, alignment: .leading),
                                    story: "components-conversation-stagedplaceholderattachment--default", theme: theme)
+    }
+}
+
+@MainActor @Suite(.serialized) struct AttachmentRemovalTests {
+    @Observable fileprivate final class Draft {
+        var attachments: [MessageAttachment] = [255, 0].map { value in
+            var attachment = MessageAttachment(contentType: "image/png", fileName: "\(value).png", size: 4, width: 120, height: 120)
+            attachment.image = RGBAImage(width: 1, height: 1, pixels: Data([UInt8(value), UInt8(value), UInt8(value), 255]))
+            attachment.isDownloaded = true
+            attachment.hasUrl = true
+            return attachment
+        }
+        var opened = false
+    }
+
+    private struct Composer: View {
+        let draft: Draft
+        var body: some View {
+            AttachmentList(attachments: draft.attachments, canEditImages: true,
+                           onClickAttachment: { _ in draft.opened = true },
+                           onCloseAttachment: { draft.attachments.remove(at: $0) })
+                .frame(width: 320, height: 160, alignment: .topLeading)
+        }
+    }
+
+    /// Upstream's close button (16 pt, 4 pt in from the tile's top-right corner) removes only
+    /// its own image, without opening the image editor.
+    @Test func closeButtonRemovesOnlyItsImage() async throws {
+        let draft = Draft()
+        let host = NSHostingView(rootView: Composer(draft: draft))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 160),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(100))
+        host.layoutSubtreeIfNeeded()
+        // The first 120 pt tile spans x 12…132 and y 23…143 from the top: its button's centre
+        // is 12 pt in from that corner (window coordinates count y from the bottom).
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: 120, y: 160 - 35),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+        #expect(draft.attachments.map(\.fileName) == ["0.png"])
+        #expect(!draft.opened)
     }
 }

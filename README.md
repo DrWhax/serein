@@ -124,6 +124,21 @@ Tools/lint-codecs.sh                      # memory-safety and isolation rules
 Tools/check-sandbox-profile.sh            # the Seatbelt profiles and peer checks, after build-app.sh
 ```
 
+The app's attachment-drop regression runs with
+`swift test --package-path App/SignalSafe --filter AttachmentDropTests`. Promised-file
+callbacks in the native composer are explicitly `@Sendable`: reading and removing the
+delivered file runs on AppKit's background delivery queue, and staging hops to the main
+actor. Chat drops consume SwiftUI's item providers instead of requesting the same file
+promise again; SwiftUI owns that delivery and its cache. A file a provider hands over is
+NSItemProvider's copy of what the drag's source wrote, read like a promise in the composer: a
+regular file with one link, opened without following a link. The copy keeps a symbolic link a
+link (refused) but turns a hard link into a plain file, which only the composer's folder can
+tell apart. Tests cover background callback staging, provider-backed images, Finder file
+URLs, symbolic links to other files and file ownership. They do
+not simulate a native drag gesture. `swift test --package-path Packages/SignalUI --filter
+AttachmentRemovalTests` clicks a staged image's remove button and checks that only that image
+is removed, without opening the editor.
+
 `Tools/check-sandbox-profile.sh` does three things:
 - It runs a probe under each profile and checks what the probe may and may not do.
 - It runs the real services from the built app on test media, a voice note, a live link preview and a Giphy search.
