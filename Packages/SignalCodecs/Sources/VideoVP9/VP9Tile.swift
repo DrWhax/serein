@@ -1,66 +1,167 @@
 /// Per-MI neighbour state (8×8), including the four luma sub-blocks in decode order.
-struct VP9MV: Equatable { var row = 0, col = 0 }
-struct VP9Block {
-    var width = 8, height = 8, tx = 0, segment = 0, level = 0
-    var originX = 0, originY = 0
-    var skip = false, predictedSegment = false
-    var yModes = (0,0,0,0), uvMode = 0
-    var refs = (0,0), motionMode = 0, filter = 4
-    var vectors = (VP9MV(),VP9MV())
-    var subVectors: [(VP9MV,VP9MV)]?
-    func mode(_ x: Int, _ y: Int) -> Int {
-        switch y*2+x { case 0: yModes.0; case 1: yModes.1; case 2: yModes.2; default: yModes.3 }
+/// A motion vector in eighth samples. Decoded vectors are held to ±16383 (differential), and
+/// candidates are clamped toward zero, so 16 bits hold every value.
+struct VP9MV: Equatable {
+    private var r: Int16 = 0, c: Int16 = 0
+    init(row: Int = 0, col: Int = 0) { r = Int16(truncatingIfNeeded: row); c = Int16(truncatingIfNeeded: col) }
+    var row: Int { get { Int(r) } set { r = Int16(truncatingIfNeeded: newValue) } }
+    var col: Int { get { Int(c) } set { c = Int16(truncatingIfNeeded: newValue) } }
+}
+/// A sub-8x8 block's four vector pairs, inline so a block copies without reference counting.
+struct VP9SubVectors {
+    private var pairs = InlineArray<4, (VP9MV,VP9MV)>(repeating: (VP9MV(),VP9MV()))
+    subscript(_ i: Int) -> (VP9MV,VP9MV) {
+        get { pairs[i] }
+        set { pairs[i] = newValue }
     }
 }
-final class VP9Picture {
+/// Per-MI neighbour state (8×8), including the four luma sub-blocks in decode order. Every
+/// field is small (sizes ≤ 64, modes ≤ 9, levels ≤ 63, references ≤ 3, positions < 2^16),
+/// so it is stored packed (neighbour reads copy blocks) behind Int accessors.
+struct VP9Block {
+    private var w: UInt8, h: UInt8, t: UInt8 = 0, s: UInt8 = 0, l: UInt8 = 0
+    private var x: Int32 = 0, y: Int32 = 0
+    var skip = false, predictedSegment = false
+    private var m0: UInt8 = 0, m1: UInt8 = 0, m2: UInt8 = 0, m3: UInt8 = 0, uv: UInt8 = 0
+    private var r0: Int8 = 0, r1: Int8 = 0, mm: UInt8 = 0, f: UInt8 = 4
+    var vectors = (VP9MV(),VP9MV())
+    var subVectors: VP9SubVectors?
+
+    init(width: Int = 8, height: Int = 8) { w = UInt8(truncatingIfNeeded: width); h = UInt8(truncatingIfNeeded: height) }
+    var width: Int { get { Int(w) } set { w = UInt8(truncatingIfNeeded: newValue) } }
+    var height: Int { get { Int(h) } set { h = UInt8(truncatingIfNeeded: newValue) } }
+    var tx: Int { get { Int(t) } set { t = UInt8(truncatingIfNeeded: newValue) } }
+    var segment: Int { get { Int(s) } set { s = UInt8(truncatingIfNeeded: newValue) } }
+    var level: Int { get { Int(l) } set { l = UInt8(truncatingIfNeeded: newValue) } }
+    var originX: Int { get { Int(x) } set { x = Int32(truncatingIfNeeded: newValue) } }
+    var originY: Int { get { Int(y) } set { y = Int32(truncatingIfNeeded: newValue) } }
+    var yModes: (Int,Int,Int,Int) {
+        get { (Int(m0),Int(m1),Int(m2),Int(m3)) }
+        set { (m0,m1,m2,m3) = (UInt8(truncatingIfNeeded: newValue.0),UInt8(truncatingIfNeeded: newValue.1),
+                               UInt8(truncatingIfNeeded: newValue.2),UInt8(truncatingIfNeeded: newValue.3)) }
+    }
+    var uvMode: Int { get { Int(uv) } set { uv = UInt8(truncatingIfNeeded: newValue) } }
+    var refs: (Int,Int) {
+        get { (Int(r0),Int(r1)) }
+        set { (r0,r1) = (Int8(truncatingIfNeeded: newValue.0),Int8(truncatingIfNeeded: newValue.1)) }
+    }
+    var motionMode: Int { get { Int(mm) } set { mm = UInt8(truncatingIfNeeded: newValue) } }
+    var filter: Int { get { Int(f) } set { f = UInt8(truncatingIfNeeded: newValue) } }
+    func mode(_ x: Int, _ y: Int) -> Int {
+        switch y*2+x { case 0: Int(m0); case 1: Int(m1); case 2: Int(m2); default: Int(m3) }
+    }
+}
+/// A decoded frame: read-only once built, so tiles on other threads can predict from it.
+final class VP9Picture: Sendable {
     let cols, rows: Int
-    var planes: [VP9Plane]
-    var blocks: [VP9Block]
-    init(width: Int, height: Int) {
-        cols = (width+7)/8; rows = (height+7)/8
-        planes = [VP9Plane(width:width, height:height),VP9Plane(width:(width+1)/2,height:(height+1)/2,chroma:true),VP9Plane(width:(width+1)/2,height:(height+1)/2,chroma:true)]
-        blocks = [VP9Block](repeating: .init(), count: cols*rows)
+    let planes: [VP9Plane]
+    let blocks: [VP9Block]
+    init(cols: Int, rows: Int, planes: [VP9Plane], blocks: [VP9Block]) {
+        self.cols = cols; self.rows = rows; self.planes = planes; self.blocks = blocks
+    }
+    /// A frame's three planes, or the strips of them under MI columns `columns`.
+    static func planes(width: Int, height: Int, columns: Range<Int>? = nil) -> [VP9Plane] {
+        let cols = (width+7)/8, chromaWidth = (width+1)/2, chromaHeight = (height+1)/2
+        func strip(_ planeWidth: Int, _ shift: Int, _ chroma: Bool) -> VP9Plane {
+            let stride = (planeWidth+63)/64*64
+            guard let columns else { return VP9Plane(width: planeWidth, height: planeHeight(chroma), chroma: chroma) }
+            let lower = (columns.lowerBound*8) >> shift
+            // The last column also owns the padding out to the stride, which transform blocks at
+            // the edge write and the loop filter reads; an empty column owns nothing.
+            let upper = columns.upperBound >= cols && !columns.isEmpty ? stride : (columns.upperBound*8) >> shift
+            return VP9Plane(width: planeWidth, height: planeHeight(chroma), chroma: chroma, columns: lower..<max(lower,upper))
+        }
+        func planeHeight(_ chroma: Bool) -> Int { chroma ? chromaHeight : height }
+        return [strip(width,0,false), strip(chromaWidth,1,true), strip(chromaWidth,1,true)]
     }
 }
 
-final class VP9Tile {
-    let h: VP9Header, context: VP9Context, picture: VP9Picture
+/// One tile column, decoded tile row by tile row: it owns the column's strips of the frame's
+/// planes, its MIs (right-left per row), its above contexts and its symbol counts, so
+/// columns can decode independently (VP9 has no dependencies between tile columns).
+struct VP9Tile {
+    let h: VP9Header
+    var context: VP9Context
     let references: [VP9Picture?], previous: VP9Picture?
     let usePreviousMVs: Bool
-    let left, right, top, bottom: Int
+    /// The frame's size in MIs, and this column's MI columns.
+    let cols, rows: Int
+    let left, right: Int
+    private(set) var top = 0, bottom = 0
     var coder: VP9Boolean
+    var planes: [VP9Plane]
+    var blocks: [VP9Block]
     var partAbove, partLeft: [Int]
     var nzAbove, nzLeft: [[Int]]
     let refDelta: [Int], modeDelta: [Int]
     /// Reused per transform block: all zero between blocks.
     var coefficients = [Int](repeating: 0, count: 1024), energy = [UInt8](repeating: 0, count: 1024)
+    /// After decoding: the loop filter's edge codes for this column's 4x4 units of each plane
+    /// (all unit rows, `filterWidths[p]` units per row), or empty when the frame has no filter.
+    private(set) var filterCodes: [[Int32]] = [], filterWidths: [Int] = []
 
-    init(_ data: ArraySlice<UInt8>, h: VP9Header, context: VP9Context, picture: VP9Picture,
-         references: [VP9Picture?], previous: VP9Picture?, usePreviousMVs: Bool, area: (Int,Int,Int,Int),
-         refDelta: [Int], modeDelta: [Int]) throws {
-        self.h = h; self.context = context; self.picture = picture; self.references = references; self.previous = previous
+    init(h: VP9Header, context: VP9Context, references: [VP9Picture?], previous: VP9Picture?, usePreviousMVs: Bool,
+         columns: Range<Int>, refDelta: [Int], modeDelta: [Int], firstTile data: ArraySlice<UInt8>, rows tileRows: Range<Int>) throws {
+        self.h = h; self.context = context.freshCounts; self.references = references; self.previous = previous
         self.usePreviousMVs = usePreviousMVs
-        (left,right,top,bottom) = area
+        cols = (h.width+7)/8; rows = (h.height+7)/8
+        (left,right) = (columns.lowerBound,columns.upperBound)
         self.refDelta = refDelta; self.modeDelta = modeDelta
         coder = try .init(data)
-        partAbove = .init(repeating:0,count:picture.cols+8); partLeft = .init(repeating:0,count:picture.rows+8)
-        nzAbove = .init(repeating: .init(repeating:0,count:picture.cols*2+16),count:3)
-        nzLeft = .init(repeating: .init(repeating:0,count:picture.rows*2+16),count:3)
+        (top,bottom) = (tileRows.lowerBound,tileRows.upperBound)
+        planes = VP9Picture.planes(width: h.width, height: h.height, columns: cols == columns.count ? nil : columns)
+        blocks = [VP9Block](repeating: .init(), count: columns.count*rows)
+        partAbove = .init(repeating:0,count:cols+8); partLeft = .init(repeating:0,count:rows+8)
+        nzAbove = .init(repeating: .init(repeating:0,count:cols*2+16),count:3)
+        nzLeft = .init(repeating: .init(repeating:0,count:rows*2+16),count:3)
+    }
+    /// The next tile row of this column. Left contexts are indexed by frame row, so the new
+    /// rows' entries are still zero; above contexts carry on from the tile above.
+    mutating func next(_ data: ArraySlice<UInt8>, rows tileRows: Range<Int>) throws {
+        coder = try .init(data)
+        (top,bottom) = (tileRows.lowerBound,tileRows.upperBound)
+    }
+    /// Work out filterCodes from this column's blocks (they depend on nothing else), so the
+    /// columns do it in parallel rather than the frame's filter.
+    mutating func decideFilterEdges() {
+        let span = right-left
+        filterCodes = []; filterWidths = []
+        for index in 0..<3 {
+            let chroma = index != 0, shift = chroma ? 1 : 0
+            let (unitRows, unitCols) = VP9Plane.units(width: chroma ? (h.width+1)/2 : h.width,
+                                                      height: chroma ? (h.height+1)/2 : h.height, chroma: chroma)
+            let first = chroma ? left : left*2
+            let last = max(first, right == cols ? unitCols : (chroma ? right : right*2))
+            var codes = [Int32](repeating: 0, count: unitRows*(last-first))
+            var out = codes.mutableSpan
+            for row4 in 0..<unitRows {
+                for col4 in first..<last {
+                    let x = (col4*4) << shift, y = (row4*4) << shift
+                    let cellX = min(cols-1, chroma ? col4 & ~1 : x/8), cellY = min(rows-1, chroma ? row4 & ~1 : y/8)
+                    let b = blocks[cellY*span + cellX-left]
+                    let size = min(max(8,b.width),max(8,b.height)).trailingZeroBitCount
+                    out[row4*(last-first) + col4-first] = VP9Plane.edgeCode(
+                        level: b.level, tx: min(b.tx,size-shift-2), skip: b.skip && b.refs.0 != 0,
+                        left: x == b.originX, top: y == b.originY, row: row4, col: col4, rows: unitRows, cols: unitCols, chroma: chroma)
+                }
+            }
+            filterCodes.append(codes); filterWidths.append(last-first)
+        }
     }
     func neighbour(_ col: Int, _ row: Int) -> VP9Block? {
-        guard col >= left, col < right, row >= 0, row < picture.rows else { return nil }
-        return picture.blocks[row*picture.cols+col]
+        guard col >= left, col < right, row >= 0, row < rows else { return nil }
+        return blocks[row*(right-left)+col-left]
     }
-    func decode() throws {
+    mutating func decode() throws {
         for row in stride(from:top,to:bottom,by:8) {
             for col in stride(from:left,to:right,by:8) { try partition(col,row,level:3) }
         }
         guard !coder.exhausted else { throw VP9DecodeError.malformed }
     }
-    func partition(_ col: Int, _ row: Int, level: Int) throws {
+    mutating func partition(_ col: Int, _ row: Int, level: Int) throws {
         guard col < right, row < bottom else { return }
         let size = 1 << level, half = size/2
-        let hasRows = row+half < picture.rows, hasCols = col+half < picture.cols
+        let hasRows = row+half < rows, hasCols = col+half < cols
         let at = 3*(level*4 + ((partAbove[col] >> level) & 1) + 2*((partLeft[row] >> level) & 1))
         func read(_ i: Int) -> Int {
             h.intra ? coder.bit(VP9Table.kfPartitionProbs[at+i]) : context.read(&coder,VP9Prob.partition+at+i)
@@ -99,17 +200,17 @@ final class VP9Tile {
     static let noFeatures: [Int?] = [nil,nil,nil,nil]
     /// Intra mode to transform type (libvpx mode2txfm_map).
     static let modeTxType = [0,1,2,0,3,1,2,2,1,3]
-    func block(_ col: Int, _ row: Int, width: Int, height: Int) throws {
+    mutating func block(_ col: Int, _ row: Int, width: Int, height: Int) throws {
         let above = neighbour(col,row-1), leftBlock = neighbour(col-1,row)
         var b = VP9Block(width:width, height:height)
         b.originX = col*8; b.originY = row*8
         let subs = min(width,height) < 8
         if h.segmented {
             var predicted = 7
-            let old = h.intra || h.resilient ? nil : previous.flatMap { p in p.cols == picture.cols && p.rows == picture.rows ? p : nil }
+            let old = h.intra || h.resilient ? nil : previous.flatMap { p in p.cols == cols && p.rows == rows ? p : nil }
             if let old {
-                for y in row..<min(picture.rows,row+max(1,height/8)) {
-                    for x in col..<min(picture.cols,col+max(1,width/8)) { predicted = min(predicted,old.blocks[y*old.cols+x].segment) }
+                for y in row..<min(rows,row+max(1,height/8)) {
+                    for x in col..<min(cols,col+max(1,width/8)) { predicted = min(predicted,old.blocks[y*old.cols+x].segment) }
                 }
             } else { predicted = 0 }
             if !h.intra, h.updateMap, h.temporalMap {
@@ -180,30 +281,35 @@ final class VP9Tile {
             if inter { try predictInter(col:col,row:row,plane:p,block:b) }
             for by in stride(from:0,to:ph,by:size) {
                 let y = oy+by
-                guard y < ((picture.rows*8) >> shift) else { break }
+                guard y < ((rows*8) >> shift) else { break }
                 for bx in stride(from:0,to:pw,by:size) {
                     let x = ox+bx
-                    guard x < ((picture.cols*8) >> shift) else { break }
+                    guard x < ((cols*8) >> shift) else { break }
                     let mode = p == 0 ? b.mode(subs ? bx/4 : 1,subs ? by/4 : 1) : b.uvMode
                     if !inter {
-                        picture.planes[p].predictIntra(mode:mode,x:x,y:y,size:size,tileLeft:(left*8) >> shift,tileTop:0,haveRight:bx+size<pw)
+                        planes[p].predictIntra(mode:mode,x:x,y:y,size:size,tileLeft:(left*8) >> shift,tileTop:0,haveRight:bx+size<pw)
                     }
                     let span = size/4, ix = x/4, iy = y/4
                     var nonzero = false
                     if !b.skip {
                         let above = nzAbove[p][ix..<(ix+span)].contains(1), left = nzLeft[p][iy..<(iy+span)].contains(1)
                         let type = !inter && p == 0 && tx < 3 && !h.lossless ? Self.modeTxType[mode] : 0
-                        nonzero = context.residual(&coder,tx:tx,type:type,chroma:p != 0,inter:inter,
+                        let end = context.residual(&coder,tx:tx,type:type,chroma:p != 0,inter:inter,
                             neighbours:(above ? 1 : 0)+(left ? 1 : 0),dc:dc,ac:ac,coefficients:&coefficients,energy:&energy)
-                        if nonzero {
+                        nonzero = end > 0
+                        if end == 1 && type == 0 && !h.lossless {
+                            // Only DC: the 2-D DCT is one value everywhere (libvpx vpx_idct*_1_add).
+                            planes[p].addConstant(VP9Transform.dcOnly(coefficients[0],size:size),x:x,y:y,size:size)
+                            coefficients[0] = 0
+                        } else if nonzero {
                             VP9Transform.apply(&coefficients,size:size,type:type,lossless:h.lossless)
-                            picture.planes[p].addResidual(&coefficients,x:x,y:y,size:size)
+                            planes[p].addResidual(&coefficients,x:x,y:y,size:size)
                         }
                     }
                     hasTokens = hasTokens || nonzero
                     for i in 0..<span {
-                        nzAbove[p][ix+i] = nonzero && ix+i < ((picture.cols*2) >> shift) ? 1 : 0
-                        nzLeft[p][iy+i] = nonzero && iy+i < ((picture.rows*2) >> shift) ? 1 : 0
+                        nzAbove[p][ix+i] = nonzero && ix+i < ((cols*2) >> shift) ? 1 : 0
+                        nzLeft[p][iy+i] = nonzero && iy+i < ((rows*2) >> shift) ? 1 : 0
                     }
                 }
             }
@@ -211,15 +317,16 @@ final class VP9Tile {
         // libvpx feeds a zero-EOB inter block of at least 8×8 back into both
         // the next block's skip probability and the loop filter.
         b.skip = b.skip || (inter && !subs && !hasTokens)
+        let span = right-left
         for y in row..<min(bottom,row+max(1,height/8)) { for x in col..<min(right,col+max(1,width/8)) {
-            picture.blocks[y*picture.cols+x] = b
+            blocks[y*span+x-left] = b
         } }
         if coder.exhausted { throw VP9DecodeError.malformed }
     }
 }
 
 extension VP9Tile {
-    func predictInter(col: Int, row: Int, plane: Int, block: VP9Block) throws {
+    mutating func predictInter(col: Int, row: Int, plane: Int, block: VP9Block) throws {
         let subsampling = plane == 0 ? 0 : 1
         let x = (col*8) >> subsampling, y = (row*8) >> subsampling
         let width = max(8,block.width) >> subsampling, height = max(8,block.height) >> subsampling
@@ -235,24 +342,24 @@ extension VP9Tile {
                 var dx = mv.col << (1-subsampling), dy = mv.row << (1-subsampling)
                 if scaleX != 16384 || scaleY != 16384 {
                     let marginX = (4+w)*16, marginY = (4+ht)*16
-                    dx = max(-x*16-marginX,min(dx,(((picture.cols*8) >> subsampling)-x-width)*16+marginX-16))
-                    dy = max(-y*16-marginY,min(dy,(((picture.rows*8) >> subsampling)-y-height)*16+marginY-16))
+                    dx = max(-x*16-marginX,min(dx,(((cols*8) >> subsampling)-x-width)*16+marginX-16))
+                    dy = max(-y*16-marginY,min(dy,(((rows*8) >> subsampling)-y-height)*16+marginY-16))
                 }
                 let ix = x+bx, iy = y+by
                 let originX = (((ix*scaleX) >> 14) << 4) + (((scaleX*((col*8+bx)*16)) >> 14) & 15)
                 let originY = (((iy*scaleY) >> 14) << 4) + (((scaleY*((row*8+by)*16)) >> 14) & 15)
-                picture.planes[plane].predictInter(reference:source.planes[plane],x:ix,y:iy,width:w,height:ht,
+                planes[plane].predictInter(reference:source.planes[plane],x:ix,y:iy,width:w,height:ht,
                     sourceX16:originX+((scaleX*dx) >> 14),sourceY16:originY+((scaleY*dy) >> 14),
                     stepX16:sx,stepY16:sy,filter:block.filter,average:i == 1)
             }
             if let sub = block.subVectors {
-                guard sub.count == 4 else { throw VP9DecodeError.malformed }
                 if plane == 0 {
                     for n in 0..<4 { part(n%2*4,n/2*4,4,4,i == 0 ? sub[n].0 : sub[n].1) }
                 } else {
-                    let v = sub.map { i == 0 ? $0.0 : $0.1 }
+                    var rowSum = 0, colSum = 0
+                    for n in 0..<4 { let v = i == 0 ? sub[n].0 : sub[n].1; rowSum += v.row; colSum += v.col }
                     func average(_ total: Int) -> Int { (total + (total < 0 ? -2 : 2))/4 }
-                    part(0,0,width,height,.init(row:average(v.reduce(0) { $0+$1.row }),col:average(v.reduce(0) { $0+$1.col })))
+                    part(0,0,width,height,.init(row:average(rowSum),col:average(colSum)))
                 }
             } else { part(0,0,width,height,i == 0 ? block.vectors.0 : block.vectors.1) }
         }

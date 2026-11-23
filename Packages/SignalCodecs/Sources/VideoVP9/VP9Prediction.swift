@@ -6,16 +6,42 @@ struct VP9Plane: Sendable {
     let stride: Int
     private let codedWidth: Int
     private let codedHeight: Int
+    /// The first sample column stored: 0 for a whole plane; a tile column's strip stores only
+    /// its own columns but is addressed in frame coordinates.
+    let originX: Int
     var bytes: [UInt8]
 
     init(width: Int, height: Int, chroma: Bool = false) {
+        self.init(width: width, height: height, chroma: chroma, columns: 0..<((width+63) / 64 * 64))
+    }
+
+    /// Sample columns `columns` of a frame plane of this size.
+    init(width: Int, height: Int, chroma: Bool, columns: Range<Int>) {
         self.width = width
         self.height = height
         let miSize = chroma ? 4 : 8
         codedWidth = (width+miSize-1)/miSize*miSize
         codedHeight = (height+miSize-1)/miSize*miSize
-        stride = (width+63) / 64 * 64
+        originX = columns.lowerBound
+        stride = columns.count
         bytes = [UInt8](repeating: 0, count: stride * ((height+63)/64*64))
+    }
+
+    /// A whole plane from its tile columns' strips, left to right, row by row (no zero fill).
+    init(strips: [Self]) {
+        let first = strips[0]
+        self.width = first.width; self.height = first.height
+        codedWidth = first.codedWidth; codedHeight = first.codedHeight
+        originX = 0
+        stride = strips.reduce(0) { $0 + $1.stride }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(stride * ((height+63)/64*64))
+        for row in 0..<((height+63)/64*64) {
+            for strip in strips where strip.stride > 0 {
+                bytes.append(contentsOf: strip.bytes[(row*strip.stride)..<((row+1)*strip.stride)])
+            }
+        }
+        self.bytes = bytes
     }
 
     /// The decoder reconstructs complete transform blocks at the coded frame edge.
@@ -26,7 +52,7 @@ struct VP9Plane: Sendable {
         var top = [Int](repeating: 127, count: size*2+2)
         var left = [Int](repeating: 129, count: size+2)
         func neighbour(_ x: Int, _ y: Int) -> Int {
-            Int(bytes[min(codedHeight-1,y)*stride+min(codedWidth-1,x)])
+            Int(bytes[min(codedHeight-1,y)*stride+min(codedWidth-1,x)-originX])
         }
         let corner = !hasTop ? 127 : !hasLeft ? 129 : neighbour(x-1, y-1)
         if hasTop {
@@ -78,14 +104,24 @@ struct VP9Plane: Sendable {
                     result = row.isMultiple(of: 2) ? avg2(top[i],top[i+1]) : avg3(top[i],top[i+1],top[i+2])
                 default: result = top[col]+left[row]-corner
                 }
-                bytes[(y+row)*stride+x+col] = UInt8(clamping: result)
+                bytes[(y+row)*stride+x-originX+col] = UInt8(clamping: result)
             }
+        }
+    }
+
+    /// Add one residual value to a whole transform block, clamped.
+    mutating func addConstant(_ value: Int, x: Int, y: Int, size: Int) {
+        let stride = self.stride, x = x - originX
+        var out = bytes.mutableSpan
+        for dy in 0..<size {
+            let row = (y+dy)*stride + x
+            for dx in 0..<size { out[row+dx] = UInt8(clamping: Int(out[row+dx]) + value) }
         }
     }
 
     /// Add a transform block's residual, clamped, and zero those values for the next block.
     mutating func addResidual(_ values: inout [Int], x: Int, y: Int, size: Int) {
-        let stride = self.stride
+        let stride = self.stride, x = x - originX
         var out = bytes.mutableSpan, residual = values.mutableSpan
         for dy in 0..<size {
             let row = (y+dy)*stride + x, base = dy*size
@@ -137,7 +173,7 @@ struct VP9Plane: Sendable {
                     for tap in 0..<8 { sum += taps[tap]*Int(intermediate[(base+tap-3)*width+col]) }
                     prediction = UInt8(clamping: (sum+64)>>7)
                 }
-                let i = (y+row)*stride+x+col
+                let i = (y+row)*stride+x-originX+col
                 bytes[i] = average ? UInt8((Int(bytes[i])+Int(prediction)+1)>>1) : prediction
             }
         }
@@ -149,14 +185,14 @@ struct VP9Plane: Sendable {
     private mutating func predictUnscaled(reference: Self, x: Int, y: Int, width: Int, height: Int,
                                           sourceX16: Int, sourceY16: Int, filter: Int, average: Bool) {
         let fractionX = sourceX16 & 15, fractionY = sourceY16 & 15
-        let originX = sourceX16 >> 4, originY = sourceY16 >> 4
+        let sourceX = sourceX16 >> 4, sourceY = sourceY16 >> 4
         let kx = (filter*16 + fractionX)*8, ky = (filter*16 + fractionY)*8
-        let inside = originX-3 >= 0 && originX+width+4 <= reference.width
-            && originY-3 >= 0 && originY+height+4 <= reference.height
-        let src = inside ? reference.bytes : reference.window(x: originX-3, y: originY-3, width: width+7, height: height+7)
+        let inside = sourceX-3 >= 0 && sourceX+width+4 <= reference.width
+            && sourceY-3 >= 0 && sourceY+height+4 <= reference.height
+        let src = inside ? reference.bytes : reference.window(x: sourceX-3, y: sourceY-3, width: width+7, height: height+7)
         let srcStride = inside ? reference.stride : width+7
-        let srcOrigin = inside ? originY*srcStride + originX : 3*srcStride+3
-        let dstStride = stride, dstOrigin = y*stride + x
+        let srcOrigin = inside ? sourceY*srcStride + sourceX : 3*srcStride+3
+        let dstStride = stride, dstOrigin = y*stride + x - originX
         var dst = bytes.mutableSpan
         Self.convolve(src.span, srcOrigin, srcStride, &dst, dstOrigin, dstStride, width: width, height: height,
                       kx: kx, ky: ky, fractionX: fractionX, fractionY: fractionY, average: average)

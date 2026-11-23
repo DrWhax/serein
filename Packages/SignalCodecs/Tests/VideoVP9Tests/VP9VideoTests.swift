@@ -19,6 +19,13 @@ import VideoVP9
         try verify("tile", count: 12, sha256: "9b19a754cda72a5517c2665a7ecfd717a5e7d99ce8eeea30d022373bf5cac382")
     }
 
+    /// Four tile columns (libvpx 1.17 real time, -tile-columns 2, 1024x96, adapting): the
+    /// columns decode on separate threads into their own strips and counts, which are joined
+    /// afterwards. Hash from the libvpx decoder.
+    @Test func fourTileColumnsDecodeIndependently() throws {
+        try verify("tiles4", count: 10, sha256: "66e001571297c2c4cfce9df5e784810762ff68da7b8957d39363378f9472a3d0")
+    }
+
     @Test func cyclicRefreshAndHighQuantizers() throws {
         try verify("segment", count: 19, sha256: "cf56776c1c7a7f2ffeb1476c41eb81a3d6bedf1cba4b016e5fbe4e6be7c6b402")
     }

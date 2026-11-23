@@ -1,6 +1,9 @@
 /// Boolean range coder for VP9 compressed headers and tile partitions.
 struct VP9Boolean {
     let bytes: ArraySlice<UInt8>
+    /// `value` holds `available` unread bits at its top (fewer than zero: bits read past the
+    /// end). A decision reads the top 8 and consumes at most 7, so the window is refilled,
+    /// several bytes at once, whenever fewer than 16 remain.
     private var pos: Int, available = 0, range = 255
     private var value: UInt64 = 0
     var exhausted: Bool { available < 0 }
@@ -8,25 +11,40 @@ struct VP9Boolean {
     init(_ bytes: ArraySlice<UInt8>) throws {
         self.bytes = bytes
         pos = bytes.startIndex
-        fill()
+        (value,available,pos) = Self.refill(bytes,pos,value,available)
         guard !bytes.isEmpty, bit() == 0 else { throw VP9DecodeError.malformed }
     }
-    private mutating func fill() {
+    /// Top up the window, eight bytes at a time where the data allows. It takes and returns
+    /// values (not the coder by address), so the hot state stays in registers.
+    @inline(never)
+    private static func refill(_ bytes: ArraySlice<UInt8>, _ pos: Int, _ value: UInt64, _ available: Int) -> (UInt64, Int, Int) {
+        var (value, available, pos) = (value, available, pos)
+        let room = (64 - available) >> 3
+        if bytes.endIndex - pos >= 8 && room > 0 {
+            var chunk: UInt64 = 0
+            for i in 0..<8 { chunk = chunk << 8 | UInt64(bytes[pos + i]) }
+            let bits = room * 8
+            value |= (chunk >> (64 - bits)) << (64 - available - bits)
+            return (value, available + bits, pos + room)
+        }
         while available <= 56, pos < bytes.endIndex {
             value |= UInt64(bytes[pos]) << (56-available)
             pos += 1
             available += 8
         }
+        return (value, available, pos)
     }
+    @inline(__always)
     mutating func bit(_ probability: Int = 128) -> Int {
-        let split = 1 + (((range-1)*probability) >> 8), boundary = UInt64(split) << 56
+        let split = 1 &+ (((range &- 1) &* probability) &>> 8), boundary = UInt64(truncatingIfNeeded: split) &<< 56
         let one = value >= boundary
-        if one { value -= boundary; range -= split } else { range = split }
-        let shift = UInt8(range).leadingZeroBitCount
-        range <<= shift
-        value <<= shift
-        available -= shift
-        if available <= 56 { fill() }
+        range = one ? range &- split : split
+        value = one ? value &- boundary : value
+        let shift = UInt32(truncatingIfNeeded: range).leadingZeroBitCount &- 24
+        range &<<= shift
+        value &<<= UInt64(truncatingIfNeeded: shift)
+        available &-= shift
+        if available < 16 { (value,available,pos) = Self.refill(bytes,pos,value,available) }
         return one ? 1 : 0
     }
     mutating func literal(_ count: Int) -> Int {
@@ -70,7 +88,9 @@ enum VP9Prob {
     ].flatMap { $0 }
 }
 
-final class VP9Context {
+/// The frame's probabilities (fixed while tiles decode) and one tile column's symbol counts:
+/// a value, so each column counts on its own and the frame adds the counts up.
+struct VP9Context: Sendable {
     var probabilities: [Int]
     var counts: [Int]
     var txMode = 0, refMode = 0
@@ -78,28 +98,28 @@ final class VP9Context {
         probabilities = probs
         counts = .init(repeating: 0, count: 2*probs.count)
     }
-    func read(_ coder: inout VP9Boolean, _ i: Int) -> Int {
+    mutating func read(_ coder: inout VP9Boolean, _ i: Int) -> Int {
         let b = coder.bit(probabilities[i])
         counts[2*i+b] += 1
         return b
     }
     /// A read that libvpx does not count as read (it counts the decoded symbol instead).
     func peek(_ coder: inout VP9Boolean, _ i: Int) -> Int { coder.bit(probabilities[i]) }
-    func count(_ i: Int, _ bit: Int) { counts[2*i+bit] += 1 }
+    mutating func count(_ i: Int, _ bit: Int) { counts[2*i+bit] += 1 }
     /// libvpx read_partition counts the resulting partition, ++counts->partition[ctx][p], even
     /// where the picture edge leaves one bit or none to read; adaptation then sees the symbol's
     /// whole tree path: NONE 0; HORZ 1,0; VERT 1,1,0; SPLIT 1,1,1.
-    func countPartition(_ base: Int, _ type: Int) {
+    mutating func countPartition(_ base: Int, _ type: Int) {
         count(base, type == 0 ? 0 : 1)
         if type > 0 { count(base + 1, type == 1 ? 0 : 1) }
         if type > 1 { count(base + 2, type == 2 ? 0 : 1) }
     }
-    func tree(_ coder: inout VP9Boolean, _ shape: [Int], _ start: Int) -> Int {
+    mutating func tree(_ coder: inout VP9Boolean, _ shape: [Int], _ start: Int) -> Int {
         var node = 0
         repeat { node = shape[node + read(&coder,start+node/2)] } while node > 0
         return -node
     }
-    func decodeHeader(_ input: ArraySlice<UInt8>, header: VP9Header) throws {
+    mutating func decodeHeader(_ input: ArraySlice<UInt8>, header: VP9Header) throws {
         var coder = try VP9Boolean(input)
         if !header.lossless { txMode = coder.literal(2); if txMode == 3 { txMode += coder.bit() } }
         func update(_ start: Int, _ count: Int, motion: Bool = false) {
@@ -145,7 +165,19 @@ final class VP9Context {
         }
         guard !coder.exhausted else { throw VP9DecodeError.malformed }
     }
-    func adapt(from previous: [Int], intra: Bool, afterKey: Bool) {
+    /// The same probabilities with every count zero, for one tile column.
+    var freshCounts: VP9Context {
+        var copy = self
+        copy.counts = .init(repeating: 0, count: counts.count)
+        return copy
+    }
+    /// Add a tile column's counts.
+    mutating func add(_ other: VP9Context) {
+        var mine = counts.mutableSpan
+        let theirs = other.counts.span
+        for i in 0..<min(mine.count, theirs.count) { mine[i] += theirs[i] }
+    }
+    mutating func adapt(from previous: [Int], intra: Bool, afterKey: Bool) {
         for i in probabilities.indices where !intra || i >= VP9Prob.coef {
             let zeros = counts[i*2], total = zeros+counts[i*2+1]
             if total == 0 { probabilities[i] = previous[i]; continue }
@@ -161,24 +193,20 @@ final class VP9Context {
 extension VP9Context {
     /// Coefficient model (tx size, chroma, inter, band, neighbours, tree node). Dequantised
     /// values go into `coefficients` and token classes into `energy`, both all zero on entry;
-    /// energy is zero again on return. True if any token was read.
-    func residual(_ coder: inout VP9Boolean, tx: Int, type: Int, chroma: Bool, inter: Bool,
-                  neighbours: Int, dc: Int, ac: Int, coefficients: inout [Int], energy: inout [UInt8]) -> Bool {
-        // Counted reads use local copies: no exclusivity or uniqueness checks per symbol.
-        var counts = [Int]()
-        swap(&counts, &self.counts)
+    /// energy is zero again on return. Returns the end of block: the number of scan positions
+    /// read (0: none; 1: the DC coefficient only, and it is nonzero).
+    mutating func residual(_ coder: inout VP9Boolean, tx: Int, type: Int, chroma: Bool, inter: Bool,
+                           neighbours: Int, dc: Int, ac: Int, coefficients: inout [Int], energy: inout [UInt8]) -> Int {
         let probabilities = self.probabilities
         var tally = counts.mutableSpan
         var values = coefficients.mutableSpan, tokens = energy.mutableSpan
-        let read = Self.tokens(&coder, probabilities.span, &tally, tx: tx, type: type, chroma: chroma, inter: inter,
-                               neighbours: neighbours, dc: dc, ac: ac, &values, &tokens)
-        swap(&counts, &self.counts)
-        return read
+        return Self.tokens(&coder, probabilities.span, &tally, tx: tx, type: type, chroma: chroma, inter: inter,
+                           neighbours: neighbours, dc: dc, ac: ac, &values, &tokens)
     }
 
     private static func tokens(_ coder: inout VP9Boolean, _ probabilities: borrowing Span<Int>, _ counts: inout MutableSpan<Int>,
                                tx: Int, type: Int, chroma: Bool, inter: Bool, neighbours: Int, dc: Int, ac: Int,
-                               _ coefficients: inout MutableSpan<Int>, _ energy: inout MutableSpan<UInt8>) -> Bool {
+                               _ coefficients: inout MutableSpan<Int>, _ energy: inout MutableSpan<UInt8>) -> Int {
         @inline(__always) func read(_ coder: inout VP9Boolean, _ counts: inout MutableSpan<Int>, _ i: Int) -> Int {
             let b = coder.bit(probabilities[i])
             counts[2*i+b] += 1
@@ -227,7 +255,7 @@ extension VP9Context {
             if pos < limit { context = (1 + Int(energy[adjacent[2*pos]]) + Int(energy[adjacent[2*pos+1]])) >> 1 }
         }
         for k in 0..<pos { energy[scan[k]] = 0 }
-        return pos > 0
+        return pos
     }
     private static let categoryBase = [5,7,11,19,35,67]
     private static let bands4 = [0,1,1,2,2,2,3,3,3,3,4,4,4]

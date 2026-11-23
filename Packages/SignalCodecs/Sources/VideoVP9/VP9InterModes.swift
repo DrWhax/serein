@@ -85,7 +85,7 @@ extension VP9Tile {
     private static let classTree = [0,2,-1,4,6,8,-2,-3,10,12,-4,-5,-6,14,16,18,-7,-8,-9,-10]
     private static let modeContext = [2,3,4,1,3,0,0,0,0,5,5,0,5,0,0,0,0,0,6]
 
-    private func mvComponent(_ axis: Int, highPrecision: Bool) -> Int {
+    private mutating func mvComponent(_ axis: Int, highPrecision: Bool) -> Int {
         let neg = context.read(&coder, VP9Prob.sign + axis)
         let cls = context.tree(&coder, Self.classTree, VP9Prob.mvClass + 10 * axis)
         var delta = 0
@@ -108,7 +108,7 @@ extension VP9Tile {
         return neg == 0 ? magnitude : -magnitude
     }
 
-    private func differential(_ base: VP9MV) throws -> VP9MV {
+    private mutating func differential(_ base: VP9MV) throws -> VP9MV {
         let joint = context.tree(&coder, Self.fourValues, VP9Prob.joint)
         let hp = h.highPrecision && abs(base.row) < 64 && abs(base.col) < 64
         let row = base.row + (joint >= 2 ? mvComponent(0, highPrecision: hp) : 0)
@@ -117,7 +117,7 @@ extension VP9Tile {
         return VP9MV(row: row, col: col)
     }
 
-    private func referencePair(_ hints: VP9References, forced: Int?) -> (Int,Int) {
+    private mutating func referencePair(_ hints: VP9References, forced: Int?) -> (Int,Int) {
         if let forced { return (forced,0) }
         let compound = context.refMode == 2 ? context.read(&coder, VP9Prob.compound + hints.mode) : context.refMode
         if compound != 0 {
@@ -180,8 +180,8 @@ extension VP9Tile {
             }
         }
         while vectors.count < wantedCount { vectors.append(VP9MV()) }
-        let maxRow = (picture.rows - row - max(1,block.height/8)) * 64 + 128
-        let maxCol = (picture.cols - col - max(1,block.width/8)) * 64 + 128
+        let maxRow = (rows - row - max(1,block.height/8)) * 64 + 128
+        let maxCol = (cols - col - max(1,block.width/8)) * 64 + 128
         return vectors.map { VP9MV(row: max(-row*64-128,min(maxRow,$0.row)), col: max(-col*64-128,min(maxCol,$0.col))) }
     }
 
@@ -190,7 +190,7 @@ extension VP9Tile {
         return VP9MV(row: mv.row / 2 * 2, col: mv.col / 2 * 2)
     }
 
-    func interModes(col: Int, row: Int, block: inout VP9Block, forcedRef: Int?, forcedSkip: Bool) throws {
+    mutating func interModes(col: Int, row: Int, block: inout VP9Block, forcedRef: Int?, forcedSkip: Bool) throws {
         let above = neighbour(col,row-1), left = neighbour(col-1,row)
         block.refs = referencePair(VP9References(above,left,bias:h.bias), forced: forcedRef)
         let offsets = Self.offsets(width: block.width, height: block.height)
@@ -211,7 +211,7 @@ extension VP9Tile {
             let filterContext = a == b || b == 3 ? a : (a == 3 ? b : 3)
             block.filter = context.tree(&coder, [0,2,-1,-2], VP9Prob.interp + 2 * min(3,filterContext))
         }
-        if subBlocks { block.subVectors = Array(repeating: (VP9MV(),VP9MV()), count: 4) }
+        if subBlocks { block.subVectors = VP9SubVectors() }
         for y in stride(from: 0, to: 2, by: min(2,block.height/4)) {
             for x in stride(from: 0, to: 2, by: min(2,block.width/4)) {
                 let sub = 2*y+x

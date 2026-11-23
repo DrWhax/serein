@@ -65,6 +65,23 @@ struct VP9PredictionTests {
         #expect(digest(output) == "a6017f7ce646ef30c9706515b1d04316b4abcfae5120db7bf00c869de2d80a22")
     }
 
+    /// A DCT block whose only coefficient is DC skips the 2-D transform (libvpx's idct*_1 path):
+    /// the shortcut must equal the full transform at every position, for every Int16 DC value
+    /// and every size.
+    @Test func dcOnlyBlocksMatchTheFullTransform() {
+        for size in [4, 8, 16, 32] {
+            var mismatches = 0
+            for dc in Int(Int16.min)...Int(Int16.max) {
+                var block = [Int](repeating: 0, count: size*size)
+                block[0] = dc
+                VP9Transform.apply(&block, size: size, type: 0, lossless: false)
+                let value = VP9Transform.dcOnly(dc, size: size)
+                if block.contains(where: { $0 != value }) { mismatches += 1 }
+            }
+            #expect(mismatches == 0, "size \(size)")
+        }
+    }
+
     /// The plane filter runs two units along an edge as 8 vector lanes; each lane must equal
     /// the scalar kernel on its own line, for every mix of widths (incl. unfiltered units),
     /// levels, sharpness and direction, on content built to reach the flat and wide paths.

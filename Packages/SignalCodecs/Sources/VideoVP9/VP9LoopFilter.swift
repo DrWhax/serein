@@ -1,42 +1,34 @@
-/// Edge metadata in plane-local 4x4 units. The decoder supplies the segment and
-/// mode-adjusted filter level and the transform size (0=4x4 through 3=32x32).
-struct VP9FilterBlock {
-    var level: Int
-    var tx: Int
-    var skip: Bool
-    var left: Bool
-    var top: Bool
-}
-
 extension VP9Plane {
-    /// Filter one plane in superblock order. Both passes over a superblock
-    /// finish before the vertical pass on the adjacent superblock starts.
-    mutating func filter(sharpness: Int, chroma: Bool, info: (Int, Int) -> VP9FilterBlock) {
-        let sb = chroma ? 8 : 16
-        let rows = chroma ? (height+3)/4 : (height+7)/8*2
-        let cols = chroma ? (width+3)/4 : (width+7)/8*2
-        let stride = self.stride
-        // Each 4x4's filter decisions for its left (vertical pass) and top edges, packed as
-        // level | vertical taps << 8 | horizontal taps << 16; zero taps: not filtered.
-        // Filtering never changes block info, so this is the same as asking per edge.
-        var edges = [Int32](repeating: 0, count: rows*cols)
-        do {
-            var out = edges.mutableSpan
-            for row in 0..<rows {
-                for col in 0..<cols {
-                    let block = info(row,col)
-                    guard block.level > 0 else { continue }
-                    func taps(_ edge: Int, _ count: Int, _ boundary: Bool) -> Int {
-                        guard edge != 0, edge.isMultiple(of: 1 << block.tx), !block.skip || boundary else { return 0 }
-                        var taps = min(16, 4 << block.tx)
-                        if taps == 4 && edge.isMultiple(of: 8) { taps = 8 }
-                        if chroma && edge+1 == count { taps = min(8,taps) }
-                        return taps
-                    }
-                    out[row*cols+col] = Int32(block.level | taps(col,cols,block.left) << 8 | taps(row,rows,block.top) << 16)
-                }
-            }
+    /// The plane's size in 4x4 units.
+    static func units(width: Int, height: Int, chroma: Bool) -> (rows: Int, cols: Int) {
+        (chroma ? (height+3)/4 : (height+7)/8*2, chroma ? (width+3)/4 : (width+7)/8*2)
+    }
+
+    /// A 4x4's filter decisions for its left (vertical pass) and top edges, packed as
+    /// level | vertical taps << 8 | horizontal taps << 16; zero taps: not filtered. `level`
+    /// and `tx` are the block's (tx already limited to the plane's block size), `skip` a
+    /// skipped inter block, `left`/`top` whether the 4x4 starts the block's column/row.
+    static func edgeCode(level: Int, tx: Int, skip: Bool, left: Bool, top: Bool,
+                         row: Int, col: Int, rows: Int, cols: Int, chroma: Bool) -> Int32 {
+        guard level > 0 else { return 0 }
+        func taps(_ edge: Int, _ count: Int, _ boundary: Bool) -> Int {
+            guard edge != 0, edge.isMultiple(of: 1 << tx), !skip || boundary else { return 0 }
+            var taps = min(16, 4 << tx)
+            if taps == 4 && edge.isMultiple(of: 8) { taps = 8 }
+            if chroma && edge+1 == count { taps = min(8,taps) }
+            return taps
         }
+        return Int32(level | taps(col,cols,left) << 8 | taps(row,rows,top) << 16)
+    }
+
+    /// Filter one plane in superblock order, given every 4x4's edgeCode (row-major). Both
+    /// passes over a superblock finish before the vertical pass on the adjacent superblock
+    /// starts. Filtering never changes block info, so deciding first is the same as per edge.
+    mutating func filter(sharpness: Int, chroma: Bool, codes edges: [Int32]) {
+        let sb = chroma ? 8 : 16
+        let (rows, cols) = Self.units(width: width, height: height, chroma: chroma)
+        let stride = self.stride
+        guard edges.count == rows*cols else { return }
         var samples = bytes.mutableSpan
         for sbRow in Swift.stride(from: 0, to: rows, by: sb) {
             for sbCol in Swift.stride(from: 0, to: cols, by: sb) {
@@ -155,21 +147,22 @@ extension VP9Plane {
         // Vertical edges (step 1): lane j is row j, read as one contiguous run per row.
         let across = step == 1
         @inline(__always) func load(_ k: Int) -> SIMD8<Int16> {
-            let i = index + k*step
-            _ = s[i]; _ = s[i + 7]
-            return SIMD8(Int16(s[i]), Int16(s[i+1]), Int16(s[i+2]), Int16(s[i+3]),
-                         Int16(s[i+4]), Int16(s[i+5]), Int16(s[i+6]), Int16(s[i+7]))
+            // Wrapping index arithmetic: a bad index still fails the span's bounds check.
+            let i = index &+ k &* step
+            _ = s[i]; _ = s[i &+ 7]
+            return SIMD8(Int16(s[i]), Int16(s[i &+ 1]), Int16(s[i &+ 2]), Int16(s[i &+ 3]),
+                         Int16(s[i &+ 4]), Int16(s[i &+ 5]), Int16(s[i &+ 6]), Int16(s[i &+ 7]))
         }
-        /// Samples first ..< first+count of every row, as count lane vectors (vertical edges).
+        /// Samples first ..< first+8 of every row, as 8 lane vectors (vertical edges): each row is
+        /// read as one contiguous run, then the 8x8 block is transposed.
         @inline(__always) func rows(_ first: Int) -> (V, V, V, V, V, V, V, V) {
-            var a = V(), b = V(), c = V(), d = V(), e = V(), f = V(), g = V(), h = V()
-            for j in 0..<8 {
-                let i = index + j*increment + first
-                _ = s[i]; _ = s[i + 7]
-                a[j] = Int16(s[i]); b[j] = Int16(s[i+1]); c[j] = Int16(s[i+2]); d[j] = Int16(s[i+3])
-                e[j] = Int16(s[i+4]); f[j] = Int16(s[i+5]); g[j] = Int16(s[i+6]); h[j] = Int16(s[i+7])
+            @inline(__always) func row(_ j: Int) -> V {
+                let i = index &+ j &* increment &+ first
+                _ = s[i]; _ = s[i &+ 7]
+                return V(Int16(s[i]), Int16(s[i &+ 1]), Int16(s[i &+ 2]), Int16(s[i &+ 3]),
+                         Int16(s[i &+ 4]), Int16(s[i &+ 5]), Int16(s[i &+ 6]), Int16(s[i &+ 7]))
             }
-            return (a, b, c, d, e, f, g, h)
+            return Self.transpose(row(0), row(1), row(2), row(3), row(4), row(5), row(6), row(7))
         }
         typealias V = SIMD8<Int16>
         let zero = V(repeating: 0), one = V(repeating: 1), two = V(repeating: 2), three = V(repeating: 3)
@@ -251,12 +244,33 @@ extension VP9Plane {
             }
         }
         @inline(__always) func store(_ k: Int, _ v: SIMD8<Int16>) {
-            let i = index + k*step
-            for j in 0..<8 { s[i + j*increment] = UInt8(truncatingIfNeeded: v[j]) }
+            let i = index &+ k &* step
+            for j in 0..<8 { s[i &+ j &* increment] = UInt8(truncatingIfNeeded: v[j]) }
         }
         guard !wide else { return }
         store(-2, op1); store(-1, op0); store(0, oq0); store(1, oq1)
         if any(flat) { store(-3, op2); store(2, oq2) }
+    }
+
+    /// An 8x8 transpose: element c of vector r becomes element r of vector c. Three rounds of
+    /// unzips (the even and odd lanes of a pair), each pairing vectors by one row bit. Swift
+    /// 6.4 lowers these to lane moves rather than uzp1/uzp2, but reading each row whole still
+    /// measured a few percent faster than gathering lanes byte by byte.
+    @inline(__always)
+    static func transpose(_ r0: SIMD8<Int16>, _ r1: SIMD8<Int16>, _ r2: SIMD8<Int16>, _ r3: SIMD8<Int16>,
+                          _ r4: SIMD8<Int16>, _ r5: SIMD8<Int16>, _ r6: SIMD8<Int16>, _ r7: SIMD8<Int16>)
+        -> (SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>) {
+        @inline(__always) func unzip(_ a: SIMD8<Int16>, _ b: SIMD8<Int16>) -> (SIMD8<Int16>, SIMD8<Int16>) {
+            let both = SIMD16(lowHalf: a, highHalf: b)
+            return (both.evenHalf, both.oddHalf)
+        }
+        // Lane bits start as the column (c2 c1 c0); each round moves the lowest into the vector
+        // choice and a row bit into the top lane bit, ending with lanes (r2 r1 r0).
+        let (a0, a1) = unzip(r0, r1), (b0, b1) = unzip(r2, r3), (c0, c1) = unzip(r4, r5), (d0, d1) = unzip(r6, r7)
+        let (e00, e01) = unzip(a0, b0), (e10, e11) = unzip(a1, b1), (f00, f01) = unzip(c0, d0), (f10, f11) = unzip(c1, d1)
+        let (col0, col4) = unzip(e00, f00), (col2, col6) = unzip(e01, f01)
+        let (col1, col5) = unzip(e10, f10), (col3, col7) = unzip(e11, f11)
+        return (col0, col1, col2, col3, col4, col5, col6, col7)
     }
 
     /// Symmetric 7- or 15-sample box filter with one extra weight at the centre,

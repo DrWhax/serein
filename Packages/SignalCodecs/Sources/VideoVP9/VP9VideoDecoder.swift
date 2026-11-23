@@ -1,3 +1,6 @@
+import Dispatch
+import Synchronization
+
 public struct VP9Frame: Sendable {
     public let width, height, yStride, uvStride: Int
     public let y, u, v: [UInt8]
@@ -61,52 +64,105 @@ public struct VP9VideoDecoder {
             h.context = 0
             refDelta = [1,0,-1,-1]; modeDelta = [0,0]
         }
-        let p = VP9Picture(width:h.width,height:h.height)
         for i in refDelta.indices { if let v = h.refDeltas[i] { refDelta[i] = v } }
         for i in modeDelta.indices { if let v = h.modeDeltas[i] { modeDelta[i] = v } }
-        let entropy = VP9Context(contexts[h.context])
+        var entropy = VP9Context(contexts[h.context])
         var pos = h.headerBytes+h.compressedBytes
         try entropy.decodeHeader(bytes[h.headerBytes..<pos],header:h)
-        let columns = 1 << h.logCols, rows = 1 << h.logRows
-        func start(_ n: Int, _ count: Int, _ log: Int) -> Int { min(count,(((count+7)/8*n) >> log)*8) }
+        let cols = (h.width+7)/8, rows = (h.height+7)/8
+        let tileCols = 1 << h.logCols, tileRows = 1 << h.logRows
+        @Sendable func start(_ n: Int, _ count: Int, _ log: Int) -> Int { min(count,(((count+7)/8*n) >> log)*8) }
         let sameSize = previous.map { $0.planes[0].width == h.width && $0.planes[0].height == h.height } == true
         let temporal = !h.resilient && !previousIntra && previousShown && sameSize
-        var upperContexts: [(partition: [Int], nonzero: [[Int]])?] = .init(repeating:nil,count:columns)
-        for tr in 0..<rows { for tc in 0..<columns {
+        // Every tile's bytes, in bitstream order (row by row), filed by column.
+        var tiles = [[Range<Int>]](repeating: [], count: tileCols)
+        for tr in 0..<tileRows { for tc in 0..<tileCols {
             var length = bytes.count-pos
-            if tr*columns+tc < columns*rows-1 {
+            if tr*tileCols+tc < tileCols*tileRows-1 {
                 guard length >= 4 else { throw VP9DecodeError.malformed }
                 length = 0
                 for _ in 0..<4 { length = length*256+Int(bytes[pos]); pos += 1 }
             }
             guard length > 0, length <= bytes.count-pos else { throw VP9DecodeError.malformed }
-            let area = (start(tc,p.cols,h.logCols),start(tc+1,p.cols,h.logCols),start(tr,p.rows,h.logRows),start(tr+1,p.rows,h.logRows))
-            let tile = try VP9Tile(bytes[pos..<(pos+length)],h:h,context:entropy,picture:p,references:refs,
-                                 previous:previous,usePreviousMVs:temporal,area:area,refDelta:refDelta,modeDelta:modeDelta)
-            if let upper = upperContexts[tc] { tile.partAbove = upper.partition; tile.nzAbove = upper.nonzero }
-            try tile.decode()
-            upperContexts[tc] = (tile.partAbove,tile.nzAbove)
+            tiles[tc].append(pos..<(pos+length))
             pos += length
         } }
-        if h.level > 0 {
-            // The fields the filter reads, per MI, without the block's vector array.
-            let cells = p.blocks.map { b in
-                (level: b.level, tx: b.tx, skip: b.skip && b.refs.0 != 0, x: b.originX, y: b.originY,
-                 size: min(max(8,b.width),max(8,b.height)).trailingZeroBitCount)
+        let rowBounds = (0...tileRows).map { start($0,rows,h.logRows) }, tileBytes = tiles
+        // What each column reads, captured by value (the columns may run on other threads).
+        let header = h, shared = entropy, references = refs, prior = previous
+        let frameRefDelta = refDelta, frameModeDelta = modeDelta
+        @Sendable func column(_ tc: Int) throws -> VP9Tile {
+            var tile = try VP9Tile(h:header,context:shared,references:references,previous:prior,usePreviousMVs:temporal,
+                                   columns:start(tc,cols,header.logCols)..<start(tc+1,cols,header.logCols),
+                                   refDelta:frameRefDelta,modeDelta:frameModeDelta,firstTile:bytes[tileBytes[tc][0]],rows:rowBounds[0]..<rowBounds[1])
+            try tile.decode()
+            for tr in 1..<tileRows {
+                try tile.next(bytes[tileBytes[tc][tr]],rows:rowBounds[tr]..<rowBounds[tr+1])
+                try tile.decode()
             }
-            let rows = p.rows, cols = p.cols
-            for index in 0..<3 {
-                let shift = index == 0 ? 0 : 1
-                p.planes[index].filter(sharpness:h.sharpness,chroma:index != 0) { row4,col4 in
-                    let x = (col4*4) << shift, y = (row4*4) << shift
-                    let cellX = index == 0 ? x/8 : col4 & ~1
-                    let cellY = index == 0 ? y/8 : row4 & ~1
-                    let block = cells[min(rows-1,cellY)*cols+min(cols-1,cellX)]
-                    return VP9FilterBlock(level:block.level,tx:min(block.tx,block.size-shift-2),skip:block.skip,
-                                          left:x == block.x,top:y == block.y)
+            if header.level > 0 { tile.decideFilterEdges() }
+            return tile
+        }
+        var planes: [VP9Plane], blocks: [VP9Block], filterCodes: [[Int32]] = []
+        if tileCols == 1 {
+            let tile = try column(0)
+            (planes,blocks,filterCodes) = (tile.planes,tile.blocks,tile.filterCodes)
+            entropy.add(tile.context)
+        } else {
+            // Tile columns share nothing while they decode: each on its own thread.
+            let results = Mutex<[Result<VP9Tile,any Error>?]>(.init(repeating:nil,count:tileCols))
+            DispatchQueue.concurrentPerform(iterations:tileCols) { tc in
+                let result = Result { try column(tc) }
+                results.withLock { $0[tc] = result }
+            }
+            var decoded: [VP9Tile] = []
+            for result in results.withLock({ $0 }) {
+                guard let result else { throw VP9DecodeError.malformed }
+                decoded.append(try result.get())
+            }
+            planes = (0..<3).map { i in VP9Plane(strips: decoded.map { $0.planes[i] }) }
+            blocks = []
+            blocks.reserveCapacity(cols*rows)
+            for y in 0..<rows {
+                for tile in decoded {
+                    let span = tile.right-tile.left
+                    blocks.append(contentsOf: tile.blocks[(y*span)..<((y+1)*span)])
+                }
+            }
+            for tile in decoded { entropy.add(tile.context) }
+            if h.level > 0 {
+                filterCodes = (0..<3).map { p in
+                    var codes = [Int32]()
+                    let unitRows = decoded[0].filterCodes[p].count / max(1,decoded[0].filterWidths[p])
+                    for row in 0..<unitRows {
+                        for tile in decoded {
+                            let width = tile.filterWidths[p]
+                            codes.append(contentsOf: tile.filterCodes[p][(row*width)..<((row+1)*width)])
+                        }
+                    }
+                    return codes
                 }
             }
         }
+        if h.level > 0 {
+            // The planes filter independently, each on its own thread. A plane moves into its job
+            // (the slot keeps no reference), so it is filtered in place, not copied. (Superblock
+            // rows as a wavefront, as libvpx does, gained ~2% wall time for ~50% more CPU here:
+            // a row on an efficiency core holds back every row below it.)
+            let slots = Mutex<[VP9Plane?]>(planes.map { $0 }), codes = filterCodes
+            planes = []
+            let sharpness = h.sharpness
+            DispatchQueue.concurrentPerform(iterations:3) { index in
+                guard var plane = slots.withLock({ $0[index].take() }) else { return }
+                plane.filter(sharpness:sharpness,chroma:index != 0,codes:codes[index])
+                slots.withLock { $0[index] = plane }
+            }
+            for plane in slots.withLock({ $0 }) {
+                guard let plane else { throw VP9DecodeError.malformed }
+                planes.append(plane)
+            }
+        }
+        let p = VP9Picture(cols:cols,rows:rows,planes:planes,blocks:blocks)
         if h.saveContext {
             if !h.resilient && !h.parallel { entropy.adapt(from:contexts[h.context],intra:h.intra,afterKey:previousKey) }
             contexts[h.context] = entropy.probabilities

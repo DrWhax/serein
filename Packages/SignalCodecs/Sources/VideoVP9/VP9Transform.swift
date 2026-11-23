@@ -758,6 +758,14 @@ enum VP9Transform {
         io[31] = wrap(wrap(s1[0] - s1[31]))
     }
 
+    /// The residual of a DCT block whose only nonzero coefficient is DC: the same value at every
+    /// position (libvpx vpx_idct{4,8,16,32}_1_add; equal to apply(...) for every Int16 DC,
+    /// checked exhaustively by a test).
+    static func dcOnly(_ dc: Int, size: Int) -> Int {
+        let shift = size == 4 ? 4 : (size == 8 ? 5 : 6)
+        return (round(round(dc * cp16) * cp16) + (1 << (shift-1))) >> shift
+    }
+
     /// In place: rows, then columns. An all-zero row transforms to zeros, so it is skipped.
     static func apply(_ coefficients: inout [Int], size: Int, type: Int, lossless: Bool) {
         func transform(_ input: inout Line, sine: Bool, firstPass: Bool) {
