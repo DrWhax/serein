@@ -94,7 +94,7 @@ final class HostileCallService: XPCMessageHandler, Sendable {
     func reply(to request: XPCMessage) async throws -> XPCMessage {
         let r = try Wire.decode(CallRequest.self, try request.requirePayload(), maxBytes: maxRequestBytes)
         switch r {
-        case .create, .createSwiftVoice:
+        case .create:
             let id = state.withLock { s -> UInt64 in
                 let id = UInt64(100 + s.endpoints.count)
                 s.endpoints.append(id)

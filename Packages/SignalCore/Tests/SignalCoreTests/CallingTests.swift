@@ -13,6 +13,7 @@ import CryptoKit
 @testable import SignalCore
 
 @Suite(.serialized) struct CallingTests {
+    #if SEREIN_CALL_TEST_PEER
     @Test func localCallLinkTestPeerAdmissionAndSFUScope() throws {
         #expect(try LocalCallLinkTestPeer.passkey(nil, restrictions: .none) == nil)
         #expect(throws: LocalCallLinkTestPeerError.approvalRequired) { try LocalCallLinkTestPeer.passkey(nil, restrictions: .adminApproval) }
@@ -53,6 +54,7 @@ import CryptoKit
         #expect(!LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders.merging(["X-Room-Id": "elsewhere"]) { $1 }, body, expected: scope))
         #expect(!LocalCallLinkTestPeer.permitsRequest(.put, joinHeaders.merging(["Cookie": "extra"]) { $1 }, body, expected: scope))
     }
+    #endif
 
     @MainActor @Test func callingMessageProtoRoundTrip() {
         let m = CallingMessage(offer: OfferMessage(callId: 0xFFFF_0000_1234, type: .videoCall, opaque: Data([1, 2, 3])),
@@ -275,16 +277,25 @@ private func SHA512Digest(_ d: Data) -> [UInt8] { Array(SHA512.hash(data: d))
             if case .groupCallChanged(room, _) = event { joined = service?.groupCall(for: room)?.localDeviceState.joinState == .joined }
             if case .groupCallEnded(room, let reason) = event { ended.append(reason) }
         }
+        var camera: [Bool] = []
+        service.onCameraNeeded = { camera.append($0) }
         let call = try attach()
         // joinCallLinkCall applies these settings before the first asynchronous connection event.
         call.setOutgoingAudioMuted(true)
         call.setOutgoingVideoMuted(true)
         #expect(service.groupCall(for: room) === call)
+        #expect(camera.allSatisfy { !$0 })
         call.handleConnectionStateChanged(.connecting)
         call.handleJoinStateChanged(.joined, demuxId: 16)
         #expect(joined)
+        call.setOutgoingVideoMuted(false)
+        #expect(camera.last == true)
         let oldObserver = try #require(service.observers[room])
         call.handleConnectionStateChanged(.notConnected)
+        // As upstream: a client that is not connected stops the camera at once, before its
+        // end arrives, and still owns the room until then.
+        #expect(camera.last == false)
+        #expect(service.groupCall(for: room) === call)
         call.handleEnded(.iceFailedAfterConnected, CallSummary(.null))
         #expect(ended == [.iceFailedAfterConnected])
         #expect(service.groupCall(for: room) == nil && service.observers[room] == nil)

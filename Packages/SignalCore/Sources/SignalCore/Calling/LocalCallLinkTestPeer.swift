@@ -1,3 +1,5 @@
+// QA and debug builds only (Package.swift `testPeer`; SEREIN_QA_CALL_PEER=1 Tools/build-app.sh).
+#if SEREIN_CALL_TEST_PEER
 import Foundation
 import LibSignalClient
 public import SignalRingRTC
@@ -351,3 +353,4 @@ final class LocalCallLinkTestPeer: GroupCallObserver {
     func onRemoteMute(_ groupCall: GroupCall, demuxId: UInt32) {}
     func onObservedRemoteMute(_ groupCall: GroupCall, sourceDemuxId: UInt32, targetDemuxId: UInt32) {}
 }
+#endif

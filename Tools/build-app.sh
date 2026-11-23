@@ -35,7 +35,11 @@ check_signal_dep vendor/libsignal libsignal
 # Build the messaging protocol FFI.
 CARGO_BUILD_TARGET=aarch64-apple-darwin "$root/vendor/libsignal/swift/build_ffi.sh" --release
 cd "$pkg"
-swift build -c release --product SignalSafe
+# SEREIN_QA_CALL_PEER=1: a QA build with the local RingRTC test peer compiled in (for
+# Tools/stage-call-test-peer.py). A shipping build has none of it; checked below.
+qa_peer=""
+if [ "${SEREIN_QA_CALL_PEER:-}" = 1 ]; then qa_peer="-Xswiftc -DSEREIN_CALL_TEST_PEER"; fi
+swift build -c release --product SignalSafe $qa_peer
 products="$pkg/.build/out/Products/Release"
 app="$pkg/.build/Serein.app"
 rm -rf "$app" "$pkg/.build/SignalSafe.app"
@@ -240,6 +244,17 @@ done
 links "$bin" "13RingRTCNative|11CallService|12SwiftCalling|26SwiftCallingServiceAdapter|16VoiceNoteService" "calling backend or recorder linked into the app binary"
 links "$app/Contents/MacOS/Serein" "8VideoVP9|8VideoVP8|9ImageJPEG|8ImageGIF|9ImageWebP|8ImageBMP|9ImageTIFF|12ContainerMP4|9VideoH264|9VideoHEVC|8VideoAV1|9ImageHEIF|8AudioAAC|8AudioMP3|8HTMLMeta|$web" \
   "decoder or web-client symbols linked into the app binary"
+# The local RingRTC test peer: only in QA builds, and only in the app (never the calling service).
+peer_symbols='LocalCallLinkTestPeer|LocalCallTestPeerModel|testPeerFactory|CallTestPeerVideo|receiveLocalCallLinkMediaKey'
+if nm "$callxpc/Contents/MacOS/SignalCalling" | grep -qE "$peer_symbols"; then
+  echo "error: the call test peer is linked into the calling service" >&2; exit 1
+fi
+if [ -n "$qa_peer" ]; then
+  nm "$bin" | grep -qE "$peer_symbols" || { echo "error: SEREIN_QA_CALL_PEER=1 but the app lacks the test peer" >&2; exit 1; }
+  echo "build-app: QA build with the local RingRTC test peer (not for distribution)"
+elif nm "$bin" | grep -qE "$peer_symbols"; then
+  echo "error: the call test peer is linked into a shipping build" >&2; exit 1
+fi
 # Notification and call sounds (generated WAVs; UNNotificationSound looks in Library/Sounds).
 [ -f "$pkg/Resources/Sounds/pop.wav" ] || "$root/Tools/gen-sounds.sh" >/dev/null
 mkdir -p "$app/Contents/Library/Sounds"

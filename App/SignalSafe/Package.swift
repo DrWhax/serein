@@ -5,6 +5,10 @@
 
 import PackageDescription
 
+// The local RingRTC test peer (LocalCallTestPeer.swift and its hooks): debug builds and QA
+// release builds only (`SEREIN_QA_CALL_PEER=1 Tools/build-app.sh` passes -DSEREIN_CALL_TEST_PEER).
+let testPeer: [SwiftSetting] = [.define("SEREIN_CALL_TEST_PEER", .when(configuration: .debug))]
+
 let package = Package(
     name: "SignalSafe",
     platforms: [.macOS("27.0")],
@@ -40,7 +44,7 @@ let package = Package(
                 .strictMemorySafety(),
                 .treatWarning("StrictMemorySafety", as: .error),
                 .treatAllWarnings(as: .error),
-            ]
+            ] + testPeer
         ),
         // macOS integration: display sleep during calls, screen security, login item,
         // system notifications.
@@ -58,7 +62,7 @@ let package = Package(
             name: "SignalSafeTests",
             dependencies: ["SignalSafe", .product(name: "ImagePNG", package: "SignalCodecs"), .product(name: "CodecCore", package: "SignalCodecs"),
                            .product(name: "SignalUI", package: "SignalUI")],
-            swiftSettings: [.strictMemorySafety(), .treatWarning("StrictMemorySafety", as: .error)]
+            swiftSettings: [.strictMemorySafety(), .treatWarning("StrictMemorySafety", as: .error)] + testPeer
         ),
     ]
 )

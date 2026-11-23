@@ -112,11 +112,11 @@ extension RingRTC {
             handleRtcStatsReport?(e["reportJson"].string ?? "")
         case "handlePeekResponse":
             let status = e["status"].int ?? 0
-            let result: HttpResult<PeekInfo> = e["info"].isNull ? .failure(errorStatusCode: status) : .success(PeekInfo(e["info"]))
+            let result: HttpResult<PeekInfo> = e["info"].isNull ? .failure(errorStatusCode: status) : .success(revealingTitle(PeekInfo(e["info"])))
             if !peekRequests.resolve(UInt32(clamping: e["requestId"].int ?? 0), result) { logWarn("Invalid request ID for handlePeekResponse") }
         case "handleCallLinkResponse":
             let status = e["status"].int ?? 0
-            let result: HttpResult<CallLinkState> = CallLinkState(e["state"]).map { .success($0) } ?? .failure(errorStatusCode: status)
+            let result: HttpResult<CallLinkState> = revealingTitle(CallLinkState(e["state"])).map { .success($0) } ?? .failure(errorStatusCode: status)
             if !callLinkRequests.resolve(UInt32(clamping: e["requestId"].int ?? 0), result) { logWarn("Invalid request ID for handleCallLinkResponse") }
         case "handleEmptyResponse":
             let status = e["status"].int ?? 0
@@ -187,7 +187,7 @@ extension RingRTC {
             g.observer?.onReactions(g, reactions: e["reactions"].array.map { Reaction(demuxId: UInt32(clamping: $0["demuxId"].int ?? 0), value: $0["value"].string ?? "") })
         case "handleRaisedHands": g.observer?.onRaisedHands(g, raisedHands: e["raisedHands"].array.compactMap { $0.int.map { UInt32(clamping: $0) } })
         case "handleRemoteDevicesChanged": g.handleRemoteDevicesChanged(e["remoteDeviceStates"].array.map(RemoteDeviceState.init))
-        case "handlePeekChanged": g.handlePeekChanged(PeekInfo(e["info"]))
+        case "handlePeekChanged": g.handlePeekChanged(revealingTitle(PeekInfo(e["info"])))
         case "handleEnded":
             groupCallByClientId[clientId] = nil
             g.handleEnded(CallEndReason(rawValue: e["reason"].int ?? 0) ?? .internalFailure, CallSummary(e["summary"]))

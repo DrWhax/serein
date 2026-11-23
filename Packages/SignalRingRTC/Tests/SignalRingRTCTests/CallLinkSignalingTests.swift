@@ -4,6 +4,7 @@ import Testing
 @testable import SignalRingRTC
 
 @MainActor @Suite struct CallLinkSignalingTests {
+    #if SEREIN_CALL_TEST_PEER
     @Test func localTestPeerOnlyAcceptsOneCompleteSendingKeyForItsCurrentDevice() throws {
         let observer = Observer()
         let call = GroupCall(kind: .callLink, endpoint: FakeEndpoint(), observer: observer, clientId: 1)
@@ -91,6 +92,8 @@ import Testing
         deliver()
         #expect(b.commands.withLock { $0.filter { $0 == "receivedCallMessage" }.count } == 2)
     }
+
+    #endif
 
     @Test func roomAndCurrentAudienceBindGroupedMessagesAndFallback() throws {
         let rtc = try RingRTC(endpoint: { _ in FakeEndpoint() })

@@ -59,9 +59,11 @@ struct RootView: View {
                 ShareContactDialogHost(session: session)
                 ChatDialogs(session: session, i18n: i18n)
                 callLinkModal
+                #if SEREIN_CALL_TEST_PEER
                 if let message = session.localCallTestPeerLaunchError {
                     ErrorModal(title: "Test call", description: message) { session.localCallTestPeerLaunchError = nil }
                 }
+                #endif
                 if let e = session.composeError {
                     ErrorModal(title: i18n("icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
                 }

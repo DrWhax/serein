@@ -26,8 +26,7 @@ enum EndpointPlace: String, CaseIterable, Sendable {
         var states: [CallState] = []
         var incoming: Call?
         init(_ name: String, _ place: EndpointPlace = .inProcess,
-             backend: @escaping LocalCallEndpointFactory = NativeEndpoint.factory,
-             swiftVoice: Bool = false) throws {
+             backend: @escaping LocalCallEndpointFactory = NativeEndpoint.factory) throws {
             self.name = name
             switch place {
             case .inProcess:
@@ -39,7 +38,7 @@ enum EndpointPlace: String, CaseIterable, Sendable {
                 let l = XPCServer.anonymous(requirement: nil, h)
                 listener = l
                 handler = h
-                rtc = try RingRTC(endpoint: RemoteCallEndpoint.factory(.endpoint(l.endpoint), peer: nil, swiftVoice: swiftVoice))
+                rtc = try RingRTC(endpoint: RemoteCallEndpoint.factory(.endpoint(l.endpoint), peer: nil))
             }
         }
         isolated deinit { listener?.cancel() }

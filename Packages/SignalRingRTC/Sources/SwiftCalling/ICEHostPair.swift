@@ -115,7 +115,14 @@ struct ICEHostPair: Sendable {
         outgoingName = remoteUfrag + ":" + localUfrag
     }
 
-    private static func valid(_ field: String, min: Int) -> Bool {
+    /// RFC 8445 §5.3: an ice-pwd carries at least 128 bits of randomness. 24 ice-chars from the
+    /// system generator carry 144, as WebRTC's do.
+    static func randomPassword() -> String {
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".utf8)
+        return String(decoding: (0..<24).map { _ in alphabet[Int.random(in: 0..<alphabet.count)] }, as: UTF8.self)
+    }
+
+    static func valid(_ field: String, min: Int) -> Bool {
         (min...256).contains(field.utf8.count) && field.utf8.allSatisfy {
             (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 43 || $0 == 47
         }

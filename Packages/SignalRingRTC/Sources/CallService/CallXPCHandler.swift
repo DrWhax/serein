@@ -66,7 +66,7 @@ public final class CallXPCHandler: XPCMessageHandler {
 
     func run(_ request: CallRequest) async throws -> Data {
         switch request {
-        case .create(let trials), .createSwiftVoice(let trials):
+        case .create(let trials):
             let generation = session.withLock { $0.generation }
             return try await on(commands) { [self] in
                 try session.withLock {

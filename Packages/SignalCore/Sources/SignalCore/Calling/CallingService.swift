@@ -99,7 +99,9 @@ public final class CallingService {
     var callsLookup: [String: ActiveCall] = [:]
     /// GroupCall keeps its observer weakly.
     var observers: [String: GroupObserver] = [:]
+    #if SEREIN_CALL_TEST_PEER
     var localCallLinkTestPeer: LocalCallLinkTestPeer?
+    #endif
     var iceServersCache: (servers: [IceServer], expires: Date)?
     var adhocProfileKeysSent = Set<String>()
     /// Upstream `#cameraEnabled`: whether the camera should send once a call is accepted.
@@ -132,11 +134,15 @@ public final class CallingService {
         self.credentials = credentials
         self.config = config
         rtc = try RingRTC(fieldTrials: fieldTrials, endpoint: endpoint)
+        // Call-link titles are sealed and opened here, with libsignal (CallLinkTitles.swift).
+        rtc.callLinkTitleCipher = CallLinkTitles()
         try rtc.setSelfUuid(Self.uuidBytes(account.aci))
         wire()
     }
 
+    #if SEREIN_CALL_TEST_PEER
     isolated deinit { localCallLinkTestPeer?.stop(.ended) }
+    #endif
 
     /// Registers the "call link refresh" job; call before `jobs.start()`.
     public func register() async {
@@ -148,6 +154,7 @@ public final class CallingService {
     }
 
     func emit(_ e: CallingEvent) {
+        #if SEREIN_CALL_TEST_PEER
         if let peer = localCallLinkTestPeer {
             switch e {
             case .groupCallChanged(let room, _) where room == peer.roomId: peer.update()
@@ -155,6 +162,7 @@ public final class CallingService {
             default: break
             }
         }
+        #endif
         onEvent?(e)
     }
 
@@ -174,7 +182,9 @@ public final class CallingService {
         }
         rtc.handleSendCallMessage = { [weak self] recipient, data, urgency in
             guard let self, let userId = Self.uuidString(recipient) else { return }
+            #if SEREIN_CALL_TEST_PEER
             if self.localCallLinkTestPeer?.handlePrimaryKey(recipient: recipient, message: data) == true { return }
+            #endif
             Task { @MainActor in
                 _ = await self.handleOutgoingSignaling(userId, CallingMessage(opaque: OpaqueMessage(data: data)), urgency: urgency)
             }

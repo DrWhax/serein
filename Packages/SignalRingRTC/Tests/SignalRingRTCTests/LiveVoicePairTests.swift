@@ -49,6 +49,7 @@ struct LiveVoicePairTests {
         let routes = Mutex<[Int]>([])
         let recovered = Mutex(0)
         let reconnecting = Mutex(0)
+        let logs = Mutex<[String]>([])
 
         func observe(_ event: LiveVoiceSession.Event) {
             switch event {
@@ -73,6 +74,7 @@ struct LiveVoicePairTests {
             case .networkRoute(let adapter): routes.withLock { $0.append(adapter) }
             case .reconnecting: reconnecting.withLock { $0 += 1 }
             case .reconnected: recovered.withLock { $0 += 1 }
+            case .log(let line): logs.withLock { $0.append(line) }
             case .remoteAudio, .remoteVideo, .remoteScreen, .lowBandwidthForVideo: break
             case .audioLevels(let captured, let received):
                 if captured > 0 || received > 0 { audible.withLock { $0 = true } }
@@ -295,6 +297,42 @@ struct LiveVoicePairTests {
         await alice.end(sendHangup: false); await bob.end(sendHangup: false)
     }
 
+    /// A phone signals its local addresses first; from another network they never answer. Behind
+    /// a NAT that drops unsolicited packets, the callee cannot reach the caller first either, so
+    /// the caller's own checks must find the reachable address. RingRTC (WebRTC) checks pairs in
+    /// parallel; a dead address must not hold up the rest (both sides ring within seconds).
+    @Test func callerReachesThePeerPastAddressesThatNeverAnswer() async throws {
+        let first = Observer(), second = Observer()
+        let caller = LiveVoiceSession(callID: 72, outgoing: true,
+            devices: .init(microphone: Microphone(), speaker: Speaker()), event: first.observe)
+        let callee = LiveVoiceSession(callID: 72, outgoing: false,
+            devices: .init(microphone: Microphone(), speaker: Speaker()), event: second.observe)
+        // TEST-NET-1 (RFC 5737): routed nowhere, so these checks go unanswered.
+        for (i, port) in [40001, 40002, 40003].enumerated() {
+            await caller.addCandidate(.init(addedSDP: "candidate:dead\(i) 1 udp 2122260223 192.0.2.\(10 + i) \(port) typ host"))
+        }
+        let toCaller = Task { for await candidate in second.candidates.stream { await caller.addCandidate(candidate) } }
+        let dropped = Task { for await _ in first.candidates.stream {} }
+        defer { toCaller.cancel(); dropped.cancel() }
+        let callerIdentity = Data(repeating: 0x11, count: 33), calleeIdentity = Data(repeating: 0x22, count: 33)
+        try await caller.setRemote(callee.localParameters, callerIdentity: callerIdentity, calleeIdentity: calleeIdentity)
+        try await callee.setRemote(caller.localParameters, callerIdentity: callerIdentity, calleeIdentity: calleeIdentity)
+        let started = ContinuousClock.now
+        await callee.configure(relayOnly: false, servers: [])
+        await caller.configure(relayOnly: false, servers: [])
+        do {
+            try await wait(seconds: 40) { first.ringing.withLock { $0 } && second.ringing.withLock { $0 } }
+        } catch {
+            await caller.end(sendHangup: false)
+            await callee.end(sendHangup: false)
+            throw error
+        }
+        let elapsed = started.duration(to: .now)
+        await caller.end(sendHangup: true)
+        await callee.end(sendHangup: false)
+        #expect(elapsed < .seconds(4), "both sides rang after \(elapsed)")
+    }
+
     @Test(arguments: [false, true]) func directCaptureConsentMuteAndTeardown(peerReflexive: Bool) async throws {
         let first = Observer(), second = Observer()
         let micA = Microphone(), micB = Microphone()
@@ -326,6 +364,7 @@ struct LiveVoicePairTests {
             #expect(await !speakerA.running)
             #expect(await !speakerB.running)
 
+            await caller.setStatsInterval(seconds: 1)
             await callee.accept()
             try await wait { await micA.running }
             try await wait { await micB.running }
@@ -334,6 +373,11 @@ struct LiveVoicePairTests {
             try await wait { await speakerA.audibleBlocks >= 3 }
             try await wait { await speakerB.audibleBlocks >= 3 }
             try await wait { first.audible.withLock { $0 } && second.audible.withLock { $0 } }
+            // Diagnostics reach the app's log: the path and per-interval media, never an address.
+            try await wait(seconds: 6) { first.logs.withLock { $0.contains { $0.hasPrefix("media: rtt ") } } }
+            let lines = first.logs.withLock { $0 } + second.logs.withLock { $0 }
+            #expect(lines.contains { $0.hasPrefix("ICE: connected over direct") })
+            #expect(!lines.contains { $0.contains("127.0.0.1") || $0.contains("::1") })
 
             // Let the prior 60 ms packet and its bounded concealment tail finish.
             try await Task.sleep(for: .milliseconds(200))

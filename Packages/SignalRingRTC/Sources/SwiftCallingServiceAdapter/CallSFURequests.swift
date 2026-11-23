@@ -81,7 +81,7 @@ struct CallSFURequests {
         var method = HttpMethod.get
         if !kind.isPeek { headers["Content-Type"] = .string("application/json") }
         if [.create, .update, .delete].contains(kind) {
-            guard let admin = fields["adminPasskey"]?.data, let root else { throw RingRTCError.invalidResponse }
+            guard let admin = fields["adminPasskey"]?.data, root != nil else { throw RingRTCError.invalidResponse }
             var object: [String: JSONValue] = ["adminPasskey": .bytes(admin)]
             if kind == .create {
                 guard let params = fields["publicZkparams"]?.data else { throw RingRTCError.invalidResponse }
@@ -92,7 +92,11 @@ struct CallSFURequests {
                 if restriction == 1 { object["restrictions"] = .string("adminApproval") }
             }
             if kind == .update {
-                if let name = fields["newName"]?.string { object["name"] = .bytes(try CallLinkNameCipher(rootKey: root.bytes).seal(name)) }
+                // The app seals the title (CallLinkTitleCipher, libsignal); this service holds no cipher.
+                if fields["newName"] != nil || fields["encryptedNewName"] != nil {
+                    guard let sealed = fields["encryptedNewName"]?.data, sealed.count <= 65_536 + 60 else { throw RingRTCError.invalidResponse }
+                    object["name"] = .bytes(sealed)
+                }
                 if let revoked = fields["newRevoked"]?.bool { object["revoked"] = .bool(revoked) }
             }
             body = .bytes(try JSONEncoder().encode(JSONValue.object(object)))
@@ -115,8 +119,8 @@ struct CallSFURequests {
 
         func event(root: CallLinkRootKey) throws -> JSONValue {
             guard expiration <= UInt64(Int64.max / 1000) else { throw RingRTCError.invalidResponse }
-            let plain = Data(base64Encoded: name).flatMap { try? CallLinkNameCipher(rootKey: root.bytes).open($0) }
-            return .object(["name": .string(plain ?? ""), "revoked": .bool(revoked), "rootKey": .bytes(root.bytes),
+            // Passed through as the SFU stores it; the app opens it (RingRTC.revealingTitle).
+            return .object(["encryptedName": .string(name), "revoked": .bool(revoked), "rootKey": .bytes(root.bytes),
                             "expirationMillis": .int(Int64(expiration) * 1000),
                             "rawRestrictions": .int(restrictions == "none" ? 0 : restrictions == "adminApproval" ? 1 : -1)])
         }

@@ -6,6 +6,8 @@ import Synchronization
 /// Serein's strict Swift calling endpoint, hosted in the calling service.
 public final class SwiftVoiceEndpoint: LocalCallEndpoint {
     public static let factory: LocalCallEndpointFactory = { _ in SwiftVoiceEndpoint() }
+    /// Upstream's TIME_OUT_PERIOD (RingRTC call_manager.rs).
+    static let callTimeout: Duration = .seconds(60)
 
     package static func factory(devices: @escaping @Sendable () -> VoiceCallDevices) -> LocalCallEndpointFactory {
         { _ in SwiftVoiceEndpoint(devices: devices) }
@@ -231,6 +233,9 @@ public final class SwiftVoiceEndpoint: LocalCallEndpoint {
                     emit(call.party.propagatedHangup(.accepted, device: device), &s)
                 }
                 emit(call.party.event("onCallState", ["state": .string("connected")]), &s)
+            case .log(let message):
+                emit(.object(["type": .string("onLogMessage"), "level": .int(Int64(CallLogLevel.info.rawValue)),
+                              "file": .string("LiveVoiceSession"), "line": .int(0), "message": .string(message)]), &s)
             case .lowBandwidthForVideo(let recovered):
                 guard call.leg.id == legID else { return }
                 emit(call.party.event("onLowBandwidthForVideo", ["recovered": .bool(recovered)]), &s)
@@ -272,7 +277,8 @@ public final class SwiftVoiceEndpoint: LocalCallEndpoint {
         let identity = LiveVoiceSession.Identity()
         let leg = makeLeg(party, outgoing: outgoing, identity: identity)
         let deadline = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(120)) } catch { return }
+            // RingRTC call_manager.rs TIME_OUT_PERIOD: a call not accepted within 60 s times out.
+            do { try await Task.sleep(for: Self.callTimeout) } catch { return }
             guard let self else { return }
             self.state.withLock { s in
                 if s.call?.token == token && s.call?.claimed == false { self.finish(.timeout, &s, sendHangup: true) }

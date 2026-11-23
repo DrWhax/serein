@@ -159,14 +159,10 @@ import SignalUI
     var callSetupTask: Task<Void, Never>?
     /// From pressing Join until a call link connects or the server asks for admin approval.
     var callLinkJoinTimeoutTask: Task<Void, Never>?
-    var localCallTestPeerState: LocalCallTestPeerState = .idle
-    var localCallTestPeerLaunchError: String?
-    var waitingForTestRoom = false
-    var localCallTestPeerDemuxId: UInt32?
-    @ObservationIgnored var localCallTestPeerTask: Task<Void, Never>?
-    @ObservationIgnored var localCallTestPeerAttempt: UUID?
-    @ObservationIgnored var automaticTestPeerRoom: String?
-    @ObservationIgnored var handledTestPeerLaunch = false
+    #if SEREIN_CALL_TEST_PEER
+    /// The local RingRTC test peer (LocalCallTestPeer.swift): QA and debug builds only.
+    @ObservationIgnored let callTestPeer = LocalCallTestPeerModel()
+    #endif
     /// The current screen share's token (nil: none). Each share gets a new one; its frame and
     /// stop callbacks carry it, so an old stream's late frame or error cannot reach a newer
     /// share or call (a call generation alone does not tell two shares in one call apart).

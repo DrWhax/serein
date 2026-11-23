@@ -1,3 +1,5 @@
+// QA and debug builds only (Package.swift `testPeer`; SEREIN_QA_CALL_PEER=1 Tools/build-app.sh).
+#if SEREIN_CALL_TEST_PEER
 import Foundation
 import MediaXPCInterface
 import SignalRingRTC
@@ -58,3 +60,4 @@ public enum CallTestPeerVideo {
         return pixels
     }
 }
+#endif

@@ -21,7 +21,7 @@ import Testing
         var issued: [Issuance] = []
         var sendsWhilePending: [Data] = []
         for i in ids.indices {
-            let side = try LoopbackCallTests.Side(ids[i], .overXPC, backend: SwiftVoiceEndpoint.factory, swiftVoice: true)
+            let side = try LoopbackCallTests.Side(ids[i], .overXPC, backend: SwiftVoiceEndpoint.factory)
             clients.append(side)
             try side.rtc.setSelfUuid(users[i])
             side.rtc.handleSendHttpRequest = { [weak side] id, url, method, headers, body in

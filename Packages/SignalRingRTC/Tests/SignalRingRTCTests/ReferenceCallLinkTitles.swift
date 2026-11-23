@@ -1,5 +1,13 @@
+// Test reference only. Production call-link titles use libsignal's AES-256-GCM-SIV in the app
+// (SignalCore CallLinkTitles); the calling service holds no cipher. This independent Swift
+// implementation lets SignalRingRTC's tests play the app's part against the Swift service and
+// interoperate with native RingRTC (RustCrypto).
 import CryptoKit
 import Foundation
+@testable import SignalRingRTC
+@testable import SwiftCalling
+
+enum ReferenceTitleError: Error { case malformed }
 
 /// RingRTC call-link titles use AES-256-GCM-SIV with empty associated data (RFC 8452).
 struct CallLinkRecordCipher {
@@ -8,7 +16,7 @@ struct CallLinkRecordCipher {
     private let nonce: [UInt8]
 
     init(key: SymmetricKey, nonce: [UInt8]) throws {
-        guard key.bitCount == 256, nonce.count == 12 else { throw CallingWireError.malformed }
+        guard key.bitCount == 256, nonce.count == 12 else { throw ReferenceTitleError.malformed }
         self.nonce = nonce
         let master = try AESBlockCipher(key)
         var input = SIMD16<UInt8>()
@@ -80,43 +88,36 @@ struct CallLinkRecordCipher {
     }
 
     func open(_ record: [UInt8]) throws -> [UInt8] {
-        guard record.count >= 16 else { throw CallingWireError.malformed }
+        guard record.count >= 16 else { throw ReferenceTitleError.malformed }
         var received = SIMD16<UInt8>()
         for i in 0..<16 { received[i] = record[record.count - 16 + i] }
         let plain = crypt(Array(record.dropLast(16)), tag: received)
         let diff = received ^ tag(for: plain)
-        guard (0..<16).reduce(UInt8.zero, { $0 | diff[$1] }) == 0 else { throw CallingWireError.malformed }
+        guard (0..<16).reduce(UInt8.zero, { $0 | diff[$1] }) == 0 else { throw ReferenceTitleError.malformed }
         return plain
     }
 }
 
-package struct CallLinkNameCipher {
-    private let key: SymmetricKey
-    private static let limit = 65_536
-
-    package init(rootKey: Data) throws {
-        guard rootKey.count == 16 || rootKey.count == 21 else { throw CallingWireError.malformed }
-        let info = rootKey.count == 16 ? "20230501-Signal-CallLinkRootKey-AES" : "20251219-Signal-CallLinkRootKey-AES"
-        key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: rootKey.prefix(16)), info: Data(info.utf8), outputByteCount: 32)
+struct ReferenceCallLinkTitles: CallLinkTitleCipher {
+    private static func key(_ rootKey: CallLinkRootKey) throws -> SymmetricKey {
+        let root = rootKey.bytes
+        guard root.count == 16 || root.count == 21 else { throw ReferenceTitleError.malformed }
+        let info = root.count == 16 ? "20230501-Signal-CallLinkRootKey-AES" : "20251219-Signal-CallLinkRootKey-AES"
+        return HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: root.prefix(16)), info: Data(info.utf8), outputByteCount: 32)
     }
 
-    package func seal(_ title: String) throws -> Data {
+    func seal(_ title: String, rootKey: CallLinkRootKey) throws -> Data {
         guard !title.isEmpty else { return Data() }
-        guard title.utf8.count <= Self.limit else { throw CallingWireError.malformed }
         let nonce = (0..<12).map { _ in UInt8.random(in: .min ... .max) }
         var plain = Array(title.utf8) + [0x80]
         plain += Array(repeating: 0, count: (32 - (12 + plain.count) % 32) % 32)
-        return try Data(nonce + CallLinkRecordCipher(key: key, nonce: nonce).seal(plain))
+        return try Data(nonce + CallLinkRecordCipher(key: Self.key(rootKey), nonce: nonce).seal(plain))
     }
 
-    package func open(_ envelope: Data) throws -> String {
-        guard !envelope.isEmpty else { return "" }
-        guard (28...(Self.limit + 60)).contains(envelope.count) else { throw CallingWireError.malformed }
-        let cipher = try CallLinkRecordCipher(key: key, nonce: Array(envelope.prefix(12)))
-        let plain = try cipher.open(Array(envelope.dropFirst(12)))
-        guard let marker = plain.lastIndex(of: 0x80), let title = String(bytes: plain[..<marker], encoding: .utf8) else {
-            throw CallingWireError.malformed
-        }
-        return title
+    func open(_ encrypted: Data, rootKey: CallLinkRootKey) -> String? {
+        guard encrypted.count >= 28, let key = try? Self.key(rootKey),
+              let cipher = try? CallLinkRecordCipher(key: key, nonce: Array(encrypted.prefix(12))),
+              let plain = try? cipher.open(Array(encrypted.dropFirst(12))), let marker = plain.lastIndex(of: 0x80) else { return nil }
+        return String(bytes: plain[..<marker], encoding: .utf8)
     }
 }

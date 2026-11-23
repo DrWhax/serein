@@ -150,7 +150,7 @@ package actor GroupMediaSession {
         dh = Curve25519.KeyAgreement.PrivateKey()
         publicKey = dh.publicKey.rawRepresentation
         iceUfrag = String(UUID().uuidString.prefix(8))
-        icePassword = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        icePassword = ICEHostPair.randomPassword()
         self.groupVideo = groupVideo
         self.levelsInterval = audioLevelsIntervalMillis.flatMap(Self.interval)
         self.devices = devices

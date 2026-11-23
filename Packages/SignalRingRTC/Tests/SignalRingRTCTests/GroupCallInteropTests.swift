@@ -57,7 +57,7 @@ import Testing
             backend = SwiftVoiceEndpoint.factory(devices: { .init(microphone:microphone,speaker:speaker) })
         } else { backend = SwiftVoiceEndpoint.factory }
         let reference = ProcessInfo.processInfo.environment["SEREIN_TEST_REFERENCE_NATIVE"] == "1"
-        let a = try reference ? LoopbackCallTests.Side("reference", .overXPC) : LoopbackCallTests.Side("swift",.overXPC,backend:backend,swiftVoice:true)
+        let a = try reference ? LoopbackCallTests.Side("reference", .overXPC) : LoopbackCallTests.Side("swift",.overXPC,backend:backend)
         let b = try LoopbackCallTests.Side("native",.overXPC)
         if ProcessInfo.processInfo.environment["SEREIN_TEST_NATIVE_LOG"] == "1" {
             b.rtc.handleLogMessage = { _, file, _, message in print("[native \(file)] \(message)") }

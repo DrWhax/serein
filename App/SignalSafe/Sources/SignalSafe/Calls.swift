@@ -9,6 +9,7 @@ import AppKit
 import CallXPC
 import Foundation
 import GRDB
+import OSLog
 import SignalCore
 import SignalRingRTC
 import SignalUI
@@ -61,7 +62,9 @@ struct CallDevices {
 /// One group participant's video.
 @MainActor final class GroupCallVideo: CallVideoFrameSource {
     weak var calling: CallingService?
+    #if SEREIN_CALL_TEST_PEER
     var onNextFrame: (() -> Void)?
+    #endif
     let conversationId: String
     let demuxId: UInt32
     init(calling: CallingService?, conversationId: String, demuxId: UInt32) {
@@ -71,10 +74,12 @@ struct CallDevices {
     }
     func receiveVideoFrame(into buffer: inout [UInt8], maxWidth: Int, maxHeight: Int) -> (width: Int, height: Int)? {
         let frame = calling?.groupCall(for: conversationId)?.receiveVideoFrame(demuxId: demuxId, into: &buffer, maxWidth: maxWidth, maxHeight: maxHeight)
+        #if SEREIN_CALL_TEST_PEER
         if frame != nil, let onNextFrame {
             self.onNextFrame = nil
             onNextFrame()
         }
+        #endif
         return frame
     }
 }
@@ -104,6 +109,9 @@ extension CallingService: CallControl {
 }
 
 @MainActor extension SignalSession {
+    /// The calling engine's diagnostics, forwarded by RingRTC.handleLogMessage.
+    static let callLog = Logger(subsystem: "org.signalsafe.SignalSafe", category: "Calling")
+
     /// The calling service as the call lifecycle sees it (`callControlOverride` in tests).
     var callControl: (any CallControl)? {
         if let callControlOverride { return callControlOverride }
@@ -125,6 +133,17 @@ extension CallingService: CallControl {
                 service.onEvent = { [weak self] e in _ = self?.enqueueCallingEvent(e) }
                 service.onCameraNeeded = { [weak self] on in Task { @MainActor in self?.setCameraSending(on) } }
                 service.rtc.handleInputDeviceChanged = { [weak self] list in self?.callDevices.microphones = Self.callDeviceList(list) }
+                // The calling engine's diagnostics (connection path, timing; no addresses) go to the
+                // unified log, as upstream keeps RingRTC's: `log stream --predicate 'subsystem == "org.signalsafe.SignalSafe" && category == "Calling"'`.
+                // The service is untrusted, so each line is flattened and capped.
+                service.rtc.handleLogMessage = { level, file, _, message in
+                    let line = String(String(message.prefix(300)).map { $0.isNewline ? " " : $0 })
+                    switch level {
+                    case .error: Self.callLog.error("\(file, privacy: .public): \(line, privacy: .public)")
+                    case .warn: Self.callLog.warning("\(file, privacy: .public): \(line, privacy: .public)")
+                    default: Self.callLog.info("\(file, privacy: .public): \(line, privacy: .public)")
+                    }
+                }
                 service.rtc.handleOutputDeviceChanged = { [weak self] list in self?.callDevices.speakers = Self.callDeviceList(list) }
                 calling = service
                 preferredMicrophoneId = UserDefaults.standard.string(forKey: "preferredMicrophone")
@@ -132,9 +151,11 @@ extension CallingService: CallControl {
                 preferredCameraId = UserDefaults.standard.string(forKey: "preferredCamera")
                 applyAudioDevices()
                 Self.trace("calling: ready")
+                #if SEREIN_CALL_TEST_PEER
                 if CommandLine.arguments.contains("--test-call-link-stdin") {
                     await openCurrentTestCallLink()
                 }
+                #endif
                 // Debugging the call UI: open a voice-call lobby (no call is placed).
                 if ProcessInfo.processInfo.environment["SIGNALSAFE_DEBUG_LOBBY"] == "1" {
                     try? await Task.sleep(for: .seconds(3))
@@ -244,10 +265,12 @@ extension CallingService: CallControl {
 
     func updateGroupJoinState(_ join: JoinState, connection: ConnectionState) {
         if join == .joined { activeCall?.stage = .inCall }
+        #if SEREIN_CALL_TEST_PEER
         if join == .joined, connection == .connected, let room = automaticTestPeerRoom, room == activeCall?.conversationId {
             automaticTestPeerRoom = nil
             startLocalCallTestPeer()
         }
+        #endif
         // Waiting for a person to approve a request has no connection deadline.
         if callLinkJoinTimeoutTask != nil, join == .pending || (join == .joined && connection == .connected) {
             callLinkJoinTimeoutTask?.cancel()
@@ -270,9 +293,11 @@ extension CallingService: CallControl {
     /// ringtone stops. A ringing incoming call is left ringing.
     func releaseCallMedia(conversationId: String?) {
         callGeneration &+= 1
+        #if SEREIN_CALL_TEST_PEER
         automaticTestPeerRoom = nil
         waitingForTestRoom = false
         stopLocalCallTestPeer()
+        #endif
         callSetupTask?.cancel()
         callSetupTask = nil
         callLinkJoinTimeoutTask?.cancel()

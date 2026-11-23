@@ -1,11 +1,62 @@
+// QA and debug builds only (Package.swift `testPeer`; SEREIN_QA_CALL_PEER=1 Tools/build-app.sh).
+#if SEREIN_CALL_TEST_PEER
 import CallXPC
 import Foundation
+import Observation
 import OSLog
 import SignalCore
 import SignalRingRTC
 
 enum LocalCallTestPeerState: Equatable {
     case idle, starting, running, failed(String)
+}
+
+/// The test peer's state, held by `SignalSession.callTestPeer`. Kept out of the session so
+/// a shipping build has none of it.
+@MainActor @Observable final class LocalCallTestPeerModel {
+    var state: LocalCallTestPeerState = .idle
+    var launchError: String?
+    var waitingForRoom = false
+    var demuxId: UInt32?
+    @ObservationIgnored var task: Task<Void, Never>?
+    @ObservationIgnored var attempt: UUID?
+    @ObservationIgnored var automaticRoom: String?
+    @ObservationIgnored var handledLaunch = false
+}
+
+@MainActor extension SignalSession {
+    var localCallTestPeerState: LocalCallTestPeerState {
+        get { callTestPeer.state }
+        set { callTestPeer.state = newValue }
+    }
+    var localCallTestPeerLaunchError: String? {
+        get { callTestPeer.launchError }
+        set { callTestPeer.launchError = newValue }
+    }
+    var waitingForTestRoom: Bool {
+        get { callTestPeer.waitingForRoom }
+        set { callTestPeer.waitingForRoom = newValue }
+    }
+    var localCallTestPeerDemuxId: UInt32? {
+        get { callTestPeer.demuxId }
+        set { callTestPeer.demuxId = newValue }
+    }
+    var localCallTestPeerTask: Task<Void, Never>? {
+        get { callTestPeer.task }
+        set { callTestPeer.task = newValue }
+    }
+    var localCallTestPeerAttempt: UUID? {
+        get { callTestPeer.attempt }
+        set { callTestPeer.attempt = newValue }
+    }
+    var automaticTestPeerRoom: String? {
+        get { callTestPeer.automaticRoom }
+        set { callTestPeer.automaticRoom = newValue }
+    }
+    var handledTestPeerLaunch: Bool {
+        get { callTestPeer.handledLaunch }
+        set { callTestPeer.handledLaunch = newValue }
+    }
 }
 
 @MainActor extension SignalSession {
@@ -154,3 +205,4 @@ enum LocalCallTestPeerState: Equatable {
         localCallTestPeerState = state
     }
 }
+#endif

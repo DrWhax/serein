@@ -6,7 +6,7 @@ import Testing
 
 @MainActor @Suite struct GroupLobbyTests {
     @Test func scopedLinkIdentitiesAndLateJoinResponse() async throws {
-        let peer = try LoopbackCallTests.Side("strict", .overXPC, backend: SwiftVoiceEndpoint.factory, swiftVoice: true)
+        let peer = try LoopbackCallTests.Side("strict", .overXPC, backend: SwiftVoiceEndpoint.factory)
         let rtc = peer.rtc
         var ended = false
         let observer = BoundaryObserver { _ in ended = true }

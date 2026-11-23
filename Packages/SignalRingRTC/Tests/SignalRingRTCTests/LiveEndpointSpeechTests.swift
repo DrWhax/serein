@@ -62,7 +62,7 @@ actor PhraseSpeaker: VoiceCallSpeaker {
         let mic = PhraseMicrophone(fixture), speaker = PhraseSpeaker(fixture)
         let swift = try LoopbackCallTests.Side("swift", .overXPC, backend: SwiftVoiceEndpoint.factory(devices: {
             VoiceCallDevices(microphone: mic, speaker: speaker)
-        }), swiftVoice: true)
+        }))
         let native = try LoopbackCallTests.Side("native", .overXPC)
         try #require(native.rtc.getAudioInputs()?.devices.map(\.name) == ["Serein file microphone"])
         let swiftCalls = env["SEREIN_SPEECH_ROLE"] == "caller"

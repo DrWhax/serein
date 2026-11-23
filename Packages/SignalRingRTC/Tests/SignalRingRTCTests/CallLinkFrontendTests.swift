@@ -16,7 +16,7 @@ import Testing
         let parameters = try #require(fixture["publicZkparams"].data)
         let owner = try LoopbackCallTests.Side("owner", .overXPC, backend: SwiftVoiceEndpoint.factory(devices: {
             .init(microphone: VideoTestMic(), speaker: VideoTestSpeaker())
-        }), swiftVoice: true)
+        }))
         defer { withExtendedLifetime(owner) {} }
         let swift = owner.rtc
         let native = try RingRTC(endpoint: NativeEndpoint.factory)
@@ -39,6 +39,8 @@ import Testing
             }
         }
         defer { swift.handleSendHttpRequest = nil; native.handleSendHttpRequest = nil }
+        // The app's part: libsignal in Serein, the test reference here. The native peer seals its own.
+        swift.callLinkTitleCipher = ReferenceCallLinkTitles()
         let url = server.absoluteString
         func createRoom() async -> HttpResult<CallLinkState> {
             await swift.createCallLink(sfuUrl: url, createCredentialPresentation: create, linkRootKey: provisional, adminPasskey: pass,

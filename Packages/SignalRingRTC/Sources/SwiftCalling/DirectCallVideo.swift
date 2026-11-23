@@ -41,7 +41,18 @@ package final class DirectCallVideo: Sendable {
         var stats = RTPStatsCounter()
     }
 
+    /// Why received pictures were not shown: decoder errors by kind, and resets for a gap.
+    struct ReceiveDiagnostics: Sendable {
+        var gapResets = 0
+        var errors: [String: Int] = [:]
+        var summary: String {
+            let kinds = errors.sorted { $0.key < $1.key }.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ")
+            return "\(gapResets) gap resets, decode errors: " + (kinds.isEmpty ? "none" : kinds)
+        }
+    }
+
     private struct State {
+        var diagnostics = ReceiveDiagnostics()
         var transport: DirectICETransport?
         var closed = false
         var requested = false
@@ -423,19 +434,32 @@ package final class DirectCallVideo: Sendable {
             var decoder = VP8VideoDecoder()
             var vp9 = VP9VideoDecoder()
             var lastVP9: UInt16?
+            var lastPicture: (id: Int, mask: Int)?
             var previousID: Int?, previousEnd: UInt16?
             for await encoded in stream {
                 guard let self, !self.state.withLock({ $0.closed }) else { return }
                 let started = ContinuousClock.now
                 if case .vp9(let layer, let ssrc) = encoded {
-                    if let lastVP9, lastVP9 &+ 1 != layer.start { vp9 = VP9VideoDecoder() }
+                    // Reset only on a missing picture. FEC and padding take RTP sequence numbers
+                    // between pictures (RingRTC negotiates RED/ULPFEC), so a sequence gap alone is
+                    // not a loss; an SFU renumbers the sequence when it drops a layer.
+                    let sequential = lastVP9.map { $0 &+ 1 == layer.start } ?? true
+                    let nextPicture = layer.pictureID.flatMap { id in
+                        lastPicture.map { $0.mask == layer.pictureIDMask && (id == $0.id || id == ($0.id + 1) & $0.mask) }
+                    } ?? false
+                    if !sequential && !nextPicture {
+                        vp9 = VP9VideoDecoder()
+                        self.state.withLock { $0.diagnostics.gapResets += 1 }
+                    }
                     lastVP9 = layer.end
+                    lastPicture = layer.pictureID.map { ($0, layer.pictureIDMask) }
                     do {
                         let bytes = try open?(layer.bytes) ?? layer.bytes
                         if let frame = try vp9.decode(Array(bytes)) {
                             self.present(Decoded(frame), rotation: layer.rotation, timestamp: layer.timestamp, ssrc: ssrc, codec: 9, started: started)
                         }
                     } catch {
+                        self.noteError(error, codec: 9)
                         vp9 = VP9VideoDecoder()
                         await refresh()
                     }
@@ -445,7 +469,10 @@ package final class DirectCallVideo: Sendable {
                 let contiguous: Bool
                 if let id = picture.id, let mask = picture.mask, let previousID { contiguous = ((previousID + 1) & mask) == id }
                 else { contiguous = previousEnd.map { $0 &+ 1 == picture.start } ?? false }
-                if !contiguous { decoder = VP8VideoDecoder() }
+                if !contiguous {
+                    if previousEnd != nil { self.state.withLock { $0.diagnostics.gapResets += 1 } }
+                    decoder = VP8VideoDecoder()
+                }
                 previousID = picture.id
                 previousEnd = picture.end
                 do {
@@ -453,10 +480,20 @@ package final class DirectCallVideo: Sendable {
                     if let frame = try decoder.decode(bytes, limits: limits) {
                         self.present(Decoded(frame), rotation: picture.rotation, timestamp: picture.timestamp, ssrc: ssrc, codec: 8, started: started)
                     }
-                } catch { await refresh() }
+                } catch {
+                    self.noteError(error, codec: 8)
+                    await refresh()
+                }
             }
         }
     }
+
+    private func noteError(_ error: any Error, codec: Int) {
+        let kind = "VP\(codec) \(type(of: error)).\(String(String(describing: error).prefix(40)))"
+        state.withLock { s in if s.diagnostics.errors.count < 16 || s.diagnostics.errors[kind] != nil { s.diagnostics.errors[kind, default: 0] += 1 } }
+    }
+
+    func receiveDiagnostics() -> ReceiveDiagnostics { state.withLock { $0.diagnostics } }
 
     private func permits(_ revision: UInt64) -> Bool {
         state.withLock { !$0.closed && $0.sending && $0.revision == revision }

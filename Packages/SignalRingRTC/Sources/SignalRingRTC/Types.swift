@@ -133,10 +133,15 @@ public struct CallLinkState: Sendable, Equatable {
     public var revoked: Bool
     public var expiration: Date
     public var rootKey: CallLinkRootKey
+    /// The title as the SFU stores it, until RingRTC's `callLinkTitleCipher` opens it. The
+    /// Swift calling service passes titles through encrypted; the native reference decrypts them.
+    var encryptedName: Data?
 
     init?(_ j: JSONValue) {
-        guard let name = j["name"].string, let key = j["rootKey"].data else { return nil }
+        let encrypted = j["encryptedName"].string
+        guard let name = j["name"].string ?? (encrypted == nil ? nil : ""), let key = j["rootKey"].data else { return nil }
         self.name = name
+        encryptedName = encrypted.map { Data(base64Encoded: $0) ?? Data() }
         restrictions = switch j["rawRestrictions"].int {
         case 0: .none
         case 1: .adminApproval
@@ -441,4 +446,14 @@ public struct CallingMessage: Sendable, Equatable {
         self.opaque = opaque
         self.destinationDeviceId = destinationDeviceId
     }
+}
+
+/// Call-link titles: AES-256-GCM-SIV under a key derived from the link's root key (RingRTC
+/// lite/call_links/root_key.rs). The app supplies libsignal's implementation (RustCrypto's
+/// aes-gcm-siv, as upstream); the calling service holds no cipher and passes titles through.
+public protocol CallLinkTitleCipher: Sendable {
+    /// The SFU's `name` field; empty for an empty title.
+    func seal(_ title: String, rootKey: CallLinkRootKey) throws -> Data
+    /// nil when the record does not open under this root key.
+    func open(_ encrypted: Data, rootKey: CallLinkRootKey) -> String?
 }

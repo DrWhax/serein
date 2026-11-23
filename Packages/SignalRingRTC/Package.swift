@@ -16,7 +16,11 @@ let memorySafety: [SwiftSetting] = [
     .strictMemorySafety(),
     .treatWarning("StrictMemorySafety", as: .error),
 ]
-let strict: [SwiftSetting] = memorySafety + [.treatAllWarnings(as: .error), .enableExperimentalFeature("SafeInteropWrappers")]
+// The local RingRTC test peer (CallXPC/CallTestPeer.swift, GroupCall+LocalMediaKey.swift) is
+// compiled into debug builds and QA release builds only: `SEREIN_QA_CALL_PEER=1 Tools/build-app.sh`
+// passes -DSEREIN_CALL_TEST_PEER. A shipping release build contains none of it.
+let testPeer: [SwiftSetting] = [.define("SEREIN_CALL_TEST_PEER", .when(configuration: .debug))]
+let strict: [SwiftSetting] = memorySafety + [.treatAllWarnings(as: .error), .enableExperimentalFeature("SafeInteropWrappers")] + testPeer
 
 let package = Package(
     name: "SignalRingRTC",

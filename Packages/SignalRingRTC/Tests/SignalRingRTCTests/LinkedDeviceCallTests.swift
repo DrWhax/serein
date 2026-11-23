@@ -5,7 +5,7 @@ import Testing
 
 @MainActor @Suite struct LinkedDeviceCallTests {
     @Test func secondLinkedRingRTCDeviceCanAccept() async throws {
-        let caller = try LoopbackCallTests.Side("caller", .overXPC, backend: SwiftVoiceEndpoint.factory, swiftVoice: true)
+        let caller = try LoopbackCallTests.Side("caller", .overXPC, backend: SwiftVoiceEndpoint.factory)
         let first = try LoopbackCallTests.Side("callee", .overXPC)
         let second = try LoopbackCallTests.Side("callee", .overXPC)
         let key = Data(repeating: 0x17, count: 32)

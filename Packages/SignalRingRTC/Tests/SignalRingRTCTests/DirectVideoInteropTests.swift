@@ -18,7 +18,7 @@ actor VideoTestSpeaker: VoiceCallSpeaker {
     @Test(arguments: [true, false], [true, false]) func twoWayVideo(swiftCalls: Bool, vp9: Bool) async throws {
         let strict = try LoopbackCallTests.Side("swift", .overXPC, backend: SwiftVoiceEndpoint.factory(devices: {
             .init(microphone: VideoTestMic(), speaker: VideoTestSpeaker())
-        }), swiftVoice: true)
+        }))
         let native = try LoopbackCallTests.Side("native", .overXPC)
         let uri = ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_URI"]
         let servers = uri.map { [IceServer(username: "serein", password: "serein-test-relay", urls: [$0])] } ?? []

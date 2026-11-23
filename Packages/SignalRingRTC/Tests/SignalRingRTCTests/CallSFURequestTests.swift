@@ -29,7 +29,7 @@ import Testing
         try CallLinkRootKey.fromBytes(Data(0..<16))
     }
 
-    @Test func authenticatedRosterUsesTheSameMembersAndEncryptedTitleAsHTTP() throws {
+    @MainActor @Test func authenticatedRosterUsesTheSameMembersAndEncryptedTitleAsHTTP() throws {
         let aci = Data(repeating: 1, count: 16), cipher = Data([7, 9])
         let opaque = hex(Array(SHA256.hash(data: cipher)))
         let members: [JSONValue] = [.object(["userId": .bytes(aci), "userIdCipherText": .bytes(cipher)])]
@@ -43,10 +43,17 @@ import Testing
         #expect(group["pendingUsers"].array.map(\.data) == [aci] && group["deviceCountIncludingPendingDevices"].int == 2)
 
         let root = try fixtureKey()
-        let title = try CallLinkNameCipher(rootKey: root.bytes).seal("Practice room")
+        let title = try ReferenceCallLinkTitles().seal("Practice room", rootKey: root)
         roster.linkState = .init(encryptedName: title.base64EncodedString(), restrictions: 1, revoked: false, expiration: 1234)
         let link = try CallSFURequests.inCallPeek(roster, members: [], rootKey: root.bytes)
-        #expect(link["callLinkState"]["name"].string == "Practice room" && link["opaqueCreator"].string == opaque)
+        // The service passes the title through sealed; only the app's cipher opens it.
+        #expect(link["callLinkState"]["encryptedName"].string == title.base64EncodedString() && link["callLinkState"]["name"].isNull)
+        #expect(link["opaqueCreator"].string == opaque)
+        let rtc = try RingRTC(endpoint: SwiftVoiceEndpoint.factory)
+        #expect(rtc.revealingTitle(PeekInfo(link)).callLinkState?.name == "")
+        rtc.callLinkTitleCipher = ReferenceCallLinkTitles()
+        let opened = rtc.revealingTitle(PeekInfo(link))
+        #expect(opened.callLinkState?.name == "Practice room" && opened.callLinkState?.encryptedName == nil)
         #expect(link["pendingDevices"].array.first?["opaqueUserId"].string == opaque)
         roster.devices[0].demuxID = nil
         #expect(throws: (any Error).self) { try CallSFURequests.inCallPeek(roster, members: members, rootKey: nil) }
@@ -56,6 +63,9 @@ import Testing
     func encryptedTitleInteroperatesWithNative(swiftWriter: Bool) async throws {
         let writer = try RingRTC(endpoint: swiftWriter ? SwiftVoiceEndpoint.factory : NativeEndpoint.factory)
         let reader = try RingRTC(endpoint: swiftWriter ? NativeEndpoint.factory : SwiftVoiceEndpoint.factory)
+        // As the app does for either backend: the native reference ignores the sealed field.
+        writer.callLinkTitleCipher = ReferenceCallLinkTitles()
+        reader.callLinkTitleCipher = ReferenceCallLinkTitles()
         let key = try CallLinkRootKey.generate().issued(epoch: 0x12345678)
         let title = "Afternoon music ☀️"
         let base = "https://sfu.example/path///"

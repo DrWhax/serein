@@ -52,6 +52,14 @@ var failed = false
 }
 
 let staged = CommandLine.arguments.dropFirst() == ["--staged-video"]
+let factory = staged ? RemoteCallEndpoint.factory()
+                     : RemoteCallEndpoint.factory(.service(RemoteCallEndpoint.serviceName), peer: nil)
+#if !SEREIN_CALL_TEST_PEER
+if CommandLine.arguments.dropFirst() == ["--test-peer-devices"] || CommandLine.arguments.contains("--live-voice") {
+    print("FAILED: this CallServiceCheck was built without the test peer; build it with -Xswiftc -DSEREIN_CALL_TEST_PEER")
+    exit(1)
+}
+#else
 if CommandLine.arguments.dropFirst() == ["--test-peer-devices"] {
     do {
         guard let factory = RemoteCallEndpoint.testPeerFactory() else { throw RingRTCError.noEndpoint }
@@ -67,12 +75,11 @@ if CommandLine.arguments.dropFirst() == ["--test-peer-devices"] {
         exit(1)
     }
 }
-let factory = staged ? RemoteCallEndpoint.factory()
-                     : RemoteCallEndpoint.factory(.service(RemoteCallEndpoint.serviceName), peer: nil)
 if CommandLine.arguments.contains("--live-voice") {
     do { try await checkLiveVoice(); exit(failed ? 1 : 0) }
     catch { print("FAILED: live voice call: \(error)"); exit(1) }
 }
+#endif
 /// ringrtc's warnings and errors, shown when a check fails.
 var log: [String] = []
 do {

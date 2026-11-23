@@ -1,3 +1,5 @@
+// QA and debug builds only (Package.swift `testPeer`; SEREIN_QA_CALL_PEER=1 Tools/build-app.sh).
+#if SEREIN_CALL_TEST_PEER
 import CallXPC
 import Foundation
 import SignalRingRTC
@@ -93,3 +95,4 @@ import SignalRingRTC
     report(incoming.endedReason == .remoteHangup, "Swift hardware call ended", String(describing: incoming.endedReason))
     verified = !failed
 }
+#endif

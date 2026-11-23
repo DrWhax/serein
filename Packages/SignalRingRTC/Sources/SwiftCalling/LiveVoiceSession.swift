@@ -9,6 +9,8 @@ package actor LiveVoiceSession {
         case candidate(IceCandidateUpdate), ringing, accepted, remoteAudio(Bool), remoteHangup, failed(String)
         case remoteVideo(Bool), remoteScreen(Bool), reconnecting, reconnected, networkRoute(Int)
         case lowBandwidthForVideo(recovered: Bool)
+        /// A diagnostic line for the app's log: pair kinds, counts and times, never addresses.
+        case log(String)
         case audioLevels(captured: UInt16, received: UInt16)
     }
 
@@ -100,8 +102,20 @@ package actor LiveVoiceSession {
     private var gatherHosts: GatherHosts?
     private var allocateRelay: @Sendable ([VoiceTURNServer]) async -> TURNAllocation? = VoiceTURNServer.allocateFirst
 
+    /// The nominated pair.
     private var active: Candidate?
-    private var attempt: Task<Void, Never>?
+    /// RFC 8445 §6.1.4: pairs are checked in parallel, a new one every `checkPacing` (WebRTC
+    /// starts one about every 50 ms), so an address that never answers delays no other.
+    private var attempts: [UUID: (candidate: Candidate, task: Task<Void, Never>)] = [:]
+    private var nextCheckStart = ContinuousClock.now
+    private var iceStarted: ContinuousClock.Instant?
+    private var checksStarted = 0, checksFailed = 0
+    /// Video repair requests we sent, and the totals at the last quality line.
+    private var nacksSent = 0, refreshesSent = 0
+    private var qualityTotals: (at: ContinuousClock.Instant, videoIn: UInt64, videoOut: UInt64, audioIn: UInt64,
+                                rendered: UInt64, nacks: Int, refreshes: Int)?
+    private static let checkPacing: Duration = .milliseconds(50)
+    private static let maxParallelChecks = 16
     private var transport: DirectICETransport?
     private var receive: Task<Void, Never>?
     private let audioClockOrigin = ContinuousClock.now
@@ -167,7 +181,7 @@ package actor LiveVoiceSession {
             var parameters = DirectCallParameters()
             parameters.publicKey = key.publicKey.rawRepresentation
             parameters.iceUfrag = String(UUID().uuidString.prefix(8))
-            parameters.icePassword = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            parameters.icePassword = ICEHostPair.randomPassword()
             parameters.encoders = [8]
             parameters.decoders = [8]
             self.parameters = parameters
@@ -205,6 +219,8 @@ package actor LiveVoiceSession {
             levelInterval = .milliseconds(min(60_000, max(50, ms)))
         }
         self.relayOnly = relayOnly
+        iceStarted = .now
+        event(.log("ICE: \(role == .caller ? "caller" : "callee"), \(relayOnly ? "relay only" : "direct and relay"), \(servers.count) relay servers"))
         self.servers = servers
         self.gatherHosts = gatherHosts
         self.allocateRelay = allocateRelay
@@ -305,8 +321,7 @@ package actor LiveVoiceSession {
 
     private func inboundNominated(_ selected: DirectICETransport, packets: AsyncStream<Data>, candidate: ICEHostCandidate, token: UUID) async {
         guard incoming.removeValue(forKey: token) != nil, !ended, transport == nil else { selected.close(); return }
-        attempt?.cancel()
-        active = .host(candidate)
+        cancelAttempts()
         await connected(selected, packets: packets, candidate: .host(candidate), generation: iceGeneration)
     }
 
@@ -325,7 +340,7 @@ package actor LiveVoiceSession {
 
     private func gatherFailed(generation: UUID) async {
         guard !ended, generation == iceGeneration, transport == nil else { return }
-        guard recovering else { await fail("No TURN allocation is available."); return }
+        guard recovering else { event(.log("ICE: no relay allocation from \(servers.count) servers")); await fail("No TURN allocation is available."); return }
         do { try await Task.sleep(for: .seconds(1)) } catch { return }
         if !ended, generation == iceGeneration, transport == nil { gatherRelay() }
     }
@@ -333,6 +348,7 @@ package actor LiveVoiceSession {
     private func didGather(_ allocation: TURNAllocation, generation: UUID) {
         guard !ended, generation == iceGeneration, transport == nil else { allocation.close(); return }
         self.allocation = allocation
+        event(.log("ICE: relay allocation ready"))
         event(.candidate(.init(addedSDP: allocation.localCandidate.sdp)))
         checkCandidates()
     }
@@ -359,10 +375,9 @@ package actor LiveVoiceSession {
             let address = ICEBinding.Address(ip: Array(removed.ip), port: removed.port)
             knownCandidates.removeAll { $0.address == address }
             candidates.removeAll { $0.address == address }
-            if active?.address == address {
-                if transport != nil { restartICE(); return }
-                attempt?.cancel()
-            }
+            if active?.address == address, transport != nil { restartICE(); return }
+            if cancelAttempts(where: { $0.address == address }), transport == nil { replaceAllocation() }
+            checkCandidates()
             return
         }
         guard let sdp = update.addedSDP else { return }
@@ -382,7 +397,7 @@ package actor LiveVoiceSession {
         recovering = true
         iceGeneration = UUID()
         nomination = ICENomination()
-        attempt?.cancel(); attempt = nil
+        cancelAttempts()
         receive?.cancel(); receive = nil
         heartbeat?.cancel(); heartbeat = nil
         listen?.cancel(); listen = nil
@@ -420,77 +435,114 @@ package actor LiveVoiceSession {
         if deadline == nil {
             deadline = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(40)) } catch { return }
-                await self?.fail("ICE nomination timed out.")
+                await self?.iceTimedOut()
             }
         }
-        guard attempt == nil else { return }
-        let index = candidates.firstIndex { candidate in
-            switch candidate {
-            case .host: !relayOnly
-            case .relay: allocation != nil
-            }
-        }
-        guard let index else { return }
-        let candidate = candidates.remove(at: index)
-        active = candidate
         let local = DirectICETransport.Credentials(ufrag: ufrag, password: password)
         let iceRole: ICEBinding.Role = role == .caller ? .controlling(tieBreaker) : .controlled(tieBreaker)
-        let allocation = self.allocation
-        // The controlled peer's advertised port belongs to its UDP listener. Its
-        // outbound checks need a distinct socket so they cannot consume inbound
-        // checks for the tuple that the controlling peer is nominating.
-        let port = role == .caller ? hostPort?.port : nil
+        // Both roles check from the advertised port, as WebRTC does. Behind a NAT only that
+        // socket's own sends open the mapping the peer's checks need (a callee checking from
+        // another port was unreachable). A check arriving on a pair's socket is answered and
+        // its nomination recorded there (ICEHostPair.receive), not lost to the listener.
+        let port = hostPort?.port
         let generation = iceGeneration
+        // Only one pair of this generation can carry USE-CANDIDATE (ICENomination).
         let election = role == .caller ? nomination : nil
-        attempt = Task { [weak self] in
-            let packets = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(64))
-            do {
-                let route: DirectICETransport.Route
-                switch candidate {
-                case .host(let host): route = .host(host)
-                case .relay(let relay):
-                    guard let allocation else { throw DirectICETransport.Failure.noConsent }
-                    route = .relay(try await allocation.connect(to: relay))
-                }
-                let connection = try await DirectICETransport.connect(route: route, relayOnly: relayOnly,
-                    local: local, remote: remoteICE, role: iceRole, hostPort: port, nomination: election) { packets.continuation.yield($0) }
-                guard let self else { connection.close(); return }
-                if Task.isCancelled {
-                    connection.close()
-                    await self.candidateFailed(candidate, generation: generation)
-                } else { await self.connected(connection, packets: packets.stream, candidate: candidate, generation: generation) }
-            } catch {
-                packets.continuation.finish()
-                await self?.candidateFailed(candidate, generation: generation)
+        // Host pairs run in parallel. A relay pair needs the allocation to itself
+        // (TURNAllocation.connect serves one peer), so relay pairs go one at a time.
+        while attempts.count < Self.maxParallelChecks, let index = candidates.firstIndex(where: { candidate in
+            switch candidate {
+            case .host: !relayOnly
+            case .relay: allocation != nil && !attempts.values.contains { Self.relayed($0.candidate) }
             }
+        }) {
+            let candidate = candidates.remove(at: index)
+            let allocation = self.allocation
+            let now = ContinuousClock.now
+            let start = max(now, nextCheckStart)
+            nextCheckStart = start + Self.checkPacing
+            let delay = now.duration(to: start)
+            let id = UUID()
+            let task = Task { [weak self] in
+                let packets = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(64))
+                do {
+                    if delay > .zero { try await Task.sleep(for: delay) }
+                    let route: DirectICETransport.Route
+                    switch candidate {
+                    case .host(let host): route = .host(host)
+                    case .relay(let relay):
+                        guard let allocation else { throw DirectICETransport.Failure.noConsent }
+                        route = .relay(try await allocation.connect(to: relay))
+                    }
+                    let connection = try await DirectICETransport.connect(route: route, relayOnly: relayOnly,
+                        local: local, remote: remoteICE, role: iceRole, hostPort: port, nomination: election) { packets.continuation.yield($0) }
+                    guard let self else { connection.close(); return }
+                    if Task.isCancelled {
+                        connection.close()
+                        await self.candidateFailed(candidate, attempt: id, generation: generation)
+                    } else {
+                        await self.connected(connection, packets: packets.stream, candidate: candidate, attempt: id, generation: generation)
+                    }
+                } catch {
+                    packets.continuation.finish()
+                    await self?.candidateFailed(candidate, attempt: id, generation: generation)
+                }
+            }
+            attempts[id] = (candidate, task)
+            checksStarted += 1
         }
     }
 
-    private func candidateFailed(_ candidate: Candidate, generation: UUID) {
-        guard !ended, generation == iceGeneration, transport == nil else { return }
-        active = nil
-        attempt = nil
-        if case .relay = candidate {
-            if let address = allocation?.localCandidate.address,
-               let update = try? IceCandidateUpdate(removingIP: Data(address.ip), port: address.port) {
-                event(.candidate(update))
-            }
-            allocation?.close()
-            allocation = nil
-            gatherRelay()
+    /// Cancelled checks are dropped here; their tasks then find themselves unregistered.
+    /// Returns whether a relay check was among them: its allocation can serve no other peer.
+    @discardableResult
+    private func cancelAttempts(where matches: (Candidate) -> Bool = { _ in true }) -> Bool {
+        var relay = false
+        for (id, attempt) in attempts where matches(attempt.candidate) {
+            attempt.task.cancel()
+            attempts[id] = nil
+            relay = relay || Self.relayed(attempt.candidate)
         }
+        return relay
+    }
+
+    private static func relayed(_ candidate: Candidate) -> Bool { if case .relay = candidate { true } else { false } }
+
+    /// After a relay check ends without winning, a fresh allocation serves the next relay pair.
+    private func replaceAllocation() {
+        if let address = allocation?.localCandidate.address,
+           let update = try? IceCandidateUpdate(removingIP: Data(address.ip), port: address.port) {
+            event(.candidate(update))
+        }
+        allocation?.close()
+        allocation = nil
+        gatherRelay()
+    }
+
+    private func candidateFailed(_ candidate: Candidate, attempt id: UUID, generation: UUID) {
+        guard attempts.removeValue(forKey: id) != nil, !ended, generation == iceGeneration, transport == nil else { return }
+        checksFailed += 1
+        if Self.relayed(candidate) { replaceAllocation() }
         checkCandidates()
     }
 
-    private func connected(_ connection: DirectICETransport, packets: AsyncStream<Data>, candidate: Candidate, generation: UUID) async {
+    private func connected(_ connection: DirectICETransport, packets: AsyncStream<Data>, candidate: Candidate, attempt id: UUID? = nil,
+                           generation: UUID) async {
         guard !ended, generation == iceGeneration, transport == nil, let media else { connection.close(); return }
-        guard !Task.isCancelled else { connection.close(); candidateFailed(candidate, generation: generation); return }
+        guard !Task.isCancelled else {
+            connection.close()
+            if let id { candidateFailed(candidate, attempt: id, generation: generation) } else { checkCandidates() }
+            return
+        }
         transport = connection
+        active = candidate
+        // The winner's own task is finishing this call; every other check stops.
+        if let id { attempts[id] = nil }
+        cancelAttempts()
         reflexiveGather?.cancel(); reflexiveGather = nil
         listen?.cancel()
         for check in incoming.values { check.cancel() }
         incoming.removeAll()
-        attempt = nil
         deadline?.cancel()
         deadline = nil
         gather?.cancel()
@@ -506,6 +558,9 @@ package actor LiveVoiceSession {
         recovering = false
         let adapter = connection.adapter ?? networkPath?.adapter ?? 0
         measurements.nominated(relayed: connection.relayed)
+        let elapsed = iceStarted.map { Int($0.duration(to: .now) / .milliseconds(1)) } ?? -1
+        event(.log("ICE: connected over \(Self.describe(candidate))\(id == nil ? " (peer's check)" : "") after \(elapsed) ms; "
+                   + "\(checksStarted) checks started, \(checksFailed) failed"))
         if reportedAdapter != adapter || resumed { event(.networkRoute(adapter)); reportedAdapter = adapter }
         if resumed { video.replaceTransport(connection); video.requestKeyframe(); event(.reconnected) }
         else { event(.ringing) }
@@ -568,7 +623,42 @@ package actor LiveVoiceSession {
             measurements.inbound(remoteRole.videoSSRC, video: true, frames: video.frameStats(ssrc: remoteRole.videoSSRC, outgoing: false))
         ]
         measurements.sample(rtt: connection.lastRoundTrip, media: streams, relayed: connection.relayed)
+        logQuality(connection, outAudio: streams[0], outVideo: streams[1], inAudio: streams[2], inVideo: streams[3])
         nextMeasurement = .now + (streams.contains(where: { $0.count.packets > 0 }) ? measurementInterval : .seconds(1))
+    }
+
+    /// One line per measurement interval: what we receive and request, what we send, and the
+    /// bitrate limits each side applies. Video quality from the peer follows our feedback.
+    private func logQuality(_ connection: DirectICETransport, outAudio: RTPObservation, outVideo: RTPObservation,
+                            inAudio: RTPObservation, inVideo: RTPObservation) {
+        let now = ContinuousClock.now
+        let rendered = inVideo.frames?.rendered ?? 0
+        defer {
+            qualityTotals = (now, inVideo.count.bytes, outVideo.count.bytes, inAudio.count.bytes, rendered, nacksSent, refreshesSent)
+        }
+        guard let last = qualityTotals, accepted else { return }
+        let seconds = max(0.001, last.at.duration(to: now) / .seconds(1))
+        func kbps(_ total: UInt64, _ before: UInt64) -> Int { Int(Double(total &- before) * 8 / seconds / 1000) }
+        func size(_ frames: VideoFrameCounters?) -> String {
+            guard let width = frames?.width, let height = frames?.height else { return "none" }
+            return "\(width)x\(height)"
+        }
+        let remoteRole: DirectCallRole = role == .caller ? .callee : .caller
+        let inbound = measurements.inboundStats(for: remoteRole.videoSSRC)
+        let rtt = connection.lastRoundTrip.map { "\(Int($0.milliseconds)) ms" } ?? "?"
+        let tenths = Int((Double(rendered &- last.rendered) / seconds * 10).rounded())
+        let sendEstimate = media?.sendRate.estimate.map { "\($0 / 1000)" } ?? "?"
+        let peerEstimate = remoteEstimate.map { "\($0.bitrate / 1000)" } ?? "none"
+        event(.log("media: rtt \(rtt)\(connection.relayed ? " relayed" : ""); "
+            + "video in \(size(inVideo.frames)) \(tenths / 10).\(tenths % 10) fps \(kbps(inVideo.count.bytes, last.videoIn)) kbps, "
+            + "lost \(inbound?.lost ?? 0) total, jitter \(Int((inbound?.jitterSeconds ?? 0) * 1000)) ms, "
+            + "\(inVideo.frames?.freezes ?? 0) freezes, \(inVideo.frames?.dropped ?? 0) dropped, "
+            + "\(nacksSent - last.nacks) NACKs, \(refreshesSent - last.refreshes) keyframe requests, "
+            + "codec \(inVideo.frames?.codec.map { "VP\($0)" } ?? "none"), \(video.receiveDiagnostics().summary) (since start); "
+            + "audio in \(kbps(inAudio.count.bytes, last.audioIn)) kbps; "
+            + "video out \(size(outVideo.frames)) \(kbps(outVideo.count.bytes, last.videoOut)) kbps; "
+            + "we accept \(localBitrate / 1000) kbps, peer accepts \(peerBitrate / 1000) kbps, "
+            + "send estimate \(sendEstimate) kbps, peer's estimate \(peerEstimate) kbps"))
     }
 
     private func sendTransportFeedback(_ connection: DirectICETransport) {
@@ -685,7 +775,7 @@ package actor LiveVoiceSession {
             }
         } else if accepted, VideoRepair.primaryType(payloadType) != nil || [DirectVideoStream.vp8, VP9Assembly.payloadType, DirectVideoStream.red, 122].contains(payloadType) {
             if let nack = try? media.video.receive(packet, vp8Enabled: peerSendsVP8, vp9Enabled: vp9Decode && peerSendsVP9, sink: video) {
-                try? transport?.send(nack)
+                if (try? transport?.send(nack)) != nil { nacksSent += 1 }
             }
             if media.video.waitingForRepair && repairTimer == nil { scheduleVideoRepair() }
         } else if accepted, payloadType == DirectOpusSender.payloadType {
@@ -744,13 +834,14 @@ package actor LiveVoiceSession {
     private func pollVideoRepair() {
         repairTimer = nil
         guard accepted, !ended, let media, let transport, media.video.waitingForRepair else { return }
-        if let nack = try? media.video.pollRepair(vp8: peerSendsVP8, vp9: vp9Decode && peerSendsVP9, sink: video) { try? transport.send(nack) }
+        if let nack = try? media.video.pollRepair(vp8: peerSendsVP8, vp9: vp9Decode && peerSendsVP9, sink: video),
+           (try? transport.send(nack)) != nil { nacksSent += 1 }
         if media.video.waitingForRepair { scheduleVideoRepair() }
     }
 
     private func requestVideoRefresh() {
         guard accepted, !ended, let media, let refresh = try? media.video.refresh() else { return }
-        try? transport?.send(refresh)
+        if (try? transport?.send(refresh)) != nil { refreshesSent += 1 }
     }
 
     package static func maxBitrate(lowDataMode: Bool) -> UInt64 { lowDataMode ? 300_000 : 2_000_000 }
@@ -919,6 +1010,20 @@ package actor LiveVoiceSession {
         }
     }
 
+    private func iceTimedOut() async {
+        event(.log("ICE: no pair after 40 s; \(checksStarted) checks started, \(checksFailed) failed, \(candidates.count) waiting, "
+                   + "relay allocation \(allocation == nil ? "none" : "ready"), \(knownCandidates.count) remote pairs"))
+        await fail("ICE nomination timed out.")
+    }
+
+    private static func describe(_ candidate: Candidate) -> String {
+        let family = candidate.address.ip.count == 16 ? "IPv6" : "IPv4"
+        switch candidate {
+        case .host: return "direct " + family
+        case .relay: return "relay to " + family
+        }
+    }
+
     private func fail(_ reason: String) async {
         guard !ended else { return }
         await end(sendHangup: true)
@@ -941,7 +1046,7 @@ package actor LiveVoiceSession {
         }
         pathMonitor?.cancel()
         pathMonitor = nil
-        attempt?.cancel()
+        cancelAttempts()
         deadline?.cancel()
         gather?.cancel()
         heartbeat?.cancel()
@@ -990,7 +1095,7 @@ package actor LiveVoiceSession {
         audioPlayout?.cancel()
         gather?.cancel()
         deadline?.cancel()
-        attempt?.cancel()
+        for attempt in attempts.values { attempt.task.cancel() }
         hostGather?.cancel()
         reflexiveGather?.cancel()
         listen?.cancel()

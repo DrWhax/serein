@@ -576,7 +576,12 @@ final class GroupObserver: GroupCallObserver {
         updateHistory(groupCall, onPeek: false)
         // The mute setters notify synchronously, often before the connecting event arrives.
         // Keep ownership of this client through all local state changes until onEnded.
-        if local.connectionState != .notConnected {
+        if local.connectionState == .notConnected {
+            // Upstream (calling.preload.ts onLocalDeviceStateChanged) disables local video
+            // whenever the client is not connected; the microphone warm-up stops with it.
+            service.onCameraNeeded?(false)
+            service.rtc.stopMicrophoneWarmup()
+        } else {
             if !local.sharingScreen { service.onCameraNeeded?(!local.videoMuted) }
             if updateMessageState == .sentNothing, local.joinState == .joined, let era = groupCall.peekInfo?.eraId { joined(groupCall, eraId: era) }
         }
@@ -639,11 +644,11 @@ final class GroupObserver: GroupCallObserver {
     private func finish(_ groupCall: GroupCall, reason: CallEndReason) {
         guard let service, service.groupCall(for: conversationId) === groupCall else { return }
         service.callsLookup[conversationId] = nil
-        if service.callsLookup.isEmpty {
-            service.isPresenting = false
-            service.onCameraNeeded?(false)
-            service.rtc.stopMicrophoneWarmup()
-        }
+        // As upstream: only one call captures at a time, so an ending group call releases
+        // the camera and the microphone warm-up whatever else is in the lookup.
+        service.onCameraNeeded?(false)
+        service.rtc.stopMicrophoneWarmup()
+        if service.callsLookup.isEmpty { service.isPresenting = false }
         if mode == .group, updateMessageState == .sentJoin, let era = groupCall.peekInfo?.eraId {
             updateMessageState = .sentLeft
             let id = conversationId

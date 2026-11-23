@@ -50,6 +50,8 @@ public final class RingRTC {
     /// How long the endpoint is kept with nothing to do (long enough for a hang-up's last
     /// messages to go out and for a quick call back).
     public var idleGrace: Duration = .seconds(10)
+    /// Opens and seals call-link titles for an endpoint that passes them through encrypted.
+    public var callLinkTitleCipher: (any CallLinkTitleCipher)?
     var lastActivity = ContinuousClock.now
     var retireTask: Task<Void, Never>?
     /// Microphone warm-up (which records) is on.
@@ -407,10 +409,31 @@ public final class RingRTC {
     public func updateCallLinkName(sfuUrl: String, authCredentialPresentation: Data, linkRootKey: CallLinkRootKey, adminPasskey: Data, newName: String) async
         -> HttpResult<CallLinkState>
     {
-        await callLinkRequest("updateCallLink", [
+        var fields: [String: JSONValue] = [
             "sfuUrl": .string(sfuUrl), "authPresentation": .bytes(authCredentialPresentation), "rootKey": .bytes(linkRootKey.bytes),
             "adminPasskey": .bytes(adminPasskey), "newName": .string(newName),
-        ])
+        ]
+        // The Swift service sends `encryptedNewName` as given; the native reference encrypts `newName`.
+        if let callLinkTitleCipher {
+            guard let sealed = try? callLinkTitleCipher.seal(newName, rootKey: linkRootKey) else { return .failure(errorStatusCode: -1) }
+            fields["encryptedNewName"] = .bytes(sealed)
+        }
+        return await callLinkRequest("updateCallLink", fields)
+    }
+
+    /// A state from an endpoint that left its title encrypted, with the title opened (empty
+    /// when there is no cipher or it does not open, as RingRTC reports an undecryptable title).
+    func revealingTitle(_ state: CallLinkState?) -> CallLinkState? {
+        guard var state, let encrypted = state.encryptedName else { return state }
+        state.encryptedName = nil
+        state.name = encrypted.isEmpty ? "" : callLinkTitleCipher?.open(encrypted, rootKey: state.rootKey) ?? ""
+        return state
+    }
+
+    func revealingTitle(_ info: PeekInfo) -> PeekInfo {
+        var info = info
+        info.callLinkState = revealingTitle(info.callLinkState)
+        return info
     }
 
     public func updateCallLinkRestrictions(sfuUrl: String, authCredentialPresentation: Data, linkRootKey: CallLinkRootKey, adminPasskey: Data,

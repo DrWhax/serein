@@ -19,15 +19,12 @@ import XPC
         while !done() && Date() < end { try? await Task.sleep(for: .milliseconds(20)) }
     }
 
-    @Test(arguments: [false, true])
-    func lossEndsTheCallAndTheNextCommandStartsAfresh(legacySwiftVoiceRequest: Bool) async throws {
+    @Test func lossEndsTheCallAndTheNextCommandStartsAfresh() async throws {
         let handler = CallXPCHandler(makeEndpoint: SwiftVoiceEndpoint.factory)
         let listener = XPCServer.anonymous(requirement: nil, handler)
         defer { listener.cancel() }
         let channel = XPCChannel(.endpoint(listener.endpoint), peer: nil, timeout: .seconds(20))
-        let rtc = try RingRTC(endpoint: { trials in
-            try RemoteCallEndpoint(fieldTrials: trials, channel: channel, swiftVoice: legacySwiftVoiceRequest)
-        })
+        let rtc = try RingRTC(endpoint: { trials in try RemoteCallEndpoint(fieldTrials: trials, channel: channel) })
         // Keep the outgoing call alive until the service is deliberately lost.
         rtc.handleStartCall = { _ in true }
         try rtc.setSelfUuid(Data(repeating: 1, count: 16))

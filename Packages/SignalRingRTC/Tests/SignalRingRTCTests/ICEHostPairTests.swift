@@ -12,6 +12,22 @@ struct ICEHostPairTests {
                                remoteUfrag: "peer", remotePassword: password, role: .controlling(12))
     }
 
+    /// RFC 8445 §5.3: at least 128 bits of randomness; 24 ice-chars of 6 bits each give 144.
+    @Test func generatedPasswordsCarry144RandomBits() throws {
+        var seen = Set<String>()
+        for _ in 0..<1000 {
+            let generated = ICEHostPair.randomPassword()
+            #expect(generated.utf8.count == 24 && ICEHostPair.valid(generated, min: 22))
+            seen.insert(generated)
+        }
+        #expect(seen.count == 1000)
+        // Every ice-char occurs: the generator draws from the whole 64-symbol alphabet.
+        #expect(Set(seen.joined().utf8).count == 64)
+        let candidate = try #require(ICEHostCandidate("candidate:a 1 UDP 123 192.0.2.1 54321 typ host"))
+        _ = try ICEHostPair(candidate: candidate, relayOnly: false, localUfrag: "here", localPassword: ICEHostPair.randomPassword(),
+                            remoteUfrag: "peer", remotePassword: ICEHostPair.randomPassword(), role: .controlling(12))
+    }
+
     @Test func candidateAndPrivacyPolicy() throws {
         #expect(ICEHostCandidate("candidate:x 1 udp 123 2001:db8::12 15 typ host")?.address.ip.count == 16)
         for sdp in ["candidate:x 1 tcp 1 192.0.2.1 9 typ host", "candidate:x 1 udp 1 example.org 53 typ host",

@@ -12,12 +12,17 @@ struct VP9Assembly {
         let rotation: Int
         let timestamp: UInt32
         let start, end: UInt16
+        /// The picture ID (7 or 15 bits): spatial layers of one picture share it, and the next
+        /// picture's is one more. RTP sequence numbers can skip packets that are not video (FEC).
+        var pictureID: Int? = nil
+        var pictureIDMask = 0x7fff
     }
 
     private struct Descriptor {
         let begins, ends, dependsOnLower: Bool
         let spatial: Int
         let payload: Data
+        var pictureID: Int?, pictureIDMask = 0x7fff
 
         init(_ bytes: Data) throws {
             var input = ByteCursor(Array(bytes))
@@ -26,7 +31,13 @@ struct VP9Assembly {
             begins = flags & 0x08 != 0
             ends = flags & 0x04 != 0
             if flags & 0x80 != 0 {
-                if try input.u8() & 0x80 != 0 { try input.skip(1) }
+                let high = try input.u8()
+                if high & 0x80 != 0 {
+                    pictureID = Int(high & 0x7f) << 8 | Int(try input.u8())
+                } else {
+                    pictureID = Int(high)
+                    pictureIDMask = 0x7f
+                }
             } else if flexible { throw CallingWireError.malformed }
             if flags & 0x20 != 0 {
                 let layer = try input.u8()
@@ -67,6 +78,7 @@ struct VP9Assembly {
         var start: UInt16?
         var end: UInt16?
         var rotation = 0
+        var pictureID: Int?, pictureIDMask = 0x7fff
         var parts: [UInt16: Data] = [:]
 
         var complete: Data? {
@@ -101,7 +113,9 @@ struct VP9Assembly {
             lastEmitted = 7
             throw CallingWireError.tooLarge
         }
-        if layers[spatial] == nil { layers[spatial] = Layer(dependsOnLower: descriptor.dependsOnLower) }
+        if layers[spatial] == nil {
+            layers[spatial] = Layer(dependsOnLower: descriptor.dependsOnLower, pictureID: descriptor.pictureID, pictureIDMask: descriptor.pictureIDMask)
+        }
         guard layers[spatial]?.dependsOnLower == descriptor.dependsOnLower else { throw CallingWireError.malformed }
         if descriptor.begins { layers[spatial]?.start = packet.sequence }
         if descriptor.ends {
@@ -117,7 +131,8 @@ struct VP9Assembly {
             guard let layer = layers[id] else { continue }
             if layer.dependsOnLower && lastEmitted != id - 1 { break }
             guard let start = layer.start, let end = layer.end, let bytes = layer.complete else { break }
-            output.append(Frame(bytes: bytes, spatialLayer: id, rotation: layer.rotation, timestamp: packet.timestamp, start: start, end: end))
+            output.append(Frame(bytes: bytes, spatialLayer: id, rotation: layer.rotation, timestamp: packet.timestamp, start: start, end: end,
+                                pictureID: layer.pictureID, pictureIDMask: layer.pictureIDMask))
             layers.removeValue(forKey: id)
             lastEmitted = id
         }

@@ -18,9 +18,11 @@ def live_hardware_call(work, relay):
     # UDP in this test copy. The installed service retains its local network deny.
     def run(*args, **kwargs):
         return subprocess.run(args, check=True, **kwargs)
+    # --live-voice drives the bundled test peer, compiled in only with SEREIN_CALL_TEST_PEER.
+    qa = ["-Xswiftc", "-DSEREIN_CALL_TEST_PEER"]
     for product in ["SignalCallingService", "CallServiceCheck"]:
-        run("swift", "build", "--package-path", PACKAGE, "-c", "release", "--product", product)
-    products = Path(run("swift", "build", "--package-path", PACKAGE, "-c", "release",
+        run("swift", "build", "--package-path", PACKAGE, "-c", "release", "--product", product, *qa)
+    products = Path(run("swift", "build", "--package-path", PACKAGE, "-c", "release", *qa,
                         "--show-bin-path", capture_output=True, text=True).stdout.strip())
     app = work / "VoiceCallHost.app"
     service = app / "Contents/XPCServices/SignalCalling.xpc"

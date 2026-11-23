@@ -29,6 +29,10 @@ def stage(app, udp_port, tcp_port):
     app_ent = get_entitlements(app)
     if info["SereinXPCPeers"]["app"] != info["CFBundleIdentifier"]:
         raise ValueError("Missing signed app peer identity")
+    # A shipping build compiles the test peer out. Only a QA build can host it.
+    symbols = run("nm", contents / "MacOS" / info["CFBundleExecutable"], capture_output=True, text=True).stdout
+    if "testPeerFactory" not in symbols:
+        raise ValueError("This app was built without the test peer: rebuild it with SEREIN_QA_CALL_PEER=1 Tools/build-app.sh")
     identity = os.environ.get("SIGNALSAFE_SIGN_IDENTITY", "-")
     if info.get("SereinXPCSameTeam") and identity == "-":
         raise ValueError("Set SIGNALSAFE_SIGN_IDENTITY to this QA app's signing identity")
