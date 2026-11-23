@@ -23,6 +23,16 @@ import VideoVP9
         try verify("segment", count: 19, sha256: "cf56776c1c7a7f2ffeb1476c41eb81a3d6bedf1cba4b016e5fbe4e6be7c6b402")
     }
 
+    /// WebRTC-style real time from libvpx 1.17.0 (ffmpeg libvpx-vp9: deadline realtime, cpu-used 8,
+    /// no lag, cyclic refresh, 300 kb/s) with frame_parallel_decoding_mode 0, so probabilities
+    /// adapt backward from each frame's counts, as in calls from stock Android. At 480x270 the
+    /// bottom superblocks are partial: libvpx counts an edge partition as the whole symbol, and
+    /// counts the unread high-precision MV bit as 1 in frames that allow high precision. Either
+    /// count wrong desynchronised every later frame. Hashes from the libvpx decoder.
+    @Test func backwardAdaptationAtPictureEdges() throws {
+        try verify("adapt-edge", count: 24, sha256: "8a797c153b059c71cd8797e3eacb8fbf6d33057e72529c8db89be543a045de15")
+    }
+
     /// Swift-encoded spatial layers with libvpx-decoded reference pixels.
     /// Quantization removes every coefficient in some inter blocks whose signaled skip is zero.
     @Test func quantizedInterLayerSkipContext() throws {

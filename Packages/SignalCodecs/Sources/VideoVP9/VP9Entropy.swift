@@ -83,6 +83,17 @@ final class VP9Context {
         counts[2*i+b] += 1
         return b
     }
+    /// A read that libvpx does not count as read (it counts the decoded symbol instead).
+    func peek(_ coder: inout VP9Boolean, _ i: Int) -> Int { coder.bit(probabilities[i]) }
+    func count(_ i: Int, _ bit: Int) { counts[2*i+bit] += 1 }
+    /// libvpx read_partition counts the resulting partition, ++counts->partition[ctx][p], even
+    /// where the picture edge leaves one bit or none to read; adaptation then sees the symbol's
+    /// whole tree path: NONE 0; HORZ 1,0; VERT 1,1,0; SPLIT 1,1,1.
+    func countPartition(_ base: Int, _ type: Int) {
+        count(base, type == 0 ? 0 : 1)
+        if type > 0 { count(base + 1, type == 1 ? 0 : 1) }
+        if type > 1 { count(base + 2, type == 2 ? 0 : 1) }
+    }
     func tree(_ coder: inout VP9Boolean, _ shape: [Int], _ start: Int) -> Int {
         var node = 0
         repeat { node = shape[node + read(&coder,start+node/2)] } while node > 0

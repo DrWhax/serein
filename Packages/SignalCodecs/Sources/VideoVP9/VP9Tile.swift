@@ -65,9 +65,18 @@ final class VP9Tile {
         }
         let type: Int
         if hasRows && hasCols { type = read(0) == 0 ? 0 : (read(1) == 0 ? 1 : 2+read(2)) }
-        else if hasCols { type = read(1) == 0 ? 1 : 3 }
-        else if hasRows { type = read(2) == 0 ? 2 : 3 }
-        else { type = 3 }
+        else {
+            // At the picture edge one bit is read, or none (a forced split), but libvpx counts
+            // the whole resulting partition. Counting only the bit read desynchronised backward
+            // adaptation from the encoder's (frame_parallel_decoding_mode 0, WebRTC's default).
+            func edge(_ i: Int) -> Int {
+                h.intra ? coder.bit(VP9Table.kfPartitionProbs[at+i]) : context.peek(&coder,VP9Prob.partition+at+i)
+            }
+            if hasCols { type = edge(1) == 0 ? 1 : 3 }
+            else if hasRows { type = edge(2) == 0 ? 2 : 3 }
+            else { type = 3 }
+            if !h.intra { context.countPartition(VP9Prob.partition+at, type) }
+        }
         let width = type == 2 || type == 3 ? size*4 : size*8
         let height = type == 1 || type == 3 ? size*4 : size*8
         if level == 0 || type == 0 { try block(col,row,width:width,height:height) }

@@ -95,7 +95,15 @@ extension VP9Tile {
         }
         let index = cls == 0 ? VP9Prob.class0Fr + 6 * axis + 3 * delta : VP9Prob.mvFr + 3 * axis
         let fraction = context.tree(&coder, Self.fourValues, index)
-        let hp = highPrecision ? context.read(&coder, (cls == 0 ? VP9Prob.class0HP : VP9Prob.hp) + axis) : 1
+        // libvpx vp9_inc_mv counts the high-precision bit as 1 even when this vector cannot read
+        // it (a large reference). It adapts those probabilities only in frames that allow high
+        // precision (vp9_adapt_mv_probs), and adapt() follows the counts, so count only there.
+        let hpIndex = (cls == 0 ? VP9Prob.class0HP : VP9Prob.hp) + axis
+        let hp: Int
+        if highPrecision { hp = context.read(&coder, hpIndex) } else {
+            hp = 1
+            if h.highPrecision { context.count(hpIndex, 1) }
+        }
         let magnitude = (cls == 0 ? 0 : 2 << (cls + 2)) + (delta << 3) + 2 * fraction + hp + 1
         return neg == 0 ? magnitude : -magnitude
     }
