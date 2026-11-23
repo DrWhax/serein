@@ -71,12 +71,16 @@ struct VP8ModeProbabilities: Sendable {
         b.uvmode = br.bit(uv[0]) == 0 ? 0 : br.bit(uv[1]) == 0 ? 2 : br.bit(uv[2]) == 0 ? 3 : 1
     }
 
-    func motion(_ br: inout VP8BoolDecoder, left: VP8Motion, top: VP8Motion, corner: VP8Motion,
-                biases: [Bool], x: Int, y: Int, width: Int, height: Int) -> VP8Motion {
-        let ref = br.bit(last) == 0 ? 1 : 2 + br.bit(golden)
-        var result = VP8Motion(reference: ref)
-        var near = Array(repeating: VP8Vector(), count: 4)
-        var count = [0,0,0,0], index = 0
+    /// RFC 6386 §16.3 (vp8_find_near_mvs): the best, nearest and near vectors for a macroblock
+    /// (clamped as the decoder uses them) and the counts selecting each mode's probability.
+    /// Shared by the decoder and the encoder.
+    struct NearVectors { var best = VP8Vector(), nearest = VP8Vector(), near = VP8Vector(), counts = InlineArray<4, Int>(repeating: 0) }
+    static let modeProbabilities = [[7,1,1,143],[14,18,14,107],[135,64,57,68],[60,56,128,65],[159,134,128,34],[234,188,128,28]]
+
+    static func nearVectors(left: VP8Motion, top: VP8Motion, corner: VP8Motion, biases: [Bool], reference ref: Int,
+                            x: Int, y: Int, width: Int, height: Int) -> NearVectors {
+        var near = InlineArray<4, VP8Vector>(repeating: VP8Vector())
+        var count = InlineArray<4, Int>(repeating: 0), index = 0
         for (block, weight) in [(top,2), (left,2), (corner,1)] where block.reference != 0 {
             let v = block.vector
             if v == VP8Vector() { count[0] += weight; continue }
@@ -85,18 +89,27 @@ struct VP8ModeProbabilities: Sendable {
             count[index] += weight
         }
         if index == 3, near[3] == near[1] { count[1] += 1 }
-        if count[2] > count[1] { count.swapAt(1,2); near.swapAt(1,2) }
+        if count[2] > count[1] { (count[1], count[2]) = (count[2], count[1]); (near[1], near[2]) = (near[2], near[1]) }
         if count[1] >= count[0] { near[0] = near[1] }
         count[3] = (top.split.isEmpty ? 0 : 2) + (left.split.isEmpty ? 0 : 2) + (corner.split.isEmpty ? 0 : 1)
-        let p = [[7,1,1,143],[14,18,14,107],[135,64,57,68],[60,56,128,65],[159,134,128,34],[234,188,128,28]]
         func clamp(_ v: VP8Vector) -> VP8Vector {
             .init(x: min((width-x)*128, max(-(x+1)*128,v.x)), y: min((height-y)*128,max(-(y+1)*128,v.y)))
         }
+        return NearVectors(best: clamp(near[0]), nearest: clamp(near[1]), near: clamp(near[2]), counts: count)
+    }
+
+    func motion(_ br: inout VP8BoolDecoder, left: VP8Motion, top: VP8Motion, corner: VP8Motion,
+                biases: [Bool], x: Int, y: Int, width: Int, height: Int) -> VP8Motion {
+        let ref = br.bit(last) == 0 ? 1 : 2 + br.bit(golden)
+        var result = VP8Motion(reference: ref)
+        let found = Self.nearVectors(left: left, top: top, corner: corner, biases: biases, reference: ref,
+                                     x: x, y: y, width: width, height: height)
+        let count = found.counts, p = Self.modeProbabilities
         guard br.bit(p[count[0]][0]) == 1 else { return result }
         result.filterMode = 2
-        if br.bit(p[count[1]][1]) == 0 { result.vector = clamp(near[1]); return result }
-        if br.bit(p[count[2]][2]) == 0 { result.vector = clamp(near[2]); return result }
-        let best = clamp(near[0])
+        if br.bit(p[count[1]][1]) == 0 { result.vector = found.nearest; return result }
+        if br.bit(p[count[2]][2]) == 0 { result.vector = found.near; return result }
+        let best = found.best
         if br.bit(p[count[3]][3]) == 0 { result.vector = best + vector(&br); return result }
 
         result.filterMode = 3

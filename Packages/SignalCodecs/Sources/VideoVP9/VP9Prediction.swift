@@ -136,6 +136,27 @@ struct VP9Plane: Sendable {
         Int(bytes[min(height-1,max(0,y))*stride + min(width-1,max(0,x))])
     }
 
+    /// Where part (bx, by, width x height) of the block at MI (col, row) predicts from, in
+    /// sixteenths of a sample, with the steps for a scaled reference (VP9 §8.5.2.3; libvpx
+    /// dec_build_inter_predictors). `blockWidth`/`blockHeight` are the block's size in this
+    /// plane; `frame` and `reference` are luma sizes. Shared by the decoder and the encoder.
+    static func motionSource(frame: (Int, Int), reference: (Int, Int), cols: Int, rows: Int, subsampling: Int,
+                             col: Int, row: Int, blockWidth: Int, blockHeight: Int, bx: Int, by: Int,
+                             width w: Int, height ht: Int, mv: VP9MV) -> (x: Int, y: Int, x16: Int, y16: Int, stepX16: Int, stepY16: Int) {
+        let x = (col*8) >> subsampling, y = (row*8) >> subsampling
+        let scaleX = (reference.0 << 14)/frame.0, scaleY = (reference.1 << 14)/frame.1
+        var dx = mv.col << (1-subsampling), dy = mv.row << (1-subsampling)
+        if scaleX != 16384 || scaleY != 16384 {
+            let marginX = (4+w)*16, marginY = (4+ht)*16
+            dx = max(-x*16-marginX,min(dx,(((cols*8) >> subsampling)-x-blockWidth)*16+marginX-16))
+            dy = max(-y*16-marginY,min(dy,(((rows*8) >> subsampling)-y-blockHeight)*16+marginY-16))
+        }
+        let ix = x+bx, iy = y+by
+        let originX = (((ix*scaleX) >> 14) << 4) + (((scaleX*((col*8+bx)*16)) >> 14) & 15)
+        let originY = (((iy*scaleY) >> 14) << 4) + (((scaleY*((row*8+by)*16)) >> 14) & 15)
+        return (ix, iy, originX+((scaleX*dx) >> 14), originY+((scaleY*dy) >> 14), (scaleX*16) >> 14, (scaleY*16) >> 14)
+    }
+
     /// Source coordinates and steps are in sixteenths of a plane sample, including
     /// any per-reference frame scaling. Average a second prediction for compound modes.
     mutating func predictInter(reference: Self, x: Int, y: Int, width: Int, height: Int,
@@ -198,6 +219,32 @@ struct VP9Plane: Sendable {
                       kx: kx, ky: ky, fractionX: fractionX, fractionY: fractionY, average: average)
     }
 
+    /// predictInter's unscaled prediction of a width x height block (each ≤ 64) from this plane
+    /// into `out` (row-major, `width` per row), so the encoder's motion search measures exactly
+    /// what the decoder will predict.
+    func predicted(sourceX16: Int, sourceY16: Int, width: Int, height: Int, filter: Int, into out: inout [UInt8]) {
+        let fractionX = sourceX16 & 15, fractionY = sourceY16 & 15
+        let sourceX = sourceX16 >> 4, sourceY = sourceY16 >> 4
+        let kx = (filter*16 + fractionX)*8, ky = (filter*16 + fractionY)*8
+        let inside = sourceX-3 >= 0 && sourceX+width+4 <= self.width && sourceY-3 >= 0 && sourceY+height+4 <= self.height
+        let src = inside ? bytes : window(x: sourceX-3, y: sourceY-3, width: width+7, height: height+7)
+        let srcStride = inside ? stride : width+7
+        let srcOrigin = inside ? sourceY*srcStride + sourceX : 3*srcStride+3
+        var dst = out.mutableSpan
+        Self.convolve(src.span, srcOrigin, srcStride, &dst, 0, width, width: width, height: height,
+                      kx: kx, ky: ky, fractionX: fractionX, fractionY: fractionY, average: false)
+    }
+
+    /// The 8-tap prediction of a width x height block (each ≤ 64) at sixteenth-sample fractions
+    /// (fractionX, fractionY) from `source` (sample origin, stride: edge-extended as far as the
+    /// taps reach) into `out`, `width` per row: predictInter's arithmetic for the encoder.
+    static func convolveBlock(_ source: borrowing Span<UInt8>, origin: Int, stride: Int, width: Int, height: Int,
+                              fractionX: Int, fractionY: Int, filter: Int, into out: inout [UInt8]) {
+        var dst = out.mutableSpan
+        convolve(source, origin, stride, &dst, 0, width, width: width, height: height,
+                 kx: (filter*16 + fractionX)*8, ky: (filter*16 + fractionY)*8, fractionX: fractionX, fractionY: fractionY, average: false)
+    }
+
     /// The samples sample(_:_:) reads for a window, clamped once per position.
     private func window(x: Int, y: Int, width w: Int, height h: Int) -> [UInt8] {
         var window = [UInt8](repeating: 0, count: w*h)
@@ -228,9 +275,8 @@ struct VP9Plane: Sendable {
 
     @inline(__always)
     private static func load8(_ s: borrowing Span<UInt8>, _ i: Int) -> Lanes {
-        _ = s[i + 7]
-        return Lanes(Int32(s[i]), Int32(s[i+1]), Int32(s[i+2]), Int32(s[i+3]),
-                     Int32(s[i+4]), Int32(s[i+5]), Int32(s[i+6]), Int32(s[i+7]))
+        let w = s.extracting(i..<(i &+ 8))
+        return Lanes(Int32(w[0]), Int32(w[1]), Int32(w[2]), Int32(w[3]), Int32(w[4]), Int32(w[5]), Int32(w[6]), Int32(w[7]))
     }
 
     /// Eight outputs of one 8-tap pass: tap t of output j reads s[i + j + t*step].
@@ -261,10 +307,185 @@ struct VP9Plane: Sendable {
         }
     }
 
+    // MARK: 16-bit lanes
+    //
+    // Wide16: for every VP9 filter the negative taps add up to at most 54 and the positive ones
+    // to at most 182, so a sum of eight taps times bytes lies in [-13 770, 46 410]. Biased by
+    // 64 + 108*128 it lies in [118, 60 298]: wrapping 16-bit lanes hold it exactly, and
+    // (biased >> 7) - 108 is (sum + 64) >> 7, clamped to bytes without branches.
+    @inline(__always)
+    private static func loadWide16(_ s: borrowing Span<UInt8>, _ i: Int) -> SIMD16<Int16> {
+        let w = s.extracting(i..<(i &+ 16))
+        return SIMD16<Int16>(Int16(w[0]), Int16(w[1]), Int16(w[2]), Int16(w[3]), Int16(w[4]), Int16(w[5]), Int16(w[6]), Int16(w[7]), Int16(w[8]), Int16(w[9]), Int16(w[10]), Int16(w[11]), Int16(w[12]), Int16(w[13]), Int16(w[14]), Int16(w[15]))
+    }
+
+    /// The 8 taps of kernel k as lane vectors.
+    @inline(__always)
+    private static func kernelWide16(_ k: Int) -> (SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>) {
+        let taps = flatFilters
+        return (SIMD16<Int16>(repeating: Int16(taps[k+0])), SIMD16<Int16>(repeating: Int16(taps[k+1])), SIMD16<Int16>(repeating: Int16(taps[k+2])), SIMD16<Int16>(repeating: Int16(taps[k+3])), SIMD16<Int16>(repeating: Int16(taps[k+4])), SIMD16<Int16>(repeating: Int16(taps[k+5])), SIMD16<Int16>(repeating: Int16(taps[k+6])), SIMD16<Int16>(repeating: Int16(taps[k+7])))
+    }
+
+    /// clamp((sum + 64) >> 7, 0, 255) of eight taps, exactly: see Wide16.
+    @inline(__always)
+    private static func filterWide16(_ k: (SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>),
+                                 _ r0: SIMD16<Int16>, _ r1: SIMD16<Int16>, _ r2: SIMD16<Int16>, _ r3: SIMD16<Int16>, _ r4: SIMD16<Int16>, _ r5: SIMD16<Int16>, _ r6: SIMD16<Int16>, _ r7: SIMD16<Int16>) -> SIMD16<Int16> {
+        var sum = SIMD16<Int16>(repeating: 64 + 108*128) &+ k.0 &* r0
+        sum &+= k.1 &* r1 &+ k.2 &* r2 &+ k.3 &* r3
+        sum &+= k.4 &* r4 &+ k.5 &* r5 &+ k.6 &* r6 &+ k.7 &* r7
+        // The biased sum is below 2^16: its unsigned >> 7 is the arithmetic shift's low 9 bits.
+        var value = ((sum &>> SIMD16<Int16>(repeating: 7)) & SIMD16<Int16>(repeating: 511)) &- SIMD16<Int16>(repeating: 108)
+        value &= ~(value &>> SIMD16<Int16>(repeating: 15))
+        let over = (SIMD16<Int16>(repeating: 255) &- value) &>> SIMD16<Int16>(repeating: 15)
+        return (value & ~over) | (SIMD16<Int16>(repeating: 255) & over)
+    }
+
+    @inline(__always)
+    private static func horizontalWide16(_ s: borrowing Span<UInt8>, _ at: Int, _ k: (SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>, SIMD16<Int16>)) -> SIMD16<Int16> {
+        filterWide16(k, loadWide16(s, at), loadWide16(s, at &+ 1), loadWide16(s, at &+ 2), loadWide16(s, at &+ 3),
+                 loadWide16(s, at &+ 4), loadWide16(s, at &+ 5), loadWide16(s, at &+ 6), loadWide16(s, at &+ 7))
+    }
+
+    @inline(__always)
+    private static func storeWide16(_ d: inout MutableSpan<UInt8>, _ i: Int, _ v: SIMD16<Int16>, _ average: Bool) {
+        var v = v
+        if average {
+            let old = loadWide16(d.span, i)
+            v = (old &+ v &+ SIMD16<Int16>(repeating: 1)) &>> SIMD16<Int16>(repeating: 1)
+        }
+        _ = d[i]; _ = d[i &+ 15]
+        for j in 0..<16 { d[i &+ j] = UInt8(truncatingIfNeeded: v[j]) }
+    }
+
+    /// convolve for blocks 16 samples wide (or a multiple of it): 16 outputs per lane vector.
+    /// Two-dimensional filtering keeps the last eight horizontally filtered rows in a ring.
+    private static func convolveWide16(_ source: borrowing Span<UInt8>, _ srcOrigin: Int, _ srcStride: Int,
+                                   _ dst: inout MutableSpan<UInt8>, _ dstOrigin: Int, _ dstStride: Int,
+                                   width: Int, height: Int, kx: Int, ky: Int, fractionX: Int, fractionY: Int,
+                                   average: Bool) {
+        let h = kernelWide16(kx), v = kernelWide16(ky)
+        for col in Swift.stride(from: 0, to: width, by: 16) {
+            let s = srcOrigin + col, d = dstOrigin + col
+            if fractionY == 0 {
+                for row in 0..<height {
+                    storeWide16(&dst, d + row*dstStride, horizontalWide16(source, s + row*srcStride - 3, h), average)
+                }
+            } else if fractionX == 0 {
+                for row in 0..<height {
+                    let at = s + (row - 3)*srcStride
+                    let out = filterWide16(v, loadWide16(source, at), loadWide16(source, at + srcStride), loadWide16(source, at + 2*srcStride),
+                                       loadWide16(source, at + 3*srcStride), loadWide16(source, at + 4*srcStride),
+                                       loadWide16(source, at + 5*srcStride), loadWide16(source, at + 6*srcStride),
+                                       loadWide16(source, at + 7*srcStride))
+                    storeWide16(&dst, d + row*dstStride, out, average)
+                }
+            } else {
+                // Row m of the ring is source row m - 3 filtered horizontally.
+                var ring = InlineArray<8, SIMD16<Int16>>(repeating: SIMD16<Int16>())
+                for m in 0..<7 { ring[m] = horizontalWide16(source, s + (m - 3)*srcStride - 3, h) }
+                for row in 0..<height {
+                    ring[(row + 7) & 7] = horizontalWide16(source, s + (row + 4)*srcStride - 3, h)
+                    let out = filterWide16(v, ring[row & 7], ring[(row + 1) & 7], ring[(row + 2) & 7], ring[(row + 3) & 7],
+                                       ring[(row + 4) & 7], ring[(row + 5) & 7], ring[(row + 6) & 7], ring[(row + 7) & 7])
+                    storeWide16(&dst, d + row*dstStride, out, average)
+                }
+            }
+        }
+    }
+    @inline(__always)
+    private static func loadWide8(_ s: borrowing Span<UInt8>, _ i: Int) -> SIMD8<Int16> {
+        let w = s.extracting(i..<(i &+ 8))
+        return SIMD8<Int16>(Int16(w[0]), Int16(w[1]), Int16(w[2]), Int16(w[3]), Int16(w[4]), Int16(w[5]), Int16(w[6]), Int16(w[7]))
+    }
+
+    /// The 8 taps of kernel k as lane vectors.
+    @inline(__always)
+    private static func kernelWide8(_ k: Int) -> (SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>) {
+        let taps = flatFilters
+        return (SIMD8<Int16>(repeating: Int16(taps[k+0])), SIMD8<Int16>(repeating: Int16(taps[k+1])), SIMD8<Int16>(repeating: Int16(taps[k+2])), SIMD8<Int16>(repeating: Int16(taps[k+3])), SIMD8<Int16>(repeating: Int16(taps[k+4])), SIMD8<Int16>(repeating: Int16(taps[k+5])), SIMD8<Int16>(repeating: Int16(taps[k+6])), SIMD8<Int16>(repeating: Int16(taps[k+7])))
+    }
+
+    /// clamp((sum + 64) >> 7, 0, 255) of eight taps, exactly: see Wide16.
+    @inline(__always)
+    private static func filterWide8(_ k: (SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>),
+                                 _ r0: SIMD8<Int16>, _ r1: SIMD8<Int16>, _ r2: SIMD8<Int16>, _ r3: SIMD8<Int16>, _ r4: SIMD8<Int16>, _ r5: SIMD8<Int16>, _ r6: SIMD8<Int16>, _ r7: SIMD8<Int16>) -> SIMD8<Int16> {
+        var sum = SIMD8<Int16>(repeating: 64 + 108*128) &+ k.0 &* r0
+        sum &+= k.1 &* r1 &+ k.2 &* r2 &+ k.3 &* r3
+        sum &+= k.4 &* r4 &+ k.5 &* r5 &+ k.6 &* r6 &+ k.7 &* r7
+        // The biased sum is below 2^16: its unsigned >> 7 is the arithmetic shift's low 9 bits.
+        var value = ((sum &>> SIMD8<Int16>(repeating: 7)) & SIMD8<Int16>(repeating: 511)) &- SIMD8<Int16>(repeating: 108)
+        value &= ~(value &>> SIMD8<Int16>(repeating: 15))
+        let over = (SIMD8<Int16>(repeating: 255) &- value) &>> SIMD8<Int16>(repeating: 15)
+        return (value & ~over) | (SIMD8<Int16>(repeating: 255) & over)
+    }
+
+    @inline(__always)
+    private static func horizontalWide8(_ s: borrowing Span<UInt8>, _ at: Int, _ k: (SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>, SIMD8<Int16>)) -> SIMD8<Int16> {
+        filterWide8(k, loadWide8(s, at), loadWide8(s, at &+ 1), loadWide8(s, at &+ 2), loadWide8(s, at &+ 3),
+                 loadWide8(s, at &+ 4), loadWide8(s, at &+ 5), loadWide8(s, at &+ 6), loadWide8(s, at &+ 7))
+    }
+
+    @inline(__always)
+    private static func storeWide8(_ d: inout MutableSpan<UInt8>, _ i: Int, _ v: SIMD8<Int16>, _ average: Bool) {
+        var v = v
+        if average {
+            let old = loadWide8(d.span, i)
+            v = (old &+ v &+ SIMD8<Int16>(repeating: 1)) &>> SIMD8<Int16>(repeating: 1)
+        }
+        _ = d[i]; _ = d[i &+ 7]
+        for j in 0..<8 { d[i &+ j] = UInt8(truncatingIfNeeded: v[j]) }
+    }
+
+    /// convolve for blocks 8 samples wide (or a multiple of it): 8 outputs per lane vector.
+    /// Two-dimensional filtering keeps the last eight horizontally filtered rows in a ring.
+    private static func convolveWide8(_ source: borrowing Span<UInt8>, _ srcOrigin: Int, _ srcStride: Int,
+                                   _ dst: inout MutableSpan<UInt8>, _ dstOrigin: Int, _ dstStride: Int,
+                                   width: Int, height: Int, kx: Int, ky: Int, fractionX: Int, fractionY: Int,
+                                   average: Bool) {
+        let h = kernelWide8(kx), v = kernelWide8(ky)
+        for col in Swift.stride(from: 0, to: width, by: 8) {
+            let s = srcOrigin + col, d = dstOrigin + col
+            if fractionY == 0 {
+                for row in 0..<height {
+                    storeWide8(&dst, d + row*dstStride, horizontalWide8(source, s + row*srcStride - 3, h), average)
+                }
+            } else if fractionX == 0 {
+                for row in 0..<height {
+                    let at = s + (row - 3)*srcStride
+                    let out = filterWide8(v, loadWide8(source, at), loadWide8(source, at + srcStride), loadWide8(source, at + 2*srcStride),
+                                       loadWide8(source, at + 3*srcStride), loadWide8(source, at + 4*srcStride),
+                                       loadWide8(source, at + 5*srcStride), loadWide8(source, at + 6*srcStride),
+                                       loadWide8(source, at + 7*srcStride))
+                    storeWide8(&dst, d + row*dstStride, out, average)
+                }
+            } else {
+                // Row m of the ring is source row m - 3 filtered horizontally.
+                var ring = InlineArray<8, SIMD8<Int16>>(repeating: SIMD8<Int16>())
+                for m in 0..<7 { ring[m] = horizontalWide8(source, s + (m - 3)*srcStride - 3, h) }
+                for row in 0..<height {
+                    ring[(row + 7) & 7] = horizontalWide8(source, s + (row + 4)*srcStride - 3, h)
+                    let out = filterWide8(v, ring[row & 7], ring[(row + 1) & 7], ring[(row + 2) & 7], ring[(row + 3) & 7],
+                                       ring[(row + 4) & 7], ring[(row + 5) & 7], ring[(row + 6) & 7], ring[(row + 7) & 7])
+                    storeWide8(&dst, d + row*dstStride, out, average)
+                }
+            }
+        }
+    }
+
     private static func convolve(_ source: borrowing Span<UInt8>, _ srcOrigin: Int, _ srcStride: Int,
                                  _ dst: inout MutableSpan<UInt8>, _ dstOrigin: Int, _ dstStride: Int,
                                  width: Int, height: Int, kx: Int, ky: Int, fractionX: Int, fractionY: Int,
                                  average: Bool) {
+        if fractionX != 0 || fractionY != 0 {
+            if width.isMultiple(of: 16) {
+                return convolveWide16(source, srcOrigin, srcStride, &dst, dstOrigin, dstStride, width: width, height: height,
+                                      kx: kx, ky: ky, fractionX: fractionX, fractionY: fractionY, average: average)
+            }
+            if width == 8 {
+                return convolveWide8(source, srcOrigin, srcStride, &dst, dstOrigin, dstStride, width: width, height: height,
+                                     kx: kx, ky: ky, fractionX: fractionX, fractionY: fractionY, average: average)
+            }
+        }
         if fractionX != 0 && fractionY != 0 {
             // Rows -3 ... height+3 through the horizontal filter first, into a buffer sized
             // for the block (zeroing the largest for every small block costs more than it).

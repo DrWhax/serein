@@ -1,7 +1,7 @@
 /// Per-MI neighbour state (8×8), including the four luma sub-blocks in decode order.
 /// A motion vector in eighth samples. Decoded vectors are held to ±16383 (differential), and
 /// candidates are clamped toward zero, so 16 bits hold every value.
-struct VP9MV: Equatable {
+struct VP9MV: Hashable {
     private var r: Int16 = 0, c: Int16 = 0
     init(row: Int = 0, col: Int = 0) { r = Int16(truncatingIfNeeded: row); c = Int16(truncatingIfNeeded: col) }
     var row: Int { get { Int(r) } set { r = Int16(truncatingIfNeeded: newValue) } }
@@ -328,7 +328,6 @@ struct VP9Tile {
 extension VP9Tile {
     mutating func predictInter(col: Int, row: Int, plane: Int, block: VP9Block) throws {
         let subsampling = plane == 0 ? 0 : 1
-        let x = (col*8) >> subsampling, y = (row*8) >> subsampling
         let width = max(8,block.width) >> subsampling, height = max(8,block.height) >> subsampling
         for i in 0..<(block.refs.1 == 0 ? 1 : 2) {
             let ref = i == 0 ? block.refs.0 : block.refs.1
@@ -336,21 +335,12 @@ extension VP9Tile {
             let refLuma = source.planes[0]
             guard refLuma.width <= h.width*2, refLuma.height <= h.height*2,
                   h.width <= refLuma.width*16, h.height <= refLuma.height*16 else { throw VP9DecodeError.malformed }
-            let scaleX = (refLuma.width << 14)/h.width, scaleY = (refLuma.height << 14)/h.height
-            let sx = (scaleX*16) >> 14, sy = (scaleY*16) >> 14
             func part(_ bx: Int, _ by: Int, _ w: Int, _ ht: Int, _ mv: VP9MV) {
-                var dx = mv.col << (1-subsampling), dy = mv.row << (1-subsampling)
-                if scaleX != 16384 || scaleY != 16384 {
-                    let marginX = (4+w)*16, marginY = (4+ht)*16
-                    dx = max(-x*16-marginX,min(dx,(((cols*8) >> subsampling)-x-width)*16+marginX-16))
-                    dy = max(-y*16-marginY,min(dy,(((rows*8) >> subsampling)-y-height)*16+marginY-16))
-                }
-                let ix = x+bx, iy = y+by
-                let originX = (((ix*scaleX) >> 14) << 4) + (((scaleX*((col*8+bx)*16)) >> 14) & 15)
-                let originY = (((iy*scaleY) >> 14) << 4) + (((scaleY*((row*8+by)*16)) >> 14) & 15)
-                planes[plane].predictInter(reference:source.planes[plane],x:ix,y:iy,width:w,height:ht,
-                    sourceX16:originX+((scaleX*dx) >> 14),sourceY16:originY+((scaleY*dy) >> 14),
-                    stepX16:sx,stepY16:sy,filter:block.filter,average:i == 1)
+                let at = VP9Plane.motionSource(frame:(h.width,h.height),reference:(refLuma.width,refLuma.height),cols:cols,rows:rows,
+                                               subsampling:subsampling,col:col,row:row,blockWidth:width,blockHeight:height,
+                                               bx:bx,by:by,width:w,height:ht,mv:mv)
+                planes[plane].predictInter(reference:source.planes[plane],x:at.x,y:at.y,width:w,height:ht,
+                    sourceX16:at.x16,sourceY16:at.y16,stepX16:at.stepX16,stepY16:at.stepY16,filter:block.filter,average:i == 1)
             }
             if let sub = block.subVectors {
                 if plane == 0 {

@@ -1,12 +1,12 @@
 // VP9 Bitstream Specification, sections 6.4.9–6.4.14 and 7.3.
 // Reference tables and context derivations from libvpx (BSD-3-Clause).
-private extension VP9Block {
+extension VP9Block {
     var compound: Bool { refs.1 != 0 }
     var inter: Bool { refs.0 != 0 }
     func uses(_ reference: Int) -> Bool { refs.0 == reference || refs.1 == reference }
 }
 
-private struct VP9References {
+struct VP9References {
     let edges: [VP9Block]
     let fixed: Int, first: Int, second: Int
     let fixedLast: Bool
@@ -79,11 +79,91 @@ private struct VP9References {
     }
 }
 
+/// Motion vector prediction shared by the decoder (VP9Tile) and the encoder: neighbour
+/// candidates (libvpx find_mv_refs), the inter-mode context and precision lowering.
+/// `neighbour(col, row)` returns a coded block of the same tile, or nil.
+enum VP9VectorPrediction {
+    private static let modeContexts = [2,3,4,1,3,0,0,0,0,5,5,0,5,0,0,0,0,0,6]
+    private static let modeWeights = [0,0,3,1]
+
+    // Neighbours for each block size in (row, column) order.
+    static func offsets(width: Int, height: Int) -> [(Int,Int)] {
+        switch (width,height) {
+        case (8,16): [(0,-1),(-1,0),(1,-1),(-1,-1),(0,-2),(-2,0),(-2,-1),(-1,-2)]
+        case (16,8): [(-1,0),(0,-1),(-1,1),(-1,-1),(-2,0),(0,-2),(-1,-2),(-2,-1)]
+        case (16,16): [(-1,0),(0,-1),(-1,1),(1,-1),(-1,-1),(-3,0),(0,-3),(-3,-3)]
+        case (16,32): [(0,-1),(-1,0),(2,-1),(-1,-1),(-1,1),(0,-3),(-3,0),(-3,-3)]
+        case (32,16): [(-1,0),(0,-1),(-1,2),(-1,-1),(1,-1),(-3,0),(0,-3),(-3,-3)]
+        case (32,32): [(-1,1),(1,-1),(-1,2),(2,-1),(-1,-1),(-3,0),(0,-3),(-3,-3)]
+        case (32,64): [(0,-1),(-1,0),(4,-1),(-1,2),(-1,-1),(0,-3),(-3,0),(2,-1)]
+        case (64,32): [(-1,0),(0,-1),(-1,4),(2,-1),(-1,-1),(-3,0),(0,-3),(-1,2)]
+        case (64,64): [(-1,3),(3,-1),(-1,4),(4,-1),(-1,-1),(-1,0),(0,-1),(-1,6)]
+        default: [(-1,0),(0,-1),(-1,-1),(-2,0),(0,-2),(-2,-1),(-1,-2),(-2,-2)]
+        }
+    }
+
+    /// The inter-mode probability context: from the first two neighbours' modes.
+    static func modeContext(col: Int, row: Int, offsets: [(Int,Int)], neighbour: (Int, Int) -> VP9Block?) -> Int {
+        var tally = 0
+        for (dy, dx) in offsets.prefix(2) {
+            if let edge = neighbour(col+dx,row+dy) { tally += edge.refs.0 != 0 ? modeWeights[edge.motionMode] : 9 }
+        }
+        return modeContexts[tally]
+    }
+
+    /// Nearest (and near) vector candidates for `reference`, clamped as the decoder clamps them.
+    /// `previous`: the co-located block of the previous picture, when its vectors are used.
+    static func candidates(col: Int, row: Int, block: VP9Block, reference: Int, sub: Int, near: Bool,
+                           offsets: [(Int,Int)], bias: [Bool], rows: Int, cols: Int, previous: VP9Block?,
+                           neighbour: (Int, Int) -> VP9Block?) -> [VP9MV] {
+        var sources: [(block: VP9Block, subIndex: Int?)] = []
+        for (i, offset) in offsets.enumerated() {
+            if let other = neighbour(col + offset.1, row + offset.0) {
+                var subIndex: Int?
+                if i < 2, sub >= 0, other.subVectors != nil {
+                    subIndex = offset.1 == 0 ? [2,3,2,3][sub] : [1,1,3,3][sub]
+                }
+                sources.append((other,subIndex))
+            }
+        }
+        if let previous { sources.append((previous,nil)) }
+        let wantedCount = near ? 2 : 1
+        var vectors: [VP9MV] = []
+        func add(_ mv: VP9MV) { if vectors.count < wantedCount && !vectors.contains(mv) { vectors.append(mv) } }
+        for source in sources {
+            guard vectors.count < wantedCount else { break }
+            let pair = source.subIndex.flatMap { source.block.subVectors?[$0] } ?? source.block.vectors
+            if source.block.refs.0 == reference { add(pair.0) }
+            else if source.block.refs.1 == reference { add(pair.1) }
+        }
+        for source in sources {
+            guard vectors.count < wantedCount else { break }
+            let other = source.block
+            for i in 0..<(other.refs.1 != 0 ? 2 : 1) {
+                let ref = i == 0 ? other.refs.0 : other.refs.1
+                guard ref > 0 && ref != reference, i == 0 || other.vectors.0 != other.vectors.1 else { continue }
+                var mv = i == 0 ? other.vectors.0 : other.vectors.1
+                if bias[ref] != bias[reference] { mv = VP9MV(row: -mv.row, col: -mv.col) }
+                add(mv)
+            }
+        }
+        while vectors.count < wantedCount { vectors.append(VP9MV()) }
+        let maxRow = (rows - row - max(1,block.height/8)) * 64 + 128
+        let maxCol = (cols - col - max(1,block.width/8)) * 64 + 128
+        return vectors.map { VP9MV(row: max(-row*64-128,min(maxRow,$0.row)), col: max(-col*64-128,min(maxCol,$0.col))) }
+    }
+
+    /// Without high precision (or for a long reference), vectors keep quarter samples.
+    static func lowerPrecision(_ mv: VP9MV, highPrecision: Bool) -> VP9MV {
+        if highPrecision && abs(mv.row) < 64 && abs(mv.col) < 64 { return mv }
+        return VP9MV(row: mv.row / 2 * 2, col: mv.col / 2 * 2)
+    }
+}
+
 extension VP9Tile {
     private static let modeTree = [-2, 2, 0, 4, -1, -3]
     private static let fourValues = [0,2,-1,4,-2,-3]
     private static let classTree = [0,2,-1,4,6,8,-2,-3,10,12,-4,-5,-6,14,16,18,-7,-8,-9,-10]
-    private static let modeContext = [2,3,4,1,3,0,0,0,0,5,5,0,5,0,0,0,0,0,6]
 
     private mutating func mvComponent(_ axis: Int, highPrecision: Bool) -> Int {
         let neg = context.read(&coder, VP9Prob.sign + axis)
@@ -128,77 +208,11 @@ extension VP9Tile {
         return (2 + context.read(&coder, VP9Prob.singleRef + 2 * hints.single(2) + 1),0)
     }
 
-    // Neighbours for each block size in (row, column) order.
-    private static func offsets(width: Int, height: Int) -> [(Int,Int)] {
-        switch (width,height) {
-        case (8,16): [(0,-1),(-1,0),(1,-1),(-1,-1),(0,-2),(-2,0),(-2,-1),(-1,-2)]
-        case (16,8): [(-1,0),(0,-1),(-1,1),(-1,-1),(-2,0),(0,-2),(-1,-2),(-2,-1)]
-        case (16,16): [(-1,0),(0,-1),(-1,1),(1,-1),(-1,-1),(-3,0),(0,-3),(-3,-3)]
-        case (16,32): [(0,-1),(-1,0),(2,-1),(-1,-1),(-1,1),(0,-3),(-3,0),(-3,-3)]
-        case (32,16): [(-1,0),(0,-1),(-1,2),(-1,-1),(1,-1),(-3,0),(0,-3),(-3,-3)]
-        case (32,32): [(-1,1),(1,-1),(-1,2),(2,-1),(-1,-1),(-3,0),(0,-3),(-3,-3)]
-        case (32,64): [(0,-1),(-1,0),(4,-1),(-1,2),(-1,-1),(0,-3),(-3,0),(2,-1)]
-        case (64,32): [(-1,0),(0,-1),(-1,4),(2,-1),(-1,-1),(-3,0),(0,-3),(-1,2)]
-        case (64,64): [(-1,3),(3,-1),(-1,4),(4,-1),(-1,-1),(-1,0),(0,-1),(-1,6)]
-        default: [(-1,0),(0,-1),(-1,-1),(-2,0),(0,-2),(-2,-1),(-1,-2),(-2,-2)]
-        }
-    }
-
-    private func candidates(col: Int, row: Int, block: VP9Block, reference: Int, sub: Int,
-                            near: Bool, offsets: [(Int,Int)]) -> [VP9MV] {
-        var sources: [(block: VP9Block, subIndex: Int?)] = []
-        for (i, offset) in offsets.enumerated() {
-            if let other = neighbour(col + offset.1, row + offset.0) {
-                var subIndex: Int?
-                if i < 2, sub >= 0, other.subVectors != nil {
-                    subIndex = offset.1 == 0 ? [2,3,2,3][sub] : [1,1,3,3][sub]
-                }
-                sources.append((other,subIndex))
-            }
-        }
-        if usePreviousMVs, let previous, row < previous.rows, col < previous.cols {
-            sources.append((previous.blocks[row * previous.cols + col],nil))
-        }
-        let wantedCount = near ? 2 : 1
-        var vectors: [VP9MV] = []
-        func add(_ mv: VP9MV) { if vectors.count < wantedCount && !vectors.contains(mv) { vectors.append(mv) } }
-        for source in sources {
-            guard vectors.count < wantedCount else { break }
-            let pair = source.subIndex.flatMap { source.block.subVectors?[$0] } ?? source.block.vectors
-            if source.block.refs.0 == reference { add(pair.0) }
-            else if source.block.refs.1 == reference { add(pair.1) }
-        }
-        for source in sources {
-            guard vectors.count < wantedCount else { break }
-            let other = source.block
-            for i in 0..<(other.compound ? 2 : 1) {
-                let ref = i == 0 ? other.refs.0 : other.refs.1
-                guard ref > 0 && ref != reference, i == 0 || other.vectors.0 != other.vectors.1 else { continue }
-                var mv = i == 0 ? other.vectors.0 : other.vectors.1
-                if h.bias[ref] != h.bias[reference] { mv = VP9MV(row: -mv.row, col: -mv.col) }
-                add(mv)
-            }
-        }
-        while vectors.count < wantedCount { vectors.append(VP9MV()) }
-        let maxRow = (rows - row - max(1,block.height/8)) * 64 + 128
-        let maxCol = (cols - col - max(1,block.width/8)) * 64 + 128
-        return vectors.map { VP9MV(row: max(-row*64-128,min(maxRow,$0.row)), col: max(-col*64-128,min(maxCol,$0.col))) }
-    }
-
-    private func lowerPrecision(_ mv: VP9MV) -> VP9MV {
-        if h.highPrecision && abs(mv.row) < 64 && abs(mv.col) < 64 { return mv }
-        return VP9MV(row: mv.row / 2 * 2, col: mv.col / 2 * 2)
-    }
-
     mutating func interModes(col: Int, row: Int, block: inout VP9Block, forcedRef: Int?, forcedSkip: Bool) throws {
         let above = neighbour(col,row-1), left = neighbour(col-1,row)
         block.refs = referencePair(VP9References(above,left,bias:h.bias), forced: forcedRef)
-        let offsets = Self.offsets(width: block.width, height: block.height)
-        var tally = 0
-        for (dy, dx) in offsets.prefix(2) {
-            if let edge = neighbour(col+dx,row+dy) { tally += edge.inter ? [0,0,3,1][edge.motionMode] : 9 }
-        }
-        let modeProb = VP9Prob.interMode + 3 * Self.modeContext[tally]
+        let offsets = VP9VectorPrediction.offsets(width: block.width, height: block.height)
+        let modeProb = VP9Prob.interMode + 3 * VP9VectorPrediction.modeContext(col: col, row: row, offsets: offsets) { neighbour($0,$1) }
         let subBlocks = min(block.width,block.height) < 8
         if forcedSkip {
             guard !subBlocks else { throw VP9DecodeError.malformed }
@@ -220,8 +234,10 @@ extension VP9Tile {
                 for channel in 0..<(block.compound ? 2 : 1) where block.motionMode != 2 {
                     let reference = channel == 0 ? block.refs.0 : block.refs.1
                     let new = block.motionMode == 3, near = block.motionMode == 1
-                    let external = candidates(col: col, row: row, block: block, reference: reference,
-                                              sub: subBlocks && !new ? sub : -1, near: near, offsets: offsets)
+                    let previousBlock = usePreviousMVs ? previous.flatMap { p in row < p.rows && col < p.cols ? p.blocks[row * p.cols + col] : nil } : nil
+                    let external = VP9VectorPrediction.candidates(col: col, row: row, block: block, reference: reference,
+                                                                  sub: subBlocks && !new ? sub : -1, near: near, offsets: offsets,
+                                                                  bias: h.bias, rows: rows, cols: cols, previous: previousBlock) { neighbour($0,$1) }
                     var best = near ? external[1] : external[0]
                     if let parts = block.subVectors, !new, sub > 0 {
                         func at(_ i: Int) -> VP9MV { channel == 0 ? parts[i].0 : parts[i].1 }
@@ -231,7 +247,7 @@ extension VP9Tile {
                             best = alternatives.first { $0 != nearest } ?? VP9MV()
                         } else { best = nearest }
                     }
-                    if !subBlocks || new { best = lowerPrecision(best) }
+                    if !subBlocks || new { best = VP9VectorPrediction.lowerPrecision(best, highPrecision: h.highPrecision) }
                     let mv = new ? try differential(best) : best
                     if channel == 0 { pair.0 = mv } else { pair.1 = mv }
                 }
