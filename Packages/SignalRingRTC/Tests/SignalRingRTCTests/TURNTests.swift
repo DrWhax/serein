@@ -45,7 +45,7 @@ struct TURNTests {
         #expect(try TURNMessage(modern).legacyNonce == nil)
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_PORT"] != nil))
+    @Test
     func deniedPermissionEndsAllocation() async throws {
         let allocation = try await TURNTestRelay.open()
         defer { allocation.close() }
@@ -62,7 +62,7 @@ struct TURNTests {
         } catch TURNMessage.Failure.closed {}
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_PORT"] != nil))
+    @Test
     func twoIndependentAllocations() async throws {
         let first = try await TURNTestRelay.open()
         defer { first.close() }

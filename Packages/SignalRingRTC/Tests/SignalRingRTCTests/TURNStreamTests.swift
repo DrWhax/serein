@@ -6,7 +6,8 @@ import Testing
 enum TURNTestRelay {
     static var peerURI: String {
         let env = ProcessInfo.processInfo.environment
-        return env["SEREIN_TEST_TURN_URI"] ?? "turn:127.0.0.1:\(env["SEREIN_TEST_TURN_PORT"] ?? "")?transport=udp"
+        // Tools/with-calling-turn.py's coturn when it set these, else the in-process Swift server.
+        return env["SEREIN_TEST_TURN_URI"] ?? "turn:127.0.0.1:\(env["SEREIN_TEST_TURN_PORT"] ?? String(TURNTestServer.shared.port))?transport=udp"
     }
 
     static func open(tlsHostname: String = "localhost", trustTestRoot: Bool = true) async throws -> TURNAllocation {
