@@ -159,27 +159,49 @@ final class VP9Context {
 }
 
 extension VP9Context {
-    /// Coefficient model (tx size, chroma, inter, band, neighbours, tree node).
+    /// Coefficient model (tx size, chroma, inter, band, neighbours, tree node). Dequantised
+    /// values go into `coefficients` and token classes into `energy`, both all zero on entry;
+    /// energy is zero again on return. True if any token was read.
     func residual(_ coder: inout VP9Boolean, tx: Int, type: Int, chroma: Bool, inter: Bool,
-                  neighbours: Int, dc: Int, ac: Int) -> (coefficients: [Int], hasTokens: Bool) {
+                  neighbours: Int, dc: Int, ac: Int, coefficients: inout [Int], energy: inout [UInt8]) -> Bool {
+        // Counted reads use local copies: no exclusivity or uniqueness checks per symbol.
+        var counts = [Int]()
+        swap(&counts, &self.counts)
+        let probabilities = self.probabilities
+        var tally = counts.mutableSpan
+        var values = coefficients.mutableSpan, tokens = energy.mutableSpan
+        let read = Self.tokens(&coder, probabilities.span, &tally, tx: tx, type: type, chroma: chroma, inter: inter,
+                               neighbours: neighbours, dc: dc, ac: ac, &values, &tokens)
+        swap(&counts, &self.counts)
+        return read
+    }
+
+    private static func tokens(_ coder: inout VP9Boolean, _ probabilities: borrowing Span<Int>, _ counts: inout MutableSpan<Int>,
+                               tx: Int, type: Int, chroma: Bool, inter: Bool, neighbours: Int, dc: Int, ac: Int,
+                               _ coefficients: inout MutableSpan<Int>, _ energy: inout MutableSpan<UInt8>) -> Bool {
+        @inline(__always) func read(_ coder: inout VP9Boolean, _ counts: inout MutableSpan<Int>, _ i: Int) -> Int {
+            let b = coder.bit(probabilities[i])
+            counts[2*i+b] += 1
+            return b
+        }
         let scans = Self.scans[min(tx,3)][type == 1 && tx < 3 ? 1 : (type == 2 && tx < 3 ? 2 : 0)]
         let (scan, adjacent) = scans
         let limit = scan.count
-        var coefficients = [Int](repeating: 0, count: limit), energy = coefficients
         let row = VP9Prob.coef+((tx*2+(chroma ? 1 : 0))*2+(inter ? 1 : 0))*108
         var pos = 0, context = neighbours, readEnd = true
         let bands = tx == 0 ? Self.bands4 : Self.bandsLarge
+        let table = VP9Table.pareto8Full
         while pos < limit {
             let band = pos < bands.count ? bands[pos] : 5
             let p = row + band*18 + context*3
-            if readEnd, read(&coder,p) == 0 { break }
+            if readEnd, read(&coder,&counts,p) == 0 { break }
             let index = scan[pos]
-            if read(&coder,p+1) == 0 {
+            if read(&coder,&counts,p+1) == 0 {
                 readEnd = false
             } else {
-                var value = 1, token = 1
-                if read(&coder,p+2) != 0 {
-                    let table = VP9Table.pareto8Full, base = (probabilities[p+2]-1)*8
+                var value = 1, token: UInt8 = 1
+                if read(&coder,&counts,p+2) != 0 {
+                    let base = (probabilities[p+2]-1)*8
                     if coder.bit(table[base]) == 0 {
                         if coder.bit(table[base+1]) == 0 { value = 2; token = 2 }
                         else { value = 3+coder.bit(table[base+2]); token = 3 }
@@ -193,7 +215,7 @@ extension VP9Context {
                         }
                         var extra = 0
                         for prob in Self.category[cat] { extra = extra*2 + coder.bit(prob) }
-                        value = [5,7,11,19,35,67][cat] + extra
+                        value = Self.categoryBase[cat] + extra
                     }
                 }
                 let scaled = (value * (index == 0 ? dc : ac)) >> (tx == 3 ? 1 : 0)
@@ -202,10 +224,12 @@ extension VP9Context {
                 readEnd = true
             }
             pos += 1
-            if pos < limit { context = (1 + energy[adjacent[2*pos]] + energy[adjacent[2*pos+1]]) >> 1 }
+            if pos < limit { context = (1 + Int(energy[adjacent[2*pos]]) + Int(energy[adjacent[2*pos+1]])) >> 1 }
         }
-        return (coefficients,pos > 0)
+        for k in 0..<pos { energy[scan[k]] = 0 }
+        return pos > 0
     }
+    private static let categoryBase = [5,7,11,19,35,67]
     private static let bands4 = [0,1,1,2,2,2,3,3,3,3,4,4,4]
     private static let bandsLarge = [0,1,1,2,2,2,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4]
     private static let category = [[159],[165,145],[173,148,140],[176,155,140,135],[180,157,141,134,130],

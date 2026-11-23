@@ -32,6 +32,8 @@ final class VP9Tile {
     var partAbove, partLeft: [Int]
     var nzAbove, nzLeft: [[Int]]
     let refDelta: [Int], modeDelta: [Int]
+    /// Reused per transform block: all zero between blocks.
+    var coefficients = [Int](repeating: 0, count: 1024), energy = [UInt8](repeating: 0, count: 1024)
 
     init(_ data: ArraySlice<UInt8>, h: VP9Header, context: VP9Context, picture: VP9Picture,
          references: [VP9Picture?], previous: VP9Picture?, usePreviousMVs: Bool, area: (Int,Int,Int,Int),
@@ -81,7 +83,7 @@ final class VP9Tile {
         let height = type == 1 || type == 3 ? size*4 : size*8
         if level == 0 || type == 0 { try block(col,row,width:width,height:height) }
         else if type == 3 {
-            for y in [row,row+half] { for x in [col,col+half] { try partition(x,y,level:level-1) } }
+            for y in 0..<2 { for x in 0..<2 { try partition(col+x*half,row+y*half,level:level-1) } }
             return
         } else {
             try block(col,row,width:width,height:height)
@@ -93,6 +95,10 @@ final class VP9Tile {
     }
 
     static let intraTree = [0,2,-9,4,-1,6,8,12,-2,10,-4,-5,-3,14,-8,16,-6,-7]
+    static let segmentTree = [2,4,6,8,10,12,0,-1,-2,-3,-4,-5,-6,-7]
+    static let noFeatures: [Int?] = [nil,nil,nil,nil]
+    /// Intra mode to transform type (libvpx mode2txfm_map).
+    static let modeTxType = [0,1,2,0,3,1,2,2,1,3]
     func block(_ col: Int, _ row: Int, width: Int, height: Int) throws {
         let above = neighbour(col,row-1), leftBlock = neighbour(col-1,row)
         var b = VP9Block(width:width, height:height)
@@ -111,10 +117,10 @@ final class VP9Tile {
                 b.predictedSegment = coder.bit(h.segmentation.prediction[at]) != 0
             }
             if h.updateMap && !b.predictedSegment {
-                b.segment = coder.tree([2,4,6,8,10,12,0,-1,-2,-3,-4,-5,-6,-7],probs:h.segmentation.tree,at:0)
+                b.segment = coder.tree(Self.segmentTree,probs:h.segmentation.tree,at:0)
             } else if !h.intra { b.segment = predicted }
         }
-        let features = h.segmented ? h.segmentation.features[b.segment] : [nil,nil,nil,nil]
+        let features = h.segmented ? h.segmentation.features[b.segment] : Self.noFeatures
         let skipCtx = (above?.skip == true ? 1 : 0) + (leftBlock?.skip == true ? 1 : 0)
         b.skip = features[3] != nil || context.read(&coder,VP9Prob.skip+skipCtx) != 0
         let inter: Bool
@@ -132,14 +138,14 @@ final class VP9Tile {
         if maxTX > 0, context.txMode == 4, !b.skip || !inter {
             let a = above.map { $0.skip ? maxTX : $0.tx }, l = leftBlock.map { $0.skip ? maxTX : $0.tx }
             let ctx = (a ?? l ?? maxTX) + (l ?? a ?? maxTX) > maxTX ? 1 : 0
-            let offset = [0,VP9Prob.tx8,VP9Prob.tx16,VP9Prob.tx32][maxTX]+ctx*maxTX
+            let offset = (maxTX == 1 ? VP9Prob.tx8 : maxTX == 2 ? VP9Prob.tx16 : VP9Prob.tx32)+ctx*maxTX
             b.tx = 0
             while b.tx < maxTX, context.read(&coder,offset+b.tx) != 0 { b.tx += 1 }
         }
         if inter {
             try interModes(col:col,row:row,block:&b,forcedRef:features[2],forcedSkip:features[3] != nil)
         } else {
-            var modes = [Int](repeating:0,count:4)
+            var modes = InlineArray<4, Int>(repeating: 0)
             let stepX = width == 4 ? 1 : 2, stepY = height == 4 ? 1 : 2
             let group = min(3,min(width,height).trailingZeroBitCount-2)
             for y in stride(from:0,to:2,by:stepY) { for x in stride(from:0,to:2,by:stepX) {
@@ -186,17 +192,12 @@ final class VP9Tile {
                     var nonzero = false
                     if !b.skip {
                         let above = nzAbove[p][ix..<(ix+span)].contains(1), left = nzLeft[p][iy..<(iy+span)].contains(1)
-                        let type = !inter && p == 0 && tx < 3 && !h.lossless ? [0,1,2,0,3,1,2,2,1,3][mode] : 0
-                        var (values,tokens) = context.residual(&coder,tx:tx,type:type,chroma:p != 0,inter:inter,
-                            neighbours:(above ? 1 : 0)+(left ? 1 : 0),dc:dc,ac:ac)
-                        nonzero = tokens
+                        let type = !inter && p == 0 && tx < 3 && !h.lossless ? Self.modeTxType[mode] : 0
+                        nonzero = context.residual(&coder,tx:tx,type:type,chroma:p != 0,inter:inter,
+                            neighbours:(above ? 1 : 0)+(left ? 1 : 0),dc:dc,ac:ac,coefficients:&coefficients,energy:&energy)
                         if nonzero {
-                            VP9Transform.apply(&values,size:size,type:type,lossless:h.lossless)
-                            let stride = picture.planes[p].stride
-                            for dy in 0..<size { for dx in 0..<size {
-                                let pos = (y+dy)*stride+x+dx
-                                picture.planes[p].bytes[pos] = UInt8(clamping:Int(picture.planes[p].bytes[pos])+values[dy*size+dx])
-                            } }
+                            VP9Transform.apply(&coefficients,size:size,type:type,lossless:h.lossless)
+                            picture.planes[p].addResidual(&coefficients,x:x,y:y,size:size)
                         }
                     }
                     hasTokens = hasTokens || nonzero

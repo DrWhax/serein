@@ -1,6 +1,7 @@
 // VP9 inverse transforms, adapted from go-vp9 (BSD-2-Clause).
 // Fixed-point butterfly stages follow the VP9 decoding specification, section 8.7.
 enum VP9Transform {
+    typealias Line = InlineArray<32, Int>
     static func wrap(_ v: Int) -> Int { Int(Int16(truncatingIfNeeded: v)) }
     static func round(_ v: Int) -> Int { wrap((v + 8192) >> 14) }
     static let cp1 = 16364
@@ -38,7 +39,7 @@ enum VP9Transform {
     static let sp2 = 9929
     static let sp3 = 13377
     static let sp4 = 15212
-    static func idct4(_ io: inout [Int]) {
+    static func idct4(_ io: inout Line) {
         let s0 = (round(((io[0]) + (io[2])) * cp16))
         let s1 = (round(((io[0]) - (io[2])) * cp16))
         let s2 = (round((io[1])*cp24 - (io[3])*cp8))
@@ -51,7 +52,7 @@ enum VP9Transform {
 
     // ---- 4-point inverse ADST (spec §8.7.1.2) ----
 
-    static func iadst4(_ io: inout [Int]) {
+    static func iadst4(_ io: inout Line) {
         let s0 = sp1 * (io[0])
         let s1 = sp2 * (io[0])
         let s2 = sp3 * (io[1])
@@ -72,7 +73,7 @@ enum VP9Transform {
 
     // ---- 8-point inverse DCT (spec §8.7.1.3 / libvpx vp9_idct8_c) ----
 
-    static func idct8(_ io: inout [Int]) {
+    static func idct8(_ io: inout Line) {
         // stage 1: butterflies on the 4 odd positions
         let s4 = round((io[1])*cp28 - (io[7])*cp4)
         let s7 = round((io[1])*cp4 + (io[7])*cp28)
@@ -114,7 +115,7 @@ enum VP9Transform {
     // iadst8 is the 8-point inverse ADST, a line-for-line port of libvpx
     // iadst8_c (vpx_dsp/inv_txfm.c): 3 butterfly stages with WRAPLOW (wl) and
     // dct_const_round_shift (drs), then the signed output permutation.
-    static func iadst8(_ io: inout [Int]) {
+    static func iadst8(_ io: inout Line) {
         var x0 = (io[7])
         var x1 = (io[0])
         var x2 = (io[5])
@@ -195,7 +196,7 @@ enum VP9Transform {
     // idct16 is a line-for-line port of libvpx idct16_c (vpx_dsp/inv_txfm.c).
     // All step values are kept in int16 range via wl (WRAPLOW); drs is
     // dct_const_round_shift. s1/s2 mirror libvpx step1/step2.
-    static func idct16(_ io: inout [Int]) {
+    static func idct16(_ io: inout Line) {
         var s1 = [Int](repeating: 0, count: 16), s2 = s1
 
         // stage 1
@@ -318,7 +319,7 @@ enum VP9Transform {
     // 4 butterfly stages with WRAPLOW (wl) / dct_const_round_shift (drs), then the
     // signed output permutation. Inputs are int16-range so int32 intermediates do
     // not overflow.
-    static func iadst16(_ io: inout [Int]) {
+    static func iadst16(_ io: inout Line) {
         var x0 = (io[15])
         var x1 = (io[0])
         var x2 = (io[13])
@@ -490,7 +491,7 @@ enum VP9Transform {
     // idct32 is a line-for-line port of libvpx idct32_c (vpx_dsp/inv_txfm.c):
     // 8 stages, every step kept in int16 range via wl (WRAPLOW); drs is
     // dct_const_round_shift. s1/s2 mirror libvpx step1/step2.
-    static func idct32(_ io: inout [Int]) {
+    static func idct32(_ io: inout Line) {
         var s1 = [Int](repeating: 0, count: 32), s2 = s1
 
         // stage 1
@@ -757,8 +758,9 @@ enum VP9Transform {
         io[31] = wrap(wrap(s1[0] - s1[31]))
     }
 
+    /// In place: rows, then columns. An all-zero row transforms to zeros, so it is skipped.
     static func apply(_ coefficients: inout [Int], size: Int, type: Int, lossless: Bool) {
-        func transform(_ input: inout [Int], sine: Bool, firstPass: Bool) {
+        func transform(_ input: inout Line, sine: Bool, firstPass: Bool) {
             if lossless {
                 let shift = firstPass ? 2 : 0
                 var a = input[0] >> shift, b = input[3] >> shift
@@ -770,7 +772,7 @@ enum VP9Transform {
                 c = e - c
                 a -= b
                 d += c
-                input = [a,b,c,d]
+                input[0] = a; input[1] = b; input[2] = c; input[3] = d
                 return
             }
             switch (size,sine) {
@@ -784,14 +786,17 @@ enum VP9Transform {
             }
         }
         let shift = size == 4 ? 4 : (size == 8 ? 5 : 6)
-        var intermediate = [Int](repeating: 0, count: size*size)
+        var line = Line(repeating: 0)
         for row in 0..<size {
-            var line = Array(coefficients[(row*size)..<((row+1)*size)])
+            let base = row*size
+            var any = false
+            for column in 0..<size { line[column] = coefficients[base+column]; any = any || line[column] != 0 }
+            guard any else { continue }
             transform(&line,sine: type == 2 || type == 3,firstPass: true)
-            for column in 0..<size { intermediate[column*size+row] = line[column] }
+            for column in 0..<size { coefficients[base+column] = line[column] }
         }
         for column in 0..<size {
-            var line = Array(intermediate[(column*size)..<((column+1)*size)])
+            for row in 0..<size { line[row] = coefficients[row*size+column] }
             transform(&line,sine: type == 1 || type == 3,firstPass: false)
             for row in 0..<size { coefficients[row*size+column] = lossless ? line[row] : (line[row] + (1 << (shift-1))) >> shift }
         }

@@ -89,17 +89,21 @@ public struct VP9VideoDecoder {
             pos += length
         } }
         if h.level > 0 {
+            // The fields the filter reads, per MI, without the block's vector array.
+            let cells = p.blocks.map { b in
+                (level: b.level, tx: b.tx, skip: b.skip && b.refs.0 != 0, x: b.originX, y: b.originY,
+                 size: min(max(8,b.width),max(8,b.height)).trailingZeroBitCount)
+            }
+            let rows = p.rows, cols = p.cols
             for index in 0..<3 {
                 let shift = index == 0 ? 0 : 1
                 p.planes[index].filter(sharpness:h.sharpness,chroma:index != 0) { row4,col4 in
                     let x = (col4*4) << shift, y = (row4*4) << shift
                     let cellX = index == 0 ? x/8 : col4 & ~1
                     let cellY = index == 0 ? y/8 : row4 & ~1
-                    let block = p.blocks[min(p.rows-1,cellY)*p.cols+min(p.cols-1,cellX)]
-                    let width = max(8,block.width), height = max(8,block.height)
-                    let maxTx = min(width,height).trailingZeroBitCount-shift-2
-                    return VP9FilterBlock(level:block.level,tx:min(block.tx,maxTx),skip:block.skip && block.refs.0 != 0,
-                                          left:x == block.originX,top:y == block.originY)
+                    let block = cells[min(rows-1,cellY)*cols+min(cols-1,cellX)]
+                    return VP9FilterBlock(level:block.level,tx:min(block.tx,block.size-shift-2),skip:block.skip,
+                                          left:x == block.x,top:y == block.y)
                 }
             }
         }

@@ -65,6 +65,42 @@ struct VP9PredictionTests {
         #expect(digest(output) == "a6017f7ce646ef30c9706515b1d04316b4abcfae5120db7bf00c869de2d80a22")
     }
 
+    /// The plane filter runs two units along an edge as 8 vector lanes; each lane must equal
+    /// the scalar kernel on its own line, for every mix of widths (incl. unfiltered units),
+    /// levels, sharpness and direction, on content built to reach the flat and wide paths.
+    @Test func vectorDeblockingMatchesScalar() {
+        var seed: UInt64 = 0x9e3779b97f4a7c15
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        var cases = 0
+        for trial in 0..<1500 {
+            var original = VP9Plane(width: 32, height: 32)
+            let base = 40 + next(160), jump = [0, 1, 2, 5, 12, 40][next(6)], noise = [0, 1, 2, 4][next(4)]
+            for y in 0..<32 { for x in 0..<32 {
+                let side = trial.isMultiple(of: 2) ? x : y
+                original.bytes[y*original.stride+x] = UInt8(clamping: base + (side >= 16 ? jump : 0) + next(noise+1))
+            } }
+            let vertical = trial.isMultiple(of: 2)
+            let taps = ([0, 4, 8, 16][next(4)], [0, 4, 8, 16][next(4)])
+            let levels = (1 + next(63), 1 + next(63)), sharpness = next(8)
+            let along = 8 + next(16)
+            let index = vertical ? along*original.stride + 16 : 16*original.stride + along
+            let step = vertical ? 1 : original.stride, increment = vertical ? original.stride : 1
+            var scalar = original, lanes = original
+            for (unit, (width, level)) in [(taps.0, levels.0), (taps.1, levels.1)].enumerated() where width != 0 {
+                for i in 0..<4 {
+                    scalar.filterSample(at: index + (unit*4 + i)*increment, step: step, taps: width, level: level, sharpness: sharpness)
+                }
+            }
+            lanes.filterPair(at: index, step: step, increment: increment, taps: taps, levels: levels, sharpness: sharpness)
+            #expect(lanes.bytes == scalar.bytes, "trial \(trial): taps \(taps) levels \(levels) sharpness \(sharpness)")
+            if lanes.bytes != original.bytes { cases += 1 }
+        }
+        #expect(cases > 500)
+    }
+
     @Test func deblockingThresholdsAndWidthsMatchLibvpx() {
         var output = Data()
         for taps in [4,8,16] {
