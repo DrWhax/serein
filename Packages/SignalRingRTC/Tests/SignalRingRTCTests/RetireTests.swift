@@ -41,6 +41,32 @@ import Testing
         #expect(levels == [.info])
     }
 
+    @Test func lateEndpointLossOnlySettlesRequestsMadeOnTheLostGeneration() async throws {
+        let root = try CallLinkRootKey.generate()
+        func create() -> Task<HttpResult<CallLinkState>, Never> {
+            Task.immediate { @MainActor in
+                await rtc.createCallLink(sfuUrl: "https://sfu.example", createCredentialPresentation: Data(),
+                                         linkRootKey: root, adminPasskey: Data(), callLinkPublicParams: Data(), restrictions: .adminApproval)
+            }
+        }
+
+        rtc.retireEndpoint()
+        let lost = create()
+        #expect(fake.isLive && fake.generation == 1)
+        rtc.endpointLost(0)  // the idle endpoint's queued report
+        #expect(rtc.callLinkRequests.pending.count == 1)
+
+        fake.retire()  // the serving endpoint then dies while its request is in flight
+        let fresh = create()
+        let id = try #require(rtc.callLinkRequests.pending.keys.max())
+        rtc.endpointLost(1)
+        #expect(rtc.callLinkRequests.pending.keys.sorted() == [id])
+        event("handleCallLinkResponse", ["requestId": .int(Int64(id)), "state": .object(["name": .string("solo"), "rootKey": .bytes(root.bytes)])])
+        guard case .failure(errorStatusCode: -1) = await lost.value else { Issue.record("The lost request must fail"); return }
+        guard case .success(let state) = await fresh.value else { Issue.record("The new request must receive its own reply"); return }
+        #expect(state.name == "solo" && state.rootKey == root)
+    }
+
     @Test func activityPostponesIt() async throws {
         for _ in 0..<6 {
             _ = rtc.getAudioInputs()

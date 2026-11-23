@@ -33,13 +33,13 @@ public struct CallingLobby: View {
     let toggleParticipants: () -> Void
     let togglePip: () -> Void
     let toggleSettings: (Bool) -> Void
-    @State var isCallConnecting: Bool
+    let isCallConnecting: Bool
     @Environment(\.i18n) var i18n
     @Environment(\.axoStaticRendering) var staticRendering
 
     public init(callMode: Mode, conversation: CallingConversation, me: CallingConversation, groupMembers: [CallingConversation] = [],
                 peekedParticipants: [PeekedParticipant] = [], hasLocalAudio: Bool, hasLocalVideo: Bool, hasCamera: Bool = true,
-                isAdhocAdminApprovalRequired: Bool = false, isAdhocJoinRequestPending: Bool = false, isConversationTooBigToRing: Bool = false,
+                isAdhocAdminApprovalRequired: Bool = false, isAdhocJoinRequestPending: Bool = false, isCallConnecting: Bool = false, isConversationTooBigToRing: Bool = false,
                 isCallFull: Bool = false, isOnline: Bool = true, outgoingRing: Bool, isSharingPhoneNumberWithEverybody: Bool = false,
                 localVideo: LocalVideoModel? = nil, setLocalAudio: @escaping (Bool) -> Void = { _ in }, setLocalVideo: @escaping (Bool) -> Void = { _ in },
                 setOutgoingRing: @escaping (Bool) -> Void = { _ in }, onJoinCall: @escaping () -> Void = {}, onCallCanceled: @escaping () -> Void = {},
@@ -68,7 +68,7 @@ public struct CallingLobby: View {
         self.toggleParticipants = toggleParticipants
         self.togglePip = togglePip
         self.toggleSettings = toggleSettings
-        _isCallConnecting = State(initialValue: isAdhocJoinRequestPending)
+        self.isCallConnecting = isCallConnecting || isAdhocJoinRequestPending
     }
 
     var isGroupOrAdhoc: Bool { callMode != .direct }
@@ -194,10 +194,7 @@ public struct CallingLobby: View {
                                              overrides: .init(paddingBlock: 7, background: AxoColor(light: LegacyColor.accentRed, dark: LegacyColor.accentRed),
                                                               paddingInline: 16, radius: 40, fontSize: 12, lineHeight: 17), action: onCallCanceled)
                             } else {
-                                CallingLobbyJoinButton(variant: joinVariant, disabled: !canJoin) {
-                                    isCallConnecting = true
-                                    onJoinCall()
-                                }
+                                CallingLobbyJoinButton(variant: joinVariant, disabled: !canJoin, onClick: onJoinCall)
                             }
                         }
                         Color.clear.frame(width: 122.67, height: 0)

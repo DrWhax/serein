@@ -21,12 +21,12 @@ public enum SignalEnvironment: String, Sendable, CaseIterable {
             ServiceEndpoints(storageURL: URL(string: "https://storage-staging.signal.org")!,
                              cdnURLs: [0: URL(string: "https://cdn-staging.signal.org")!, 2: URL(string: "https://cdn2-staging.signal.org")!,
                                        3: URL(string: "https://cdn3-staging.signal.org")!],
-                             rootCertificatesDER: [Self.signalRootCertificateDER])
+                             rootCertificatesDER: [Self.signalRootCertificateDER], sfuURL: sfuURL)
         case .production:
             ServiceEndpoints(storageURL: URL(string: "https://storage.signal.org")!,
                              cdnURLs: [0: URL(string: "https://cdn.signal.org")!, 2: URL(string: "https://cdn2.signal.org")!,
                                        3: URL(string: "https://cdn3.signal.org")!],
-                             rootCertificatesDER: [Self.signalRootCertificateDER])
+                             rootCertificatesDER: [Self.signalRootCertificateDER], sfuURL: sfuURL)
         }
     }
 

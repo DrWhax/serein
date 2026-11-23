@@ -59,6 +59,11 @@ struct RootView: View {
                 ShareContactDialogHost(session: session)
                 ChatDialogs(session: session, i18n: i18n)
                 callLinkModal
+                #if SEREIN_CALL_TEST_PEER
+                if let message = session.localCallTestPeerLaunchError {
+                    ErrorModal(title: "Test call", description: message) { session.localCallTestPeerLaunchError = nil }
+                }
+                #endif
                 if let e = session.composeError {
                     ErrorModal(title: i18n("icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
                 }
@@ -510,7 +515,7 @@ struct RootView: View {
                                      isGroup: c.kind == .group)
         }
         return CallsTab(preferredLeftPaneWidth: model.preferredLeftPaneWidth, navTabsCollapsed: model.navTabsCollapsed, hasAnyAdminCallLinks: session.callLinks.contains(where: \.isAdmin),
-                        hasActiveCall: session.activeCall != nil, callsListItems: items, historyQuery: $model.callsHistoryQuery,
+                        hasActiveCall: session.activeCall != nil, isCreatingCallLink: session.isCreatingCallLink, callsListItems: items, historyQuery: $model.callsHistoryQuery,
                         missedOnly: $model.callsMissedOnly, newCallConversations: people, newCallQuery: $model.newCallQuery, actions: {
                             var a = CallsTabActions()
                             a.onToggleNavTabsCollapse = { model.navTabsCollapsed = $0 }
@@ -522,7 +527,7 @@ struct RootView: View {
                                     session.openCallLobby(item.peerId, video: item.group.type == .video || item.conversation.conversationType == .group)
                                 }
                             }
-                            a.onCreateCallLink = { session.createCallLink() }
+                            a.onCreateCallLink = { Task { await session.createCallLink() } }
                             a.onOutgoingAudioCallInConversation = { session.openCallLobby($0, video: false) }
                             a.onOutgoingVideoCallInConversation = { session.openCallLobby($0, video: true) }
                             a.onClearCallHistory = { session.clearCallHistory() }
@@ -540,6 +545,25 @@ struct RootView: View {
     /// permission modal.
     @ViewBuilder var callLinkModal: some View {
         switch session.callLinkModal {
+        case .creationFailed(let code)?:
+            AxoBaseDialog.Host {
+                let explanation = i18n("icu:calling__call-link-connection-issues")
+                AxoConfirmDialog.Root(title: i18n("icu:CallsList__CreateCallLink"), description: [explanation, code].compactMap { $0 }.joined(separator: "\n")) {
+                    AxoConfirmDialog.Cancel(i18n("icu:cancel")) { session.callLinkModal = nil }
+                    AxoConfirmDialog.Action(i18n("icu:installTryAgain"), variant: .strongPrimary) {
+                        Task { await session.createCallLink() }
+                    }
+                }
+            }
+        case .joinFailed(let roomId, let reason)?:
+            AxoBaseDialog.Host {
+                AxoConfirmDialog.Root(title: i18n("icu:calling__cant-join"), description: i18n(reason.messageKey)) {
+                    AxoConfirmDialog.Cancel(i18n(reason.canRetry ? "icu:cancel" : "icu:ok")) { session.callLinkModal = nil }
+                    if reason.canRetry {
+                        AxoConfirmDialog.Action(i18n("icu:installTryAgain"), variant: .strongPrimary) { session.retryCallLinkJoin(roomId) }
+                    }
+                }
+            }
         case .edit(let roomId)?:
             if let link = session.callLink(roomId) {
                 AxoBaseDialog.Host {

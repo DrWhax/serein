@@ -14,8 +14,7 @@
 //
 // The service is kept only while it has work: once no call, group call client, request or
 // microphone warm-up is left and nothing has been sent or received for `idleGrace`, the endpoint
-// is retired (its process exits) and the next command starts a fresh one. A compromise of WebRTC
-// through one call then ends with that call instead of listening on for the rest of the session.
+// is retired (its process exits) and the next command starts a fresh one.
 
 import Foundation
 
@@ -51,6 +50,8 @@ public final class RingRTC {
     /// How long the endpoint is kept with nothing to do (long enough for a hang-up's last
     /// messages to go out and for a quick call back).
     public var idleGrace: Duration = .seconds(10)
+    /// Opens and seals call-link titles for an endpoint that passes them through encrypted.
+    public var callLinkTitleCipher: (any CallLinkTitleCipher)?
     var lastActivity = ContinuousClock.now
     var retireTask: Task<Void, Never>?
     /// Microphone warm-up (which records) is on.
@@ -78,8 +79,7 @@ public final class RingRTC {
     public var handleGroupCallRingUpdate: ((_ groupId: GroupId, _ ringId: Int64, _ sender: GroupCallUserId, _ update: RingUpdate) -> Void)?
     public var handleRtcStatsReport: ((String) -> Void)?
 
-    /// `endpoint`: where the endpoint runs (the calling service in the app; RingRTCNative's
-    /// `NativeEndpoint.factory` in process).
+    /// Supplies the calling service endpoint in the app, or a test endpoint.
     public init(fieldTrials: [String: String] = [:], endpoint: @escaping RingRTCEndpointFactory) throws {
         makeEndpoint = endpoint
         self.endpoint = try endpoint(Self.fieldTrialString(fieldTrials))
@@ -132,15 +132,15 @@ public final class RingRTC {
             groupCallByClientId[id] = nil
             g.observer?.onEnded(g, reason: .internalFailure, summary: CallSummary(.null))
         }
-        peekRequests.failAll(.failure(errorStatusCode: -1))
-        callLinkRequests.failAll(.failure(errorStatusCode: -1))
-        emptyRequests.failAll(.failure(errorStatusCode: -1))
-        audioDeviceRequests.failAll(RingRTCError.lost)
+        peekRequests.resolve(through: generation, with: .failure(errorStatusCode: -1))
+        callLinkRequests.resolve(through: generation, with: .failure(errorStatusCode: -1))
+        emptyRequests.resolve(through: generation, with: .failure(errorStatusCode: -1))
+        audioDeviceRequests.fail(through: generation, with: RingRTCError.lost)
     }
 
-    func run(_ name: String, _ fields: [String: JSONValue] = [:]) throws -> JSONValue {
+    func run(_ name: String, _ fields: [String: JSONValue] = [:], generation: UInt64? = nil) throws -> JSONValue {
         noteActivity()
-        return try endpoint.command(name, fields)
+        return try endpoint.command(name, fields, generation: generation)
     }
 
     // MARK: retiring the endpoint
@@ -341,24 +341,27 @@ public final class RingRTC {
 
     public func getCallLinkCall(sfuUrl: String, endorsementPublicKey: Data, authCredentialPresentation: Data, rootKey: CallLinkRootKey, adminPasskey: Data?,
                                 hkdfExtraInfo: Data, audioLevelsIntervalMillis: Int?, dredDuration: Int?, svcConfig: GroupCallSvcConfig?,
-                                observer: any GroupCallObserver) -> GroupCall? {
+                                observer: any GroupCallObserver, scopedLinkSignaling: Bool = false, resolveMember: ((Data) -> Data?)? = nil) -> GroupCall? {
         guard let id = (try? run("createCallLinkCallClient", [
             "sfuUrl": .string(sfuUrl), "endorsementPublicKey": .bytes(endorsementPublicKey), "authPresentation": .bytes(authCredentialPresentation),
             "rootKey": .bytes(rootKey.bytes), "adminPasskey": .bytes(adminPasskey), "hkdfExtraInfo": .bytes(hkdfExtraInfo),
+            "scopedLinkSignaling": .bool(scopedLinkSignaling),
             "audioLevelsIntervalMillis": .int(Int64(audioLevelsIntervalMillis ?? 0)), "dredDuration": .int(Int64(dredDuration ?? 0)),
             "svcConfig": svcConfig?.json ?? .null,
         ]))?.int, id != 0 else { return nil }
         let g = GroupCall(kind: .callLink, endpoint: endpoint, observer: observer, clientId: GroupCallClientId(id))
+        g.linkRoomId = try? rootKey.deriveRoomId()
+        g.resolveLinkMember = resolveMember
         groupCallByClientId[g.clientId] = g
         return g
     }
 
     /// `peekGroupCall` (an empty PeekInfo on failure, as upstream).
     public func peekGroupCall(sfuUrl: String, membershipProof: Data, groupMembers: [GroupMemberInfo]) async -> PeekInfo {
-        let (id, result) = peekRequests.add()
+        let (id, result) = peekRequests.add(generation: endpoint.generation)
         do {
             _ = try run("peekGroupCall", ["requestId": .int(Int64(id)), "sfuUrl": .string(sfuUrl), "membershipProof": .bytes(membershipProof),
-                                          "members": .array(groupMembers.map(\.json))])
+                                          "members": .array(groupMembers.map(\.json))], generation: result.generation)
         } catch {
             peekRequests.resolve(id, .failure(errorStatusCode: -1))
         }
@@ -366,22 +369,28 @@ public final class RingRTC {
         return PeekInfo()
     }
 
-    public func peekCallLinkCall(sfuUrl: String, authCredentialPresentation: Data, rootKey: CallLinkRootKey) async -> HttpResult<PeekInfo> {
-        let (id, result) = peekRequests.add()
+    public func peekCallLinkCall(sfuUrl: String, authCredentialPresentation: Data, rootKey: CallLinkRootKey,
+                                 resolveMember: ((Data) -> Data?)? = nil) async -> HttpResult<PeekInfo> {
+        let (id, result) = peekRequests.add(generation: endpoint.generation)
         do {
             _ = try run("peekCallLinkCall", ["requestId": .int(Int64(id)), "sfuUrl": .string(sfuUrl), "authPresentation": .bytes(authCredentialPresentation),
-                                             "rootKey": .bytes(rootKey.bytes)])
+                                             "rootKey": .bytes(rootKey.bytes)], generation: result.generation)
         } catch {
             peekRequests.resolve(id, .failure(errorStatusCode: -1))
         }
-        return await result.value
+        let response = await result.value
+        if let resolveMember, case .success(var info) = response {
+            info.resolveMembers(resolveMember)
+            return .success(info)
+        }
+        return response
     }
 
     func callLinkRequest(_ name: String, _ fields: [String: JSONValue]) async -> HttpResult<CallLinkState> {
-        let (id, result) = callLinkRequests.add()
+        let (id, result) = callLinkRequests.add(generation: endpoint.generation)
         var f = fields
         f["requestId"] = .int(Int64(id))
-        do { _ = try run(name, f) } catch { callLinkRequests.resolve(id, .failure(errorStatusCode: -1)) }
+        do { _ = try run(name, f, generation: result.generation) } catch { callLinkRequests.resolve(id, .failure(errorStatusCode: -1)) }
         return await result.value
     }
 
@@ -400,10 +409,31 @@ public final class RingRTC {
     public func updateCallLinkName(sfuUrl: String, authCredentialPresentation: Data, linkRootKey: CallLinkRootKey, adminPasskey: Data, newName: String) async
         -> HttpResult<CallLinkState>
     {
-        await callLinkRequest("updateCallLink", [
+        var fields: [String: JSONValue] = [
             "sfuUrl": .string(sfuUrl), "authPresentation": .bytes(authCredentialPresentation), "rootKey": .bytes(linkRootKey.bytes),
             "adminPasskey": .bytes(adminPasskey), "newName": .string(newName),
-        ])
+        ]
+        // The Swift service sends `encryptedNewName` as given; the native reference encrypts `newName`.
+        if let callLinkTitleCipher {
+            guard let sealed = try? callLinkTitleCipher.seal(newName, rootKey: linkRootKey) else { return .failure(errorStatusCode: -1) }
+            fields["encryptedNewName"] = .bytes(sealed)
+        }
+        return await callLinkRequest("updateCallLink", fields)
+    }
+
+    /// A state from an endpoint that left its title encrypted, with the title opened (empty
+    /// when there is no cipher or it does not open, as RingRTC reports an undecryptable title).
+    func revealingTitle(_ state: CallLinkState?) -> CallLinkState? {
+        guard var state, let encrypted = state.encryptedName else { return state }
+        state.encryptedName = nil
+        state.name = encrypted.isEmpty ? "" : callLinkTitleCipher?.open(encrypted, rootKey: state.rootKey) ?? ""
+        return state
+    }
+
+    func revealingTitle(_ info: PeekInfo) -> PeekInfo {
+        var info = info
+        info.callLinkState = revealingTitle(info.callLinkState)
+        return info
     }
 
     public func updateCallLinkRestrictions(sfuUrl: String, authCredentialPresentation: Data, linkRootKey: CallLinkRootKey, adminPasskey: Data,
@@ -415,10 +445,10 @@ public final class RingRTC {
     }
 
     public func deleteCallLink(sfuUrl: String, authCredentialPresentation: Data, linkRootKey: CallLinkRootKey, adminPasskey: Data) async -> HttpResult<Bool> {
-        let (id, result) = emptyRequests.add()
+        let (id, result) = emptyRequests.add(generation: endpoint.generation)
         do {
             _ = try run("deleteCallLink", ["requestId": .int(Int64(id)), "sfuUrl": .string(sfuUrl), "authPresentation": .bytes(authCredentialPresentation),
-                                           "rootKey": .bytes(linkRootKey.bytes), "adminPasskey": .bytes(adminPasskey)])
+                                           "rootKey": .bytes(linkRootKey.bytes), "adminPasskey": .bytes(adminPasskey)], generation: result.generation)
         } catch {
             emptyRequests.resolve(id, .failure(errorStatusCode: -1))
         }
@@ -431,15 +461,23 @@ public final class RingRTC {
     public func getAudioOutputs() -> AudioDeviceList? { (try? run("getAudioOutputs")).flatMap { $0.isNull ? nil : AudioDeviceList($0) } }
 
     func audioRequest(_ name: String, _ fields: [String: JSONValue]) async throws -> AudioDevice? {
-        let (id, result) = audioDeviceRequests.add()
+        let (id, result) = audioDeviceRequests.add(generation: endpoint.generation)
         var f = fields
         f["requestId"] = .int(Int64(id))
-        do { _ = try run(name, f) } catch { audioDeviceRequests.fail(id, error) }
+        do { _ = try run(name, f, generation: result.generation) } catch { audioDeviceRequests.fail(id, error) }
         return try await result.result()
     }
 
-    public func setAudioInputById(_ id: String) async throws -> AudioDevice? { try await audioRequest("setAudioInputById", ["id": .string(id)]) }
-    public func setAudioOutputById(_ id: String) async throws -> AudioDevice? { try await audioRequest("setAudioOutputById", ["id": .string(id)]) }
+    public func setAudioInputById(_ id: String) async throws -> AudioDevice? { try await setAudioInputById(id, followSystemDefault: false) }
+
+    public func setAudioInputById(_ id: String, followSystemDefault: Bool) async throws -> AudioDevice? {
+        try await audioRequest("setAudioInputById", ["id": .string(id), "followSystemDefault": .bool(followSystemDefault)])
+    }
+    public func setAudioOutputById(_ id: String) async throws -> AudioDevice? { try await setAudioOutputById(id, followSystemDefault: false) }
+
+    public func setAudioOutputById(_ id: String, followSystemDefault: Bool) async throws -> AudioDevice? {
+        try await audioRequest("setAudioOutputById", ["id": .string(id), "followSystemDefault": .bool(followSystemDefault)])
+    }
     public func setVoiceProcessingEnabled(_ enabled: Bool) async throws -> AudioDevice? { try await audioRequest("setVoiceProcessingEnabled", ["enabled": .bool(enabled)]) }
 
     public func setMicrophoneWarmupEnabled(_ warmup: Bool) async throws -> AudioDevice? {
@@ -510,9 +548,13 @@ public final class RingRTC {
 @MainActor
 struct Requests<T: Sendable> {
     final class Pending: Sendable {
+        let generation: UInt64
         let stream: AsyncStream<Result<T, any Error>>
         let continuation: AsyncStream<Result<T, any Error>>.Continuation
-        init() { (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1)) }
+        init(generation: UInt64) {
+            self.generation = generation
+            (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+        }
         var value: T {
             get async {
                 for await r in stream { if case .success(let v) = r { return v } }
@@ -528,10 +570,10 @@ struct Requests<T: Sendable> {
     var pending: [UInt32: Pending] = [:]
     var isEmpty: Bool { pending.isEmpty }
 
-    mutating func add() -> (UInt32, Pending) {
+    mutating func add(generation: UInt64) -> (UInt32, Pending) {
         let id = nextId
         nextId &+= 1
-        let p = Pending()
+        let p = Pending(generation: generation)
         pending[id] = p
         return (id, p)
     }
@@ -544,14 +586,13 @@ struct Requests<T: Sendable> {
         return true
     }
 
-    /// Every pending request settles with `value` (the endpoint that would answer is gone).
-    mutating func failAll(_ value: T) {
-        for id in Array(pending.keys) { resolve(id, value) }
+    /// Loss reports arrive asynchronously. A newer endpoint may already be handling requests.
+    mutating func resolve(through generation: UInt64, with value: T) {
+        for (id, request) in pending where request.generation <= generation { resolve(id, value) }
     }
 
-    /// Every pending request fails with `error`.
-    mutating func failAll(_ error: any Error) {
-        for id in Array(pending.keys) { fail(id, error) }
+    mutating func fail(through generation: UInt64, with error: any Error) {
+        for (id, request) in pending where request.generation <= generation { fail(id, error) }
     }
 
     @discardableResult

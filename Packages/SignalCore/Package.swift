@@ -24,6 +24,9 @@ let memorySafety: [SwiftSetting] = [
     .treatWarning("StrictMemorySafety", as: .error),
 ]
 let strict: [SwiftSetting] = memorySafety + [.treatAllWarnings(as: .error)]
+// The local RingRTC test peer (Calling/LocalCallLinkTestPeer.swift): debug builds and QA release
+// builds only (`SEREIN_QA_CALL_PEER=1 Tools/build-app.sh` passes -DSEREIN_CALL_TEST_PEER).
+let testPeer: [SwiftSetting] = [.define("SEREIN_CALL_TEST_PEER", .when(configuration: .debug))]
 
 let package = Package(
     name: "SignalCore",
@@ -89,7 +92,7 @@ let package = Package(
                 // (the app hands CallingService that endpoint; tests one in this process).
                 .product(name: "SignalRingRTC", package: "SignalRingRTC"),
             ],
-            swiftSettings: strict,
+            swiftSettings: strict + testPeer,
             linkerSettings: [.unsafeFlags(["-L", ffiDir])]
         ),
         .testTarget(
@@ -104,7 +107,7 @@ let package = Package(
                            .product(name: "LinkPreviewParser", package: "SignalMediaService"),
                            .product(name: "EncodePNG", package: "SignalCodecs"), .product(name: "CodecCore", package: "SignalCodecs")],
             resources: [.copy("Resources")],
-            swiftSettings: memorySafety,
+            swiftSettings: memorySafety + testPeer,
             linkerSettings: [.unsafeFlags(["-L", ffiDir])]
         ),
     ]

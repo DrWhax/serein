@@ -8,9 +8,12 @@
 # its own build script (protopiler + tsc). Tests/MockServer depends on it via file:.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-src=Signal-Desktop/packages/mock-server
+desktop_checkout=${SIGNAL_DESKTOP_CHECKOUT:-Signal-Desktop}
+src="$desktop_checkout/packages/mock-server"
 dst=Tests/MockServer/.mock-server
-rsync -a --delete --exclude node_modules --exclude '*.tsbuildinfo' "$src/" "$dst/"
+# The copy drops TypeScript's emitted files during each synchronization. Drop its
+# incremental build record too, so a rebuilt fixture emits all JavaScript again.
+rsync -a --delete --exclude node_modules --filter='H *.tsbuildinfo' "$src/" "$dst/"
 # Apple's TLS policy (URLSession, used for the storage service and CDN) rejects upstream's
 # leaf certificate: 100-year validity and no serverAuth extended key usage (Chromium and
 # rustls accept it). Re-issue the leaf from the mock's own CA, whose key and passphrase
@@ -42,7 +45,7 @@ openssl x509 -req -in "$certs/csr.pem" -CA "$certs/ca-cert.pem" -CAkey "$certs/c
 sed -i '' "s|get('/v1/call-link/'|get('/v1/call-link'|" "$dst/src/server/http.ts"
 # Pin every dependency to the exact version in upstream's pnpm-lock.yaml (workspace
 # links keep their published version), so npm resolves what upstream tests with.
-python3 -I - "$dst/package.json" Signal-Desktop/pnpm-lock.yaml <<'PY'
+python3 -I - "$dst/package.json" "$desktop_checkout/pnpm-lock.yaml" <<'PY'
 import json, re, sys
 pkg_path, lock_path = sys.argv[1], sys.argv[2]
 pkg = json.load(open(pkg_path))

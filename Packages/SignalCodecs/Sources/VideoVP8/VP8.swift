@@ -109,6 +109,7 @@ public enum VP8Decoder {
     static let placeholderMB = MBData()
     struct MBData: Sendable {
         var coeffs = [Int16](repeating: 0, count: 384)
+        var motion = VP8Motion()
         var isI4x4 = false
         var imodes = [Int](repeating: 0, count: 16)
         var uvmode = 0
@@ -118,16 +119,30 @@ public enum VP8Decoder {
     }
 
     public static func decode(_ payload: ByteSlice, limits: DecodeLimits = .default) throws(ParseFailure) -> VP8Frame {
+        var state = VP8PictureState()
+        return try picture(payload, limits: limits, state: &state, still: true)
+    }
+
+    static func picture(_ payload: ByteSlice, limits: DecodeLimits, state: inout VP8PictureState,
+                        still: Bool) throws(ParseFailure) -> VP8Frame {
         var c = payload.cursor()
         let at = c.position
         let tag = Int(try c.u24le("VP8.frameTag"))
-        guard tag & 1 == 0 else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("not a key frame")) }
-        guard (tag >> 1) & 7 <= 3 else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("profile \((tag >> 1) & 7)")) }
-        guard (tag >> 4) & 1 == 1 else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("frame not shown")) }
+        let key = tag & 1 == 0, version = (tag >> 1) & 7
+        guard version <= 3, !still || (key && tag & 0x10 != 0) else {
+            throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("frame type or profile"))
+        }
         let partLen = tag >> 5
-        try c.expect([0x9D, 0x01, 0x2A], "VP8.startCode")
-        let width = Int(try c.u16le("VP8.width")) & 0x3FFF
-        let height = Int(try c.u16le("VP8.height")) & 0x3FFF
+        let width, height: Int
+        if key {
+            state = VP8PictureState()
+            try c.expect([0x9D, 0x01, 0x2A], "VP8.startCode")
+            width = Int(try c.u16le("VP8.width")) & 0x3fff
+            height = Int(try c.u16le("VP8.height")) & 0x3fff
+        } else if let previous = state.references[1] {
+            width = previous.width
+            height = previous.height
+        } else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("missing reference picture")) }
         try limits.checkDimensions(width: width, height: height, at: at, rule: "VP8")
         guard partLen <= c.remaining else {
             throw ParseFailure(offset: at, rule: "VP8", reason: .unexpectedEnd(needed: partLen, available: c.remaining))
@@ -135,11 +150,14 @@ public enum VP8Decoder {
         var br = VP8BoolDecoder(try c.bytes(partLen, "VP8.partition0").copyBytes())
         let mbW = (width + 15) >> 4, mbH = (height + 15) >> 4
 
-        _ = br.flag()  // colour space
-        _ = br.flag()  // clamping type (decoder always clamps)
+        if key {
+            _ = br.value(2) // colour space and clamping
+            state.map = Array(repeating: 0, count: mbW * mbH)
+        }
 
         // Segment header.
-        var seg = Segment()
+        var seg = state.segment
+        seg.updateMap = false
         var segProbs = [255, 255, 255]
         seg.useSegment = br.flag()
         if seg.useSegment {
@@ -154,7 +172,7 @@ public enum VP8Decoder {
         guard !br.eof else { throw ParseFailure(offset: at, rule: "VP8", reason: .unexpectedEnd(needed: 1, available: 0)) }
 
         // Filter header.
-        var flt = Filter()
+        var flt = state.filter
         flt.simple = br.flag()
         flt.level = br.value(6)
         flt.sharpness = br.value(3)
@@ -211,59 +229,66 @@ public enum VP8Decoder {
             quant[i] = m
         }
 
-        _ = br.flag()  // update_proba: ignored
-        var proba = [Int](repeating: 0, count: 4 * 8 * 3 * 11)
-        for i in 0..<proba.count {
-            proba[i] = br.bit(Int(VP8Tables.coeffsUpdateProba[i])) == 1 ? br.value(8) : Int(VP8Tables.coeffsProba0[i])
-        }
+        let refreshGolden = key || br.flag(), refreshAlternate = key || br.flag()
+        let copyGolden = refreshGolden ? 0 : br.value(2), copyAlternate = refreshAlternate ? 0 : br.value(2)
+        let biases = [false, false, !key && br.flag(), !key && br.flag()]
+        let refreshEntropy = br.flag(), refreshLast = key || br.flag()
+        var modes = state.modes
+        for i in modes.coeff.indices where br.bit(Int(VP8Tables.coeffsUpdateProba[i])) == 1 { modes.coeff[i] = br.value(8) }
         let useSkip = br.flag()
         let skipP = useSkip ? br.value(8) : 0
+        if !key { modes.update(&br) }
+        let proba = modes.coeff
 
-        // Filter strengths (frame_dec.c PrecomputeFilterStrengths).
-        var fstr = [[FInfo]](repeating: [FInfo(), FInfo()], count: 4)
-        if filterType > 0 {
-            for s in 0..<4 {
-                var base = seg.useSegment ? seg.filterStrength[s] : flt.level
-                if seg.useSegment && !seg.absoluteDelta { base += flt.level }
-                for i4 in 0...1 {
-                    var level = base
-                    if flt.useLfDelta { level += flt.refDelta[0]; if i4 == 1 { level += flt.modeDelta[0] } }
-                    level = max(0, min(63, level))
-                    var info = FInfo()
-                    if level > 0 {
-                        var il = level
-                        if flt.sharpness > 0 {
-                            il >>= flt.sharpness > 4 ? 2 : 1
-                            if il > 9 - flt.sharpness { il = 9 - flt.sharpness }
-                        }
-                        if il < 1 { il = 1 }
-                        info.ilevel = il
-                        info.limit = 2 * level + il
-                        info.hevThresh = level >= 40 ? 2 : level >= 15 ? 1 : 0
-                    }
-                    info.inner = i4 == 1
-                    fstr[s][i4] = info
-                }
+        func filterInfo(_ b: MBData, skip: Bool) -> FInfo {
+            var level = seg.useSegment ? seg.filterStrength[b.segment] + (seg.absoluteDelta ? 0 : flt.level) : flt.level
+            if flt.useLfDelta {
+                level += flt.refDelta[b.motion.reference]
+                if b.motion.reference != 0 { level += flt.modeDelta[b.motion.filterMode] }
+                else if b.isI4x4 { level += flt.modeDelta[0] }
             }
+            level = max(0,min(63,level))
+            guard level > 0 else { return FInfo() }
+            var il = level
+            if flt.sharpness > 0 { il = min(9 - flt.sharpness, il >> (flt.sharpness > 4 ? 2 : 1)) }
+            il = max(il,1)
+            let hev = (level >= 15 ? 1 : 0) + (level >= 40 ? 1 : 0) + (!key && level >= 20 ? 1 : 0)
+            return FInfo(limit: 2 * level + il, ilevel: il, inner: b.isI4x4 || !skip, hevThresh: hev)
         }
-
         // Decode macroblocks: this thread parses each row (modes from partition 0, residuals from
         // its token partition) and hands it over, by value, to a second one that reconstructs and
         // loop-filters it a row behind (the split libwebp's threaded decoding makes).
-        let pipeline = VP8RowPipeline(width: width, height: height, mbW: mbW, mbH: mbH, filter: filterType)
+        let pipeline = VP8RowPipeline(width: width, height: height, mbW: mbW, mbH: mbH, filter: filterType, references: state.references, version: version)
         var intraT = [Int](repeating: 0, count: 4 * mbW)
         var nzTop = [UInt32](repeating: 0, count: mbW), nzDcTop = [Int](repeating: 0, count: mbW)
+        var topMotion = [VP8Motion](repeating: VP8Motion(), count: mbW)
         do throws(ParseFailure) {
         for mbY in 0..<mbH {
             var row = pipeline.freshRow()
             var finfo = [FInfo](repeating: FInfo(), count: filterType > 0 ? mbW : 0)
             // Intra modes for the whole row (partition 0).
             var intraL = [0, 0, 0, 0]
+            var left = VP8Motion(), corner = VP8Motion()
             for mbX in 0..<mbW {
                 var b = row[mbX]
                 row[mbX] = Self.placeholderMB   // so that `b`'s arrays are its own: written in place
-                b.segment = seg.updateMap ? (br.bit(segProbs[0]) == 0 ? br.bit(segProbs[1]) : br.bit(segProbs[2]) + 2) : 0
+                let position = mbY * mbW + mbX
+                if seg.updateMap { state.map[position] = UInt8(br.bit(segProbs[0]) == 0 ? br.bit(segProbs[1]) : br.bit(segProbs[2]) + 2) }
+                b.segment = seg.useSegment ? Int(state.map[position]) : 0
                 b.skip = useSkip ? br.bit(skipP) == 1 : false
+                if !key {
+                    b.motion = VP8Motion()
+                    if br.bit(modes.inter) == 1 {
+                        b.motion = modes.motion(&br, left: left, top: topMotion[mbX], corner: corner,
+                                                biases: biases, x: mbX, y: mbY, width: mbW, height: mbH)
+                        b.isI4x4 = !b.motion.split.isEmpty
+                    } else { modes.intra(&br, &b) }
+                    left = b.motion
+                    corner = topMotion[mbX]
+                    topMotion[mbX] = b.motion
+                    row[mbX] = b
+                    continue
+                }
                 b.isI4x4 = br.bit(145) == 0
                 if !b.isI4x4 {
                     let ymode = br.bit(156) == 1 ? (br.bit(128) == 1 ? 1 : 3) : (br.bit(163) == 1 ? 2 : 0)
@@ -304,11 +329,7 @@ public enum VP8Decoder {
                     if !row[mbX].isI4x4 { nzDcLeft = 0; nzDcTop[mbX] = 0 }
                     row[mbX].nonZeroY = 0; row[mbX].nonZeroUV = 0
                 }
-                if filterType > 0 {
-                    var f = fstr[row[mbX].segment][row[mbX].isI4x4 ? 1 : 0]
-                    f.inner = f.inner || !skip
-                    finfo[mbX] = f
-                }
+                if filterType > 0 { finfo[mbX] = filterInfo(row[mbX], skip: skip) }
                 guard !parts[pi].eof else { throw ParseFailure(offset: at, rule: "VP8", reason: .invalid("premature end of token partition")) }
             }
 
@@ -318,7 +339,18 @@ public enum VP8Decoder {
             pipeline.cancel()
             throw error
         }
-        return pipeline.finish()
+        let frame = pipeline.finish()
+        state.segment = seg
+        state.filter = flt
+        if refreshEntropy { state.modes = modes }
+        if copyAlternate == 1 { state.references[3] = state.references[1] }
+        if copyAlternate == 2 { state.references[3] = state.references[2] }
+        if copyGolden == 1 { state.references[2] = state.references[1] }
+        if copyGolden == 2 { state.references[2] = state.references[3] }
+        if refreshAlternate { state.references[3] = frame }
+        if refreshGolden { state.references[2] = frame }
+        if refreshLast { state.references[1] = frame }
+        return frame
     }
 
     // MARK: residuals (vp8_dec.c ParseResiduals / GetCoeffs)
@@ -659,7 +691,7 @@ public enum VP8Decoder {
 
     /// One row of macroblocks into the window's band (rows 4… of `w`).
     static func reconstructRow(_ mbY: Int, _ row: [MBData], _ ws: inout [UInt8], _ f: inout VP8Window,
-                               _ topY: inout [UInt8], _ topU: inout [UInt8], _ topV: inout [UInt8]) {
+                               _ topY: inout [UInt8], _ topU: inout [UInt8], _ topV: inout [UInt8], references: [VP8Frame?], version: Int) {
         let y0 = yOff, u0 = uOff, v0 = vOff
         for j in 0..<16 { ws[y0 + j * BPS - 1] = 129 }
         for j in 0..<8 { ws[u0 + j * BPS - 1] = 129; ws[v0 + j * BPS - 1] = 129 }
@@ -685,7 +717,10 @@ public enum VP8Decoder {
                 for i in 0..<8 { ws[u0 - BPS + i] = topU[mbX * 8 + i]; ws[v0 - BPS + i] = topV[mbX * 8 + i] }
             }
             var bits = b.nonZeroY
-            if b.isI4x4 {
+            if let ref = references[b.motion.reference] {
+                VP8Prediction.inter(b.motion, x: mbX, y: mbY, reference: ref, version: version, workspace: &ws)
+                for n in 0..<16 { doTransform(bits, b.coeffs, n * 16, &ws, y0 + scan[n]); bits <<= 2 }
+            } else if b.isI4x4 {
                 let tr = y0 - BPS + 16
                 if mbY > 0 {
                     if mbX >= f.mbW - 1 { for k in 0..<4 { ws[tr + k] = topY[mbX * 16 + 15] } }
@@ -704,8 +739,10 @@ public enum VP8Decoder {
                     for n in 0..<16 { doTransform(bits, b.coeffs, n * 16, &ws, y0 + scan[n]); bits <<= 2 }
                 }
             }
-            predictBlock(&ws, u0, 8, b.uvmode, mbX, mbY)
-            predictBlock(&ws, v0, 8, b.uvmode, mbX, mbY)
+            if b.motion.reference == 0 {
+                predictBlock(&ws, u0, 8, b.uvmode, mbX, mbY)
+                predictBlock(&ws, v0, 8, b.uvmode, mbX, mbY)
+            }
             doUVTransform(b.nonZeroUV, b.coeffs, 256, &ws, u0)
             doUVTransform(b.nonZeroUV >> 8, b.coeffs, 320, &ws, v0)
             if mbY < f.mbH - 1 {

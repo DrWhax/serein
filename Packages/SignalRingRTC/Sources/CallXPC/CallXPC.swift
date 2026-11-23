@@ -1,7 +1,7 @@
-// ringrtc in SignalCalling.xpc, as the app sees it: the requests (in the wire format,
+// The calling engine in SignalCalling.xpc, as the app sees it: the requests (in the wire format,
 // MediaXPCInterface/Wire.swift) and `RemoteCallEndpoint`, the RingRTCEndpoint that sends them.
 //
-// The service runs WebRTC: it reads what remote peers send (RTP, ICE, call signalling) and
+// The service runs the Swift calling engine: it reads what remote peers send (RTP, ICE, call signalling) and
 // holds the network and the microphone, but no keys, messages or files. The app treats its
 // replies as hostile: every reply has a size limit, frames are checked against what was asked
 // for, and RingRTC checks what the events ask the app to do (RingRTC.swift).
@@ -237,6 +237,8 @@ public final class RemoteCallEndpoint: RingRTCEndpoint {
             }
         }
         let id = try live()
+        // The event pump can report a loss while live() is acquiring the endpoint.
+        if let generation, generation != self.generation { throw RingRTCError.lost }
         return try run(id, name, fields)
     }
 

@@ -1,7 +1,7 @@
 # The calling boundary: what the calling service can make the app do
 
-The thirteenth verification slice. ringrtc (WebRTC) runs in its own sandboxed process,
-SignalCalling.xpc. That process reads what remote peers send (RTP, RTCP, ICE, DTLS, call
+The thirteenth verification slice. Serein’s Swift calling engine runs in its own sandboxed process,
+SignalCalling.xpc. That process reads what remote peers send (RTP, RTCP, ICE, call
 signalling), so it is the part of Serein most exposed to an attacker, and this slice treats it
 as compromised. It covers two things:
 - **what the service's events may make the app do**: send signalling, show an incoming call,
@@ -13,7 +13,7 @@ The slice has three parts:
 - a Lean 4 model of `RemoteCallEndpoint` (`Packages/SignalRingRTC/Sources/CallXPC`) and of
   RingRTC's handling of the service's events (`RingRTC.swift`, `RingRTC+Events.swift`, `Call`,
   `GroupCall`), with machine-checked proofs;
-- a Swift rig that runs production RingRTC, over production `RemoteCallEndpoint`, against a
+- a Swift rig that runs the production Swift `RingRTC` API, over production `RemoteCallEndpoint`, against a
   hostile calling service;
 - mutants.
 

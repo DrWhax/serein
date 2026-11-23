@@ -2,6 +2,7 @@
 // device states and peek info, reported to a `GroupCallObserver`.
 
 import Foundation
+import Synchronization
 
 @MainActor
 public protocol GroupCallObserver: AnyObject {
@@ -30,6 +31,47 @@ public final class GroupCall {
     public internal(set) var groupId: GroupId?
     /// The members last given to ringrtc (`setGroupMembers`).
     public internal(set) var members: [GroupMemberInfo] = []
+    var linkRoomId: Data?
+    var resolveLinkMember: ((Data) -> Data?)?
+    /// Per-link handlers keep issuance, token derivation and delivery bound to this room.
+    public var receiveLinkEndorsements: ((_ serialized: Data?, _ memberCiphertexts: [Data]) -> Void)?
+    public var linkEndorsements: ((_ recipients: [Data]) -> (Date, [Data])?)?
+    public var sendLinkMessage: ((_ message: Data, _ urgency: CallMessageUrgency, _ recipients: [Data], _ endorsements: [Data], _ expiration: Date?) -> Void)?
+    private var linkLeaving = false
+    private var linkRoster = Set<Data>()
+    private let linkAudience = Mutex<[Data: UUID]>([:])
+
+    /// Checked again by the app immediately before submitting a signaling message.
+    public func callLinkAuthorization(for recipients: [Data]) -> (@Sendable () throws -> Void)? {
+        let targets = Set(recipients)
+        guard kind == .callLink, !targets.isEmpty, targets.count == recipients.count else { return nil }
+        let memberships = linkAudience.withLock { audience in
+            targets.compactMap { target in audience[target].map { (target, $0) } }
+        }
+        guard memberships.count == targets.count else { return nil }
+        return { [self] in
+            guard linkAudience.withLock({ current in memberships.allSatisfy { current[$0.0] == $0.1 } }) else {
+                throw RingRTCError.invalidResponse
+            }
+        }
+    }
+
+    private func revokeLinkAudience() {
+        guard kind == .callLink else { return }
+        linkRoster.removeAll()
+        linkAudience.withLock { $0.removeAll() }
+        receiveLinkEndorsements?(nil, [])
+    }
+
+    private func refreshLinkAudience() {
+        guard kind == .callLink, !linkLeaving, localDeviceState.joinState == .joined else { return }
+        let participants = linkRoster
+        linkAudience.withLock { audience in
+            audience = audience.filter { participants.contains($0.key) }
+            for user in participants where audience[user] == nil { audience[user] = UUID() }
+        }
+    }
+
     weak var observer: (any GroupCallObserver)?
     public let clientId: GroupCallClientId
     public private(set) var localDeviceState = LocalDeviceState()
@@ -53,9 +95,9 @@ public final class GroupCall {
     }
 
     public func connect() { run("connect") }
-    public func join() { run("join") }
-    public func leave() { run("leave") }
-    public func disconnect() { run("disconnect") }
+    public func join() { linkLeaving = false; run("join") }
+    public func leave() { linkLeaving = true; revokeLinkAudience(); run("leave") }
+    public func disconnect() { linkLeaving = true; revokeLinkAudience(); run("disconnect") }
 
     /// The era id as a call id, once the call has one.
     public var callId: CallId? { peekInfo?.eraId.map(callIdFromEra) }
@@ -116,7 +158,8 @@ public final class GroupCall {
     /// `VideoFrameSender`
     @discardableResult
     public func sendVideoFrame(width: Int, height: Int, format: VideoPixelFormat, buffer: [UInt8]) -> Bool {
-        endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
+        guard localDeviceState.joinState == .joined else { return false }
+        return endpoint.sendVideoFrame(width: width, height: height, format: format, data: buffer, generation: generation)
     }
 
     /// `GroupCallVideoFrameSource.receiveVideoFrame`: also records the remote aspect ratio.
@@ -136,12 +179,20 @@ public final class GroupCall {
 
     func handleConnectionStateChanged(_ s: ConnectionState) {
         localDeviceState.connectionState = s
+        if s == .notConnected { revokeLinkAudience() }
         observer?.onLocalDeviceStateChanged(self)
     }
 
     func handleJoinStateChanged(_ s: JoinState, demuxId: UInt32?) {
+        let wasPending = localDeviceState.joinState == .pending
         localDeviceState.joinState = s
+        if s == .joined { refreshLinkAudience() } else if s == .notJoined { revokeLinkAudience() }
         if let demuxId { localDeviceState.demuxId = demuxId }
+        // RingRTC can offer its local sending key while a call-link guest is
+        // awaiting admission. Reissue it to the authorized roster upon approval.
+        if kind == .callLink, wasPending, s == .joined, !linkRoster.isEmpty, !linkLeaving {
+            resendMediaKeys()
+        }
         observer?.onLocalDeviceStateChanged(self)
     }
 
@@ -169,6 +220,8 @@ public final class GroupCall {
             states[i].videoAspectRatio = remoteDeviceStates?.first { $0.demuxId == states[i].demuxId }?.videoAspectRatio
         }
         remoteDeviceStates = states
+        if kind == .callLink && !linkLeaving { linkRoster = Set(states.map(\.userId)) }
+        refreshLinkAudience()
         observer?.onRemoteDeviceStatesChanged(self)
     }
 
@@ -178,6 +231,10 @@ public final class GroupCall {
     }
 
     func handleEnded(_ reason: CallEndReason, _ summary: CallSummary) {
+        revokeLinkAudience()
+        localDeviceState.joinState = .notJoined
+        localDeviceState.connectionState = .notConnected
+        localDeviceState.demuxId = nil
         run("deleteGroupCallClient")
         observer?.onEnded(self, reason: reason, summary: summary)
     }

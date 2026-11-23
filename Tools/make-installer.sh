@@ -21,8 +21,8 @@ if [ "${SKIP_BUILD:-0}" != 1 ]; then
 fi
 [ -d "$app" ] || { echo "error: $app not found (run without SKIP_BUILD)" >&2; exit 1; }
 
-# The bundle must be intact before it is shipped: every nested signature valid.
-codesign --verify --deep --strict "$app"
+# Check the signed bundle even when SKIP_BUILD packages an existing app.
+python3 "$root/Tools/check-shipping-calling.py" "$app"
 
 version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist")
 dist="$root/dist"

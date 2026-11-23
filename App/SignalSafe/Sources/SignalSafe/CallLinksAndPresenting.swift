@@ -9,15 +9,39 @@
 
 import AppKit
 import Foundation
+import ScreenCaptureKit
 import SignalCore
 import SignalRingRTC
 import SignalUI
 
 /// The call link modal on screen.
 enum CallLinkModal: Equatable {
+    case creationFailed(code: String?)
+    case joinFailed(roomId: String, reason: CallLinkJoinFailure)
     case edit(roomId: String)
     case addName(roomId: String)
     case needsScreenRecordingPermission
+}
+
+enum CallLinkJoinFailure: Equatable {
+    case invalidLink, ended(CallEndReason)
+
+    var messageKey: String {
+        switch self {
+        case .invalidLink: "icu:calling__call-link-no-longer-valid"
+        case .ended(.hasMaxDevices): "icu:calling__has-max-devices"
+        case .ended(.deniedRequestToJoinCall): "icu:calling__join-request-denied"
+        case .ended(.removedFromCall): "icu:calling__removed-from-call"
+        case .ended: "icu:installConnectionFailed"
+        }
+    }
+
+    var canRetry: Bool {
+        switch self {
+        case .invalidLink, .ended(.deniedRequestToJoinCall), .ended(.removedFromCall): false
+        case .ended: true
+        }
+    }
 }
 
 @MainActor extension SignalSession {
@@ -38,16 +62,41 @@ enum CallLinkModal: Equatable {
     func callLinkTitle(_ link: CallLinkRecord, _ defaultTitle: String) -> String { link.name.isEmpty ? defaultTitle : link.name }
 
     /// Calls tab "Create a call link": made on the SFU, then the edit modal.
-    func createCallLink() {
-        guard let calling else { return }
-        Task {
-            do {
-                let link = try await calling.createCallLink()
-                callLinkModal = .edit(roomId: link.roomId)
-            } catch {
-                Self.trace("create call link failed: \(error)")
-                toast = .error
+    func createCallLink() async {
+        await createCallLink {
+            if calling == nil {
+                startCalling()
+                await callingStartupTask?.value
             }
+            return try await calling?.createCallLink()
+        }
+    }
+
+    func createCallLink(using create: () async throws -> CallLinkRecord?) async {
+        guard !isCreatingCallLink else { return }
+        isCreatingCallLink = true
+        defer { isCreatingCallLink = false }
+        callLinkModal = nil
+        do {
+            guard let link = try await create() else {
+                callLinkModal = .creationFailed(code: nil)
+                return
+            }
+            // The database observation can arrive on either side of this completion.
+            if callLink(link.roomId) == nil { callLinks.append(link) }
+            callLinkModal = .edit(roomId: link.roomId)
+        } catch {
+            // A status identifies which request failed without exposing its body or the link key.
+            let code: String?
+            if let chat = error as? ChatRequestError, let status = chat.status {
+                code = "HTTP \(status) (chat)"
+            } else if let calling = error as? CallingError, case .callLinkRequestFailed(let status) = calling {
+                code = (100...599).contains(status) ? "HTTP \(status) (SFU)" : "RTC \(status)"
+            } else {
+                code = nil
+            }
+            Self.trace("create call link failed: \(code ?? String(describing: type(of: error)))")
+            callLinkModal = .creationFailed(code: code)
         }
     }
 
@@ -92,13 +141,13 @@ enum CallLinkModal: Equatable {
     }
 
     /// The lobby for a call link's call.
-    func openCallLinkLobby(_ roomId: String) {
+    func openCallLinkLobby(_ roomId: String, audio: Bool = true, video: Bool = true) {
         guard activeCall == nil, let link = callLink(roomId) else { return }
         callLinkModal = nil
         activeCall = ActiveCallState(conversationId: roomId, isGroup: true, stage: .lobby, outgoingRing: false, isCallLink: true)
-        callLocalAudio = true
-        callLocalVideo = true
-        setCameraPreview(true)
+        callLocalAudio = audio
+        callLocalVideo = video
+        setCameraPreview(video)
         if let calling, let key = try? CallLinkRootKey.fromBytes(link.rootKey) {
             // The lobby's "N people in this call".
             Task { [weak self] in
@@ -106,6 +155,23 @@ enum CallLinkModal: Equatable {
                 if self?.activeCall?.conversationId == roomId { self?.callPeek = (roomId, info) }
             }
         }
+    }
+
+    func failCallLinkJoin(_ roomId: String, _ reason: CallLinkJoinFailure) {
+        guard activeCall?.isCallLink == true, activeCall?.conversationId == roomId else { return }
+        Self.trace("call link join failed: \(reason)")
+        endCallUI()
+        callLinkModal = .joinFailed(roomId: roomId, reason: reason)
+    }
+
+    func retryCallLinkJoin(_ roomId: String) {
+        guard activeCall == nil else { return }
+        guard callLink(roomId) != nil else {
+            callLinkModal = .joinFailed(roomId: roomId, reason: .invalidLink)
+            return
+        }
+        openCallLinkLobby(roomId, audio: callLocalAudio, video: callLocalVideo)
+        startCallFromLobby()
     }
 
     /// A clicked link Serein opens itself: a sticker pack link its preview, a call link its
@@ -144,6 +210,7 @@ enum CallLinkModal: Equatable {
         var isGranted: () -> Bool
         var sources: @MainActor (ScreenShareCapture) async throws -> [PresentableSource]
         var start: @MainActor (ScreenShareCapture, String) async throws -> Void
+        var pickFilter: @MainActor (ScreenShareCapture) async throws -> SCContentFilter? = { try await $0.pickFilter() }
 
         static let system = ScreenShareBackend(isGranted: { ScreenRecordingPermission.isGranted },
                                                sources: { try await $0.sources() },
@@ -155,11 +222,6 @@ enum CallLinkModal: Equatable {
         guard let id = activeCall?.conversationId, let calling = callControl else { return }
         if calling.isPresenting {
             stopPresenting()
-            return
-        }
-        guard screenShareBackend.isGranted() else {
-            ScreenRecordingPermission.request()
-            callLinkModal = .needsScreenRecordingPermission
             return
         }
         // A share not presenting yet (its sources loading or its stream starting), or one the
@@ -181,12 +243,26 @@ enum CallLinkModal: Equatable {
             // The task may start after a hang-up or another press: then nothing is asked for.
             guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
             do {
+                if !backend.isGranted() {
+                    // The system picker grants this stream access to the chosen content.
+                    let filter = try await backend.pickFilter(capture)
+                    guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
+                    guard let filter else { clearScreenShare(); return }
+                    startPresenting { try await $0.start(filter) }
+                    return
+                }
                 let sources = try await backend.sources(capture)
                 guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }   // the call ended meanwhile
                 presentingSources = sources
             } catch {
                 Self.trace("screen sources failed: \(error)")
-                if screenShareToken == token { clearScreenShare() }
+                guard screenShareToken == token else { return }
+                clearScreenShare()
+                if error as? ScreenShareError == .notAuthorized {
+                    callLinkModal = .needsScreenRecordingPermission
+                } else {
+                    toast = .error
+                }
             }
         }
     }
@@ -219,16 +295,20 @@ enum CallLinkModal: Equatable {
 
     /// A source picked: its frames replace the camera's.
     func startPresenting(_ sourceId: String) {
+        let backend = screenShareBackend
+        startPresenting { try await backend.start($0, sourceId) }
+    }
+
+    private func startPresenting(using start: @escaping @MainActor (ScreenShareCapture) async throws -> Void) {
         presentingSources = nil
         guard let id = activeCall?.conversationId, activeCall?.isLive == true, let calling = callControl, let capture = screenCapture,
               let token = screenShareToken else { return }
         let generation = callGeneration
-        let backend = screenShareBackend
         _ = mainTasks.spawn("screen.present") { [self] in
             // The task may start after a hang-up or another pick: then nothing is captured.
             guard isCurrentScreenShare(token, generation: generation, conversationId: id) else { return }
             do {
-                try await backend.start(capture, sourceId)
+                try await start(capture)
                 // The call ended, or sharing was stopped, while the stream was starting.
                 guard isCurrentScreenShare(token, generation: generation, conversationId: id) else {
                     await capture.stop()
@@ -240,7 +320,10 @@ enum CallLinkModal: Equatable {
                 // Stopped while starting: stopPresenting already cleaned up.
             } catch {
                 Self.trace("screen share failed: \(error)")
-                if screenShareToken == token { clearScreenShare() }
+                if screenShareToken == token {
+                    clearScreenShare()
+                    toast = .error
+                }
             }
         }
     }

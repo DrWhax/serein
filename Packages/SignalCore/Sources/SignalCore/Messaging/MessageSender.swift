@@ -199,7 +199,8 @@ public final class MessageSender: Sendable {
     /// Sealed sender is used when the recipient's access key is known, unless `sealed` is false.
     @discardableResult
     public func send(_ payload: OutgoingPayload, to serviceId: String, sealed allowSealed: Bool = true, messageIds: [String] = [],
-                     logged: Bool = true) async throws -> SendResult {
+                     logged: Bool = true, scope: (@Sendable () throws -> Void)? = nil) async throws -> SendResult {
+        try scope?()
         let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
                                       groupUpdate: payload.isGroupUpdateOnly, resend: payload.resendAuthorization)
         try authorize()
@@ -240,8 +241,9 @@ public final class MessageSender: Sendable {
             guard let (messages, identity) = encrypted else { throw SendError.untrustedIdentities([serviceId]) }
             let json = try JSONEncoder().encode(MessageList(messages: messages, timestamp: payload.timestamp,
                                                             online: payload.online && !isSelf, urgent: payload.urgent))
-            let authorize = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
+            let authorizeRecipient = authorization(to: serviceId, groupId: payload.groupId, messageIds: messageIds, retracting: payload.onlyRetracts,
                                           groupUpdate: payload.isGroupUpdateOnly, encryptedIdentity: identity, resend: payload.resendAuthorization)
+            let authorize: @Sendable () throws -> Void = { try authorizeRecipient(); try scope?() }
             await beforeSubmission?()
             let path = "/v1/messages/\(serviceId)" + (storySend ? "?story=true" : "")
             do {

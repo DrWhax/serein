@@ -18,10 +18,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { Server, StorageState, loadCertificates, Proto, EMPTY_DATA_MESSAGE, ReceiptType, ServiceIdKind, Group } from '@signalapp/mock-server';
+import { Router } from '@signalapp/mock-server/src/server/ws/router.js';
 // The exact libsignal-client instance the mock server itself loaded.
 const libsignal = createRequire(import.meta.resolve('@signalapp/mock-server'))('@signalapp/libsignal-client');
 const { DecryptionErrorMessage, PlaintextContent, CiphertextMessageType, ServiceId, PublicKey, Fingerprint } = libsignal;
-const { GroupSecretParams, GroupMasterKey } = createRequire(import.meta.resolve('@signalapp/mock-server'))('@signalapp/libsignal-client/zkgroup');
+const { GroupSecretParams, GroupMasterKey, CallLinkSecretParams } = createRequire(import.meta.resolve('@signalapp/mock-server'))('@signalapp/libsignal-client/zkgroup');
 
 
 // ts/util/logPadSize.std.ts
@@ -30,6 +31,16 @@ const log = (...a) => process.stderr.write(a.join(' ') + '\n');
 const out = (o) => process.stdout.write(JSON.stringify(o, (_, v) => (typeof v === 'bigint' ? Number(v) : v)) + '\n');
 
 const certs = await loadCertificates();
+// This fixture issues credentials with one set of generic server parameters. Require
+// Desktop's version negotiation so a client asking for legacy credentials cannot pass here.
+const post = Router.prototype.post;
+Router.prototype.post = function (path, handler) {
+  if (path === '/v1/call-link/create-auth') {
+    return post.call(this, path, (params, body, headers, query) =>
+      query?.v101 === 'true' ? handler(params, body, headers, query) : [400, { error: 'Expected v101=true' }]);
+  }
+  return post.call(this, path, handler);
+};
 const cdn3Path = mkdtempSync(join(tmpdir(), 'signalsafe-cdn3-'));
 process.on('exit', () => { try { rmSync(cdn3Path, { recursive: true, force: true }); } catch {} });
 const server = new Server({ cdn3Path });
@@ -60,7 +71,7 @@ const typingQueues = new Map();
 const outerTypes = new Map();  // name -> { message: [], receipt: [] }, FIFO in queue order
 function instrumentTyping(name, primary) {
   const queue = [];
-  const outer = { message: [], receipt: [] };
+  const outer = { message: [], receipt: [], call: [] };
   typingQueues.set(name, queue);
   outerTypes.set(name, outer);
   const decrypt = primary.decrypt.bind(primary);
@@ -75,6 +86,7 @@ function instrumentTyping(name, primary) {
     if (c?.typingMessage) {
       queue.push({ source: result.unsealedSource?.aci, action: c.typingMessage.action, timestamp: Number(c.typingMessage.timestamp), envelopeType });
     }
+    if (c?.callMessage?.opaque?.data) outer.call.push({ data: b64(c.callMessage.opaque.data), envelopeType, source: result.unsealedSource?.aci });
     if (c?.dataMessage) outer.message.push(envelopeType);
     if (c?.receiptMessage) outer.receipt.push(envelopeType);
     return result;
@@ -653,6 +665,19 @@ const commands = {
   async waitForSyncMessage({ account: name = 'phone', kind, timeout = 15000 }) {
     const e = await withTimeout(account(name).waitForSyncMessage((entry) => !kind || summarizeSync(entry.syncMessage).kind === kind), timeout, `sync ${kind ?? ''}`);
     return { source: e.source?.aci ?? null, sourceDevice: e.source?.deviceId ?? null, ...summarizeSync(e.syncMessage) };
+  },
+  async callLinkCiphertexts({ names }) {
+    const link = CallLinkSecretParams.deriveFromRootKey(Buffer.alloc(16, 0x42));
+    return names.map(name => b64(link.encryptUserId(libsignal.Aci.parseFromServiceIdString(account(name).device.aci)).serialize()));
+  },
+  async waitForOpaqueCall({ account: name, timeout = 15000 }) {
+    const queue = outerTypes.get(name).call;
+    const deadline = Date.now() + timeout;
+    while (queue.length === 0) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for opaque call message to ${name}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    return queue.shift();
   },
   async waitForTyping({ account: name, timeout = 15000 }) {
     const queue = typingQueues.get(name);

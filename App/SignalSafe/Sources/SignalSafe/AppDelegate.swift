@@ -27,7 +27,7 @@ import SwiftUI
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AxoFonts.register()
-        CallingLink.smokeTestIfRequested()
+        if ProcessInfo.processInfo.environment["SIGNALSAFE_RINGRTC_SMOKE"] == "1" { _ = CallingLink.checkService() }
         let options = MainMenu.Options(platform: "darwin", isProduction: true, includeSetup: model.appView == .installer,
                                           includeSignalLinks: false)
         NSApp.mainMenu = MainMenu.build(MainMenu.template(options, i18n: i18n)) { [weak self] in self?.perform($0) }
@@ -175,6 +175,7 @@ import SwiftUI
         isQuitting = true
         guard !drainingForQuit else { return .terminateCancel }
         drainingForQuit = true
+        if session.activeCall != nil { session.endCallUI() }
         // The client shuts down before the process goes (upstream does so before quitting): the
         // job queue's handler is cancelled and has ended, with its database work, downloads and
         // timers have stopped, the connection is closed. At most a few seconds; then quit

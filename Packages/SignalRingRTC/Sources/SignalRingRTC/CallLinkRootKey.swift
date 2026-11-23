@@ -174,6 +174,25 @@ public struct CallLinkRootKey: Sendable, Hashable {
         return Data(HMAC<SHA256>.authenticationCode(for: Self.roomIdInfo + [1], using: SymmetricKey(data: Data(prk))))
     }
 
+    package var awaitingEpoch: Bool {
+        bytes.count == Self.v1Length && bytes.dropFirst(Self.crnLength).first == Self.v1Version | Self.v1InvalidBit
+    }
+
+    public var epoch: UInt32? {
+        guard bytes.count == Self.v1Length, !awaitingEpoch else { return nil }
+        return bytes.suffix(4).reduce(UInt32.zero) { $0 << 8 | UInt32($1) }
+    }
+
+    package func issued(epoch: UInt32?) throws -> Self {
+        guard awaitingEpoch else { return self }
+        var final = Data(bytes.prefix(Self.crnLength))
+        if let epoch {
+            final.append(Self.v1Version)
+            for shift in [24, 16, 8, 0] { final.append(UInt8(truncatingIfNeeded: epoch >> shift)) }
+        }
+        return try Self.fromBytes(final)
+    }
+
     public func toUnredactedString() throws -> String { try formatted() }
 
     /// `to_redacted_string`: the first two bytes, the rest starred, for logs.

@@ -41,6 +41,10 @@ public final class Messenger: Sendable {
     /// Registers the conversation-queue handler; call `jobs.start()` afterwards.
     public func register() async {
         await failOrphanedSends()
+        await jobs.register(CallLinkUpdateSyncJob.queueType) { [self] job in
+            let update = try job.decode(CallLinkUpdateSyncJob.self)
+            try await sendToSelf(update.message, timestamp: update.timestamp, urgent: false, messageIds: [])
+        }
         await jobs.register(ConversationJob.queueType, handler: { [self] job in
             try await self.run(try job.decode(ConversationJob.self))
         }, onFailure: { [self] job, error in

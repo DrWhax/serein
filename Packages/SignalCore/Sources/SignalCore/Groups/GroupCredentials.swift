@@ -162,7 +162,7 @@ extension GroupCredentials {
         struct Body: Encodable { var createCallLinkCredentialRequest: String }
         struct Reply: Decodable { var credential: String }
         let body = try JSONEncoder().encode(Body(createCallLinkCredentialRequest: context.getRequest().serialize().base64EncodedString()))
-        let reply = try JSONDecoder().decode(Reply.self, from: try await socket.authenticatedRequest("POST", "/v1/call-link/create-auth", json: body))
+        let reply = try JSONDecoder().decode(Reply.self, from: try await socket.authenticatedRequest("POST", "/v1/call-link/create-auth?v101=true", json: body))
         guard let bytes = Data(base64Encoded: reply.credential) else { throw GroupCredentialError.noCredentialForToday }
         let aci = try Aci.parseFrom(serviceIdString: account.aci)
         let generic = try genericServerParams()

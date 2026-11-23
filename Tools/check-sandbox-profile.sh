@@ -52,7 +52,7 @@ iface="$root/Packages/SignalMediaService/Sources/MediaXPCInterface"
 sandbox="$root/Packages/SignalMediaService/Sandbox"
 swiftc -swift-version 5 -O -target arm64-apple-macos27.0 -module-name ProbeService "$iface"/*.swift "$src/service/main.swift" -o "$work/probe"
 swiftc -swift-version 6 -O -target arm64-apple-macos27.0 -module-name ProbeHost "$iface"/*.swift "$src/host/main.swift" -o "$work/host"
-# The calling service's host: RingRTC over the service, as the app has it (SwiftPM builds it).
+# The calling service's host uses the app's default Swift endpoint over XPC.
 ringpkg="$root/Packages/SignalRingRTC"
 (cd "$ringpkg" && swift build -c release --product CallServiceCheck >/dev/null)
 callcheck="$ringpkg/.build/out/Products/Release/CallServiceCheck"
@@ -137,9 +137,7 @@ makecallhost "$refusedcall" org.signalsafe.not-the-app "$sign"
 loopcall="$work/LoopCallHost.app"
 makecallhost "$loopcall" org.signalsafe.SignalSafe "$sign"
 grep -v '(deny network-outbound (remote ip "localhost:\*"))' "$sandbox/SignalCalling.sb" > "$work/SignalCallingLoop.sb"
-lib_ent=""
-[ "$sign" = "-" ] && lib_ent='  <key>com.apple.security.cs.disable-library-validation</key><true/>'
-"$root/Tools/sbpl-entitlements.sh" "$work/SignalCallingLoop.sb" "$lib_ent" > "$work/SignalCallingLoop.entitlements"
+"$root/Tools/sbpl-entitlements.sh" "$work/SignalCallingLoop.sb" > "$work/SignalCallingLoop.entitlements"
 codesign --force --sign "$sign" --timestamp=none --options runtime --entitlements "$work/SignalCallingLoop.entitlements" \
   "$loopcall/Contents/XPCServices/SignalCalling.xpc" 2>/dev/null
 codesign --force --sign "$sign" --timestamp=none -i org.signalsafe.SignalSafe "$loopcall" 2>/dev/null
@@ -214,7 +212,7 @@ audio, hear = "start the audio input", "hear the microphone"
 udp = {"send udp", "bind a udp port"}
 must = {"SignalMediaDecoder": {offline}, "SignalLinkPreviewParser": {offline}, "SignalMessageParser": {offline}, "SignalVoiceNoteEncoder": {online, audio},
         "SignalLinkPreviewFetcher": {"https to the web", online}, "SignalGifSearch": {"https to the web", online},
-        "SignalCalling": {online, audio} | udp,
+        "SignalCalling": {"https to the web", online, audio} | udp,
         "Serein": {"https to the web", "write its container"}}
 system = {"read a system file", "read /etc/hosts"}
 mach = "look up a Mach service"
@@ -222,7 +220,7 @@ mach = "look up a Mach service"
 # services and the app run the audio input but hear silence.
 # No service may look up the Mach services of other programs (the pasteboard stands for them):
 # the web services, the voice-note encoder and the calling service name the few theirs need. The
-# calling service has no TLS of its own (its HTTP goes through the app), so trustd is not one.
+# calling service uses trustd to authenticate TURN over TLS.
 may = {"SignalMediaDecoder": {online}, "SignalLinkPreviewParser": {online}, "SignalMessageParser": {online}, "SignalVoiceNoteEncoder": system | {hear},
        "SignalLinkPreviewFetcher": system | {"send udp", audio}, "SignalGifSearch": system | {"send udp", audio},
        "SignalCalling": system | {hear},

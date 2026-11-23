@@ -146,6 +146,7 @@ public struct CallsList: View {
     @Binding var query: String
     @Binding var missedOnly: Bool
     let hasActiveCall: Bool
+    let isCreatingCallLink: Bool
     let selected: CallHistoryGroup?
     let onCreateCallLink: () -> Void
     let onSelect: (CallsTabSelectedView) -> Void
@@ -157,13 +158,14 @@ public struct CallsList: View {
     ///   - onCall: the row's call button (the app decides: PiP when in this call, the
     ///     leave-call confirmation when in another, else the lobby / an outgoing call).
     ///   - onRowAppear: a row scrolled into view (the app peeks visible group calls and call links).
-    public init(items: [CallsListItem]?, query: Binding<String>, missedOnly: Binding<Bool>, hasActiveCall: Bool, selected: CallHistoryGroup?,
+    public init(items: [CallsListItem]?, query: Binding<String>, missedOnly: Binding<Bool>, hasActiveCall: Bool, isCreatingCallLink: Bool = false, selected: CallHistoryGroup?,
                 onCreateCallLink: @escaping () -> Void, onSelect: @escaping (CallsTabSelectedView) -> Void,
                 onCall: @escaping (CallsListItem) -> Void, onRowAppear: @escaping (CallsListItem) -> Void = { _ in }) {
         self.items = items
         _query = query
         _missedOnly = missedOnly
         self.hasActiveCall = hasActiveCall
+        self.isCreatingCallLink = isCreatingCallLink
         self.selected = selected
         self.onCreateCallLink = onCreateCallLink
         self.onSelect = onSelect
@@ -191,7 +193,13 @@ public struct CallsList: View {
     @ViewBuilder func row(_ row: Row) -> some View {
         switch row {
         case .createCallLink:
-            ComposeStepButton(icon: .callLink, title: i18n("icu:CallsList__CreateCallLink"), onClick: onCreateCallLink)
+            ComposeStepButton(icon: .callLink, title: i18n(isCreatingCallLink ? "icu:loading" : "icu:CallsList__CreateCallLink"), onClick: onCreateCallLink)
+                .disabled(isCreatingCallLink)
+                .overlay(alignment: .trailing) {
+                    if isCreatingCallLink {
+                        ProgressView().controlSize(.small).padding(.trailing, 24)
+                    }
+                }
         case .emptyState:
             let key = !trimmedQuery.isEmpty && missedOnly ? "icu:CallsList__EmptyState--hasQueryAndMissedCalls"
                 : missedOnly ? "icu:CallsList__EmptyState--missedCalls" : "icu:CallsList__EmptyState--hasQuery"
@@ -460,6 +468,7 @@ public struct CallsTab<CallLinkDetailsView: View, ConversationDetailsView: View>
     let hasPendingUpdate: Bool
     let hasAnyAdminCallLinks: Bool
     let hasActiveCall: Bool
+    let isCreatingCallLink: Bool
     let callsListItems: [CallsListItem]?
     @Binding var historyQuery: String
     @Binding var missedOnly: Bool
@@ -476,7 +485,7 @@ public struct CallsTab<CallLinkDetailsView: View, ConversationDetailsView: View>
     @Environment(\.i18n) var i18n
 
     public init(preferredLeftPaneWidth: CGFloat, navTabsCollapsed: Bool = false, otherTabsUnreadCount: Int = 0, hasFailedStorySends: Bool = false,
-                hasPendingUpdate: Bool = false, hasAnyAdminCallLinks: Bool, hasActiveCall: Bool, callsListItems: [CallsListItem]?,
+                hasPendingUpdate: Bool = false, hasAnyAdminCallLinks: Bool, hasActiveCall: Bool, isCreatingCallLink: Bool = false, callsListItems: [CallsListItem]?,
                 historyQuery: Binding<String>, missedOnly: Binding<Bool>, newCallConversations: [CallsNewCallConversation],
                 newCallQuery: Binding<String>, actions: CallsTabActions,
                 @ViewBuilder renderCallLinkDetails: @escaping (String, CallHistoryGroup, @escaping () -> Void) -> CallLinkDetailsView,
@@ -488,6 +497,7 @@ public struct CallsTab<CallLinkDetailsView: View, ConversationDetailsView: View>
         self.hasPendingUpdate = hasPendingUpdate
         self.hasAnyAdminCallLinks = hasAnyAdminCallLinks
         self.hasActiveCall = hasActiveCall
+        self.isCreatingCallLink = isCreatingCallLink
         self.callsListItems = callsListItems
         _historyQuery = historyQuery
         _missedOnly = missedOnly
@@ -532,7 +542,7 @@ public struct CallsTab<CallLinkDetailsView: View, ConversationDetailsView: View>
             } content: {
                 switch sidebarView {
                 case .callsList:
-                    CallsList(items: callsListItems, query: $historyQuery, missedOnly: $missedOnly, hasActiveCall: hasActiveCall,
+                    CallsList(items: callsListItems, query: $historyQuery, missedOnly: $missedOnly, hasActiveCall: hasActiveCall, isCreatingCallLink: isCreatingCallLink,
                               selected: selectedView?.callHistoryGroup, onCreateCallLink: actions.onCreateCallLink, onSelect: select,
                               onCall: actions.onCall, onRowAppear: actions.onRowAppear)
                 case .newCall:

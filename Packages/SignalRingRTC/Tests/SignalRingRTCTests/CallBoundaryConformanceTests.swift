@@ -143,7 +143,8 @@ final class HostileCallService: XPCMessageHandler, Sendable {
     init(ended: @escaping (GroupCall) -> Void) { self.ended = ended }
     func requestMembershipProof(_ groupCall: GroupCall) {}
     func requestGroupMembers(_ groupCall: GroupCall) {}
-    func onLocalDeviceStateChanged(_ groupCall: GroupCall) {}
+    var localChanged: ((GroupCall) -> Void)?
+    func onLocalDeviceStateChanged(_ groupCall: GroupCall) { localChanged?(groupCall) }
     func onRemoteDeviceStatesChanged(_ groupCall: GroupCall) {}
     func onAudioLevels(_ groupCall: GroupCall) {}
     func onLowBandwidthForVideo(_ groupCall: GroupCall, recovered: Bool) {}

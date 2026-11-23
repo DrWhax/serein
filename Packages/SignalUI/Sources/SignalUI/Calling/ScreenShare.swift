@@ -121,6 +121,7 @@ public final class ScreenShareCapture {
     let queue = DispatchQueue(label: "signalsafe.screen-share")
     /// The shareable content from the last `sources()`, to resolve a picked id.
     var content: SCShareableContent?
+    private var picker: SystemScreenPicker?
     /// Bumped by every start and stop: a start that was overtaken while it waited (on the
     /// previous stream stopping, or on its own stream starting) gives up, and stops its stream.
     var generation: UInt64 = 0
@@ -130,6 +131,15 @@ public final class ScreenShareCapture {
         self.onFrame = onFrame
         self.onStop = onStop
         self.tasks = tasks
+    }
+
+    /// A user-scoped grant for this capture, available without system-wide recording permission.
+    public func pickFilter() async throws -> SCContentFilter? {
+        picker?.cancel()
+        let request = SystemScreenPicker()
+        picker = request
+        defer { if picker === request { picker = nil } }
+        return try await request.pickFilter()
     }
 
     /// Displays and on-screen windows of other apps, with thumbnails (`getSources`).
@@ -242,11 +252,14 @@ public final class ScreenShareCapture {
     }
 
     /// A start still in progress gives up (now, before `stop()` gets to run).
-    public func cancelStart() { _ = begin() }
+    public func cancelStart() {
+        _ = begin()
+        picker?.cancel()
+    }
 
     /// Stops sharing, including a start still in progress.
     public func stop() async {
-        _ = begin()
+        cancelStart()
         await teardown()
     }
 
@@ -307,45 +320,79 @@ extension ScreenShareCapture {
 /// The system content-sharing picker (what mac-screen-share presents on macOS 15+).
 @MainActor
 public final class SystemScreenPicker: NSObject, SCContentSharingPickerObserver {
-    var continuation: CheckedContinuation<ScreenShareSelection?, Never>?
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var result: Result<SCContentFilter?, any Error>?
+    private var dismiss: (() -> Void)?
 
     public override init() { super.init() }
 
     /// Shows the picker; the chosen content, or nil when cancelled.
     public func pick() async -> ScreenShareSelection? {
+        guard let filter = try? await pickFilter() else { return nil }
+        return ScreenShareSelection(filter)
+    }
+
+    /// Keep the filter supplied by macOS, including its authorization for the selected source.
+    public func pickFilter() async throws -> SCContentFilter? {
         let picker = SCContentSharingPicker.shared
+        guard picker.isAvailable else { throw ScreenShareError.notAuthorized }
         var config = SCContentSharingPickerConfiguration()
         config.allowedPickerModes = [.singleDisplay, .singleWindow, .singleApplication]
         config.excludedBundleIDs = [Bundle.main.bundleIdentifier].compactMap { $0 }
+        config.allowsChangingSelectedContent = false
         picker.defaultConfiguration = config
         picker.maximumStreamCount = 1
-        picker.add(self)
-        picker.isActive = true
-        let result = await withCheckedContinuation { c in
-            continuation = c
+        return try await selection(present: {
+            picker.add(self)
+            picker.isActive = true
             picker.present()
-        }
-        picker.remove(self)
-        picker.isActive = false
-        return result
+        }, dismiss: {
+            picker.remove(self)
+            picker.isActive = false
+        })
     }
 
-    func finish(_ s: ScreenShareSelection?) {
-        continuation?.resume(returning: s)
+    func selection(present: () -> Void, dismiss: @escaping () -> Void) async throws -> SCContentFilter? {
+        guard continuation == nil, result == nil else { throw CancellationError() }
+        await withCheckedContinuation { c in
+            continuation = c
+            self.dismiss = dismiss
+            present()
+        }
+        defer { result = nil }
+        return try result?.get()
+    }
+
+    /// Dismiss synchronously on hangup so an older request cannot dismiss a newer picker.
+    public func cancel() { finish(.success(nil)) }
+
+    private func finish(_ outcome: Result<SCContentFilter?, any Error>) {
+        guard let pending = continuation else { return }
         continuation = nil
+        dismiss?()
+        dismiss = nil
+        result = outcome
+        pending.resume()
+    }
+
+    @objc private func receiveFilter(_ filter: SCContentFilter) {
+        finish(.success(filter))
     }
 
     nonisolated public func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
-        let selection = ScreenShareSelection(filter)
-        Task { @MainActor in self.finish(selection) }
+        guard stream == nil else { return }
+        // ScreenCaptureKit calls this Objective-C delegate on its own queue. Foundation retains
+        // the selected filter for delivery on the main thread. Only that thread reads it.
+        performSelector(onMainThread: #selector(receiveFilter(_:)), with: filter, waitUntilDone: false)
     }
 
     nonisolated public func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
-        Task { @MainActor in self.finish(nil) }
+        guard stream == nil else { return }
+        Task { @MainActor in self.cancel() }
     }
 
     nonisolated public func contentSharingPickerStartDidFailWithError(_ error: any Error) {
-        Task { @MainActor in self.finish(nil) }
+        Task { @MainActor in self.finish(.failure(error)) }
     }
 }
 

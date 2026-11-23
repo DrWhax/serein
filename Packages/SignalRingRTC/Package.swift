@@ -1,16 +1,10 @@
 // swift-tools-version:6.2
 //
-// SignalRingRTC: calling for SignalSafe (plan.md Phase 6). rust/ is our C ABI over ringrtc's
-// native API (built as libsignal_ringrtc.dylib by Tools/build-ringrtc-ffi.sh).
-//   * SignalRingRTC: the Swift API, a port of ringrtc's src/node/ringrtc/Service.ts (the layer
-//     Signal Desktop calls), over an endpoint protocol (Endpoint.swift). Pure Swift, no
-//     ringrtc: what the app links.
-//   * RingRTCNative: the endpoint in this process, over the C ABI (integers, by-value structs
-//     and annotated buffers, called through Span with no `unsafe`). The only target that links
-//     the dylib: the calling service and tests.
-//   * CallXPC: the endpoint in SignalCalling.xpc, as the app sees it (requests, frames, loss).
-//   * CallService + SignalCallingService: that service, App Sandbox plus the Seatbelt rules of
-//     Packages/SignalMediaService/Sandbox/SignalCalling.sb (network and microphone; no files).
+// The app calls the SignalRingRTC Swift API through CallXPC. SignalCallingService hosts
+// the Swift calling engine in the calling sandbox. CallService implements the shared XPC
+// protocol, using the endpoint factory its executable supplies.
+// RingRTCNative links the libsignal_ringrtc.dylib reference engine for interoperability
+// tests and the optional SignalCallTestPeerService executable in Packages/SignalCallingInterop.
 
 import Foundation
 import PackageDescription
@@ -22,7 +16,11 @@ let memorySafety: [SwiftSetting] = [
     .strictMemorySafety(),
     .treatWarning("StrictMemorySafety", as: .error),
 ]
-let strict: [SwiftSetting] = memorySafety + [.treatAllWarnings(as: .error), .enableExperimentalFeature("SafeInteropWrappers")]
+// The local RingRTC test peer (CallXPC/CallTestPeer.swift, GroupCall+LocalMediaKey.swift) is
+// compiled into debug builds and QA release builds only: `SEREIN_QA_CALL_PEER=1 Tools/build-app.sh`
+// passes -DSEREIN_CALL_TEST_PEER. A shipping release build contains none of it.
+let testPeer: [SwiftSetting] = [.define("SEREIN_CALL_TEST_PEER", .when(configuration: .debug))]
+let strict: [SwiftSetting] = memorySafety + [.treatAllWarnings(as: .error), .enableExperimentalFeature("SafeInteropWrappers")] + testPeer
 
 let package = Package(
     name: "SignalRingRTC",
@@ -30,33 +28,40 @@ let package = Package(
     products: [
         .library(name: "SignalRingRTC", targets: ["SignalRingRTC"]),
         .library(name: "CallXPC", targets: ["CallXPC"]),
+        .library(name: "CallService", targets: ["CallService"]),
         .library(name: "RingRTCNative", targets: ["RingRTCNative"]),
         .executable(name: "SignalCallingService", targets: ["SignalCallingService"]),
         .executable(name: "CallServiceCheck", targets: ["CallServiceCheck"]),
     ],
-    dependencies: [.package(path: "../SignalMediaService")],
+    dependencies: [.package(path: "../SignalMediaService"), .package(path: "../SignalCodecs")],
     targets: [
-        // C header only (swiftSettings for the manifest lint; no Swift here).
+        .target(name: "CallingWire", swiftSettings: strict),
+        .target(name: "SignalRingRTC", dependencies: ["CallingWire"], swiftSettings: strict),
+        .target(name: "SwiftCalling", dependencies: ["CallingWire",
+            .product(name: "CodecCore", package: "SignalCodecs"), .product(name: "VideoVP8", package: "SignalCodecs"),
+            .product(name: "VideoVP9", package: "SignalCodecs"),
+        ], swiftSettings: strict),
+        .target(name: "SwiftCallingServiceAdapter", dependencies: ["SignalRingRTC", "SwiftCalling"], swiftSettings: strict),
+        // The tests and SignalCallingInterop link this adapter against the native reference.
         .target(name: "CSignalRingRTC", swiftSettings: memorySafety),
-        .target(name: "SignalRingRTC", swiftSettings: strict),
-        .target(
-            name: "RingRTCNative",
-            dependencies: ["CSignalRingRTC", "SignalRingRTC"],
-            swiftSettings: strict,
-            linkerSettings: [.unsafeFlags(["-L", dylibDir, "-lsignal_ringrtc", "-Xlinker", "-rpath", "-Xlinker", dylibDir])]
-        ),
+        .target(name: "RingRTCNative", dependencies: ["CSignalRingRTC", "SignalRingRTC"],
+                swiftSettings: strict,
+                linkerSettings: [.unsafeFlags(["-L", dylibDir, "-lsignal_ringrtc", "-Xlinker", "-rpath", "-Xlinker", dylibDir])]),
         .target(name: "CallXPC", dependencies: ["SignalRingRTC", .product(name: "MediaXPCInterface", package: "SignalMediaService")], swiftSettings: strict),
-        .target(name: "CallService", dependencies: ["CallXPC", "RingRTCNative", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
+        .target(name: "CallService", dependencies: ["CallXPC", "SignalRingRTC", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
                 swiftSettings: strict),
-        .executableTarget(name: "SignalCallingService", dependencies: ["CallService", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
+        .executableTarget(name: "SignalCallingService", dependencies: ["CallService", "CallXPC", "SwiftCallingServiceAdapter",
+                          .product(name: "MediaXPCInterface", package: "SignalMediaService")],
                           swiftSettings: strict),
         // Tools/check-sandbox-profile.sh's host for the real service (not shipped).
         .executableTarget(name: "CallServiceCheck", dependencies: ["CallXPC", "SignalRingRTC", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
-                          swiftSettings: memorySafety),
+                          swiftSettings: strict),
         .testTarget(
             name: "SignalRingRTCTests",
-            dependencies: ["SignalRingRTC", "RingRTCNative", "CallXPC", "CallService", .product(name: "MediaXPCInterface", package: "SignalMediaService")],
-            swiftSettings: memorySafety
+            dependencies: ["SignalRingRTC", "SwiftCalling", "SwiftCallingServiceAdapter", "CallXPC", "CallService", "RingRTCNative",
+                           .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+                           .product(name: "VideoVP9", package: "SignalCodecs")],
+            swiftSettings: strict
         ),
     ]
 )

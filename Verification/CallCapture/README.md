@@ -252,7 +252,7 @@ Tested only, not proved:
 - `setCallAudio` (microphone mute);
 - camera switching (`CaptureReconciler.restart`);
 - ringtone, PiP and other UI;
-- the screen-recording permission (always granted);
+- macOS permission and picker behavior. These model traces assume screen-recording access is already granted. A signed call-link fixture exercises ScreenCaptureKit window capture and checks the decoded frames at a RingRTC peer. [Fixture](../../Tools/check-call-link-peer.py)
 - `filter(for:)` beyond "needs the capture's sources to have loaded";
 - `ScreenShareCapture`'s once-a-second repeat of a stale frame: in the rig its task never runs.
   It calls the same output and callback as a frame.

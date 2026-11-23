@@ -1,0 +1,20 @@
+diff --git a/swift/Sources/LibSignalClient/zkgroup/GroupSendEndorsement.swift b/swift/Sources/LibSignalClient/zkgroup/GroupSendEndorsement.swift
+index 001b9320b..7b46f9aa1 100644
+--- a/swift/Sources/LibSignalClient/zkgroup/GroupSendEndorsement.swift
++++ b/swift/Sources/LibSignalClient/zkgroup/GroupSendEndorsement.swift
+@@ -144,6 +144,15 @@ public class GroupSendEndorsement: ByteArray, @unchecked Sendable {
+         }
+     }
+ 
++    /// Derives a token for endorsements issued against a call link's encrypted participants.
++    public func toToken(callLinkParams: CallLinkSecretParams) throws -> Token {
++        try withAllBorrowed(self, callLinkParams) { endorsement, params in
++            try invokeFnReturningVariableLengthSerialized {
++                signal_group_send_endorsement_call_link_params_to_token($0, endorsement, params)
++            }
++        }
++    }
++
+     /// Generates a token used to authenticate sends, ready to put in an auth header.
+     ///
+     /// `expiration` must be the same expiration that was in the original
