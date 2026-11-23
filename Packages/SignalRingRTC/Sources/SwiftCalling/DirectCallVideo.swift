@@ -153,25 +153,28 @@ package final class DirectCallVideo: Sendable {
 
     /// Each layer is separately protected and fragmented. Spatial layers of one
     /// camera image share a timestamp, including when the SFU forwards a subset.
-    private struct SendingLayer {
+    struct SendingLayer {
         let bytes: [UInt8], width: Int, height: Int, key: Bool
         let scalable: ScalableVideoPacketizer.Layer?
         var stream = 0
     }
 
-    /// Allow a refresh one second of path capacity. On a detailed image, first
-    /// increase quantization to retain text resolution, then reduce dimensions.
-    /// A periodic independent picture can retry the original quality.
+    /// Allow a refresh one second of path capacity. The quantizer follows the bandwidth
+    /// (VideoRateControl); on a picture a whole second could not hold, coarsest at once, then
+    /// smaller pictures. A periodic independent picture can retry the original size.
     private struct PictureBudget {
-        let initialQuantizer, coarseQuantizer: Int
+        private let codec: VideoRateControl.Codec
+        private(set) var rate: VideoRateControl
+        private var screen = false
         private var target = (width: 0, height: 0)
         private(set) var size = (width: 0, height: 0)
-        private(set) var quantizer = 0
         private var retryQuality: ContinuousClock.Instant?
+        /// The last picture's budget (bits) and kind, until its bits are known on the wire.
+        private var pending: (budget: Int, key: Bool)?
 
-        init(initial: Int, coarse: Int) {
-            initialQuantizer = initial
-            coarseQuantizer = coarse
+        init(_ codec: VideoRateControl.Codec) {
+            self.codec = codec
+            rate = VideoRateControl(codec)
         }
 
         static func byteLimit(bitrate: Int) -> Int {
@@ -180,19 +183,27 @@ package final class DirectCallVideo: Sendable {
             min(DirectVideoStream.maxPictureBytes - 64, max(24_000, bitrate / 8))
         }
 
-        mutating func prepare(_ dimensions: (width: Int, height: Int), key: Bool, at now: ContinuousClock.Instant) {
+        mutating func prepare(_ dimensions: (width: Int, height: Int), key: Bool, screen: Bool, at now: ContinuousClock.Instant) {
+            if screen != self.screen {
+                self.screen = screen
+                rate = VideoRateControl(codec, screen: screen)
+            }
             if target != dimensions || (key && retryQuality.map { now >= $0 } == true) {
                 target = dimensions
                 size = dimensions
-                quantizer = initialQuantizer
                 retryQuality = nil
             }
         }
 
+        func quantizer(key: Bool) -> Int { rate.quantizer(key: key) }
+
+        /// Whether a keyframe of `bytes` should be coded again coarser (VideoRateControl).
+        mutating func retryKeyframe(bytes: Int, budget: Int) -> Bool { rate.retryKeyframe(bits: bytes*8, budget: budget) }
+
         mutating func reduce(bytes: Int, limit: Int, at now: ContinuousClock.Instant) -> Bool {
             retryQuality = now + .seconds(10)
-            if quantizer < coarseQuantizer {
-                quantizer = coarseQuantizer
+            if rate.quantizer(key: true) < rate.coarsest {
+                rate.overshoot()
                 return true
             }
             guard max(size.width, size.height) > 16 else { return false }
@@ -200,30 +211,48 @@ package final class DirectCallVideo: Sendable {
             size = (max(1, Int(Double(size.width) * ratio)), max(1, Int(Double(size.height) * ratio)))
             return true
         }
+
+        mutating func encoded(budget: Int, key: Bool) { pending = (budget, key) }
+
+        /// The last picture's bits as sent (headers and FEC included).
+        mutating func sent(bits: Int) {
+            guard let pending else { return }
+            rate.record(bits: bits, budget: pending.budget, key: pending.key)
+            self.pending = nil
+        }
     }
 
-    private struct VP8Sender {
+    struct VP8Sender {
         var encoder = VP8VideoEncoder()
-        private var budget = PictureBudget(initial: 32, coarse: 96)
+        private var budget = PictureBudget(.vp8)
 
+        /// `bits`: this stream's share of the bandwidth for this picture.
         mutating func encode(_ frame: Frame, target: (width: Int,height: Int), index: Int,
-                             bitrate: Int, key: Bool) -> SendingLayer? {
-            budget.prepare(target, key: key, at: frame.captured)
+                             bitrate: Int, bits: Int, key: Bool, screen: Bool) -> SendingLayer? {
+            budget.prepare(target, key: key, screen: screen, at: frame.captured)
             let limit = PictureBudget.byteLimit(bitrate: bitrate)
-            var independent = key
+            var independent = key, retries = 0
             while true {
                 let size = budget.size
                 let pixels = DirectCallVideo.planes(frame, width: size.width, height: size.height)
                 guard let picture = encoder.encode(width: size.width, height: size.height, y: pixels.y, u: pixels.u,
-                                                   v: pixels.v, quantizer: budget.quantizer, keyframe: independent),
+                                                   v: pixels.v, quantizer: budget.quantizer(key: independent), keyframe: independent),
                       let header = picture.first else { return nil }
+                if header & 1 == 0 && retries < 3 && budget.retryKeyframe(bytes: picture.count, budget: bits) {
+                    retries += 1
+                    independent = true
+                    continue
+                }
                 if picture.count <= limit {
+                    budget.encoded(budget: bits, key: header & 1 == 0)
                     return SendingLayer(bytes: picture, width: size.width, height: size.height, key: header & 1 == 0, scalable: nil, stream: index)
                 }
                 independent = true
                 if !budget.reduce(bytes: picture.count, limit: limit, at: frame.captured) { return nil }
             }
         }
+
+        mutating func sent(bits: Int) { budget.sent(bits: bits) }
     }
 
     /// One accepted spatial picture advances every VP9 reference slot and the
@@ -231,30 +260,39 @@ package final class DirectCallVideo: Sendable {
     struct VP9Sender {
         private var encoder: VP9ScalableEncoder?
         private var encoderMode: String?
-        private var budget = PictureBudget(initial: 72, coarse: 160)
+        private var budget = PictureBudget(.vp9)
 
-        mutating func encode(_ frame: Frame, target: (width: Int, height: Int), bitrate: Int, key: Bool,
+        /// `bits`: the bandwidth's share for this picture (all its layers).
+        mutating func encode(_ frame: Frame, target: (width: Int, height: Int), bitrate: Int, bits: Int, key: Bool,
                              group: GroupVideoConfiguration?, screen: Bool) -> (frames: [VP9EncodedLayer], mode: String)? {
-            budget.prepare(target, key: key, at: frame.captured)
+            budget.prepare(target, key: key, screen: screen, at: frame.captured)
             let limit = PictureBudget.byteLimit(bitrate: bitrate)
-            var independent = key
+            var independent = key, retries = 0
             while true {
                 let size = budget.size
                 let mode = group?.mode(screenSharing: screen, width: size.width, height: size.height) ?? "L1T1"
                 guard var trial = mode == encoderMode ? encoder : VP9ScalableEncoder(mode: mode) else { return nil }
                 let pixels = DirectCallVideo.planes(frame, width: size.width, height: size.height)
                 guard let pictures = trial.encode(width: size.width, height: size.height, y: pixels.y, u: pixels.u, v: pixels.v,
-                                                  quantizer: budget.quantizer, keyframe: independent) else { return nil }
+                                                  quantizer: budget.quantizer(key: independent || key), keyframe: independent) else { return nil }
                 let bytes = pictures.reduce(0) { $0 + $1.bytes.count }
+                if pictures.first?.refresh == true && retries < 3 && budget.retryKeyframe(bytes: bytes, budget: bits) {
+                    retries += 1
+                    independent = true
+                    continue
+                }
                 if bytes <= limit {
                     encoder = trial
                     encoderMode = mode
+                    budget.encoded(budget: bits, key: pictures.first?.refresh == true)
                     return (pictures, mode)
                 }
                 independent = true
                 if !budget.reduce(bytes: bytes, limit: limit, at: frame.captured) { return nil }
             }
         }
+
+        mutating func sent(bits: Int) { budget.sent(bits: bits) }
     }
 
     func startSending(sender: SRTPSender, transport: DirectICETransport, vp9: Bool = false,
@@ -274,19 +312,31 @@ package final class DirectCallVideo: Sendable {
             var scalable = VP9Sender(), previousStreamCount = 0
             var packetizer = ScalableVideoPacketizer(), pictureID: UInt16 = 0
             var previousRevision: UInt64?, previousMode: String?
+            // The capture interval (all frames, coded or not), averaged.
+            var interval = 1.0 / 30, lastCapture: ContinuousClock.Instant?
             for await frame in stream {
-                guard let self, self.permits(frame.revision), frame.captured >= available else { continue }
+                if let lastCapture {
+                    let gap = Double(lastCapture.duration(to: frame.captured) / .microseconds(1)) / 1e6
+                    if gap > 0 && gap < 0.5 { interval += (min(0.2, max(1.0/60, gap)) - interval) * 0.1 }
+                }
+                lastCapture = frame.captured
+                // A picture may start while up to half an interval of the last is still being
+                // sent: a picture a little over its budget then delays the next, not drops it.
+                // The rate control counts that backlog against the next picture's budget.
+                guard let self, self.permits(frame.revision), frame.captured >= available - .microseconds(Int(interval * 500_000)) else { continue }
                 let (bitrate,height,screen,renew) = self.state.withLock { state in
                     defer { state.wantsKeyframe = false }
                     return (state.bitrate,state.maxHeight,state.screen,state.wantsKeyframe)
                 }
                 guard bitrate > 0, height != 0 else { continue }
+                let backlog = max(0, Double(frame.captured.duration(to: available) / .microseconds(1)) / 1e6)
+                let bits = Int(Double(bitrate) * max(interval / 4, interval - backlog))
                 let size = Self.size(width: frame.width, height: frame.height, bitrate: bitrate, requestedHeight: height, screen: screen, group: protect != nil)
                 let mode = groupVideo?.mode(screenSharing: screen, width: size.width, height: size.height) ?? (vp9 ? "L1T1" : nil)
                 let key = renew || mode != previousMode || previousRevision != frame.revision || lastKeyframe.duration(to: frame.captured) >= .seconds(2)
                 let layers: [SendingLayer]
                 if mode != nil {
-                    guard let picture = scalable.encode(frame, target: size, bitrate: bitrate, key: key, group: groupVideo, screen: screen) else {
+                    guard let picture = scalable.encode(frame, target: size, bitrate: bitrate, bits: bits, key: key, group: groupVideo, screen: screen) else {
                         self.requestKeyframe()
                         continue
                     }
@@ -295,12 +345,8 @@ package final class DirectCallVideo: Sendable {
                     }
                 } else {
                     let sizes = Self.streamSizes(size, simulcast: !simulcast.isEmpty)
-                    var encoded = [SendingLayer]()
-                    for (index,dimensions) in sizes.enumerated() {
-                        let refresh = key || index >= previousStreamCount
-                        guard let picture = vp8[index].encode(frame, target: dimensions, index: index, bitrate: bitrate, key: refresh) else { break }
-                        encoded.append(picture)
-                    }
+                    let encoded = Self.encodeSimulcast(&vp8, frame, sizes: sizes, bitrate: bitrate, bits: bits, key: key,
+                                                       screen: screen, streamsBefore: previousStreamCount)
                     previousStreamCount = encoded.count
                     layers = encoded
                 }
@@ -311,21 +357,27 @@ package final class DirectCallVideo: Sendable {
                 pictureID &+= 1
                 let timestamp = timeOffset &+ UInt32(truncatingIfNeeded: Int64(origin.duration(to: frame.captured) / .seconds(1) * 90_000))
                 do {
+                    var sent = [Int](repeating: 0, count: senders.count)
                     for layer in layers {
                         let sender = senders[layer.stream]
                         self.state.withLock { $0.sentFrames[sender.ssrc,default: VideoFrameCounters()].encode(timestamp) }
                         let sealed = try protect.map { Array(try $0(Data(layer.bytes))) } ?? layer.bytes
-                        available = try await self.send(layer, bytes: sealed, sender: sender, revision: frame.revision,
-                                                        pictureID: pictureID, timestamp: timestamp, captured: frame.captured, group: protect != nil, available: available)
+                        let result = try await self.send(layer, bytes: sealed, sender: sender, revision: frame.revision, pictureID: pictureID,
+                                                         timestamp: timestamp, captured: frame.captured, group: protect != nil, available: available)
+                        available = result.available
+                        sent[layer.stream] += result.bytes * 8
                     }
+                    if mode != nil { scalable.sent(bits: sent.reduce(0, +)) }
+                    else { for (stream, bits) in sent.enumerated() where bits > 0 { vp8[stream].sent(bits: bits) } }
                 } catch { self.requestKeyframe() }
             }
         }
     }
 
     private func send(_ layer: SendingLayer, bytes: [UInt8], sender: SRTPSender, revision: UInt64, pictureID: UInt16,
-                      timestamp: UInt32, captured: ContinuousClock.Instant, group: Bool, available: ContinuousClock.Instant) async throws -> ContinuousClock.Instant {
-        var cursor = 0, available = available
+                      timestamp: UInt32, captured: ContinuousClock.Instant, group: Bool,
+                      available: ContinuousClock.Instant) async throws -> (available: ContinuousClock.Instant, bytes: Int) {
+        var cursor = 0, available = available, wire = 0
         while cursor < bytes.count {
             let start = cursor == 0, next = min(bytes.count, cursor + 1060), end = next == bytes.count
             var payload: Data
@@ -365,13 +417,14 @@ package final class DirectCallVideo: Sendable {
                 return (bytes: wireBytes,budget: value.bitrate)
             }
             available = max(available, .now) + .microseconds(total.bytes * 8_000_000 / total.budget)
+            wire += total.bytes
             if !marker { try await Task.sleep(until: available, clock: .continuous) }
             cursor = next
         }
         state.withLock { value in
             value.sentFrames[sender.ssrc,default: VideoFrameCounters()].complete(timestamp, codec: layer.scalable == nil ? 8 : 9, width: layer.width, height: layer.height)
         }
-        return available
+        return (available, wire)
     }
 
     private static func protectedPiece(_ packet: Data, payload: Data, type: UInt8, sequence: UInt16,
@@ -554,6 +607,32 @@ package final class DirectCallVideo: Sendable {
         let scale = max(1, Double(max(width,height))/Double(longLimit),
                         Double(min(width,height))/Double(max(1,shortLimit)))
         return (max(1,Int(Double(width)/scale)),max(1,Int(Double(height)/scale)))
+    }
+
+    /// One picture's simulcast streams, encoded in parallel (they are independent), each into a
+    /// copy of its sender. As when encoded in turn, only the streams before the first failure are
+    /// returned and only their senders advance, so a receiver's references match what it got.
+    /// Streams from streamsBefore on (new since the last picture) start with a keyframe.
+    /// The streams share the picture's bits by pixels^0.75 (about 8%, 24% and 68% for 180p, 360p
+    /// and 720p; before, each was budgeted the whole bandwidth).
+    static func encodeSimulcast(_ senders: inout [VP8Sender], _ frame: Frame, sizes: [(width: Int, height: Int)],
+                                bitrate: Int, bits: Int, key: Bool, screen: Bool = false, streamsBefore: Int) -> [SendingLayer] {
+        let trials = senders
+        let weights = sizes.map { pow(Double($0.width * $0.height), 0.75) }, sum = weights.reduce(0, +)
+        let results = Mutex<[(sender: VP8Sender, picture: SendingLayer?)?]>(.init(repeating: nil, count: sizes.count))
+        DispatchQueue.concurrentPerform(iterations: sizes.count) { index in
+            var sender = trials[index]
+            let picture = sender.encode(frame, target: sizes[index], index: index, bitrate: bitrate,
+                                        bits: Int(Double(bits) * weights[index] / sum), key: key || index >= streamsBefore, screen: screen)
+            results.withLock { $0[index] = (sender, picture) }
+        }
+        var encoded = [SendingLayer]()
+        for (index, result) in results.withLock({ $0 }).enumerated() {
+            guard let result, let picture = result.picture else { break }
+            senders[index] = result.sender
+            encoded.append(picture)
+        }
+        return encoded
     }
 
     /// Independent VP8 streams for RingRTC's three simulcast SSRCs. The base
