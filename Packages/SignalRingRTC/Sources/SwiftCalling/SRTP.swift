@@ -110,7 +110,8 @@ final class SRTPReceiver: Sendable {
         self.clock = clock
     }
 
-    func open(_ packet: Data) throws -> RTPPayload {
+    /// `arrival`: when the datagram came off the network (for transport feedback and jitter).
+    func open(_ packet: Data, arrival: ContinuousClock.Instant = .now) throws -> RTPPayload {
         guard (28...65_507).contains(packet.count) else { throw SRTPError.invalidPacket }
         var header = ByteCursor(Array(packet))
         let flags = try header.u8()
@@ -135,8 +136,8 @@ final class SRTPReceiver: Sendable {
                 bytes.removeLast(Int(padding))
             }
             window.accept(index)
-            if let transportNumber { arrivals?.record(transportNumber) }
-            measurements?.received(ssrc: ssrc, index: index, timestamp: timestamp, clock: clock, bytes: bytes.count)
+            if let transportNumber { arrivals?.record(transportNumber, at: arrival) }
+            measurements?.received(ssrc: ssrc, index: index, timestamp: timestamp, clock: clock, bytes: bytes.count, at: arrival)
             return RTPPayload(type: type & 0x7f, timestamp: timestamp, sequence: seq, marker: type & 0x80 != 0, rotation: rotation, transportNumber: transportNumber, bytes: bytes, protectedHeader: protected)
         }
     }

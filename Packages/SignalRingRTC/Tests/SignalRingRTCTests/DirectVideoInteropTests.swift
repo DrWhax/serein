@@ -149,6 +149,30 @@ actor VideoTestSpeaker: VoiceCallSpeaker {
             #expect(a.remoteVideoEnabled && b.remoteVideoEnabled)
             #expect(a.remoteSharingScreen == second && b.remoteSharingScreen == second)
         }
+        if swiftCalls, vp9, uri == nil, !impair {
+            // Native must trust the transport feedback Swift returns for the video it receives. With
+            // feedback it ignored (media source SSRC 0), its bandwidth estimate fell 20% a second to
+            // its 63.6 kbps floor: busy 640x480 came at 0.5 fps here (a stock client sent Serein a few
+            // tens of kbps); trusted, it comes at ~17 fps, as native to native. Frames received in
+            // the last five of ten seconds of busy pictures.
+            let width = 640, height = 480
+            var frame = [UInt8](repeating: 128, count: width*height*3/2), seed: UInt32 = 1, tick = 0
+            var buffer = [UInt8](repeating: 0, count: width*height*4)
+            let start = ContinuousClock.now
+            var received = 0
+            while ContinuousClock.now < start + .seconds(10) {
+                for i in 0..<(width*height) {
+                    seed = seed &* 1664525 &+ 1013904223
+                    frame[i] = UInt8(truncatingIfNeeded: (i % width + tick*3) ^ (i / width) &+ Int(seed >> 28))
+                }
+                _ = b.sendVideoFrame(width: width, height: height, format: .i420, buffer: frame)
+                if a.receiveVideoFrame(into: &buffer, maxWidth: width, maxHeight: height) != nil,
+                   ContinuousClock.now >= start + .seconds(5) { received += 1 }
+                tick += 1
+                try await Task.sleep(for: .milliseconds(33))
+            }
+            #expect(received >= 40, "Swift received \(received) pictures of native's busy video in 5 s")
+        }
         if !vp9, swiftCalls, ProcessInfo.processInfo.environment["SEREIN_TEST_SCREEN_RESOLUTION"] == "1" {
             let width = 2880, height = 1800
             var frame = [UInt8](repeating:128, count:width*height*3/2)

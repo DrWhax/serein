@@ -39,8 +39,11 @@ final class TransportPacketNumbers: Sendable {
 /// transport-wide number is shared. Each media stream retains its own SRTP replay window.
 final class TransportArrivals: Sendable {
     private let state = Mutex(TransportFeedback())
-    func record(_ number: UInt16) { state.withLock { $0.observe(number, at: .now) } }
-    func packet(sender: UInt32) -> Data? { state.withLock { $0.packet(sender: sender) } }
+    /// `time`: when the datagram arrived from the network, not when it was processed: the peer's
+    /// congestion control reads the spacing (stamped after a queue, bursts read as a growing
+    /// queue, and the peer's estimate fell to its floor).
+    func record(_ number: UInt16, at time: ContinuousClock.Instant = .now) { state.withLock { $0.observe(number, at: time) } }
+    func packet(sender: UInt32, media: UInt32 = 0) -> Data? { state.withLock { $0.packet(sender: sender, media: media) } }
 }
 
 /// Transport-wide feedback used by RingRTC and the Signal SFU (RTPFB FMT=15).
@@ -60,7 +63,11 @@ struct TransportFeedback {
         arrivals[delta] = Int64(origin.duration(to: now) / .microseconds(250))
     }
 
-    mutating func packet(sender: UInt32) -> Data? {
+    /// `media`: an SSRC the peer sends. libwebrtc accepts transport feedback only when its media
+    /// source SSRC is one of its own streams (RTCPReceiver::HandleTransportFeedback), as libwebrtc's
+    /// own receivers write it: with zero, stock clients ignored every report, their bandwidth
+    /// estimate fell 20% a second to its floor, and the video they sent became a few tens of kbps.
+    mutating func packet(sender: UInt32, media: UInt32 = 0) -> Data? {
         guard let base, let earliest = arrivals.keys.min(), let first = arrivals[earliest], let last = arrivals.keys.max() else { return nil }
         let reference = first / 256
         var body = [UInt8]()
@@ -68,7 +75,7 @@ struct TransportFeedback {
             bytes += [UInt8(truncatingIfNeeded:value >> 8),UInt8(truncatingIfNeeded:value)]
         }
         for shift in [24,16,8,0] { body.append(UInt8(truncatingIfNeeded:sender >> shift)) }
-        body += [0,0,0,0] // media-source SSRC unused for transport-wide feedback
+        for shift in [24,16,8,0] { body.append(UInt8(truncatingIfNeeded:media >> shift)) }
         write16(Int(base),into:&body); write16(last+1,into:&body)
         for shift in [16,8,0] { body.append(UInt8(truncatingIfNeeded:reference >> shift)) }
         body.append(sequence)

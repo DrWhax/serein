@@ -46,8 +46,8 @@ struct DirectOpusReceiver {
         receiver = SRTPReceiver(keys: keys, ssrc: remoteRole.audioSSRC, measurements: measurements, arrivals: arrivals)
     }
 
-    func open(_ data: Data) throws -> (timestamp: UInt32, sequence: UInt16, marker: Bool, packet: OpusPacket) {
-        let media = try receiver.open(data)
+    func open(_ data: Data, arrival: ContinuousClock.Instant = .now) throws -> (timestamp: UInt32, sequence: UInt16, marker: Bool, packet: OpusPacket) {
+        let media = try receiver.open(data, arrival: arrival)
         guard media.type == DirectOpusSender.payloadType else { throw SRTPError.invalidPacket }
         return try (media.timestamp, media.sequence, media.marker, OpusPacket(media.bytes))
     }
@@ -84,8 +84,8 @@ struct DirectSpeechReceiver {
 
     mutating func setDRED(_ configuration: DREDConfiguration?) { playout.setDRED(configuration) }
 
-    mutating func insert(_ data: Data) throws {
-        let media = try transport.open(data)
+    mutating func insert(_ data: Data, arrival: ContinuousClock.Instant = .now) throws {
+        let media = try transport.open(data, arrival: arrival)
         playout.insert(media.packet, timestamp: media.timestamp, sequence: media.sequence, marker: media.marker)
     }
 

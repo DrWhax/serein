@@ -41,7 +41,7 @@ struct DirectVideoStream {
     }
 
     func transportFeedback(_ arrivals: TransportArrivals) throws -> Data? {
-        guard let packet = arrivals.packet(sender: feedback.ssrc) else { return nil }
+        guard let packet = arrivals.packet(sender: feedback.ssrc, media: receiver.ssrc) else { return nil }
         return try feedback.seal(packet)
     }
 
@@ -49,12 +49,13 @@ struct DirectVideoStream {
         return try assembler.assemble(receiver.open(datagram))
     }
 
-    mutating func receive(_ datagram: Data, vp8Enabled: Bool, vp9Enabled: Bool, sink: DirectCallVideo) throws -> Data? {
+    mutating func receive(_ datagram: Data, vp8Enabled: Bool, vp9Enabled: Bool, sink: DirectCallVideo,
+                          arrival: ContinuousClock.Instant = .now) throws -> Data? {
         guard datagram.count >= 12 else { throw SRTPError.invalidPacket }
         let type = datagram[datagram.startIndex+1] & 0x7f
         let packet: RTPPayload
-        if VideoRepair.primaryType(type) != nil { packet = try VideoRepair.unpack(repairReceiver.open(datagram)) }
-        else { packet = try receiver.open(datagram) }
+        if VideoRepair.primaryType(type) != nil { packet = try VideoRepair.unpack(repairReceiver.open(datagram, arrival: arrival)) }
+        else { packet = try receiver.open(datagram, arrival: arrival) }
         let primary = packet.type == Self.red ? try Self.primary(packet) : packet
         let received = fec.ingest(primary) + [primary]
         var output = VideoReceiveQueue.Output()

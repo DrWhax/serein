@@ -50,6 +50,9 @@ package actor GroupMediaSession {
         var remoteFeedback: VideoFeedback
         let transportNumbers = TransportPacketNumbers()
         var arrivals = TransportFeedback()
+        /// The last SSRC whose packet carried a transport-wide number: transport feedback names it
+        /// as its media source, as libwebrtc's receivers do (TransportFeedback.packet).
+        var arrivalSSRC: UInt32 = 0
         var sendRate = GroupSendRate()
         var reports: [UInt32:RTCPReport] = [:]
         var nacksReceived = [UInt32:UInt64](), plisReceived = [UInt32:UInt64](), firsReceived = [UInt32:UInt64]()
@@ -395,7 +398,10 @@ package actor GroupMediaSession {
             measurements: mediaStream && !repair ? measurements : nil, clock: offset == 0 ? 48_000 : 90_000)
         guard let authenticated = try? receiver.open(bytes) else { return }
         wire.receivers[ssrc] = receiver
-        if let number = authenticated.transportNumber { wire.arrivals.observe(number, at: .now) }
+        if let number = authenticated.transportNumber {
+            wire.arrivals.observe(number, at: .now)
+            wire.arrivalSSRC = ssrc
+        }
         let packet: RTPPayload
         if repair {
             guard let original = try? VideoRepair.unpack(authenticated) else { return }
@@ -571,7 +577,7 @@ package actor GroupMediaSession {
             measurements.sample(rtt: connection.lastRoundTrip, media: observations(wire), relayed: connection.relayed)
             nextMeasurement = now + (statsInterval ?? .seconds(10))
         }
-        if let feedback = wire.arrivals.packet(sender: wire.feedback.ssrc) {
+        if let feedback = wire.arrivals.packet(sender: wire.feedback.ssrc, media: wire.arrivalSSRC) {
             try? connection.send(wire.feedback.seal(feedback))
         }
         let adapter = connection.adapter ?? networkPath?.adapter ?? 0

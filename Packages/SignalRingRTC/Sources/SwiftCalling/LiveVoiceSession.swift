@@ -4,6 +4,14 @@ import Network
 import Synchronization
 
 /// Owns the ICE, SRTP and audio devices for one V4 signaling leg.
+/// A datagram and when it came off the network: stamped in the transport's receive callback,
+/// before the session's queue, so transport feedback reports the network's spacing.
+struct Received: Sendable {
+    let data: Data
+    let arrival: ContinuousClock.Instant
+    init(_ data: Data, at arrival: ContinuousClock.Instant = .now) { self.data = data; self.arrival = arrival }
+}
+
 package actor LiveVoiceSession {
     package enum Event: Sendable {
         case candidate(IceCandidateUpdate), ringing, accepted, remoteAudio(Bool), remoteHangup, failed(String)
@@ -303,10 +311,10 @@ package actor LiveVoiceSession {
         let iceRole: ICEBinding.Role = role == .caller ? .controlling(tieBreaker) : .controlled(tieBreaker)
         let election = role == .caller ? nomination : nil
         incoming[token] = Task { [weak self] in
-            let packets = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(64))
+            let packets = AsyncStream<Received>.makeStream(bufferingPolicy: .bufferingNewest(64))
             do {
                 let selected = try await DirectICETransport.accept(socket, candidate: candidate, local: .init(ufrag: ufrag, password: password),
-                                                                   remote: remoteICE, role: iceRole, nomination: election) { packets.continuation.yield($0) }
+                                                                   remote: remoteICE, role: iceRole, nomination: election) { packets.continuation.yield(Received($0)) }
                 guard !Task.isCancelled, let self else { selected.close(); return }
                 await self.inboundNominated(selected, packets: packets.stream, candidate: candidate, token: token)
             } catch {
@@ -319,7 +327,7 @@ package actor LiveVoiceSession {
 
     private func removeIncoming(_ token: UUID) { incoming[token] = nil }
 
-    private func inboundNominated(_ selected: DirectICETransport, packets: AsyncStream<Data>, candidate: ICEHostCandidate, token: UUID) async {
+    private func inboundNominated(_ selected: DirectICETransport, packets: AsyncStream<Received>, candidate: ICEHostCandidate, token: UUID) async {
         guard incoming.removeValue(forKey: token) != nil, !ended, transport == nil else { selected.close(); return }
         cancelAttempts()
         await connected(selected, packets: packets, candidate: .host(candidate), generation: iceGeneration)
@@ -464,7 +472,7 @@ package actor LiveVoiceSession {
             let delay = now.duration(to: start)
             let id = UUID()
             let task = Task { [weak self] in
-                let packets = AsyncStream<Data>.makeStream(bufferingPolicy: .bufferingNewest(64))
+                let packets = AsyncStream<Received>.makeStream(bufferingPolicy: .bufferingNewest(64))
                 do {
                     if delay > .zero { try await Task.sleep(for: delay) }
                     let route: DirectICETransport.Route
@@ -475,7 +483,7 @@ package actor LiveVoiceSession {
                         route = .relay(try await allocation.connect(to: relay))
                     }
                     let connection = try await DirectICETransport.connect(route: route, relayOnly: relayOnly,
-                        local: local, remote: remoteICE, role: iceRole, hostPort: port, nomination: election) { packets.continuation.yield($0) }
+                        local: local, remote: remoteICE, role: iceRole, hostPort: port, nomination: election) { packets.continuation.yield(Received($0)) }
                     guard let self else { connection.close(); return }
                     if Task.isCancelled {
                         connection.close()
@@ -526,7 +534,7 @@ package actor LiveVoiceSession {
         checkCandidates()
     }
 
-    private func connected(_ connection: DirectICETransport, packets: AsyncStream<Data>, candidate: Candidate, attempt id: UUID? = nil,
+    private func connected(_ connection: DirectICETransport, packets: AsyncStream<Received>, candidate: Candidate, attempt id: UUID? = nil,
                            generation: UUID) async {
         guard !ended, generation == iceGeneration, transport == nil, let media else { connection.close(); return }
         guard !Task.isCancelled else {
@@ -549,9 +557,9 @@ package actor LiveVoiceSession {
         gather = nil
         if case .host = candidate { allocation?.close(); allocation = nil }
         receive = Task { [weak self] in
-            for await packet in packets {
+            for await received in packets {
                 guard !Task.isCancelled else { return }
-                await self?.read(packet)
+                await self?.read(received.data, arrival: received.arrival)
             }
         }
         let resumed = recovering && accepted
@@ -720,7 +728,7 @@ package actor LiveVoiceSession {
         receivedPeak = 0
     }
 
-    private func read(_ packet: Data) async {
+    private func read(_ packet: Data, arrival: ContinuousClock.Instant = .now) async {
         guard !ended, let media, packet.count >= 12 else { return }
         let type = packet[packet.startIndex + 1]
         if (192...223).contains(type) {
@@ -774,12 +782,13 @@ package actor LiveVoiceSession {
                 event(.remoteAudio(enabled))
             }
         } else if accepted, VideoRepair.primaryType(payloadType) != nil || [DirectVideoStream.vp8, VP9Assembly.payloadType, DirectVideoStream.red, 122].contains(payloadType) {
-            if let nack = try? media.video.receive(packet, vp8Enabled: peerSendsVP8, vp9Enabled: vp9Decode && peerSendsVP9, sink: video) {
+            if let nack = try? media.video.receive(packet, vp8Enabled: peerSendsVP8, vp9Enabled: vp9Decode && peerSendsVP9, sink: video,
+                                                   arrival: arrival) {
                 if (try? transport?.send(nack)) != nil { nacksSent += 1 }
             }
             if media.video.waitingForRepair && repairTimer == nil { scheduleVideoRepair() }
         } else if accepted, payloadType == DirectOpusSender.payloadType {
-            guard (try? media.receive.insert(packet)) != nil else { return }
+            guard (try? media.receive.insert(packet, arrival: arrival)) != nil else { return }
             if audioPlayout == nil { startAudioPlayout() }
         }
     }
