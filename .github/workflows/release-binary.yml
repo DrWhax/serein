@@ -1,0 +1,42 @@
+# Attaches a disk image (dist/Serein-<version>.dmg, ad-hoc signed) and its SHA-256 to a
+# release when it is published, or for a given tag on demand. See Tools/release-binary.sh.
+#
+# The build needs the macOS 27 SDK with Xcode's Swift, and Rust (rustup) for the libsignal FFI.
+# GitHub-hosted images may not have the macOS 27 SDK yet, so the default runner is a
+# self-hosted Apple Silicon Mac; set the repository variable RELEASE_RUNS_ON to a JSON label
+# list (e.g. ["macos-27"]) to use another. A clean checkout builds libsignal from scratch:
+# allow about 15 GB of free disk on the runner.
+name: Release binary
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. v0.2.2"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-binary-${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.RELEASE_RUNS_ON || '["self-hosted", "macOS", "ARM64"]') }}
+    timeout-minutes: 180
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          # Tools/build-app.sh initialises only the shipping submodules (libsignal, GRDB).
+          submodules: false
+      - name: Build and attach the disk image
+        run: Tools/release-binary.sh "$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}

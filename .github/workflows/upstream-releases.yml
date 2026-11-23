@@ -1,0 +1,25 @@
+# Opens a "Bump <library> to <tag>" issue (label upstream-release) when a Signal library that
+# Serein vendors as a submodule (libsignal, ringrtc) publishes a newer release. The pinned
+# version is read from the gitlink, so no submodule is checked out. See
+# Tools/check-upstream-releases.py; run it with --dry-run locally.
+name: Upstream Signal releases
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare pinned and released versions
+        run: python3 -I Tools/check-upstream-releases.py
+        env:
+          GH_TOKEN: ${{ github.token }}
