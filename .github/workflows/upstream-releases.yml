@@ -2,6 +2,11 @@
 # Serein vendors as a submodule (libsignal, ringrtc) publishes a newer release. The pinned
 # version is read from the gitlink, so no submodule is checked out. See
 # Tools/check-upstream-releases.py; run it with --dry-run locally.
+#
+# Opens a "Review Signal-Desktop <tag>" issue (label upstream-desktop) when Signal-Desktop
+# publishes a stable release newer than Tools/upstream-desktop.txt: the ported files that
+# changed, new files, protocol changes, strings, remote-config flags and commits. See
+# Tools/check-upstream-desktop.py; run it with --dry-run locally.
 name: Upstream Signal releases
 
 on:
@@ -16,10 +21,15 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Compare pinned and released versions
         run: python3 -I Tools/check-upstream-releases.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Review new Signal-Desktop releases
+        if: ${{ !cancelled() }}
+        run: python3 -I Tools/check-upstream-desktop.py
         env:
           GH_TOKEN: ${{ github.token }}
