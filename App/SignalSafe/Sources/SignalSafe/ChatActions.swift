@@ -195,6 +195,11 @@ import SignalUI
         group("deny") { try await $0.denyRequest($1, aci) }
     }
 
+    /// `blockGroupLinkRequests`: someone who keeps asking to join is banned from asking again.
+    func blockGroupLinkRequests(_ serviceId: String) {
+        group("ban") { try await $0.ban($1, serviceId) }
+    }
+
     /// `revokePendingMemberships`: invites revoked, requests denied.
     func revokePending(_ ids: [String]) {
         let requests = Set(details?.group?.pendingAdminApprovalV2.map(\.aci) ?? [])

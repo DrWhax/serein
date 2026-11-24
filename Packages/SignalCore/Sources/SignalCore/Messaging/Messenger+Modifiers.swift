@@ -159,15 +159,15 @@ extension Messenger {
         }
     }
 
-    /// `deleteForMe`: removes the messages here and tells our other devices.
+    /// `deleteForMe`: removes the messages here and tells our other devices (of those they can
+    /// address: notices such as calls or group changes are removed here only).
     public func deleteForMe(_ messageIds: [String]) async throws {
         let ourAci = account.aci
         let sync = try await database.pool.write { db -> Signalservice_SyncMessage.DeleteForMe in
             var byConversation: [String: [Signalservice_AddressableMessage]] = [:]
             for id in messageIds {
-                guard let c = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]),
-                      let a = try DeleteForMe.addressable(db, messageId: id) else { continue }
-                byConversation[c, default: []].append(a)
+                guard let c = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) else { continue }
+                if let a = try DeleteForMe.addressable(db, messageId: id) { byConversation[c, default: []].append(a) }
                 try DeleteForMe.deleteMessage(db, id)
             }
             var d = Signalservice_SyncMessage.DeleteForMe()

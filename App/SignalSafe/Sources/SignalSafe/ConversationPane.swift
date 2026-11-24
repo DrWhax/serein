@@ -35,6 +35,11 @@ struct ConversationPane: View {
         let messages = session.messages
         let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let index = Dictionary(messages.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // The rows: consecutive call events, group updates or timer changes fold into one
+        // (upstream mapItemsIntoCollapseSets); the divider and scroll target move to their rows.
+        let mapped = CollapseSets.map(messages.map(collapseItem), oldestUnseenIndex: session.unreadMarker.flatMap { index[$0.oldestId] },
+                                      scrollToIndex: session.scrollToMessageId.flatMap { index[$0] })
+        let sets = Dictionary(mapped.sets.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return VStack(spacing: 0) {
             ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, outgoingCallButtonStyle: callButtonStyle,
                                contactSpoofingWarning: spoofingWarning, collidingAvatars: collidingAvatars, actions: headerActions) { EmptyView() }
@@ -46,12 +51,16 @@ struct ConversationPane: View {
                                   onPinGoTo: { session.goToMessage($0) }, onPinRemove: { session.unpin($0) },
                                   onPinsShowAll: { if let first = session.pins.first { session.goToMessage(first.messageId) } })
             }
-            Timeline(id: conversation.id, items: messages.map(\.id), haveNewest: true, haveOldest: session.haveOldest,
+            Timeline(id: conversation.id, items: mapped.sets.map(\.id), haveNewest: true, haveOldest: session.haveOldest,
                      isLoadingMessages: session.isLoadingOlder,
-                     oldestUnseenIndex: session.unreadMarker.flatMap { index[$0.oldestId] }, totalUnseen: session.unreadMarker?.count ?? 0,
-                     scrollToIndex: session.scrollToMessageId.flatMap { index[$0] }, scrollToIndexCounter: session.scrollCounter,
+                     oldestUnseenIndex: mapped.unseenIndex, totalUnseen: session.unreadMarker?.count ?? 0,
+                     scrollToIndex: mapped.scrollToIndex, scrollToIndexCounter: session.scrollCounter,
                      getTimestampForMessage: { byId[$0].map { Date(milliseconds: $0.sentAt) } }) { props in
-                if let m = byId[props.id], let i = index[props.id] {
+                if let set = sets[props.id], let kind = set.kind, let i = index[props.id] {
+                    TimelineCollapseRow(pane: self, set: set, kind: kind, messages: set.messages.compactMap { byId[$0.id] },
+                                        previous: i > 0 ? messages[i - 1] : nil)
+                        .equatable()
+                } else if let m = byId[props.id], let i = index[props.id] {
                     TimelineRow(pane: self, message: m, previous: i > 0 ? messages[i - 1] : nil, next: i + 1 < messages.count ? messages[i + 1] : nil)
                         .equatable()
                 }
@@ -72,7 +81,7 @@ struct ConversationPane: View {
             .environment(\.textSelectionCenter, session.textSelection)
             if let selected = session.selectedMessageIds {
                 SelectModeActions(selectedCount: selected.count,
-                                  areSelectedMessagesForwardable: selected.allSatisfy { id in session.messages.first { $0.id == id }.map { !$0.isDeleted && !$0.isViewOnce && $0.poll == nil } ?? false },
+                                  areSelectedMessagesForwardable: selected.allSatisfy { id in session.messages.first { $0.id == id }.map { $0.notice == nil && !$0.isDeleted && !$0.isViewOnce && $0.poll == nil } ?? false },
                                   onExitSelectMode: { session.exitSelectMode() }, onDeleteMessages: { session.requestDelete(selected) },
                                   onForwardMessages: { session.forward(selected) }, showTooManyToast: { session.toast = .tooManyMessagesToForward })
                     .background(AxoColor.surfacePrimary)
@@ -425,8 +434,43 @@ struct ConversationPane: View {
         return m.direction == .outgoing ? (session.ourAci ?? "me") : (m.author ?? "unknown")
     }
 
+    /// What upstream's canCollapseFor…Set ask of a timeline entry: group updates take the
+    /// other chat-update notices (safety number and verification changes) along; a group's
+    /// ending, and the call in progress here, never fold.
+    func collapseItem(_ m: TimelineMessage) -> CollapseSetItem {
+        let kind: CollapseSetItem.Kind
+        switch m.notice {
+        case .keyChange, .verifiedChange: kind = .groupUpdate(changes: 1)
+        case .groupChange(let json):
+            let details = groupChange(json)?.details ?? []
+            kind = details.first?.type == "terminated" ? .other : .groupUpdate(changes: max(1, details.count))
+        case .timerChange(let seconds, _, _): kind = .timerChange(seconds == 0 ? nil : seconds)
+        case .call(let callId, let details): kind = isCurrentCall(callId, details) ? .other : .callEvent
+        case .deliveryIssue, .chatSessionRefreshed, nil: kind = .other
+        }
+        return CollapseSetItem(id: m.id, kind: kind, isUnseen: m.isUnseen, date: Date(milliseconds: m.sentAt))
+    }
+
+    /// The call in progress in this chat: while a direct call is, every direct call notice here;
+    /// for a group, the notice of the call (era) in progress.
+    func isCurrentCall(_ callId: String?, _ details: SignalCore.CallHistoryDetails?) -> Bool {
+        guard let details, session.activeCall?.conversationId == conversation.id else { return false }
+        if details.details.mode == .direct { return true }
+        return callId != nil && callId == session.peekedGroupCall(conversation.id)?.callId
+    }
+
+    /// A `group-v2-change` notice's change, in SignalUI's model (upstream's shape).
+    func groupChange(_ json: Data) -> GroupV2ChangeModel? { try? JSONDecoder().decode(GroupV2ChangeModel.self, from: json) }
+
+    /// A notice's row: its notification, selectable in select mode.
+    func noticeRow(_ m: TimelineMessage, _ notice: TimelineNotice, next: TimelineMessage?) -> TimelineItem {
+        TimelineItem(item: noticeItem(notice, m, next: next), isSelectMode: session.selectedMessageIds != nil,
+                     isSelected: session.selectedMessageIds?.contains(m.id) ?? false,
+                     toggleSelectMessage: { [session] shift, on in session.toggleSelect(m.id, shift: shift, selected: on) })
+    }
+
     /// The timeline's notices (upstream TimelineItem's notification types).
-    func noticeItem(_ notice: TimelineNotice) -> TimelineItemType {
+    func noticeItem(_ notice: TimelineNotice, _ m: TimelineMessage, next: TimelineMessage?) -> TimelineItemType {
         switch notice {
         case .keyChange(let serviceId):
             let who = serviceId ?? conversation.serviceId
@@ -443,7 +487,55 @@ struct ConversationPane: View {
             }))
         case .chatSessionRefreshed:
             return .chatSessionRefreshed(ChatSessionRefreshedNotification(onLearnMore: { session.contactDialog = .chatSessionRefreshed }))
+        case .call(let callId, let details):
+            return .callHistory(callNotification(m, callId: callId, details, next: next))
+        case .groupChange(let json):
+            guard let change = groupChange(json) else { return .unknown("group-v2-change") }
+            let group = session.details?.conversationId == conversation.id ? session.details?.group : nil
+            let me = session.ourAci
+            return .groupV2Change(GroupV2Change(change: change, areWeAdmin: me.map { group?.isAdmin($0) ?? false } ?? false,
+                                                groupMemberships: group?.membersV2.map { .init(aci: $0.aci, isAdmin: group?.isAdmin($0.aci) ?? false) },
+                                                groupBannedMemberships: group?.bannedMembersV2.map(\.serviceId), groupName: title(conversation),
+                                                ourAci: me, ourPni: nil, renderContact: { [session] in Emojify.run(session.contactTitle($0)) },
+                                                blockGroupLinkRequests: { [session] in session.blockGroupLinkRequests($0) }))
+        case .timerChange(let seconds, let source, let fromSync):
+            // getPropsForTimerNotification
+            let type: TimerNotification.Source = fromSync ? .fromSync : source == nil ? .fromMember : source == session.ourAci ? .fromMe : .fromOther
+            return .timerNotification(TimerNotification(type: type, title: session.contactTitle(source), expireTimer: seconds == 0 ? nil : seconds))
         }
+    }
+
+    /// `getPropsForCallHistory`: the call, who started it, and for a group call whether it is
+    /// still going (as peeked: only the call we are in or about to join is).
+    func callNotification(_ m: TimelineMessage, callId: String?, _ details: SignalCore.CallHistoryDetails?, next: TimelineMessage?) -> CallingNotification {
+        let nextIsCall = if case .call = next?.notice { true } else { false }
+        let isSelectMode = session.selectedMessageIds != nil
+        guard let h = details else {
+            return CallingNotification(callHistory: nil, callCreator: nil, conversationId: conversation.id, groupCallEnded: nil, deviceCount: 0,
+                                       maxDevices: .max, isNextItemCallingNotification: nextIsCall, isSelectMode: isSelectMode)
+        }
+        let d = h.details
+        let history = SignalUI.CallHistoryDetails(mode: SignalUI.CallMode(rawValue: d.mode.rawValue) ?? .direct,
+                                                  type: SignalUI.CallType(rawValue: d.type.rawValue) ?? .unknown,
+                                                  direction: SignalUI.CallDirection(rawValue: d.direction.rawValue) ?? .unknown,
+                                                  status: SignalUI.CallStatus(rawValue: h.status.rawValue) ?? .unknown,
+                                                  timestamp: Date(milliseconds: d.timestamp))
+        var creator: CallingNotification.Creator?
+        if d.direction == .outgoing {
+            creator = .init(title: i18n("icu:you"), isMe: true)
+        } else if let ringer = d.ringerId {
+            creator = .init(title: session.contactTitle(ringer), isMe: ringer == session.ourAci)
+        }
+        let peek = d.mode == .direct ? nil : session.peekedGroupCall(conversation.id)
+        let ended = d.mode == .direct ? false : (callId == nil || callId != peek?.callId || (peek?.deviceCount ?? 0) == 0)
+        return CallingNotification(callHistory: history, callCreator: creator, conversationId: conversation.id,
+                                   activeConversationId: session.activeCall?.conversationId, groupCallEnded: ended,
+                                   deviceCount: peek?.deviceCount ?? 0, maxDevices: peek?.maxDevices ?? .max,
+                                   isNextItemCallingNotification: nextIsCall, isSelectMode: isSelectMode,
+                                   onOutgoingAudioCall: { [session, id = conversation.id] in session.openCallLobby(id, video: false) },
+                                   onOutgoingVideoCall: { [session, id = conversation.id] in session.openCallLobby(id, video: true) },
+                                   returnToActiveCall: { [session] in session.callPip = false },
+                                   onDelete: { [session] in session.requestDelete([m.id]) })
     }
 
     func grouping(_ m: TimelineMessage) -> TimelineGroupingInfo {
@@ -677,9 +769,56 @@ struct TimelineRow: View, Equatable {
                 TimelineDateHeader(timestamp: Date(milliseconds: message.sentAt))
             }
             if let notice = message.notice {
-                TimelineItem(item: pane.noticeItem(notice))
+                pane.noticeRow(message, notice, next: next)
             } else {
                 TimelineItem(item: .message(pane.props(message, previous: previous, next: next)))
+            }
+        }
+    }
+}
+
+/// A collapse set's row (upstream TimelineItem's `collapseSet`): its date header, then the
+/// fold ("2 call events") over the set's notices. Equatable like TimelineRow.
+struct TimelineCollapseRow: View, Equatable {
+    let pane: ConversationPane
+    let set: CollapseSet
+    let kind: CollapseSetKind
+    /// The set's entries, in order.
+    let messages: [TimelineMessage]
+    /// The entry before the set.
+    let previous: TimelineMessage?
+    let session: ObjectIdentifier
+
+    init(pane: ConversationPane, set: CollapseSet, kind: CollapseSetKind, messages: [TimelineMessage], previous: TimelineMessage?) {
+        self.pane = pane
+        self.set = set
+        self.kind = kind
+        self.messages = messages
+        self.previous = previous
+        session = ObjectIdentifier(pane.session)
+    }
+
+    nonisolated static func == (a: TimelineCollapseRow, b: TimelineCollapseRow) -> Bool {
+        a.set == b.set && a.messages == b.messages && a.previous == b.previous && a.pane.conversation == b.pane.conversation
+            && a.session == b.session
+    }
+
+    var body: some View {
+        let session = pane.session
+        let selected = Set(session.selectedMessageIds ?? [])
+        VStack(spacing: 0) {
+            if let first = messages.first,
+               TimelineUtil.shouldRenderDateHeader(isOldest: previous == nil, pane.grouping(first), previous: previous.map(pane.grouping)) {
+                TimelineDateHeader(timestamp: Date(milliseconds: first.sentAt))
+            }
+            CollapseSetViewer(kind: kind, messages: set.messages, isGroup: pane.conversation.kind == .group,
+                              isSelectMode: session.selectedMessageIds != nil, isSelected: set.messages.contains { selected.contains($0.id) },
+                              targetedMessageId: session.scrollToMessageId,
+                              onDelete: { session.requestDelete($0) },
+                              onSelect: { ids in for id in ids { session.toggleSelect(id, selected: true) } }) { item in
+                if let i = messages.firstIndex(where: { $0.id == item.id }), let notice = messages[i].notice {
+                    pane.noticeRow(messages[i], notice, next: i + 1 < messages.count ? messages[i + 1] : nil)
+                }
             }
         }
     }

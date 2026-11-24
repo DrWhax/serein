@@ -228,6 +228,17 @@ extension LinkedClient {
             try await c.messenger.deleteForMe([try await c.messageId(sentAt: d2)])
             #expect(try await c.database.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM messages WHERE sent_at = ?", arguments: [Int64(d2)]) } == 0)
             _ = try await c.server.json("waitForSyncMessage", ["kind": "deleteForMe"])
+
+            // A notice no other device can address (a call here) is removed here only.
+            let d3 = try await c.send(["body": "next to a call"])
+            let notice = try await c.database.pool.write { db -> String in
+                let conversationId = try #require(try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE sent_at = ?", arguments: [Int64(d3)]))
+                return try MessageStore.insert(db, .init(conversationId: conversationId, type: "call-history", body: "", sentAt: UInt64(MessageStore.now()),
+                                                         source: nil, sourceDevice: nil, serverGuid: nil, serverTimestamp: nil, unidentified: false,
+                                                         extra: ["callId": "42"]))
+            }
+            try await c.messenger.deleteForMe([notice])
+            #expect(try await c.database.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM messages WHERE id = ?", arguments: [notice]) } == 0)
         }
     }
 }

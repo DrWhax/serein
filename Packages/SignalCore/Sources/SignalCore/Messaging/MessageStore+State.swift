@@ -160,6 +160,13 @@ extension MessageStore {
                 targets.append(ReceiptTarget(messageId: id, conversationId: conversationId, senderAci: sender, timestamp: UInt64(row["sent_at"] as Int64)))
             }
         }
+        // Upstream getUnreadByConversationAndMarkRead: every other unseen entry (calls, group
+        // and timer changes, safety-number notices) is seen too, so later it folds into its
+        // collapse set.
+        try db.execute(sql: """
+            UPDATE messages SET seenStatus = ?, json = json_set(json, '$.seenStatus', ?)
+            WHERE conversationId = ? AND seenStatus = ? AND isStory = 0 AND storyId IS NULL
+            """, arguments: [SeenStatus.seen.rawValue, SeenStatus.seen.rawValue, conversationId, SeenStatus.unseen.rawValue])
         try updateConversationJSON(db, conversationId: conversationId) { $0["unreadCount"] = 0 }
         return targets
     }

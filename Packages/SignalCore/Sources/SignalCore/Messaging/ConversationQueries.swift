@@ -59,9 +59,19 @@ public enum TimelineNotice: Sendable, Equatable {
     case deliveryIssue(sender: String?)
     /// `chat-session-refreshed`: the session was reset after a decryption error.
     case chatSessionRefreshed
+    /// `call-history`: a call in this chat, with its call history row (looked up by `callId`
+    /// when the timeline is read; nil if it is missing).
+    case call(callId: String?, details: CallHistoryDetails?)
+    /// `group-v2-change`: upstream's `groupV2Change` (`from` and `details`) as JSON, for the
+    /// UI's own model of it.
+    case groupChange(json: Data)
+    /// `timer-notification`: the disappearing timer was set (`seconds`, 0: off) by `source`
+    /// (nil: a group change with no author), or by a sync from another of our devices.
+    case timerChange(seconds: Int, source: String?, fromSync: Bool)
 
     /// The message types the timeline shows as notices.
-    static let types = ["keychange", "verified-change", "delivery-issue", "chat-session-refreshed"]
+    static let types = ["keychange", "verified-change", "delivery-issue", "chat-session-refreshed",
+                        "call-history", "group-v2-change", "timer-notification"]
 
     init?(type: String?, json: [String: Any], source: String?) {
         switch type {
@@ -69,6 +79,16 @@ public enum TimelineNotice: Sendable, Equatable {
         case "verified-change": self = .verifiedChange(verified: json["verified"] as? Bool ?? false, local: json["local"] as? Bool ?? false)
         case "delivery-issue": self = .deliveryIssue(sender: source)
         case "chat-session-refreshed": self = .chatSessionRefreshed
+        case "call-history": self = .call(callId: json["callId"] as? String, details: nil)
+        case "group-v2-change":
+            guard let change = json["groupV2Change"] as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: change, options: .sortedKeys) else { return nil }
+            self = .groupChange(json: data)
+        case "timer-notification":
+            let update = json["expirationTimerUpdate"] as? [String: Any] ?? [:]
+            self = .timerChange(seconds: (update["expireTimer"] as? NSNumber)?.intValue ?? 0,
+                                source: update["sourceServiceId"] as? String ?? update["source"] as? String,
+                                fromSync: update["fromSync"] as? Bool ?? false)
         default: return nil
         }
     }
@@ -122,6 +142,9 @@ public struct TimelineMessage: Sendable, Equatable, Identifiable {
     public var editHistory: [TimelineEdit] = []
     /// Set for an entry that is a notice, not a message (its body is empty).
     public var notice: TimelineNotice?
+    /// `seenStatus` is Unseen: not yet shown in an open chat (upstream's collapse sets keep
+    /// such entries out of their fold).
+    public var isUnseen = false
 }
 
 public struct TimelineSticker: Sendable, Equatable {
@@ -253,7 +276,7 @@ public struct ContactInfo: Sendable, Equatable {
 }
 
 public enum ConversationQueries {
-    static let messageColumns = "id, conversationId, type, body, sent_at, received_at, sourceServiceId, json, hasAttachments"
+    static let messageColumns = "id, conversationId, type, body, sent_at, received_at, sourceServiceId, json, hasAttachments, seenStatus"
 
     static let summaryColumns = "id, type, json, serviceId, e164, groupId, name, profileFullName, profileName, profileFamilyName, active_at"
 
@@ -394,6 +417,7 @@ public enum ConversationQueries {
             ORDER BY received_at DESC, sent_at DESC LIMIT ?
             """, arguments: [conversationId, before, limit]).map(message).reversed().map { m in
                 var m = m
+                if case .call(let callId?, nil) = m.notice { m.notice = .call(callId: callId, details: try CallHistoryStore.get(db, callId: callId)) }
                 if let q = m.quote {
                     m.quote?.messageId = try quotedMessageId(db, conversationId: conversationId, q)
                     m.quote?.thumbnail = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .quote, order: 0))
@@ -481,6 +505,7 @@ public enum ConversationQueries {
                                 author: row["sourceServiceId"], status: status, hasAttachments: (row["hasAttachments"] as Int?) == 1,
                                 isDeleted: json["deletedForEveryone"] as? Bool ?? false, content: MessageContentKind.of(json))
         m.notice = TimelineNotice(type: row["type"], json: json, source: row["sourceServiceId"])
+        m.isUnseen = (row["seenStatus"] as Int?) == SeenStatus.unseen.rawValue
         func int64(_ v: Any?) -> Int64? { (v as? NSNumber)?.int64Value }
         m.reactions = (json["reactions"] as? [[String: Any]] ?? []).compactMap { r in
             guard let emoji = r["emoji"] as? String, let from = r["fromId"] as? String else { return nil }

@@ -406,6 +406,8 @@ import SignalUI
     private var inboxTask: Task<Void, Never>?
     private var contactsTask: Task<Void, Never>?
     private var timelineTask: Task<Void, Never>?
+    /// The open chat's unseen notices last marked seen (each set is marked once).
+    private var markedSeenNotices: Set<String> = []
     private var eventsTask: Task<Void, Never>?
     private var identityStopsTask: Task<Void, Never>?
     /// The open safety-number review (IdentityReview.swift).
@@ -891,6 +893,14 @@ import SignalUI
                 for try await rows in db.timelineUpdates(conversationId: id, limit: limit) {
                     guard let self else { return }
                     self.messages = rows
+                    // Calls, group and timer changes shown in the open chat are seen (upstream
+                    // marks everything up to the newest message it shows), so they fold into
+                    // their collapse sets once the chat is opened again.
+                    let unseen = Set(rows.lazy.filter { $0.notice != nil && $0.isUnseen }.map(\.id))
+                    if !unseen.isEmpty, NSApp.isActive, !unseen.isSubset(of: self.markedSeenNotices) {
+                        self.markedSeenNotices.formUnion(unseen)
+                        self.markRead(id, force: true)
+                    }
                     self.haveOldest = rows.count < limit
                     self.isLoadingOlder = false
                     if let target = self.pendingScrollMessageId {
@@ -975,7 +985,9 @@ import SignalUI
         let c = conversations.first(where: { $0.id == conversationId })
         // Opening a chat marked unread clears the mark (upstream markConversationRead).
         if c?.folderProps.markedUnread == true { Task { try? await session.messenger.setMarkedUnread(conversationId, false) } }
-        guard force || c?.unreadCount ?? 0 > 0 else { return }
+        // Unseen notices in the open chat count too (they become seen; nothing is sent for them).
+        let unseenNotices = conversationId == selectedConversationId && messages.contains { $0.notice != nil && $0.isUnseen }
+        guard force || c?.unreadCount ?? 0 > 0 || unseenNotices else { return }
         Task { _ = try? await session.messenger.markRead(conversationId: conversationId) }
     }
 

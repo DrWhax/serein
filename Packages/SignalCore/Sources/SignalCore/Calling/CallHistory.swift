@@ -309,6 +309,11 @@ public enum CallHistoryStore {
         try Row.fetchOne(db, sql: "SELECT * FROM callsHistory WHERE callId = ? AND peerId = ?", arguments: [callId, peerId]).map(decode)
     }
 
+    /// `callHistorySelector`: a `call-history` message's call, by its `callId` alone.
+    public static func get(_ db: Database, callId: String) throws -> CallHistoryDetails? {
+        try Row.fetchOne(db, sql: "SELECT * FROM callsHistory WHERE callId = ? ORDER BY timestamp DESC LIMIT 1", arguments: [callId]).map(decode)
+    }
+
     /// A row of the Calls tab (`CallHistoryGroup`): consecutive calls with the same peer, mode,
     /// type, direction and status within four hours, newest first.
     public struct Group: Sendable, Equatable {

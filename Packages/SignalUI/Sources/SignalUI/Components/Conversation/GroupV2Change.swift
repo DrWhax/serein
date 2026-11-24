@@ -2,7 +2,9 @@
 // each detail of a group change as a SystemMessage with its icon, worded for who made the
 // change (you / a member / unknown) and who it affects. A changed description has "View"
 // (the description dialog); a join-request bounce from a non-member offers "Block request"
-// to admins (a confirm dialog).
+// to admins (a confirm dialog). Both dialogs open on the window's modal stack (upstream's
+// `modalState`); `viewDescription` is told as well, and `blockGroupLinkRequests` runs on
+// confirm.
 
 import SignalI18n
 import SwiftUI
@@ -329,6 +331,7 @@ public struct GroupV2Change: View {
     let blockGroupLinkRequests: (String) -> Void
     let viewDescription: (String) -> Void
     @Environment(\.i18n) var i18n
+    @Environment(\.axoModalStack) var modals
 
     public init(change: GroupV2ChangeModel, areWeAdmin: Bool, groupMemberships: [Membership]? = nil, groupBannedMemberships: [String]? = nil,
                 groupName: String? = nil, ourAci: String?, ourPni: String?, renderContact: @escaping (String) -> CSSTextRun,
@@ -395,11 +398,54 @@ public struct GroupV2Change: View {
     @ViewBuilder func button(_ r: GroupChangeRenderer.Result) -> some View {
         let d = r.detail
         if d.type == "description", let text = d.description, !text.isEmpty {
-            LegacyButton(i18n("icu:view"), size: .small, variant: .systemMessage) { viewDescription(text) }
+            LegacyButton(i18n("icu:view"), size: .small, variant: .systemMessage) { showDescription(text) }
         } else if r.isLastText, d.type == "admin-approval-bounce", areWeAdmin, let aci = d.aci, aci != ourAci,
                   change.from == nil || change.from == aci,
                   !(groupMemberships?.contains { $0.aci == aci } ?? false), !(groupBannedMemberships?.contains(aci) ?? false) {
-            LegacyButton(i18n("icu:PendingRequests--block--button"), size: .small, variant: .systemMessage) { blockGroupLinkRequests(aci) }
+            LegacyButton(i18n("icu:PendingRequests--block--button"), size: .small, variant: .systemMessage) { confirmBlock(aci) }
+        }
+    }
+
+    /// `ModalState.ViewingGroupDescription`: the description (GroupDescriptionText: emoji,
+    /// links in the text colour) in a dialog titled with the group's name.
+    func showDescription(_ text: String) {
+        viewDescription(text)
+        guard let modals else { return }
+        let id = "group-change-description"
+        let runs = Linkify.runs(text, emojify: true).map { r in
+            var r = r
+            if r.action != nil { r.color = nil }
+            return r
+        }
+        modals.present(id: id) {
+            AxoDialog.Content(size: .md, hasFooter: false) {
+                AxoDialog.Header {
+                    AxoDialog.Title(groupName ?? "")
+                    AxoDialog.Close { modals.dismiss(id: id) }
+                }
+                AxoDialog.Body {
+                    CSSText(runs: runs, style: CSSTextStyle(AxoType.bodyMedium), wrap: .wrap).cssTextColor(.labelPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    /// `ModalState.ConfirmingblockGroupLinkRequests`: "Block requests?" naming the requester;
+    /// Block bans them from requesting again.
+    func confirmBlock(_ aci: String) {
+        guard let modals else { return }
+        let id = "group-change-block-requests"
+        let runs = CSSTextRun.runs(i18n.richText("icu:PendingRequests--block--contents", ["name": .element("name")]),
+                                   elements: ["name": renderContact(aci)])
+        modals.present(id: id) {
+            AxoConfirmDialog.Root(title: i18n("icu:PendingRequests--block--title"), description: { AxoAlertDialog.Description(runs: runs) }) {
+                AxoConfirmDialog.Cancel(i18n("icu:cancel")) { modals.dismiss(id: id) }
+                AxoConfirmDialog.Action(i18n("icu:PendingRequests--block--confirm"), variant: .strongDestructive) {
+                    modals.dismiss(id: id)
+                    blockGroupLinkRequests(aci)
+                }
+            }
         }
     }
 }

@@ -24,12 +24,7 @@ public struct CollapsedMessage: Sendable, Hashable, Identifiable {
 }
 
 public struct CollapseSetViewer<Item: View>: View {
-    public enum Kind: Sendable, Hashable {
-        case groupUpdates
-        /// `endingState` in seconds (nil / 0: disabled).
-        case timerChanges(endingState: Int?)
-        case callEvents
-    }
+    public typealias Kind = CollapseSetKind
 
     let kind: Kind
     let messages: [CollapsedMessage]

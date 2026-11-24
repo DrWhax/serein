@@ -128,4 +128,12 @@ import SignalUI
         guard callPeek?.conversationId == conversationId, let info = callPeek?.info, let max = info.maxDevices else { return false }
         return info.deviceCount >= max
     }
+
+    /// The group call in progress in the chat as its peek found it (only the call we are in or
+    /// in the lobby of is peeked): its call id (`getCallIdFromEra`), devices and capacity. The
+    /// timeline's call notices use it (upstream `callSelector`).
+    func peekedGroupCall(_ conversationId: String) -> (callId: String?, deviceCount: Int, maxDevices: Int)? {
+        guard callPeek?.conversationId == conversationId, let info = callPeek?.info else { return nil }
+        return (info.eraId.map { String(callIdFromEra($0)) }, info.deviceCount, info.maxDevices ?? .max)
+    }
 }
