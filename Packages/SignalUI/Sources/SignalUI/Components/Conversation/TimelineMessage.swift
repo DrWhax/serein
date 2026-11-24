@@ -23,6 +23,8 @@ public struct TimelineMessageActions {
     /// The default emoji skin tone (nil: not chosen yet), and where a choice goes.
     public var skinTone: EmojiSkinTone?
     public var setSkinTone: ((EmojiSkinTone) -> Void)?
+    /// The reaction picker's emoji panel offers "customize" (`openCustomizePreferredReactionsModal`).
+    public var openCustomizePreferredReactions: (() -> Void)?
     public var reply: (() -> Void)?
     public var download: (() -> Void)?
     public var edit: (() -> Void)?
@@ -136,7 +138,13 @@ struct MessageMenuButtons: View {
                            placement: AxoPopper.Placement(side: .top, align: .center, sideOffset: 4, collisionPadding: 8),
                            dismiss: { state.emojiPicker = false }) {
                     FunEmojiPicker(panel: FunPanelEmojis(recentEmojis: actions.recentEmojis, messageEmojis: actions.messageEmojis,
-                                                         skinTone: actions.skinTone, onSelectEmoji: { actions.useEmoji?($0); pick($0) },
+                                                         skinTone: actions.skinTone,
+                                                         showCustomizePreferredReactionsButton: actions.openCustomizePreferredReactions != nil,
+                                                         onSelectEmoji: { actions.useEmoji?($0); pick($0) },
+                                                         onOpenCustomizePreferredReactionsModal: {
+                                                             state.emojiPicker = false
+                                                             actions.openCustomizePreferredReactions?()
+                                                         },
                                                          onSelectSkinTone: { actions.setSkinTone?($0) }))
                 }
         }

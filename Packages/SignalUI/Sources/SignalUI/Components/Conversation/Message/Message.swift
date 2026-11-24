@@ -66,6 +66,8 @@ public struct MessageProps {
     public var bubbleColor: BubbleColor = .default
     public var deletedForEveryone = false
     public var canRetryDeleteForEveryone = false
+    /// `retryDeleteForEveryone`: "Delete failed" sends the delete again.
+    public var retryDeleteForEveryone: () -> Void = {}
     public var deletedByAdmin: (title: String, isMe: Bool, contactNameColor: String?)?
     public var contactNameColor: String?
     public var contactLabel: ContactLabel?
@@ -296,6 +298,7 @@ public struct Message: View {
                         withImageNoCaption: isShowingImage, textPending: props.textPending, actions: {
                             var a = MessageMetadata.Actions()
                             a.showEditHistory = props.showEditHistory
+                            a.retryDeleteForEveryone = props.retryDeleteForEveryone
                             return a
                         }())
     }

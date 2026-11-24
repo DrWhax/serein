@@ -357,16 +357,28 @@ struct AppCallManager: View {
         var m = CallingParticipantMenuActions()
         m.isMuteAudioDisabled = !p.hasRemoteAudio
         let local = group?.localDeviceState.demuxId
+        // `sendRemoteMute`: someone else (or us on another device), when remote mute is on.
+        let remoteMute: (() -> Void)? = session.remoteMuteSendEnabled ? p.demuxId.map { demux in
+            { session.calling?.sendRemoteMute(conversationId: a.conversationId, demuxId: demux) }
+        } : nil
         if let aci = p.conversation.aci, aci == session.ourAci {
             if p.demuxId == local {
                 if session.callLocalAudio { m.onMuteAudio = { session.setCallAudio(false) } } else {
                     m.onUnmuteAudio = { session.callMutedBy = nil; session.setCallAudio(true) }
                 }
+            } else {
+                m.onMuteAudio = remoteMute
             }
         } else if let aci = p.conversation.aci {
+            m.onMuteAudio = remoteMute
             m.onGoToChat = {
                 session.callPip = true
                 session.openDirect(serviceId: aci)
+            }
+            // `onViewProfile`: their ContactModal, knowing their place in the call.
+            m.onViewProfile = {
+                session.contactModalCallDemuxId = p.demuxId
+                session.contactModalId = aci
             }
         }
         if a.isCallLink, session.callLink(a.conversationId)?.isAdmin == true, let demux = p.demuxId, demux != local {

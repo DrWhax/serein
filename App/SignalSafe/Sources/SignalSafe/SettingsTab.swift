@@ -25,7 +25,6 @@ struct SettingsTab: View {
     @State private var editingFolderId: String?
     @State private var accountKey: String?
     @State private var internalSettings = InternalSettings()
-    @State private var profilePage: ProfileEditorPage = .none
     /// Notification profiles: sync with our other devices, and whether the onboarding was seen
     /// (nil until read).
     @State private var profileSyncEnabled = true
@@ -38,13 +37,19 @@ struct SettingsTab: View {
         Preferences(me: me, page: pageBinding, preferredWidth: model.preferredLeftPaneWidth,
                     // The header's QR code: Profile → the username link.
                     onOpenUsernameLink: {
-                        profilePage = .usernameLink
+                        session.profileEditorPage = .usernameLink
                         self.page = .profile
                     },
                     navTabs: NavSidebarNavTabs(collapsed: model.navTabsCollapsed, onToggleCollapse: { model.navTabsCollapsed = $0 })) { page in
             switch page {
             case .general: PreferencesGeneralPage(settings: general, doDeleteAllData: { session.deleteAllData() })
-            case .appearance: PreferencesAppearancePage(localeText: nil, themeSetting: theme, zoomFactor: zoom, onOpenChatColor: { self.page = .chatColor })
+            case .appearance:
+                // Language: the override's name, else "System language"; a change relaunches (upstream).
+                PreferencesAppearancePage(localeText: AppLanguage.override.map { LocaleDisplayNames.name(in: AppLanguage.resolvedLocale, of: $0) }
+                                              ?? i18n("icu:Preferences__Language__SystemLanguage"),
+                                          themeSetting: theme, zoomFactor: zoom,
+                                          languageSetting: (AppLanguage.resolvedLocale, Locale.preferredLanguages, AppLanguage.override),
+                                          onLocaleChange: { AppLanguage.change(to: $0) }, onOpenChatColor: { self.page = .chatColor })
             case .chatColor: chatColorPage
             case .chats: PreferencesChatsPage(settings: chats, onOpenChatFolders: { self.page = .chatFolders },
                                               startPlaintextExport: { session.startPlaintextExport() },
@@ -473,13 +478,32 @@ struct SettingsTab: View {
         let family = own == nil ? (parts.count > 1 ? parts[1] : nil) : own?.profileFamilyName
         return ProfileEditor(aboutEmoji: own?.aboutEmoji, aboutText: own?.about, color: mine?.color, avatar: session.avatarImage(mine?.avatar),
                              firstName: first, familyName: family, username: session.accountSettings.username,
-                             usernameLink: session.accountSettings.usernameLink, hasCompletedUsernameLinkOnboarding: true,
-                             editState: $profilePage, usernameEditState: $usernameEdit, actions: {
+                             usernameLink: session.accountSettings.usernameLink,
+                             hasCompletedUsernameLinkOnboarding: session.accountSettings.hasCompletedUsernameLinkOnboarding,
+                             editState: $session.profileEditorPage, usernameEditState: $usernameEdit, actions: {
             var a = ProfileEditor.Actions()
             a.copyUsername = { NSPasteboard.general.clearContents(); NSPasteboard.general.setString($0, forType: .string) }
+            a.openUsernameReservationModal = { session.openUsernameEditor() }
+            a.deleteUsername = {
+                usernameEdit = .deleting
+                session.deleteUsername { usernameEdit = .editing }
+            }
+            a.markCompletedUsernameLinkOnboarding = { session.markUsernameLinkOnboardingComplete() }
             return a
         }()) { subpage, close in
-            if subpage == .usernameLink, let link = session.accountSettings.usernameLink, let name = session.accountSettings.username {
+            if subpage == .username {
+                // UsernameEditor: reserve as typed, then confirm; it closes itself once saved.
+                AnyView(UsernameEditor(currentUsername: session.accountSettings.username,
+                                       reservation: session.usernameEditing.reservation.map { ($0.username, session.usernameEditing.previousUsername) },
+                                       error: session.usernameEditing.error, state: session.usernameEditing.state,
+                                       minNickname: session.usernameEditing.nicknameLengths.lowerBound,
+                                       maxNickname: session.usernameEditing.nicknameLengths.upperBound,
+                                       reserveUsername: { session.reserveUsername(nickname: $0, discriminator: $1) },
+                                       clearUsernameReservation: { session.clearUsernameReservation() },
+                                       confirmUsername: { session.confirmUsername() },
+                                       setUsernameReservationError: { session.usernameEditing.error = $0 },
+                                       onClose: { session.clearUsernameReservation(); close() }))
+            } else if subpage == .usernameLink, let link = session.accountSettings.usernameLink, let name = session.accountSettings.username {
                 AnyView(UsernameLinkSave(link: link, username: name, i18n: i18n, close: close))
             } else if subpage == .profileName {
                 AnyView(ProfileNameEditor(firstName: first, familyName: family, onSave: { given, familyName in

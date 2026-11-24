@@ -163,7 +163,12 @@ public struct Timeline<Item: View, Hero: View, Typing: View>: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom)
-        .onScrollTargetVisibilityChange(idType: String.self) { tracker.visibleIds = $0 }
+        .onScrollTargetVisibilityChange(idType: String.self) { ids in
+            tracker.visibleIds = ids
+            // `markMessageRead`: what has come into view is read (upstream's visibility observer;
+            // scrolling reports it too).
+            if !ids.isEmpty, let newest = newestVisibleId { markMessageRead(newest) }
+        }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentSize.height - geo.visibleRect.maxY
         } action: { _, bottom in

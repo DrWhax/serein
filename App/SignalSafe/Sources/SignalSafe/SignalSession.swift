@@ -139,6 +139,9 @@ import SignalUI
     /// The active group call's synced state the screen shows (CallsExtras.swift), reset with each
     /// call: the lobby's peek, raised hands, reactions, the lower-hand hint, remote mutes.
     var callPeek: (conversationId: String, info: PeekInfo?)?
+    /// The last peek of each group chat's call (upstream `callsByConversation` peekInfo).
+    var groupCallPeeks: [String: PeekInfo] = [:]
+    @ObservationIgnored var lastGroupCallPeek: [String: Date] = [:]
     var callRaisedHands: [UInt32] = []
     var callReactions: [CallReaction] = []
     var callSuggestLowerHand = false
@@ -187,6 +190,8 @@ import SignalUI
     var callLinks: [CallLinkRecord] = []
     @ObservationIgnored var callLinksTask: Task<Void, Never>?
     var callLinkModal: CallLinkModal?
+    /// A signal.group link's join dialog (GroupLinkJoin.swift).
+    var groupJoin: GroupJoinPrompt?
     var isCreatingCallLink = false
     /// Text to send to chats the user picks (the forward dialog), e.g. a shared call link.
     var shareText: String?
@@ -265,6 +270,13 @@ import SignalUI
     var stickerPackPreview: (id: String, key: String)?
     /// `desktop.shareContact.prod` (isShareContactEnabled).
     var shareContactEnabled = false
+    /// Admins may end a group for everyone (upstream's version-gated `desktop.groupTerminate.send`).
+    var terminateGroupEnabled = false
+    /// Muting others in a group call (`desktop.remoteMute.send`).
+    var remoteMuteSendEnabled = false
+    /// The call slot (demux id) of the person whose ContactModal was opened from a call's
+    /// participant list (upstream's `activeCallDemuxId`).
+    var contactModalCallDemuxId: UInt32?
     /// The share-contact dialog's contacts while it is open, and the chat it shares into.
     var shareContactCandidates: [ShareContactCandidateInfo]?
     var shareContactRecipient: (id: String, title: String)?
@@ -283,7 +295,9 @@ import SignalUI
     /// The conversation panels pushed over the chat (upstream PanelType names), top last.
     var panels: [String] = []
     /// The open ContactModal (a member's service id).
-    var contactModalId: String?
+    var contactModalId: String? {
+        didSet { if contactModalId == nil { contactModalCallDemuxId = nil } }
+    }
     /// ContactSurfaces.swift: AboutContactModal's contact (live), the smaller dialogs opened
     /// from a contact (connections, name warning, note, safety tips, nickname, add to a group,
     /// their avatar), and "Add to a group"'s groups.
@@ -349,6 +363,28 @@ import SignalUI
     var mediaItems: [ConversationMediaItem] = []
     var mediaTask: Task<Void, Never>?
     var stickersTask: Task<Void, Never>?
+    @ObservationIgnored var recentGifsTask: Task<Void, Never>?
+    @ObservationIgnored var preferredReactionsTask: Task<Void, Never>?
+    /// The GIF picker's recents (`recentGifs`).
+    var recentGifs: [RecentGif] = []
+    /// The reaction picker's six emoji (`preferredReactionEmoji`, else the defaults).
+    var preferredReactions: [String] = ReactionEmoji.defaultPreferred
+    /// The customize-reactions dialog (PreferredReactions.swift).
+    var customizingReactions: PreferredReactionsDraft?
+    /// UsernameEditor's state (UsernameEditing.swift).
+    var usernameEditing = UsernameEditing()
+    @ObservationIgnored var usernameReserveTask: Task<Void, Never>?
+    /// UsernameOnboardingModal, from the onboarding banner's "Learn more".
+    var usernameOnboardingOpen = false
+    /// The profile editor's page (the onboarding dialog opens the username editor in it).
+    var profileEditorPage: ProfileEditorPage = .none
+    /// Server alerts (idle primary device) and the critical one's dialog (Announcements.swift).
+    var serverAlerts: [SignalCore.ServerAlert: ServerAlertInfo] = [:]
+    var criticalIdleModalOpen = false
+    @ObservationIgnored var criticalModalTask: Task<Void, Never>?
+    /// The remote megaphones to show, first first.
+    var megaphones: [RemoteMegaphoneRecord] = []
+    @ObservationIgnored var announcementsTask: Task<Void, Never>?
     /// Left pane compose mode (the ✏️ button): the composable contacts and groups, live.
     private(set) var isComposing = false
     var composeSearch = ""
@@ -408,6 +444,11 @@ import SignalUI
     private var timelineTask: Task<Void, Never>?
     /// The open chat's unseen notices last marked seen (each set is marked once).
     private var markedSeenNotices: Set<String> = []
+    /// The open chat's unread messages and mentions (the Timeline's scroll-down buttons).
+    var unreadCounts = ConversationQueries.UnreadCounts(unread: 0, mentions: 0)
+    @ObservationIgnored private var unreadCountsTask: Task<Void, Never>?
+    /// The newest message seen on screen in the open chat (its `received_at`).
+    @ObservationIgnored private var newestVisibleReceivedAt: Int64?
     private var eventsTask: Task<Void, Never>?
     private var identityStopsTask: Task<Void, Never>?
     /// The open safety-number review (IdentityReview.swift).
@@ -773,6 +814,7 @@ import SignalUI
             await client.refreshIncomplete()
         }
         startCalling()
+        startAnnouncements(session, database: client.database)
         traceSendHealth(session)
         identityStopsTask?.cancel()
         identityStopsTask = observeIdentityStops(session)
@@ -869,6 +911,8 @@ import SignalUI
         observeTimelineRows(id)
         // A message we are waiting to be resent keeps its later place once the chat has been read.
         if let messenger = session?.messenger { Task { try? await messenger.conversationOpened(id) } }
+        // A group chat's call is looked at when it opens (Timeline's maybePeekGroupCall).
+        peekGroupCall(id)
         // The divider is placed from what was unread before the chat is marked read; a page
         // large enough to hold it is loaded.
         Task { [weak self] in
@@ -879,7 +923,9 @@ import SignalUI
                 self.timelineLimit = unseen.count + 10
                 self.observeTimelineRows(id)
             }
-            self.markRead(id)
+            // What is read is what scrolls into view (markVisibleRead); opening only clears a
+            // "marked unread".
+            self.clearMarkedUnread(id)
         }
     }
 
@@ -887,6 +933,12 @@ import SignalUI
     private func observeTimelineRows(_ id: String) {
         guard let db = client?.database else { return }
         timelineTask?.cancel()
+        unreadCountsTask?.cancel()
+        newestVisibleReceivedAt = nil
+        unreadCounts = .init(unread: 0, mentions: 0)
+        unreadCountsTask = Task { [weak self] in
+            do { for try await c in db.unreadCountUpdates(conversationId: id) { self?.unreadCounts = c } } catch {}
+        }
         let limit = timelineLimit
         timelineTask = Task { [weak self] in
             do {
@@ -897,9 +949,9 @@ import SignalUI
                     // marks everything up to the newest message it shows), so they fold into
                     // their collapse sets once the chat is opened again.
                     let unseen = Set(rows.lazy.filter { $0.notice != nil && $0.isUnseen }.map(\.id))
-                    if !unseen.isEmpty, NSApp.isActive, !unseen.isSubset(of: self.markedSeenNotices) {
+                    if !unseen.isEmpty, NSApp.isActive, !unseen.isSubset(of: self.markedSeenNotices), let messenger = self.session?.messenger {
                         self.markedSeenNotices.formUnion(unseen)
-                        self.markRead(id, force: true)
+                        Task { try? await messenger.markNoticesSeen(conversationId: id) }
                     }
                     self.haveOldest = rows.count < limit
                     self.isLoadingOlder = false
@@ -977,6 +1029,34 @@ import SignalUI
             case .formatting(let style, _) where style != .none: MessageBodyRange(start: r.start, length: r.length, kind: .style(style.rawValue))
             default: nil
             }
+        }
+    }
+
+    /// Opening a chat marked unread clears the mark (upstream markConversationRead).
+    func clearMarkedUnread(_ conversationId: String) {
+        guard let session, conversations.first(where: { $0.id == conversationId })?.folderProps.markedUnread == true else { return }
+        Task { try? await session.messenger.setMarkedUnread(conversationId, false) }
+    }
+
+    /// `markMessageRead`: the open chat is read up to the newest message on screen, while Serein
+    /// is the active app (otherwise when it becomes active again).
+    func markVisibleRead(upTo receivedAt: Int64) {
+        guard let id = selectedConversationId else { return }
+        newestVisibleReceivedAt = max(newestVisibleReceivedAt ?? 0, receivedAt)
+        guard NSApp.isActive, unreadCounts.unread > 0, let session else { return }
+        Task { _ = try? await session.messenger.markRead(conversationId: id, upTo: receivedAt) }
+    }
+
+    /// Serein became active: what was on screen meanwhile is read.
+    func markVisibleReadOnActivation() {
+        if let r = newestVisibleReceivedAt { markVisibleRead(upTo: r) }
+    }
+
+    /// `scrollToOldestUnreadMention`
+    func scrollToOldestUnreadMention() {
+        guard let id = selectedConversationId, let db = clientDatabase else { return }
+        Task { [weak self] in
+            if let target = try? await db.oldestUnreadMention(conversationId: id), self?.selectedConversationId == id { self?.goToMessage(target) }
         }
     }
 

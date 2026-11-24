@@ -91,6 +91,12 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
 
     public func connectionWasInterrupted(_ service: AuthenticatedChatConnection, error: Error?) {}
 
+    /// The server's alerts on connecting (`onReceivedAlerts` → `handleServerAlerts`).
+    public func chatConnection(_ chat: AuthenticatedChatConnection, didReceiveAlerts alerts: [String]) {
+        let parsed = ServerAlerts.parse(alerts)
+        queue.async { try? self.database.pool.write { try ServerAlerts.received($0, parsed, now: MessageStore.now()) } }
+    }
+
     /// Processes envelopes cached by a previous run (crash between ack and commit).
     public func processCached() {
         queue.async { self.processCachedNow() }
@@ -744,6 +750,20 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                               now: MessageStore.now())
             return events + [.callHistoryChanged, .sync(kind: "callLinkUpdate", senderDevice: d.senderDevice)]
         case .blocked(let b):
+            // `handleBlocked`: the newly blocked get a BLOCK response, the newly unblocked an
+            // ACCEPT (with their notices), before the lists are replaced.
+            let acis = Set(b.acisBinary.compactMap { Self.serviceIdString(binary: $0, string: nil) } + b.acis)
+            let groups = Set(b.groupIds.map { $0.base64EncodedString() })
+            let wereBlocked = Set(try BlockedList.serviceIds.entries(db).map(\.id)), groupsWereBlocked = Set(try BlockedList.groups.entries(db).map(\.id))
+            for (id, block) in acis.subtracting(wereBlocked).map({ ($0, true) }) + wereBlocked.subtracting(acis).map({ ($0, false) }) {
+                guard let c = try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE type = 'private' AND serviceId = ?", arguments: [id])
+                else { continue }
+                try ConversationState.applyResponse(db, conversationId: c, block ? .block : .accept, ourAci: account.aci)
+            }
+            for (id, block) in groups.subtracting(groupsWereBlocked).map({ ($0, true) }) + groupsWereBlocked.subtracting(groups).map({ ($0, false) }) {
+                guard let c = try String.fetchOne(db, sql: "SELECT id FROM conversations WHERE groupId = ?", arguments: [id]) else { continue }
+                try ConversationState.applyResponse(db, conversationId: c, block ? .block : .accept, ourAci: account.aci)
+            }
             try BlockedList.numbers.replaceAll(db, b.numbers)
             try BlockedList.serviceIds.replaceAll(db, b.acisBinary.compactMap { Self.serviceIdString(binary: $0, string: nil) } + b.acis)
             try BlockedList.groups.replaceAll(db, b.groupIds.map { $0.base64EncodedString() })

@@ -8,10 +8,12 @@ import SignalUI
 
 enum ComposeMode { case compose, chooseGroupMembers, setGroupMetadata, findByUsername, findByPhoneNumber }
 
-/// A lookup's error dialog text (a message key and its arguments).
+/// A lookup's error dialog text (a message key and its arguments; the title "Error" unless
+/// `titleKey` names another).
 struct ComposeError {
     var key: String
     var args: [String: String]
+    var titleKey: String? = nil
 }
 
 /// A new-group member found by number or username (`togglePhoneNumber` / `toggleUsername`):

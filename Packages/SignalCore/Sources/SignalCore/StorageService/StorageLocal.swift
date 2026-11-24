@@ -215,6 +215,8 @@ enum StorageLocal {
                 if let aci {
                     try db.execute(sql: "UPDATE conversations SET serviceId = ? WHERE id = ?", arguments: [aci, id])
                     try MessageStore.updateConversationJSON(db, conversationId: id) { $0["serviceId"] = aci; $0["pni"] = pni }
+                    // A chat we knew by its PNI learned its ACI (`addPhoneNumberDiscoveryIfNeeded`).
+                    try ChatEventNotices.phoneNumberDiscovered(db, conversationId: id, oldPni: pni)
                 }
                 return id
             }

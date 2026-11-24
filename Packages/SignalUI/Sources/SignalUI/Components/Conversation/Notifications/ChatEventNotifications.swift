@@ -56,13 +56,16 @@ public struct DeliveryIssueNotification: View {
     }
 }
 
-/// ts/components/conversation/ConversationMergeNotification.dom.tsx (+ getStringForConversationMerge)
+/// ts/components/conversation/ConversationMergeNotification.dom.tsx (+ getStringForConversationMerge).
+/// "Learn more" opens ConversationMergeNotificationDialog on the window's modal stack
+/// (`onLearnMore` is told as well).
 public struct ConversationMergeNotification: View {
     let conversationTitle: String
     let obsoleteConversationTitle: String?
     let obsoleteConversationNumber: String?
     let onLearnMore: () -> Void
     @Environment(\.i18n) var i18n
+    @Environment(\.axoModalStack) var modals
 
     public init(conversationTitle: String, obsoleteConversationTitle: String?, obsoleteConversationNumber: String?,
                 onLearnMore: @escaping () -> Void = {}) {
@@ -88,7 +91,38 @@ public struct ConversationMergeNotification: View {
         AxoChatEvent.Root(variant: .secondary) {
             AxoChatEvent.Body(symbol: "merge") { message }
             if let t = obsoleteConversationTitle, !t.isEmpty {
-                AxoChatEvent.Action(i18n("icu:ConversationMerge--learn-more"), onClick: onLearnMore)
+                AxoChatEvent.Action(i18n("icu:ConversationMerge--learn-more"), onClick: { showExplainer(obsolete: t) })
+            }
+        }
+    }
+
+    /// ConversationMergeNotificationDialog: a small dialog with the merged-chat picture and two
+    /// paragraphs naming both chats.
+    func showExplainer(obsolete: String) {
+        onLearnMore()
+        guard let modals else { return }
+        let id = "conversation-merge-explainer"
+        let line1 = i18n("icu:ConversationMerge--explainer-dialog--line-1",
+                         ["conversationTitle": .string(conversationTitle), "obsoleteConversationTitle": .string(obsolete)])
+        let line2 = i18n("icu:ConversationMerge--explainer-dialog--line-2")
+        let title = i18n("icu:ConversationMerge--explainer-dialog--label")
+        modals.present(id: id) {
+            AxoDialog.Content(size: .sm, hasHeader: false, hasFooter: false) {
+                AxoDialog.Body {
+                    VStack(spacing: 0) {
+                        if let image = BundledImage.named("merged-chat") {
+                            PixelImage(image, fit: .contain).frame(width: 44, height: 88).padding(.bottom, 10)   // mb-2.5
+                        }
+                        AxoDialog.Description(line1).frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)   // mb-2
+                        AxoDialog.Description(line2).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .overlay(alignment: .top) {
+                AxoDialog.Header(floating: true) {
+                    AxoDialog.Title(title)
+                    AxoDialog.Close { modals.dismiss(id: id) }
+                }
             }
         }
     }

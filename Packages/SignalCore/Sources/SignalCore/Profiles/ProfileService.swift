@@ -139,7 +139,20 @@ public final class ProfileService: Sendable {
     /// `setAndMaybeFetchProfileAvatar`: download only for accepted chats and people in a group
     /// with us; keep the stored file while the URL is unchanged; decrypt with the profile key
     /// (AES-256-GCM) and store encrypted at rest as `profileAvatar` {url, path, localKey, …}.
-    func fetchAvatar(serviceId: String, url: String, profileKey: Data) async throws {
+    /// `startAvatarDownload`: the photo of someone we have not accepted, downloaded because the
+    /// user asked (it is not fetched for them otherwise).
+    public func downloadAvatar(serviceId: String) async throws {
+        let found = try await database.pool.read { db -> (url: String, key: Data)? in
+            guard let json = try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ? AND type = 'private'", arguments: [serviceId])
+                .map(MessageStore.jsonObject), let url = json["remoteAvatarUrl"] as? String,
+                  let key = (json["profileKey"] as? String).flatMap({ Data(base64Encoded: $0) }) else { return nil }
+            return (url, key)
+        }
+        guard let found else { return }
+        try await fetchAvatar(serviceId: serviceId, url: found.url, profileKey: found.key, force: true)
+    }
+
+    func fetchAvatar(serviceId: String, url: String, profileKey: Data, force: Bool = false) async throws {
         guard let avatars else { return }
         let ourAci = account.aci
         let decision = try await database.pool.read { db -> (conversationId: String, download: Bool)? in
@@ -151,7 +164,7 @@ public final class ProfileService: Sendable {
                 return (id, false)
             }
             let accepted = try ConversationState.isAccepted(db, conversationId: id, ourAci: ourAci, ignoreEmptyConvo: true)
-            if serviceId == ourAci || accepted {
+            if serviceId == ourAci || accepted || force {
                 return (id, true)
             }
             let inGroup = try String.fetchOne(db, sql: """
@@ -228,6 +241,17 @@ public final class ProfileService: Sendable {
         try account.aciStore().updateIdentityKey(db, p.identityKey, serviceId: p.serviceId)
         let conversationId = try MessageStore.privateConversation(db, serviceId: p.serviceId)
         let now = MessageStore.now()
+        // `setEncryptedProfileName`: a changed name (the given and family names together) is noted.
+        if p.givenName != nil {
+            let old = try Row.fetchOne(db, sql: "SELECT profileName, profileFamilyName FROM conversations WHERE id = ?", arguments: [conversationId])
+            func combined(_ given: String?, _ family: String?) -> String? {
+                let parts = [given, family].compactMap { $0 }.filter { !$0.isEmpty }
+                return parts.isEmpty ? nil : parts.joined(separator: " ")
+            }
+            try ChatEventNotices.profileNameChanged(db, conversationId: conversationId, serviceId: p.serviceId,
+                                                    oldName: combined(old?["profileName"], old?["profileFamilyName"]),
+                                                    newName: combined(p.givenName, p.familyName), ourAci: account.aci)
+        }
         try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
             if p.givenName != nil {
                 json["profileName"] = p.givenName

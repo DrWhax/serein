@@ -48,6 +48,13 @@ public struct UnseenSummary: Sendable, Equatable {
     public var count: Int
 }
 
+/// A message a notice points at, by author and sent time; `messageId` once found.
+public struct TimelineMessageRef: Sendable, Equatable {
+    public var author: String?
+    public var sentAt: Int64
+    public var messageId: String?
+}
+
 /// A timeline entry that is not a chat message but something the reader has to be told
 /// (upstream's notification message types).
 public enum TimelineNotice: Sendable, Equatable {
@@ -68,10 +75,39 @@ public enum TimelineNotice: Sendable, Equatable {
     /// `timer-notification`: the disappearing timer was set (`seconds`, 0: off) by `source`
     /// (nil: a group change with no author), or by a sync from another of our devices.
     case timerChange(seconds: Int, source: String?, fromSync: Bool)
+    /// `pinned-message-notification`: `source` pinned a message (looked up when the timeline is
+    /// read; nil once it is gone).
+    case pinnedMessage(source: String?, target: TimelineMessageRef)
+    /// `poll-terminate`: `source` ended the poll `question` (the poll looked up like a pin's).
+    case pollTerminate(source: String?, question: String, poll: TimelineMessageRef)
+    /// `profile-change`: the contact of chat `changedConversationId` changed their profile name.
+    case profileChange(changedConversationId: String?, oldName: String, newName: String)
+    /// `change-number-notification`: `source` changed their phone number.
+    case changeNumber(source: String?)
+    /// `joined-signal-notification`
+    case joinedSignal
+    /// `title-transition-notification`: the chat was known as `oldTitle` (getTitle of its render
+    /// info) before it learned the contact's name.
+    case titleTransition(oldTitle: String?)
+    /// `conversation-merge`: an older chat with this contact, known as `obsoleteTitle` or by
+    /// `obsoleteNumber`, was merged into this one.
+    case conversationMerge(obsoleteTitle: String?, obsoleteNumber: String?)
+    /// `phone-number-discovery`: the chat's number (`e164`) now belongs to this account.
+    case phoneNumberDiscovery(e164: String)
+    /// `message-request-response-event`: ACCEPT, BLOCK, UNBLOCK or SPAM.
+    case messageRequestResponse(event: String)
 
     /// The message types the timeline shows as notices.
     static let types = ["keychange", "verified-change", "delivery-issue", "chat-session-refreshed",
-                        "call-history", "group-v2-change", "timer-notification"]
+                        "call-history", "group-v2-change", "timer-notification", "pinned-message-notification", "poll-terminate",
+                        "profile-change", "change-number-notification", "joined-signal-notification", "title-transition-notification",
+                        "conversation-merge", "phone-number-discovery", "message-request-response-event"]
+
+    /// getTitleNoDefault of a stored render info (`renderInfo`).
+    static func title(_ renderInfo: [String: Any]?) -> String? {
+        guard let info = renderInfo else { return nil }
+        return ConversationQueries.titleNoDefault(Row(), json: info, kind: info["type"] as? String == "group" ? .group : .private)
+    }
 
     init?(type: String?, json: [String: Any], source: String?) {
         switch type {
@@ -89,6 +125,30 @@ public enum TimelineNotice: Sendable, Equatable {
             self = .timerChange(seconds: (update["expireTimer"] as? NSNumber)?.intValue ?? 0,
                                 source: update["sourceServiceId"] as? String ?? update["source"] as? String,
                                 fromSync: update["fromSync"] as? Bool ?? false)
+        case "pinned-message-notification":
+            let pin = json["pinMessage"] as? [String: Any] ?? [:]
+            self = .pinnedMessage(source: source, target: TimelineMessageRef(author: pin["targetAuthorAci"] as? String,
+                                                                             sentAt: (pin["targetSentTimestamp"] as? NSNumber)?.int64Value ?? 0))
+        case "poll-terminate":
+            let p = json["pollTerminateNotification"] as? [String: Any] ?? [:]
+            self = .pollTerminate(source: source, question: p["question"] as? String ?? "",
+                                  poll: TimelineMessageRef(author: source, sentAt: (p["pollTimestamp"] as? NSNumber)?.int64Value ?? 0))
+        case "profile-change":
+            let change = json["profileChange"] as? [String: Any] ?? [:]
+            self = .profileChange(changedConversationId: json["changedId"] as? String, oldName: change["oldName"] as? String ?? "",
+                                  newName: change["newName"] as? String ?? "")
+        case "change-number-notification": self = .changeNumber(source: source)
+        case "joined-signal-notification": self = .joinedSignal
+        case "title-transition-notification":
+            self = .titleTransition(oldTitle: Self.title((json["titleTransition"] as? [String: Any])?["renderInfo"] as? [String: Any]))
+        case "conversation-merge":
+            let info = (json["conversationMerge"] as? [String: Any])?["renderInfo"] as? [String: Any]
+            self = .conversationMerge(obsoleteTitle: Self.title(info), obsoleteNumber: info?["e164"] as? String)
+        case "phone-number-discovery":
+            self = .phoneNumberDiscovery(e164: (json["phoneNumberDiscovery"] as? [String: Any])?["e164"] as? String ?? "")
+        case "message-request-response-event":
+            guard let event = json["messageRequestResponseEvent"] as? String else { return nil }
+            self = .messageRequestResponse(event: event)
         default: return nil
         }
     }
@@ -145,6 +205,8 @@ public struct TimelineMessage: Sendable, Equatable, Identifiable {
     /// `seenStatus` is Unseen: not yet shown in an open chat (upstream's collapse sets keep
     /// such entries out of their fold).
     public var isUnseen = false
+    /// Deleted for everyone, but the delete did not go out (`deletedForEveryoneFailed`: retryable).
+    public var isDeleteForEveryoneFailed = false
 }
 
 public struct TimelineSticker: Sendable, Equatable {
@@ -273,6 +335,9 @@ public struct ContactInfo: Sendable, Equatable {
     public var title: String
     public var color: String
     public var avatar: LocalFile?
+    /// Their profile has a photo (`remoteAvatarUrl`), downloaded or not (a message request's is
+    /// only downloaded on a click).
+    public var hasRemoteAvatar = false
 }
 
 public enum ConversationQueries {
@@ -330,6 +395,33 @@ public enum ConversationQueries {
             SELECT count(*) FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?
             """, arguments: [conversationId, ReadStatus.unread.rawValue]) ?? 0
         return UnseenSummary(oldestId: oldest, count: count)
+    }
+
+    /// The open chat's unread messages and unread mentions of us (the Timeline's scroll-down
+    /// buttons: `unreadCount`, `getTotalUnreadMentionsOfMeForConversation`).
+    public struct UnreadCounts: Sendable, Equatable {
+        public var unread: Int
+        public var mentions: Int
+        public init(unread: Int, mentions: Int) {
+            self.unread = unread
+            self.mentions = mentions
+        }
+    }
+
+    public static func unreadCounts(_ db: Database, conversationId: String) throws -> UnreadCounts {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT count(*) AS unread, coalesce(sum(mentionsMe), 0) AS mentions FROM messages
+            WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?
+            """, arguments: [conversationId, ReadStatus.unread.rawValue])
+        return UnreadCounts(unread: row?["unread"] ?? 0, mentions: row?["mentions"] ?? 0)
+    }
+
+    /// `getOldestUnreadMentionOfMeForConversation`: the message to scroll to.
+    public static func oldestUnreadMention(_ db: Database, conversationId: String) throws -> String? {
+        try String.fetchOne(db, sql: """
+            SELECT id FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ? AND mentionsMe = 1
+            ORDER BY received_at, sent_at LIMIT 1
+            """, arguments: [conversationId, ReadStatus.unread.rawValue])
     }
 
     public static func inbox(_ db: Database) throws -> [ConversationSummary] {
@@ -393,7 +485,7 @@ public enum ConversationQueries {
             let serviceId: String = row["serviceId"]
             out[serviceId] = ContactInfo(title: title(row, json: json, kind: .private),
                                          color: json["color"] as? String ?? avatarColor(serviceId: serviceId, e164: row["e164"], groupId: nil),
-                                         avatar: LocalFile.from(json["profileAvatar"]))
+                                         avatar: LocalFile.from(json["profileAvatar"]), hasRemoteAvatar: json["remoteAvatarUrl"] is String)
         }
         return out
     }
@@ -417,7 +509,16 @@ public enum ConversationQueries {
             ORDER BY received_at DESC, sent_at DESC LIMIT ?
             """, arguments: [conversationId, before, limit]).map(message).reversed().map { m in
                 var m = m
-                if case .call(let callId?, nil) = m.notice { m.notice = .call(callId: callId, details: try CallHistoryStore.get(db, callId: callId)) }
+                switch m.notice {
+                case .call(let callId?, nil): m.notice = .call(callId: callId, details: try CallHistoryStore.get(db, callId: callId))
+                case .pinnedMessage(let source, var target):
+                    target.messageId = try target.author.flatMap { try MessageStore.find(db, author: $0, sentAt: UInt64(max(0, target.sentAt))) }
+                    m.notice = .pinnedMessage(source: source, target: target)
+                case .pollTerminate(let source, let question, var poll):
+                    poll.messageId = try poll.author.flatMap { try MessageStore.find(db, author: $0, sentAt: UInt64(max(0, poll.sentAt))) }
+                    m.notice = .pollTerminate(source: source, question: question, poll: poll)
+                default: break
+                }
                 if let q = m.quote {
                     m.quote?.messageId = try quotedMessageId(db, conversationId: conversationId, q)
                     m.quote?.thumbnail = try MessageAttachments.fetch(db, .init(messageId: m.id, type: .quote, order: 0))
@@ -506,6 +607,7 @@ public enum ConversationQueries {
                                 isDeleted: json["deletedForEveryone"] as? Bool ?? false, content: MessageContentKind.of(json))
         m.notice = TimelineNotice(type: row["type"], json: json, source: row["sourceServiceId"])
         m.isUnseen = (row["seenStatus"] as Int?) == SeenStatus.unseen.rawValue
+        m.isDeleteForEveryoneFailed = json["deletedForEveryoneFailed"] as? Bool ?? false
         func int64(_ v: Any?) -> Int64? { (v as? NSNumber)?.int64Value }
         m.reactions = (json["reactions"] as? [[String: Any]] ?? []).compactMap { r in
             guard let emoji = r["emoji"] as? String, let from = r["fromId"] as? String else { return nil }
@@ -578,6 +680,19 @@ extension SignalDatabase {
 
     public func timelineUpdates(conversationId: String, limit: Int = 100) -> AsyncThrowingStream<[TimelineMessage], Error> {
         observe { try ConversationQueries.messages($0, conversationId: conversationId, limit: limit) }
+    }
+
+    public func unreadCountUpdates(conversationId: String) -> AsyncThrowingStream<ConversationQueries.UnreadCounts, Error> {
+        observe { try ConversationQueries.unreadCounts($0, conversationId: conversationId) }
+    }
+
+    /// The saved reaction emoji (`preferredReactionEmoji`; empty: the defaults).
+    public func preferredReactionUpdates() -> AsyncThrowingStream<[String], Error> {
+        observe { try Items.get($0, "preferredReactionEmoji", as: [String].self) ?? [] }
+    }
+
+    public func oldestUnreadMention(conversationId: String) async throws -> String? {
+        try await pool.read { try ConversationQueries.oldestUnreadMention($0, conversationId: conversationId) }
     }
 }
 

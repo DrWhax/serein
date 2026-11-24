@@ -15,6 +15,8 @@ public struct CustomizingPreferredReactionsModal: View {
     let hadSaveError: Bool
     let isSaving: Bool
     let selectDraftEmojiToBeReplaced: (Int) -> Void
+    let deselectDraftEmoji: () -> Void
+    let replaceSelectedDraftEmoji: (String) -> Void
     let resetDraftEmoji: () -> Void
     let savePreferredReactions: () -> Void
     let cancel: () -> Void
@@ -22,7 +24,8 @@ public struct CustomizingPreferredReactionsModal: View {
 
     public init(draftPreferredReactions: [String], originalPreferredReactions: [String], selectedDraftEmojiIndex: Int? = nil,
                 emojiSkinToneDefault: EmojiSkinTone? = nil, hadSaveError: Bool = false, isSaving: Bool = false,
-                selectDraftEmojiToBeReplaced: @escaping (Int) -> Void = { _ in }, resetDraftEmoji: @escaping () -> Void = {},
+                selectDraftEmojiToBeReplaced: @escaping (Int) -> Void = { _ in }, deselectDraftEmoji: @escaping () -> Void = {},
+                replaceSelectedDraftEmoji: @escaping (String) -> Void = { _ in }, resetDraftEmoji: @escaping () -> Void = {},
                 savePreferredReactions: @escaping () -> Void = {}, cancel: @escaping () -> Void = {}) {
         self.draftPreferredReactions = draftPreferredReactions
         self.originalPreferredReactions = originalPreferredReactions
@@ -31,6 +34,8 @@ public struct CustomizingPreferredReactionsModal: View {
         self.hadSaveError = hadSaveError
         self.isSaving = isSaving
         self.selectDraftEmojiToBeReplaced = selectDraftEmojiToBeReplaced
+        self.deselectDraftEmoji = deselectDraftEmoji
+        self.replaceSelectedDraftEmoji = replaceSelectedDraftEmoji
         self.resetDraftEmoji = resetDraftEmoji
         self.savePreferredReactions = savePreferredReactions
         self.cancel = cancel
@@ -52,8 +57,15 @@ public struct CustomizingPreferredReactionsModal: View {
                 VStack(spacing: 0) {
                     ReactionPickerPicker(isSomethingSelected: selectedDraftEmojiIndex != nil, pickerStyle: .menu) {
                         ForEach(draftPreferredReactions.indices, id: \.self) { i in
+                            // CustomizingPreferredReactionsModalItem: the selected emoji opens the emoji
+                            // picker below it; picking one replaces it, closing the picker deselects.
                             ReactionPickerPickerEmojiButton(emoji: draftPreferredReactions[i], isSelected: i == selectedDraftEmojiIndex) {
                                 selectDraftEmojiToBeReplaced(i)
+                            }
+                            .axoPopper(id: "customize-reaction-\(i)", isPresented: i == selectedDraftEmojiIndex,
+                                       placement: AxoPopper.Placement(side: .bottom), dismiss: deselectDraftEmoji) {
+                                FunEmojiPicker(panel: FunPanelEmojis(recentEmojis: [], skinTone: emojiSkinToneDefault,
+                                                                     onSelectEmoji: { replaceSelectedDraftEmoji($0) }))
                             }
                         }
                     }

@@ -47,7 +47,15 @@ import Testing
     @Test func usernames() async throws {
         try await LinkedClient.with { c in
             let usernames = UsernameService(account: c.account, database: c.database, socket: c.socket)
-            await #expect(throws: UsernameError.self) { try await usernames.reserve(nickname: "x") }       // too short
+            await #expect(throws: UsernameError.reserve(.notEnoughCharacters)) { try await usernames.reserve(nickname: "x") }   // too short
+            await #expect(throws: UsernameError.reserve(.checkStartingCharacter)) { try await usernames.reserve(nickname: "1teapot") }
+            #expect(try await usernames.nicknameLimits() == 3...32)
+            // The onboarding banner (synced) and the link tooltip (this device).
+            #expect(try await c.database.pool.read { try AccountSettings.load($0) }.hasCompletedUsernameOnboarding == false)
+            try await c.messenger.setUsernameOnboardingCompleted()
+            try await c.messenger.setUsernameLinkOnboardingCompleted()
+            let settings = try await c.database.pool.read { try AccountSettings.load($0) }
+            #expect(settings.hasCompletedUsernameOnboarding && settings.hasCompletedUsernameLinkOnboarding)
             let r = try await usernames.reserve(nickname: "teapot")
             #expect(r.username.hasPrefix("teapot.") && r.hash.count == 32)
             let link = try await usernames.confirm(r)

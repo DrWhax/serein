@@ -103,6 +103,45 @@ public struct PinnedMessageNotification: View {
     }
 }
 
+/// PollTerminateNotification (ts/components/conversation/PollTerminateNotification.dom.tsx):
+/// "You ended the poll: {poll}" / "{name} ended the poll: {poll}", with "View poll".
+public struct PollTerminateNotification: View {
+    let senderTitle: String
+    let senderIsMe: Bool
+    let pollQuestion: String
+    let expireTimer: (length: TimeInterval, expiration: Date)?
+    let onViewPoll: () -> Void
+    @Environment(\.i18n) var i18n
+
+    public init(senderTitle: String, senderIsMe: Bool, pollQuestion: String, expireTimer: (length: TimeInterval, expiration: Date)? = nil,
+                onViewPoll: @escaping () -> Void = {}) {
+        self.senderTitle = senderTitle
+        self.senderIsMe = senderIsMe
+        self.pollQuestion = pollQuestion
+        self.expireTimer = expireTimer
+        self.onViewPoll = onViewPoll
+    }
+
+    /// The message: the question (and who ended it) as <UserText>: emojified, as given.
+    static func contents(_ i18n: Localizer, senderTitle: String, senderIsMe: Bool, pollQuestion: String) -> [CSSTextRun] {
+        var poll = CSSTextRun(pollQuestion)
+        poll.emojify = true
+        var name = CSSTextRun(senderTitle)
+        name.emojify = true
+        return senderIsMe
+            ? CSSTextRun.runs(i18n.richText("icu:PollTerminate--you", ["poll": .element("poll")]), elements: ["poll": poll])
+            : CSSTextRun.runs(i18n.richText("icu:PollTerminate--other", ["name": .element("name"), "poll": .element("poll")]),
+                              elements: ["name": name, "poll": poll])
+    }
+
+    public var body: some View {
+        let contents = Self.contents(i18n, senderTitle: senderTitle, senderIsMe: senderIsMe, pollQuestion: pollQuestion)
+        return SystemMessage(.symbol("poll"), contents: contents, expireTimer: expireTimer) {
+            LegacyButton(i18n("icu:PollTerminate__view-poll"), size: .small, variant: .systemMessage, action: onViewPoll)
+        }
+    }
+}
+
 /// ErrorBoundary's fallback: a 20px error icon (60%) 8px above "Couldn't display this
 /// message. Click to submit a debug log." (80%), centred, gray-60 / gray-05; Enter, Space or a
 /// click opens the debug log.

@@ -174,11 +174,16 @@ enum CallLinkJoinFailure: Equatable {
         startCallFromLobby()
     }
 
-    /// A clicked link Serein opens itself: a sticker pack link its preview, a call link its
-    /// lobby; true when handled.
+    /// A clicked link Serein opens itself: a sticker pack link its preview, a signal.me link its
+    /// chat, a group link the join dialog, a call link its lobby; true when handled.
     func openInAppLink(_ url: URL) -> Bool {
         if let pack = Stickers.packLink(url) {
             showStickerPackPreview(packId: pack.packId, packKey: pack.packKey)
+            return true
+        }
+        if openSignalMeLink(url) { return true }
+        if (url.scheme == "https" && url.host == "signal.group") || (url.scheme == "sgnl" && (url.host == "signal.group" || url.host == "joingroup")) {
+            if let link = try? GroupLink(url: url.absoluteString) { openGroupLink(link) } else { invalidGroupLink() }
             return true
         }
         return openCallLinkURL(url)

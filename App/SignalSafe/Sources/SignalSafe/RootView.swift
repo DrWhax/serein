@@ -65,7 +65,48 @@ struct RootView: View {
                 }
                 #endif
                 if let e = session.composeError {
-                    ErrorModal(title: i18n("icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
+                    ErrorModal(title: i18n(e.titleKey ?? "icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
+                }
+                if session.criticalIdleModalOpen {
+                    // CriticalIdlePrimaryDeviceModal: again a day after each close.
+                    AxoBaseDialog.Host { CriticalIdlePrimaryDeviceModal(onClose: { session.dismissCriticalIdleModal() }) }
+                }
+                if session.usernameOnboardingOpen {
+                    // UsernameOnboardingModal: Next opens the username editor (onboarding done).
+                    AxoBaseDialog.Host {
+                        UsernameOnboardingModal(onNext: {
+                            session.usernameOnboardingOpen = false
+                            session.markUsernameOnboardingComplete()
+                            model.selectedTab = .settings
+                            model.settingsPage = .profile
+                            session.openUsernameEditor()
+                            session.profileEditorPage = .username
+                        }, onSkip: {
+                            session.usernameOnboardingOpen = false
+                            session.markUsernameOnboardingComplete()
+                        }, onClose: { session.usernameOnboardingOpen = false })
+                    }
+                }
+                if let r = session.customizingReactions {
+                    AxoBaseDialog.Host {
+                        CustomizingPreferredReactionsModal(draftPreferredReactions: r.draft, originalPreferredReactions: r.original,
+                                                           selectedDraftEmojiIndex: r.selected, emojiSkinToneDefault: session.emojiSkinTone,
+                                                           hadSaveError: r.hadSaveError, isSaving: r.isSaving,
+                                                           selectDraftEmojiToBeReplaced: { session.selectReactionToReplace($0) },
+                                                           deselectDraftEmoji: { session.deselectReactionToReplace() },
+                                                           replaceSelectedDraftEmoji: { session.replaceSelectedReaction($0) },
+                                                           resetDraftEmoji: { session.resetReactionDraft() },
+                                                           savePreferredReactions: { session.savePreferredReactions() },
+                                                           cancel: { session.customizingReactions = nil })
+                    }
+                }
+                if let j = session.groupJoin {
+                    // GroupV2JoinDialog: the link's group, then join or ask to.
+                    AxoBaseDialog.Host {
+                        GroupV2JoinDialog(title: j.info.title ?? i18n("icu:unknownGroup"), avatar: j.avatar, avatarLoading: j.avatarLoading,
+                                          memberCount: j.info.memberCount, groupDescription: j.info.description, approvalRequired: j.info.approvalRequired,
+                                          onJoin: { session.joinGroupFromLink() }, onClose: { session.groupJoin = nil })
+                    }
                 }
                 if let r = session.deleteRequest {
                     DeleteMessagesModal(isMe: session.conversation(r.conversationId).map { $0.kind == .private && $0.serviceId != nil && $0.serviceId == session.ourAci } ?? false,
@@ -166,6 +207,16 @@ struct RootView: View {
             model.selectedTab = .settings
         }
         context.renderNotificationProfilesMenu = { AnyView(notificationProfilesMenu) }
+        // SmartToastManager's megaphone: "set a username" until done or dismissed, else the first
+        // remote megaphone.
+        let megaphone: AnyView? = {
+            let s = session.accountSettings
+            if !s.hasCompletedUsernameOnboarding, s.username == nil, !session.usernameOnboardingOpen {
+                return AnyView(UsernameMegaphone(onLearnMore: { session.usernameOnboardingOpen = true },
+                                                 onDismiss: { session.markUsernameOnboardingComplete() }))
+            }
+            return session.remoteMegaphoneView(isFullSize: !model.navTabsCollapsed)
+        }()
         context.renderToastManager = {
             var actions = ToastManagerActions()
             actions.hideToast = { session.toast = nil }
@@ -175,7 +226,7 @@ struct RootView: View {
                 if wasPinned { session.setPinnedChat(true, for: id) }
             }
             actions.openFileInFolder = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) }
-            return AnyView(ToastManager(toast: session.toast, actions: actions))
+            return AnyView(ToastManager(toast: session.toast, actions: actions, megaphone: megaphone))
         }
         context.updateSearchTerm = { if session.isComposing { session.composeSearch = $0 } else { session.updateSearch($0) } }
         context.clearSearchQuery = { if session.isComposing { session.composeSearch = "" } else { session.updateSearch("") } }
@@ -284,7 +335,10 @@ struct RootView: View {
                 context.renderLeftPaneChatFolders = { AnyView(folderBar) }
             }
         }
-        return LeftPane(helper: helper, context: context, dialogs: LeftPaneDialogs(),
+        // The idle-primary-device banners (`getServerAlertToShow`).
+        var dialogs = LeftPaneDialogs()
+        dialogs.serverAlert = session.serverAlertBanner(model.navTabsCollapsed ? .narrow : .wide)
+        return LeftPane(helper: helper, context: context, dialogs: dialogs,
                         preferredLeftPaneWidth: model.preferredLeftPaneWidth,
                         savePreferredLeftPaneWidth: { model.preferredLeftPaneWidth = $0 },
                         navTabsCollapsed: model.navTabsCollapsed, onToggleNavTabsCollapse: { model.navTabsCollapsed = $0 },
@@ -442,7 +496,9 @@ struct RootView: View {
                                                  isOutgoing: m.direction == .outgoing)
         }
         var d = ConversationListItemData(id: c.id, title: title, type: c.kind == .group ? .group : .direct, isMe: isMe,
-                                         isSelected: c.id == session.selectedConversationId, acceptedMessageRequest: c.isAccepted, avatar: avatar, lastMessage: last,
+                                         isSelected: c.id == session.selectedConversationId,
+                                         isSignalConversation: c.kind == .private && ReleaseNotesChat.isSignalChat(serviceId: c.serviceId),
+                                         acceptedMessageRequest: c.isAccepted, avatar: avatar, lastMessage: last,
                                          lastUpdated: c.activeAt.map { Date(milliseconds: $0) }, unreadCount: c.unreadCount)
         d.isMe = isMe
         d.markedUnread = c.folderProps.markedUnread
@@ -532,6 +588,8 @@ struct RootView: View {
                             a.onOutgoingVideoCallInConversation = { session.openCallLobby($0, video: true) }
                             a.onClearCallHistory = { session.clearCallHistory() }
                             a.onMarkCallHistoryRead = { id, _ in session.markCallHistoryRead(id) }
+                            // Visible group rows have their calls looked at (CallsList's peek queue).
+                            a.onRowAppear = { item in if item.conversation.conversationType == .group { session.peekGroupCall(item.peerId) } }
                             return a
                         }()) { roomId, group, close in
             callLinkDetails(roomId, group, close)

@@ -98,6 +98,7 @@ public final class ContactDiscovery: Sendable {
                 try MessageStore.updateConversationJSON(db, conversationId: existing) { $0["serviceId"] = serviceId }
             }
             let conversationId = try MessageStore.privateConversation(db, serviceId: serviceId)
+            try ChatEventNotices.numberChanging(db, conversationId: conversationId, to: e.e164)
             try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
                 json["e164"] = e.e164
                 if let pni = e.pni { json["pni"] = pni }

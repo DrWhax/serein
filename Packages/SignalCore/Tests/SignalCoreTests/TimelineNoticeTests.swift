@@ -26,7 +26,7 @@ import Testing
             try MessageStore.insert(db, .init(conversationId: conversationId, type: "chat-session-refreshed", body: "", sentAt: UInt64(MessageStore.now()),
                                               source: nil, sourceDevice: nil, serverGuid: nil, serverTimestamp: nil, unidentified: false))
             // A type the timeline does not know stays out.
-            try MessageStore.insert(db, .init(conversationId: conversationId, type: "profile-change", body: "", sentAt: UInt64(MessageStore.now()),
+            try MessageStore.insert(db, .init(conversationId: conversationId, type: "group-v1-migration", body: "", sentAt: UInt64(MessageStore.now()),
                                               source: nil, sourceDevice: nil, serverGuid: nil, serverTimestamp: nil, unidentified: false))
             try text("after")
             return try ConversationQueries.messages(db, conversationId: conversationId, limit: 50)

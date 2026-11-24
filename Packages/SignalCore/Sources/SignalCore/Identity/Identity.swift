@@ -153,6 +153,31 @@ public enum UsernameError: Error, Equatable {
     case invalid(String)
     case unavailable
     case notSet
+    /// `ReserveUsernameError`: why a reservation failed, for the editor's message.
+    case reserve(ReserveUsernameError)
+}
+
+/// `ReserveUsernameError` (ts/types/Username.std.ts), from libsignal's username errors as
+/// upstream's `reserveUsername` maps them.
+public enum ReserveUsernameError: Sendable, Equatable {
+    case unprocessable, conflict, notEnoughCharacters, tooManyCharacters, checkStartingCharacter, checkCharacters
+    case notEnoughDiscriminator, allZeroDiscriminator, leadingZeroDiscriminator, tooManyAttempts
+
+    static func from(_ error: Error) -> ReserveUsernameError? {
+        guard let e = error as? SignalError else { return nil }
+        switch e {
+        case .usernameNotAvailable: return .conflict
+        case .rateLimitedError: return .tooManyAttempts
+        case .nicknameCannotBeEmpty, .nicknameTooShort: return .notEnoughCharacters
+        case .nicknameTooLong: return .tooManyCharacters
+        case .nicknameCannotStartWithDigit: return .checkStartingCharacter
+        case .badNicknameCharacter: return .checkCharacters
+        case .usernameDiscriminatorCannotBeZero: return .allZeroDiscriminator
+        case .usernameDiscriminatorCannotHaveLeadingZeros: return .leadingZeroDiscriminator
+        case .usernameDiscriminatorCannotBeEmpty, .usernameDiscriminatorCannotBeSingleDigit, .usernameDiscriminatorTooLarge: return .notEnoughDiscriminator
+        default: return nil
+        }
+    }
 }
 
 public struct UsernameReservation: Sendable, Equatable {
@@ -170,6 +195,9 @@ public struct UsernameService: Sendable {
         self.database = database
         self.socket = socket
     }
+
+    /// `getMinNickname` / `getMaxNickname`, for UsernameEditor's messages.
+    public func nicknameLimits() async throws -> ClosedRange<UInt32> { try await nicknameLengths() }
 
     /// `getMinNickname` / `getMaxNickname`
     func nicknameLengths() async throws -> ClosedRange<UInt32> {
@@ -190,15 +218,15 @@ public struct UsernameService: Sendable {
                 candidates = try Username.candidates(from: nickname, withValidLengthWithin: lengths)
             }
         } catch {
-            throw UsernameError.invalid(nickname)
+            throw ReserveUsernameError.from(error).map(UsernameError.reserve) ?? UsernameError.invalid(nickname)
         }
         let hash: Data
         do {
             hash = try await socket.reserveUsernameHashes(candidates.map(\.hash))
         } catch {
-            throw UsernameError.unavailable
+            throw UsernameError.reserve(ReserveUsernameError.from(error) ?? .conflict)
         }
-        guard let chosen = candidates.first(where: { $0.hash == hash }) else { throw UsernameError.unavailable }
+        guard let chosen = candidates.first(where: { $0.hash == hash }) else { throw UsernameError.reserve(.unprocessable) }
         return UsernameReservation(username: chosen.value, hash: hash)
     }
 

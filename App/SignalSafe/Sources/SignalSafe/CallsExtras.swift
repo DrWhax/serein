@@ -33,6 +33,7 @@ import SignalUI
             if ringingGroupCall?.conversationId == id, ringingGroupCall?.ringId == ringId { ringingGroupCall = nil }
         case .peekResult(let id, let info):
             if activeCall?.conversationId == id { callPeek = (id, info) }
+            groupCallPeeks[id] = info
         case .groupCallReactions(let id, let reactions):
             guard activeCall?.conversationId == id, activeCall?.stage == .inCall else { return }
             addCallReactions(reactions.map { ($0.demuxId, $0.value) })
@@ -129,11 +130,37 @@ import SignalUI
         return info.deviceCount >= max
     }
 
-    /// The group call in progress in the chat as its peek found it (only the call we are in or
-    /// in the lobby of is peeked): its call id (`getCallIdFromEra`), devices and capacity. The
-    /// timeline's call notices use it (upstream `callSelector`).
+    /// `peekNotConnectedGroupCall`: a group chat's call is looked at (the chat opened, or its
+    /// Calls tab row appeared); at most every 10 s per chat, never the call we are in.
+    func peekGroupCall(_ conversationId: String) {
+        guard let calling, activeCall?.conversationId != conversationId, conversation(conversationId)?.kind == .group else { return }
+        let now = Date()
+        if let last = lastGroupCallPeek[conversationId], now.timeIntervalSince(last) < 10 { return }
+        lastGroupCallPeek[conversationId] = now
+        Task { [weak self] in
+            if let info = try? await calling.peekGroupCall(conversationId: conversationId) { self?.groupCallPeeks[conversationId] = info }
+        }
+    }
+
+    /// `isAnybodyElseInGroupCall`: the peek found someone other than us.
+    func isAnybodyElseInGroupCall(_ conversationId: String) -> Bool {
+        guard let devices = groupCallPeeks[conversationId]?.devices else { return false }
+        return devices.contains { $0.userId.flatMap(Self.aci) != ourAci }
+    }
+
+    /// Someone in the active group call, by their demux id (`getParticipantInActiveCall`).
+    func callParticipant(demuxId: UInt32) -> (demuxId: UInt32, hasRemoteAudio: Bool)? {
+        guard let a = activeCall, let state = calling?.groupCall(for: a.conversationId)?.remoteDeviceStates?.first(where: { $0.demuxId == demuxId })
+        else { return nil }
+        return (demuxId, state.audioMuted != true)
+    }
+
+    /// The group call in progress in the chat as its last peek found it: its call id
+    /// (`getCallIdFromEra`), devices and capacity. The timeline's call notices and the header's
+    /// Join use it (upstream `callSelector`).
     func peekedGroupCall(_ conversationId: String) -> (callId: String?, deviceCount: Int, maxDevices: Int)? {
-        guard callPeek?.conversationId == conversationId, let info = callPeek?.info else { return nil }
+        let active = callPeek?.conversationId == conversationId ? callPeek?.info : nil
+        guard let info = active ?? groupCallPeeks[conversationId] else { return nil }
         return (info.eraId.map { String(callIdFromEra($0)) }, info.deviceCount, info.maxDevices ?? .max)
     }
 }

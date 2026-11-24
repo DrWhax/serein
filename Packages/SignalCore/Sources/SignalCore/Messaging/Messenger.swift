@@ -53,6 +53,11 @@ public final class Messenger: Sendable {
                 // `failoverToLocalReset`: the request never went out.
                 try? await self.automaticSessionReset(sender: from, device: device)
             }
+            if j.type == .modifierSend, let id = j.messageId {
+                // A delete for everyone that did not go out (`deletedForEveryoneFailed`).
+                try? await self.database.pool.write { db in try MessageStore.updateJSON(db, messageId: id) { $0["deletedForEveryoneFailed"] = true } }
+                return
+            }
             guard j.type == .normalMessage, let id = j.messageId else { return }
             try? await self.database.pool.write { db in try MessageStore.markFailed(db, messageId: id, error: "\(error)") }
         })
@@ -219,12 +224,24 @@ public final class Messenger: Sendable {
         return out
     }
 
-    /// Marks every unread incoming message of a conversation read (Desktop markConversationRead):
-    /// read sync to our other devices, read receipts to the senders if enabled.
+    /// The notices shown in the open chat (calls, group and timer changes…) become seen, so they
+    /// fold into their collapse sets; messages stay unread until they are read.
+    public func markNoticesSeen(conversationId: String) async throws {
+        try await database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE messages SET seenStatus = ?, json = json_set(json, '$.seenStatus', ?)
+                WHERE conversationId = ? AND seenStatus = ? AND type NOT IN ('incoming', 'outgoing') AND isStory = 0 AND storyId IS NULL
+                """, arguments: [SeenStatus.seen.rawValue, SeenStatus.seen.rawValue, conversationId, SeenStatus.unseen.rawValue])
+        }
+    }
+
+    /// Marks the unread incoming messages of a conversation read, all or up to `receivedAt`
+    /// (Desktop markConversationRead): read sync to our other devices, read receipts to the
+    /// senders if enabled.
     @discardableResult
-    public func markRead(conversationId: String) async throws -> [ReceiptTarget] {
+    public func markRead(conversationId: String, upTo receivedAt: Int64? = nil) async throws -> [ReceiptTarget] {
         let targets = try await database.pool.write { db -> [ReceiptTarget] in
-            let targets = try MessageStore.markRead(db, conversationId: conversationId)
+            let targets = try MessageStore.markRead(db, conversationId: conversationId, upTo: receivedAt)
             guard !targets.isEmpty else { return [] }
             try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: ConversationJob.readSync(targets))
             if try Items.get(db, "read-receipt-setting", as: Bool.self) ?? false {

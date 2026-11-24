@@ -18,6 +18,10 @@ public struct AccountSettings: Sendable, Equatable {
     public var username: String?
     /// https://signal.me/#eu/… (the username link QR card).
     public var usernameLink: String?
+    /// The "set a username" banner was dismissed or followed (synced: AccountRecord).
+    public var hasCompletedUsernameOnboarding = false
+    /// The profile editor's username link tooltip was seen (this device only).
+    public var hasCompletedUsernameLinkOnboarding = false
     /// Settings → Calls (local to this device, as upstream): incoming call notifications, the
     /// ringtone, and always relaying calls (hides the IP address from the other side).
     public var incomingCallNotification = true
@@ -45,6 +49,8 @@ public struct AccountSettings: Sendable, Equatable {
             s.deviceId = account.deviceId
         }
         s.readReceipts = try Items.get(db, "read-receipt-setting", as: Bool.self) ?? false
+        s.hasCompletedUsernameOnboarding = try Items.get(db, "hasCompletedUsernameOnboarding", as: Bool.self) ?? false
+        s.hasCompletedUsernameLinkOnboarding = try Items.get(db, "hasCompletedUsernameLinkOnboarding", as: Bool.self) ?? false
         s.typingIndicators = try Items.get(db, "typingIndicators", as: Bool.self) ?? false
         s.linkPreviews = try Items.get(db, "linkPreviews", as: Bool.self) ?? false
         s.sealedSenderIndicators = try Items.get(db, "sealedSenderIndicators", as: Bool.self) ?? false

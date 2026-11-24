@@ -89,6 +89,7 @@ public final class ContactSync: Sendable {
                   (try? Aci.parseFrom(serviceIdString: aci)) != nil
             else { continue }
             let conversationId = try MessageStore.privateConversation(db, serviceId: aci)
+            if c.hasNumber, !c.number.isEmpty { try ChatEventNotices.numberChanging(db, conversationId: conversationId, to: c.number) }
             try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
                 if c.hasNumber, !c.number.isEmpty { json["e164"] = c.number }
                 if c.hasName { json["name"] = c.name }

@@ -34,6 +34,7 @@ public enum TimelineItemType {
     case resetSessionNotification
     case profileChange(ProfileChangeNotification)
     case pinnedMessage(PinnedMessageNotification)
+    case pollTerminate(PollTerminateNotification)
     case messageRequestResponse(MessageRequestResponseNotification)
     /// A type this client does not render.
     case unknown(String)
@@ -94,6 +95,7 @@ public struct TimelineItem: View {
         case .resetSessionNotification: ResetSessionNotification()
         case .profileChange(let v): v
         case .pinnedMessage(let v): v
+        case .pollTerminate(let v): v
         case .messageRequestResponse(let v): v
         case .message, .collapseSet, .unknown: EmptyView()
         }

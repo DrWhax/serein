@@ -83,6 +83,11 @@ extension GroupsService {
                                 pendingAdminApproval: info.pendingAdminApproval)
     }
 
+    /// The photo a link's preview names (`avatarKey`), decrypted (GroupV2JoinDialog's avatar).
+    public func preJoinAvatar(_ link: GroupLink, key: String) async throws -> Data {
+        try Self.decryptAvatar(try await api.avatar(key), keys: try GroupKeys(masterKey: link.masterKey))
+    }
+
     /// `joinGroupV2ViaLink`: join, or ask to.
     public func join(_ link: GroupLink) async throws -> GroupKeys {
         let keys = try GroupKeys(masterKey: link.masterKey)

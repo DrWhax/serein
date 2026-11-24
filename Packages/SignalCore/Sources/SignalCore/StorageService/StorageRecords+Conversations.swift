@@ -185,6 +185,7 @@ enum StorageRecords {
         }
 
         let mutedUntil = StorageLocal.muteFromProto(c.mutedUntilTimestamp)
+        try ChatEventNotices.numberChanging(db, conversationId: id, to: e164)
         try MessageStore.updateConversationJSON(db, conversationId: id) { json in
             if let e164 { json["e164"] = e164 }
             if aci != nil, let pni { json["pni"] = pni }

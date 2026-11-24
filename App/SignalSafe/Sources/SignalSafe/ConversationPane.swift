@@ -13,6 +13,7 @@ struct ConversationPane: View {
     @Bindable var session: SignalSession
     let conversation: ConversationSummary
     let i18n: Localizer
+    @Environment(\.axoModalStack) var modals
 
     var body: some View {
         if let id = session.messageDetailId, let i = session.messages.firstIndex(where: { $0.id == id }) {
@@ -41,7 +42,8 @@ struct ConversationPane: View {
                                       scrollToIndex: session.scrollToMessageId.flatMap { index[$0] })
         let sets = Dictionary(mapped.sets.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return VStack(spacing: 0) {
-            ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, outgoingCallButtonStyle: callButtonStyle,
+            ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, isSignalConversation: isSignalChat,
+                               outgoingCallButtonStyle: callButtonStyle,
                                contactSpoofingWarning: spoofingWarning, collidingAvatars: collidingAvatars, actions: headerActions) { EmptyView() }
             if session.activeAudioMessageId != nil {
                 // While audio plays (in this chat or another) the mini-player takes the pinned bar's place.
@@ -52,8 +54,10 @@ struct ConversationPane: View {
                                   onPinsShowAll: { if let first = session.pins.first { session.goToMessage(first.messageId) } })
             }
             Timeline(id: conversation.id, items: mapped.sets.map(\.id), haveNewest: true, haveOldest: session.haveOldest,
+                     isSignalConversation: isSignalChat,
                      isLoadingMessages: session.isLoadingOlder,
                      oldestUnseenIndex: mapped.unseenIndex, totalUnseen: session.unreadMarker?.count ?? 0,
+                     unreadCount: session.unreadCounts.unread, unreadMentionsCount: session.unreadCounts.mentions,
                      scrollToIndex: mapped.scrollToIndex, scrollToIndexCounter: session.scrollCounter,
                      getTimestampForMessage: { byId[$0].map { Date(milliseconds: $0.sentAt) } }) { props in
                 if let set = sets[props.id], let kind = set.kind, let i = index[props.id] {
@@ -74,6 +78,12 @@ struct ConversationPane: View {
                 }
             } loadOlderMessages: { _ in
                 session.loadOlderMessages()
+            } scrollToOldestUnreadMention: { _ in
+                session.scrollToOldestUnreadMention()
+            } markMessageRead: { id in
+                // A row's newest entry (a collapse set's last) is what was seen.
+                let newest = sets[id]?.messages.last.flatMap { byId[$0.id] } ?? byId[id]
+                if let newest { session.markVisibleRead(upTo: newest.receivedAt) }
             }
             .environment(\.messageTextSelectable, true)
             // A signal.link/call URL opens the call link's lobby instead of the browser.
@@ -107,7 +117,8 @@ struct ConversationPane: View {
         // The members line (`getGroupMemberships`), by their titles.
         let members = (group?.membersV2 ?? []).map { m in HeroMember(isMe: m.aci == me, titleShort: m.aci == me ? nil : session.contactTitle(m.aci)) }
         return ConversationHero(conversationType: conversation.kind == .group ? .group : .direct, title: title(conversation),
-                                avatar: avatar(conversation), isMe: isNoteToSelf, acceptedMessageRequest: conversation.isAccepted,
+                                avatar: avatar(conversation), isMe: isNoteToSelf, isSignalConversation: isSignalChat,
+                                acceptedMessageRequest: conversation.isAccepted,
                                 hasProfileName: d?.hasProfileName ?? false, hasNickname: d?.hasNickname ?? false,
                                 isInSystemContacts: d?.isInSystemContacts ?? false, isGroupNameVerified: d?.isGroupNameVerified ?? true,
                                 groupDescription: group?.description,
@@ -213,6 +224,8 @@ struct ConversationPane: View {
         a.skinTone = session.emojiSkinTone
         a.setSkinTone = { session.emojiSkinTone = $0 }
         a.recentEmojis = session.recentEmojis
+        a.preferredReactions = session.preferredReactions
+        a.openCustomizePreferredReactions = { session.openCustomizePreferredReactions() }
         a.useEmoji = { session.recordEmojiUse($0) }
         if !m.isDeleted && !m.body.isEmpty { a.copy = { session.copyText(id) } }
         a.select = { session.toggleSelect(id, selected: true) }
@@ -341,7 +354,8 @@ struct ConversationPane: View {
         guard session.calling != nil, conversation.isAccepted, !isNoteToSelf else { return .none }
         if conversation.kind == .group {
             guard let g = session.details?.group, let me = session.ourAci, g.member(me) != nil else { return .none }
-            return session.activeCall?.conversationId == conversation.id ? .join : .justVideo
+            // Join while a call is going on here (ours, or someone else's as peeked).
+            return session.activeCall?.conversationId == conversation.id || session.isAnybodyElseInGroupCall(conversation.id) ? .join : .justVideo
         }
         return .both
     }
@@ -376,7 +390,12 @@ struct ConversationPane: View {
         return a
     }
 
-    var composerModel: CompositionAreaModel {
+    /// Signal's release-notes chat: read-only, "official chat" (upstream `isSignalConversation`).
+    var isSignalChat: Bool { conversation.kind == .private && ReleaseNotesChat.isSignalChat(serviceId: conversation.serviceId) }
+
+    /// The message request actions (the request bar's, and a request-response notice's "Block or
+    /// report" confirmation).
+    var messageRequestModel: MessageRequestModel {
         var request = MessageRequestModel(conversationId: conversation.id, conversationType: conversation.kind == .group ? .group : .direct,
                                           conversationName: conversation.title)
         let id = conversation.id
@@ -386,9 +405,30 @@ struct ConversationPane: View {
         request.reportSpam = { session.respond(id, .spam) }
         request.deleteConversation = { session.respond(id, .delete) }
         let d = session.details?.conversationId == conversation.id ? session.details : nil
-        let group = d?.group, me = session.ourAci ?? ""
         request.isBlocked = d?.isBlocked ?? false
+        request.isSignalConversation = isSignalChat
+        return request
+    }
+
+    /// `onOpenMessageRequestActionsConfirmation`: the request confirmation dialog in `state`,
+    /// moving between states as its buttons say.
+    func openRequestConfirmation(_ state: MessageRequestState) {
+        guard let modals else { return }
+        let id = "message-request-\(conversation.id)"
+        let model = messageRequestModel
+        modals.present(id: id) {
+            MessageRequestActionsConfirmation(model: model, state: state) { next in
+                if next == .default { modals.dismiss(id: id) } else { openRequestConfirmation(next) }
+            }
+        }
+    }
+
+    var composerModel: CompositionAreaModel {
+        let request = messageRequestModel
+        let d = session.details?.conversationId == conversation.id ? session.details : nil
+        let group = d?.group, me = session.ourAci ?? ""
         var m = CompositionAreaModel(conversationId: conversation.id, messageRequest: request)
+        m.isSignalConversation = isSignalChat
         m.acceptedMessageRequest = conversation.isAccepted
         // The branch upstream picks from the conversation: blocked (unblock), invited, ended, left,
         // a join request waiting for an admin (cancel it), announcements only (admins may send).
@@ -435,27 +475,28 @@ struct ConversationPane: View {
     }
 
     /// What upstream's canCollapseFor…Set ask of a timeline entry: group updates take the
-    /// other chat-update notices (safety number and verification changes) along; a group's
-    /// ending, and the call in progress here, never fold.
+    /// other chat-update notices (safety number, verification, profile and number changes,
+    /// pins, ended polls) along; a group's ending, and the call in progress here, never fold.
     func collapseItem(_ m: TimelineMessage) -> CollapseSetItem {
         let kind: CollapseSetItem.Kind
         switch m.notice {
-        case .keyChange, .verifiedChange: kind = .groupUpdate(changes: 1)
+        case .keyChange, .verifiedChange, .profileChange, .changeNumber, .pinnedMessage, .pollTerminate: kind = .groupUpdate(changes: 1)
         case .groupChange(let json):
             let details = groupChange(json)?.details ?? []
             kind = details.first?.type == "terminated" ? .other : .groupUpdate(changes: max(1, details.count))
         case .timerChange(let seconds, _, _): kind = .timerChange(seconds == 0 ? nil : seconds)
         case .call(let callId, let details): kind = isCurrentCall(callId, details) ? .other : .callEvent
-        case .deliveryIssue, .chatSessionRefreshed, nil: kind = .other
+        case .deliveryIssue, .chatSessionRefreshed, .joinedSignal, .titleTransition, .conversationMerge, .phoneNumberDiscovery,
+             .messageRequestResponse, nil: kind = .other
         }
         return CollapseSetItem(id: m.id, kind: kind, isUnseen: m.isUnseen, date: Date(milliseconds: m.sentAt))
     }
 
     /// The call in progress in this chat: while a direct call is, every direct call notice here;
-    /// for a group, the notice of the call (era) in progress.
+    /// for a group, the notice of the call (era) going on, as peeked.
     func isCurrentCall(_ callId: String?, _ details: SignalCore.CallHistoryDetails?) -> Bool {
-        guard let details, session.activeCall?.conversationId == conversation.id else { return false }
-        if details.details.mode == .direct { return true }
+        guard let details else { return false }
+        if details.details.mode == .direct { return session.activeCall?.conversationId == conversation.id }
         return callId != nil && callId == session.peekedGroupCall(conversation.id)?.callId
     }
 
@@ -502,7 +543,56 @@ struct ConversationPane: View {
             // getPropsForTimerNotification
             let type: TimerNotification.Source = fromSync ? .fromSync : source == nil ? .fromMember : source == session.ourAci ? .fromMe : .fromOther
             return .timerNotification(TimerNotification(type: type, title: session.contactTitle(source), expireTimer: seconds == 0 ? nil : seconds))
+        case .pinnedMessage(let source, let target):
+            return .pinnedMessage(PinnedMessageNotification(senderTitle: session.contactTitle(source), senderIsMe: source != nil && source == session.ourAci,
+                                                            expireTimer: expireTimer(m),
+                                                            onScrollToPinnedMessage: { [session] in target.messageId.map(session.goToMessage) }))
+        case .pollTerminate(let source, let question, let poll):
+            return .pollTerminate(PollTerminateNotification(senderTitle: session.contactTitle(source), senderIsMe: source != nil && source == session.ourAci,
+                                                            pollQuestion: question, expireTimer: expireTimer(m),
+                                                            onViewPoll: { [session] in poll.messageId.map(session.goToMessage) }))
+        case .profileChange(let changedId, let oldName, let newName):
+            // getPropsForProfileChange: the contact who changed it (named when they are a
+            // system contact); "Update" edits their nickname when they have one.
+            let changed = changedId.flatMap { session.conversation($0) }
+            let d = session.details?.conversationId == changedId ? session.details : nil
+            return .profileChange(ProfileChangeNotification(oldName: oldName, newName: newName, contactTitle: changed.map(title) ?? i18n("icu:unknownContact"),
+                                                            contactName: d?.isInSystemContacts == true ? changed.map(title) : nil,
+                                                            hasNickname: d?.hasNickname ?? false,
+                                                            onOpenEditNicknameAndNoteModal: { [session] in
+                                                                if let id = changedId, let serviceId = changed?.serviceId {
+                                                                    session.contactDialog = .nickname(conversationId: id, serviceId: serviceId)
+                                                                }
+                                                            }))
+        case .changeNumber(let source):
+            return .changeNumberNotification(ChangeNumberNotification(senderTitle: session.contactTitle(source), timestamp: Date(milliseconds: m.sentAt)))
+        case .joinedSignal:
+            return .joinedSignalNotification(JoinedSignalNotification(timestamp: Date(milliseconds: m.sentAt)))
+        case .titleTransition(let oldTitle):
+            return .titleTransitionNotification(TitleTransitionNotification(oldTitle: oldTitle ?? i18n("icu:unknownContact")))
+        case .conversationMerge(let obsoleteTitle, let obsoleteNumber):
+            return .conversationMerge(ConversationMergeNotification(conversationTitle: title(conversation), obsoleteConversationTitle: obsoleteTitle,
+                                                                    obsoleteConversationNumber: obsoleteNumber))
+        case .phoneNumberDiscovery(let e164):
+            // The first group in common names where the number was seen (SmartPhoneNumberDiscovery).
+            let d = session.details?.conversationId == conversation.id ? session.details : nil
+            return .phoneNumberDiscovery(PhoneNumberDiscoveryNotification(conversationTitle: title(conversation), phoneNumber: e164,
+                                                                          sharedGroup: d?.groupsInCommon.first.flatMap { session.conversation($0)?.title }))
+        case .messageRequestResponse(let event):
+            let isGroup = conversation.kind == .group
+            let d = session.details?.conversationId == conversation.id ? session.details : nil
+            return .messageRequestResponse(MessageRequestResponseNotification(
+                event: MessageRequestResponseEvent(rawValue: event) ?? .accept, isGroup: isGroup, isBlocked: d?.isBlocked ?? false,
+                renderedContact: isGroup ? nil : Emojify.run(title(conversation)),
+                onBlockOrReport: { openRequestConfirmation(.reportingAndMaybeBlocking) },
+                onLearnMore: { [session] in session.contactDialog = .safetyTips }))
         }
+    }
+
+    /// A notice's disappearing timer (length, and when it runs out once started).
+    func expireTimer(_ m: TimelineMessage) -> (length: TimeInterval, expiration: Date)? {
+        guard let seconds = m.expireTimer, seconds > 0, let start = m.expirationStartTimestamp else { return nil }
+        return (TimeInterval(seconds), Date(milliseconds: start + Int64(seconds) * 1000))
     }
 
     /// `getPropsForCallHistory`: the call, who started it, and for a group call whether it is
@@ -552,6 +642,7 @@ struct ConversationPane: View {
         var p = MessageProps(id: m.id, direction: m.direction == .outgoing ? .outgoing : .incoming, author: author,
                              text: m.isDeleted ? nil : m.body, timestamp: Date(milliseconds: m.sentAt))
         p.conversationType = conversation.kind == .group ? .group : .direct
+        p.isSignalConversation = isSignalChat
         if conversation.kind == .group, m.direction == .incoming, let aci = m.author, let g = session.details?.group {
             // The sender's name colour and member label in the group.
             p.contactNameColor = ContactNameColors.colors(g)[aci]
@@ -617,6 +708,9 @@ struct ConversationPane: View {
             p.activeAudio = session.activeAudio(m)
         }
         p.deletedForEveryone = m.isDeleted
+        // A delete for everyone that did not go out: "Delete failed" retries it.
+        p.canRetryDeleteForEveryone = m.isDeleted && m.isDeleteForEveryoneFailed
+        p.retryDeleteForEveryone = { [session, id = m.id] in session.retryDeleteForEveryone(id) }
         p.isPinned = m.isPinned
         p.displayLimit = session.messageDisplayLimits[m.id]
         p.messageExpanded = { [session] limit in session.messageDisplayLimits[m.id] = limit }
@@ -732,8 +826,8 @@ struct ComposerFunPicker: View {
                onAddStickerPack: { close(); session.pushPanel("StickerManager") },
                onMarkStickerAsFavorite: { s, favorite in session.setStickerFavorite(packId: s.packId, stickerId: s.id, favorite) })
         } gifs: {
-            FunPanelGifs(recentGifs: [], source: session.gifSource, storedSearchInput: $gifSearch,
-                         onSelectGif: { g in session.sendGif(g.gif.attachmentMedia.url); close() }, onClose: { close() })
+            FunPanelGifs(recentGifs: session.recentGifItems, source: session.gifSource, storedSearchInput: $gifSearch,
+                         onSelectGif: { g in session.sendGif(g.gif); close() }, onRemoveRecentGif: { session.removeRecentGif($0) }, onClose: { close() })
         }
     }
 }
@@ -766,7 +860,7 @@ struct TimelineRow: View, Equatable {
     var body: some View {
         VStack(spacing: 0) {
             if TimelineUtil.shouldRenderDateHeader(isOldest: previous == nil, pane.grouping(message), previous: previous.map(pane.grouping)) {
-                TimelineDateHeader(timestamp: Date(milliseconds: message.sentAt))
+                TimelineDateHeader(timestamp: Date(milliseconds: message.sentAt), isSignalConversation: pane.isSignalChat)
             }
             if let notice = message.notice {
                 pane.noticeRow(message, notice, next: next)
@@ -809,7 +903,7 @@ struct TimelineCollapseRow: View, Equatable {
         VStack(spacing: 0) {
             if let first = messages.first,
                TimelineUtil.shouldRenderDateHeader(isOldest: previous == nil, pane.grouping(first), previous: previous.map(pane.grouping)) {
-                TimelineDateHeader(timestamp: Date(milliseconds: first.sentAt))
+                TimelineDateHeader(timestamp: Date(milliseconds: first.sentAt), isSignalConversation: pane.isSignalChat)
             }
             CollapseSetViewer(kind: kind, messages: set.messages, isGroup: pane.conversation.kind == .group,
                               isSelectMode: session.selectedMessageIds != nil, isSelected: set.messages.contains { selected.contains($0.id) },

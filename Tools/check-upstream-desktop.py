@@ -241,7 +241,8 @@ def report(up, old, new):
     head = (f"Serein is reviewed up to Signal-Desktop **{old}** (`Tools/upstream-desktop.txt`); **{new}** is out.\n\n"
             f"- Release: {UPSTREAM}/releases/tag/{new}\n- Changes: {compare}\n\n"
             "- [ ] Port what Serein should have (one issue or commit per feature)\n"
-            f"- [ ] Bump `Tools/upstream-desktop.txt` to `{new}`\n")
+            f"- [ ] Bump `Tools/upstream-desktop.txt` to `{new}` and `SignalClient.desktopVersion` to `{new.lstrip('v').split('-')[0]}` "
+            "(remote-config features and announcements are gated on it)\n")
     tail = "\n\n_Opened by Tools/check-upstream-desktop.py (.github/workflows/upstream-releases.yml)._"
     body = head + "\n" + "\n\n".join(sections)
     commits = up.commits()

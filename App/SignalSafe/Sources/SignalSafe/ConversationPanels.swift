@@ -155,9 +155,10 @@ struct ConversationPanelView: View {
         m.invitesCount = (group?.pendingMembersV2.count ?? 0) + (group?.pendingAdminApprovalV2.count ?? 0)
         // canHaveNicknameAndNote: a 1:1 chat with someone else.
         m.canHaveNicknameAndNote = conversation.kind == .private && !m.isMe && conversation.serviceId != nil
-        // Ending a group is behind upstream's version-gated remote config
-        // (`desktop.groupTerminate.send`), which has no meaning for Serein: not offered.
-        m.isTerminateGroupEnabled = false
+        // Ending a group follows upstream's version-gated remote config (`desktop.groupTerminate.send`,
+        // against the Desktop version Serein tracks).
+        m.isTerminateGroupEnabled = session.terminateGroupEnabled
+        m.isSignalConversation = conversation.kind == .private && ReleaseNotesChat.isSignalChat(serviceId: conversation.serviceId)
         m.hasActiveCall = session.activeCall != nil && session.activeCall?.conversationId != conversation.id
         m.groupsInCommon = (d?.groupsInCommon ?? []).compactMap { id in session.conversation(id).map { avatar($0) } }
         m.bubbleColor = session.bubbleColor(session.conversationColor)
@@ -216,6 +217,7 @@ struct ConversationPanelView: View {
         c.actions.onUnarchive = { session.setArchived(false) }
         c.actions.onDelete = { session.deleteChat() }
         c.actions.onLeave = { session.leaveGroup() }
+        c.actions.onTerminateGroup = { session.terminateGroup() }
         c.actions.onReportSpam = { session.reportSpam(block: false) }
         c.actions.onReportSpamAndBlock = { session.reportSpam(block: true) }
         c.actions.acceptConversation = { session.respond(conversation.id, .accept) }
@@ -353,7 +355,7 @@ struct MemberContactModal: View {
         contact.isMe = serviceId == me
         contact.color = session.contactColor(serviceId)
         contact.avatar = session.avatarImage(session.contacts[serviceId]?.avatar)
-        contact.hasAvatar = contact.avatar != nil
+        contact.hasAvatar = contact.avatar != nil || session.contacts[serviceId]?.hasRemoteAvatar == true
         contact.isBlocked = session.blockedConversationIds.contains { session.conversation($0)?.serviceId == serviceId }
         // canHaveNicknameAndNote: anyone but ourselves.
         contact.canHaveNicknameAndNote = serviceId != me
@@ -370,6 +372,7 @@ struct MemberContactModal: View {
         }
         var actions = ContactModal.Actions()
         actions.hideContactModal = { session.contactModalId = nil }
+        actions.startAvatarDownload = { session.downloadAvatar(serviceId) }
         actions.showConversation = { _ in
             session.contactModalId = nil
             session.openDirect(serviceId: serviceId)
@@ -396,8 +399,21 @@ struct MemberContactModal: View {
             }
         }
         actions.toggleGroupMemberLabelInfoModal = { _ in session.contactDialog = .memberLabelInfo }
+        // Opened from a call's participant list: mute them, or (a call link's admin) remove or
+        // block them from the call (SmartContactModal's isRemoteMuteVisible / isRemoveFromCallVisible).
+        let call = session.activeCall
+        let demux = call != nil ? session.contactModalCallDemuxId : nil
+        let participant = demux.flatMap { d in session.callParticipant(demuxId: d) }
+        if let call, let demux {
+            actions.sendRemoteMute = { _ in session.calling?.sendRemoteMute(conversationId: call.conversationId, demuxId: demux) }
+            actions.blockClientFromCall = { _ in session.calling?.blockClient(conversationId: call.conversationId, demuxId: demux) }
+            actions.removeClientFromCall = { _ in session.calling?.removeClient(conversationId: call.conversationId, demuxId: demux) }
+        }
+        let removable = call?.isCallLink == true && participant != nil && call.flatMap { session.callLink($0.conversationId)?.isAdmin } == true
         return ContactModal(contact: contact, conversation: conversation, areWeAdmin: group?.isAdmin(me) ?? false, isAdmin: member?.role == GroupRole.administrator,
-                            isMember: member != nil, hasActiveCall: session.activeCall != nil, contactLabel: label,
+                            isMember: member != nil, hasActiveCall: session.activeCall != nil, activeCallDemuxId: demux.map(Int.init),
+                            isMuted: !(participant?.hasRemoteAudio ?? true), isRemoteMuteVisible: session.remoteMuteSendEnabled && participant != nil,
+                            isRemoveFromCallVisible: removable, contactLabel: label,
                             contactNameColor: label != nil ? ContactNameColors.colors(group)[serviceId] : nil, actions: actions)
     }
 }

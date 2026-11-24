@@ -14,7 +14,8 @@ import SwiftUI
 enum ContactDialog: Equatable {
     case signalConnections
     case profileNameWarning(isGroup: Bool)
-    case notePreview(String)
+    /// A contact's note; Edit opens their nickname and note editor.
+    case notePreview(String, serviceId: String)
     case safetyTips
     /// The nickname and note editor for a 1:1 conversation.
     case nickname(conversationId: String, serviceId: String)
@@ -63,6 +64,12 @@ enum ContactDialog: Equatable {
     }
 
     /// `onOpenEditNicknameAndNoteModal` for a contact (their 1:1 chat holds the nickname and note).
+    /// `startAvatarDownload`: a contact's photo we do not fetch unasked (a message request's).
+    func downloadAvatar(_ serviceId: String) {
+        guard let session else { return }
+        Task { try? await session.profiles.downloadAvatar(serviceId: serviceId) }
+    }
+
     func editNickname(_ serviceId: String) {
         guard let session else { return }
         Task {
@@ -167,7 +174,8 @@ struct ContactSurfaceDialogs: View {
         c.isMe = isMe
         c.color = session.contactColor(info.serviceId)
         c.avatar = session.avatarImage(session.contacts[info.serviceId]?.avatar)
-        c.hasAvatar = c.avatar != nil
+        // A photo not downloaded (a message request's) is shown blurred, to download on a click.
+        c.hasAvatar = c.avatar != nil || session.contacts[info.serviceId]?.hasRemoteAvatar == true
         c.about = [info.aboutEmoji, info.about].compactMap { $0 }.joined(separator: " ")
         c.isVerified = info.isVerified
         c.isBlocked = info.isBlocked
@@ -185,13 +193,14 @@ struct ContactSurfaceDialogs: View {
         let label = member?.labelString.flatMap { $0.isEmpty ? nil : $0 }
         var a = AboutContactModal.Actions()
         a.onClose = { session.closeAboutContact() }
+        a.startAvatarDownload = { session.downloadAvatar($0) }
         a.toggleSafetyNumberModal = { id in
             session.closeAboutContact()
             session.showSafetyNumber(id)
         }
         a.toggleSignalConnectionsModal = { session.contactDialog = .signalConnections }
         a.toggleProfileNameWarningModal = { session.contactDialog = .profileNameWarning(isGroup: false) }
-        a.onOpenNotePreviewModal = { if let note = info.note { session.contactDialog = .notePreview(note) } }
+        a.onOpenNotePreviewModal = { if let note = info.note { session.contactDialog = .notePreview(note, serviceId: info.serviceId) } }
         a.showProfileEditor = {
             session.closeAboutContact()
             session.contactModalId = nil
@@ -235,8 +244,12 @@ struct ContactSurfaceDialogs: View {
             SignalConnectionsModal(onClose: close)
         case .profileNameWarning(let isGroup):
             ProfileNameWarningModal(conversationType: isGroup ? .group : .direct, onClose: close)
-        case .notePreview(let note):
-            NotePreviewModal(note: note, onClose: close)
+        case .notePreview(let note, let serviceId):
+            NotePreviewModal(note: note, onClose: close, onEdit: {
+                close()
+                session.closeAboutContact()
+                session.editNickname(serviceId)
+            })
         case .safetyTips:
             SafetyTipsModal(onClose: close)
         case .nickname(let conversationId, let serviceId):

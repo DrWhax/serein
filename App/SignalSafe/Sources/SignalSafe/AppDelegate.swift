@@ -14,7 +14,7 @@ import SwiftUI
     var keyMonitor: Any?
     /// Serein: upstream's strings that name the desktop app say "Serein"; the nonprofit line
     /// becomes the non-affiliation notice.
-    let i18n = Localizer(locale: Localizer.match(Locale.preferredLanguages), rebrand: Rebrand(name: "Serein", messages: [
+    let i18n = Localizer(locale: AppLanguage.resolvedLocale, rebrand: Rebrand(name: "Serein", messages: [
         "icu:signalNonProfit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
         "icu:EntryPoint--nonprofit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
     ]))
@@ -81,7 +81,7 @@ import SwiftUI
 
     func applicationDidBecomeActive(_ notification: Notification) {
         notifications.clear()
-        if model.selectedTab == .chats, let id = session.selectedConversationId { session.markRead(id) }
+        if model.selectedTab == .chats { session.markVisibleReadOnActivation() }
     }
 
     func createWindow() {

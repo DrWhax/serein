@@ -49,8 +49,10 @@ enum ConversationState {
         return trusted || sent > 0 || before > 0 || emptyPrivate || emptyWhitelistedGroup
     }
 
-    /// `applyMessageRequestResponse`
-    static func applyResponse(_ db: Database, conversationId: String, _ type: MessageRequestResponse, ourAci: String) throws {
+    /// `applyMessageRequestResponse`, with the notices of what changed (ChatEventNotices).
+    static func applyResponse(_ db: Database, conversationId: String, _ type: MessageRequestResponse, ourAci: String,
+                              at timestamp: Int64 = MessageStore.now()) throws {
+        let before = try ChatEventNotices.RequestState.of(db, conversationId: conversationId)
         let row = try Row.fetchOne(db, sql: "SELECT serviceId, groupId FROM conversations WHERE id = ?", arguments: [conversationId])
         let serviceId: String? = row?["serviceId"], groupId: String? = row?["groupId"]
         switch type {
@@ -61,21 +63,29 @@ enum ConversationState {
                 json["removalStage"] = nil
             }
             try setBlocked(db, serviceId: serviceId, groupId: groupId, false)
-        case .delete, .spam:
+        case .delete:
+            // `rejectConversation({ isDelete })`
             try deleteMessages(db, conversationId: conversationId)
             try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
                 json["messageRequestResponseType"] = type.rawValue
                 json["profileSharing"] = false
-                if type == .spam { json["isReportingSpam"] = true }
+            }
+        case .spam:
+            // `rejectConversation({ isSpam })`: reported; the messages stay.
+            try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
+                json["messageRequestResponseType"] = type.rawValue
+                json["isReportingSpam"] = true
             }
         case .block, .blockAndDelete, .blockAndSpam:
             try setBlocked(db, serviceId: serviceId, groupId: groupId, true)
             try MessageStore.updateConversationJSON(db, conversationId: conversationId) { json in
                 json["messageRequestResponseType"] = type.rawValue
                 json["profileSharing"] = false
+                if type == .blockAndSpam { json["isReportingSpam"] = true }
             }
-            if type != .block { try deleteMessages(db, conversationId: conversationId) }
+            if type == .blockAndDelete { try deleteMessages(db, conversationId: conversationId) }
         }
+        try ChatEventNotices.requestResponded(db, conversationId: conversationId, type, before: before, at: timestamp)
     }
 
     /// Attachments of a conversation that were stored but not queued (it was not accepted).
@@ -237,7 +247,11 @@ extension Messenger {
     public func setBlocked(_ conversationId: String, _ blocked: Bool) async throws {
         let sync = try await database.pool.write { db -> Signalservice_SyncMessage.Blocked in
             let row = try Row.fetchOne(db, sql: "SELECT serviceId, groupId, e164 FROM conversations WHERE id = ?", arguments: [conversationId])
+            let before = try ChatEventNotices.RequestState.of(db, conversationId: conversationId)
             try ConversationState.setBlocked(db, serviceId: row?["serviceId"], groupId: row?["groupId"], blocked)
+            if before.blocked != blocked {
+                try ChatEventNotices.requestEvent(db, conversationId: conversationId, blocked ? .block : .unblock, sentAt: MessageStore.now())
+            }
             if blocked { try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["profileSharing"] = false } }
             try StorageWriteBack.conversationChanged(db, conversationId: conversationId)
             var b = Signalservice_SyncMessage.Blocked()
@@ -319,6 +333,32 @@ extension Messenger {
                 json["isPinned"] = pinned
                 if pinned { json["isArchived"] = false }
             }
+            try StorageWriteBack.accountChanged(db, account: account)
+        }
+        jobs.poke()
+    }
+
+    /// `hasCompletedUsernameOnboarding`: the "set a username" banner is done (synced).
+    public func setUsernameOnboardingCompleted() async throws {
+        let account = self.account
+        try await database.pool.write { db in
+            try Items.set(db, "hasCompletedUsernameOnboarding", true)
+            try StorageWriteBack.accountChanged(db, account: account)
+        }
+        jobs.poke()
+    }
+
+    /// `hasCompletedUsernameLinkOnboarding` (this device only).
+    public func setUsernameLinkOnboardingCompleted() async throws {
+        try await database.pool.write { try Items.set($0, "hasCompletedUsernameLinkOnboarding", true) }
+    }
+
+    /// `savePreferredReactions`: the six reaction emoji (AccountRecord.preferredReactionEmoji).
+    public func setPreferredReactions(_ emoji: [String]) async throws {
+        guard StorageRecords.canSyncReactionEmoji(emoji) else { throw ModifierError.notAllowed("preferred reactions") }
+        let account = self.account
+        try await database.pool.write { db in
+            try Items.set(db, "preferredReactionEmoji", emoji)
             try StorageWriteBack.accountChanged(db, account: account)
         }
         jobs.poke()

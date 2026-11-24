@@ -146,11 +146,14 @@ extension MessageStore {
     }
 
     /// Marks unread incoming messages read and seen; returns them as receipt targets.
-    static func markRead(_ db: Database, conversationId: String) throws -> [ReceiptTarget] {
+    /// `markConversationRead`: the chat's unread messages up to `upTo` (a `received_at`; nil:
+    /// all) become read, and what is unseen up to there seen.
+    static func markRead(_ db: Database, conversationId: String, upTo: Int64? = nil) throws -> [ReceiptTarget] {
+        let limit = upTo ?? Int64.max
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, sourceServiceId, sent_at FROM messages
-            WHERE conversationId = ? AND type = 'incoming' AND readStatus = ? ORDER BY received_at
-            """, arguments: [conversationId, ReadStatus.unread.rawValue])
+            WHERE conversationId = ? AND type = 'incoming' AND readStatus = ? AND received_at <= ? ORDER BY received_at
+            """, arguments: [conversationId, ReadStatus.unread.rawValue, limit])
         var targets: [ReceiptTarget] = []
         try ConversationState.startTimers(db, messageIds: rows.map { $0["id"] }, at: now())
         for row in rows {
@@ -165,9 +168,11 @@ extension MessageStore {
         // collapse set.
         try db.execute(sql: """
             UPDATE messages SET seenStatus = ?, json = json_set(json, '$.seenStatus', ?)
-            WHERE conversationId = ? AND seenStatus = ? AND isStory = 0 AND storyId IS NULL
-            """, arguments: [SeenStatus.seen.rawValue, SeenStatus.seen.rawValue, conversationId, SeenStatus.unseen.rawValue])
-        try updateConversationJSON(db, conversationId: conversationId) { $0["unreadCount"] = 0 }
+            WHERE conversationId = ? AND seenStatus = ? AND isStory = 0 AND storyId IS NULL AND received_at <= ?
+            """, arguments: [SeenStatus.seen.rawValue, SeenStatus.seen.rawValue, conversationId, SeenStatus.unseen.rawValue, limit])
+        let unread = upTo == nil ? 0 : try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE conversationId = ? AND type = 'incoming' AND readStatus = ?",
+                                                        arguments: [conversationId, ReadStatus.unread.rawValue]) ?? 0
+        try updateConversationJSON(db, conversationId: conversationId) { $0["unreadCount"] = unread }
         return targets
     }
 

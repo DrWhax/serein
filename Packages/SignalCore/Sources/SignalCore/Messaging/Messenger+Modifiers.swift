@@ -63,7 +63,7 @@ extension Messenger {
     }
 
     /// Applies locally (as this device) and queues the send.
-    func queueModifier(_ t: TargetInfo, data: Signalservice_DataMessage, local: [PendingModifier.Kind: Data]) async throws {
+    func queueModifier(_ t: TargetInfo, data: Signalservice_DataMessage, deleteTarget: String? = nil, local: [PendingModifier.Kind: Data]) async throws {
         var content = Signalservice_Content()
         content.dataMessage = data
         let payload = try content.serializedBytes() as Data
@@ -75,8 +75,10 @@ extension Messenger {
                 try MessageModifiers.apply(db, PendingModifier(kind: kind, targetAuthor: t.author, targetSentAt: t.sentAt, context: ctx, payload: p,
                                                                storedAt: MessageStore.now()), ourAci: ourAci, keepIfMissing: false)
             }
-            try JobQueue.insert(db, queueType: ConversationJob.queueType,
-                                payload: ConversationJob.modifierSend(conversationId: t.conversationId, content: payload, timestamp: data.timestamp))
+            var job = ConversationJob.modifierSend(conversationId: t.conversationId, content: payload, timestamp: data.timestamp)
+            // A delete for everyone names its target: a send that fails marks it (retryable).
+            job.messageId = deleteTarget
+            try JobQueue.insert(db, queueType: ConversationJob.queueType, payload: job)
         }
         jobs.poke()
     }
@@ -123,7 +125,34 @@ extension Messenger {
             d.targetSentTimestamp = t.sentAt
             data.delete = d
         }
-        try await queueModifier(t, data: data, local: [admin ? .adminDelete : .delete: Data()])
+        try await queueModifier(t, data: data, deleteTarget: messageId, local: [admin ? .adminDelete : .delete: Data()])
+    }
+
+    /// `retryDeleteForEveryone`: a delete whose send failed goes out again (the message is already
+    /// deleted here; only the send is retried).
+    public func retryDeleteForEveryone(_ messageId: String) async throws {
+        let t = try await targetInfo(messageId)
+        let ourAci = account.aci
+        let failed = try await database.pool.read { db -> Bool in
+            let json = try MessageStore.jsonObject(try String.fetchOne(db, sql: "SELECT json FROM messages WHERE id = ?", arguments: [messageId]) ?? "{}")
+            return json["deletedForEveryone"] as? Bool == true && json["deletedForEveryoneFailed"] as? Bool == true
+        }
+        guard failed else {
+            throw ModifierError.notAllowed("nothing to retry")
+        }
+        var data = baseDataMessage(t, timestamp: UInt64(MessageStore.now()))
+        if t.author != ourAci {
+            var d = Signalservice_DataMessage.AdminDelete()
+            d.targetAuthorAciBinary = StorageLocal.uuidBytes(t.author) ?? Data()
+            d.targetSentTimestamp = t.sentAt
+            data.adminDelete = d
+        } else {
+            var d = Signalservice_DataMessage.Delete()
+            d.targetSentTimestamp = t.sentAt
+            data.delete = d
+        }
+        try await database.pool.write { db in try MessageStore.updateJSON(db, messageId: messageId) { $0["deletedForEveryoneFailed"] = nil } }
+        try await queueModifier(t, data: data, deleteTarget: messageId, local: [:])
     }
 
     /// `getMessagesCanDeleteForEveryone`: whether every one of `messageIds` can be deleted for

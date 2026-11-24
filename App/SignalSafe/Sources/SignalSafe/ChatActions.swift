@@ -177,6 +177,12 @@ import SignalUI
         group("leave") { try await $0.leave($1) }
     }
 
+    /// `terminateGroup`: an admin ends the group for everyone (after ConversationDetailsActions'
+    /// confirmation).
+    func terminateGroup() {
+        group("terminate") { try await $0.terminate($1) }
+    }
+
     /// `toggleAdmin`
     func toggleAdmin(_ aci: String) {
         let admin = details?.group?.isAdmin(aci) ?? false
@@ -193,6 +199,11 @@ import SignalUI
 
     func denyRequest(_ aci: String) {
         group("deny") { try await $0.denyRequest($1, aci) }
+    }
+
+    /// `retryDeleteForEveryone`
+    func retryDeleteForEveryone(_ messageId: String) {
+        run("retry delete") { try await $0.messenger.retryDeleteForEveryone(messageId) }
     }
 
     /// `blockGroupLinkRequests`: someone who keeps asking to join is banned from asking again.

@@ -325,6 +325,8 @@ enum MessageModifiers {
               inTargetConversation(t, c) else { return false }
         poll["terminatedAt"] = c.timestamp
         try MessageStore.updateJSON(db, messageId: t.id) { $0["poll"] = poll }
+        try ChatEventNotices.pollEnded(db, conversationId: t.conversationId, terminator: c.sender, question: poll["question"] as? String ?? "",
+                                       pollTimestamp: t.sentAt, at: Int64(c.timestamp), ourAci: ourAci)
         return true
     }
 
