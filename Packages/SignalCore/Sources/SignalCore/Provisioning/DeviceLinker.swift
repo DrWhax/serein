@@ -38,8 +38,10 @@ public final class DeviceLinker: Sendable {
     }
 
     /// Runs the whole link flow. `onURL` receives the QR-code URL as soon as the
-    /// server assigns a provisioning address.
-    public func link(_ options: LinkOptions, onURL: @Sendable (String) async -> Void) async throws -> Account {
+    /// server assigns a provisioning address; `onScanned` is told when the primary has sent
+    /// the provisioning message (the code was scanned and the link is being finished).
+    public func link(_ options: LinkOptions, onURL: @Sendable (String) async -> Void,
+                     onScanned: @Sendable () async -> Void = {}) async throws -> Account {
         let cipher = ProvisioningCipher()
         let events = ProvisioningEvents()
         let connection = try await net.connectProvisioning()
@@ -57,6 +59,7 @@ public final class DeviceLinker: Sendable {
             if message != nil { break }
         }
         guard let message else { throw LinkError.provisioningClosed("no envelope") }
+        await onScanned()
         return try await finishLink(message, options: options)
     }
 

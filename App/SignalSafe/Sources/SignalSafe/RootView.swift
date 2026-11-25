@@ -18,7 +18,14 @@ struct RootView: View {
                                             hasFailedStorySends: session.stories.contains { $0.isOutgoing && $0.sendStatuses.contains("Failed") },
                                             unreadChats: session.conversations.filter { $0.unreadCount > 0 && !$0.isArchived }.count,
                                             unreadStories: Set(session.stories.filter { !$0.isOutgoing && $0.isUnread }.map { $0.groupConversationId ?? $0.author }).count,
-                                            onSelect: { model.selectedTab = $0 },
+                                            onSelect: { tab in
+                                                // Leaving a settings page with unsaved changes asks first.
+                                                if model.selectedTab == .settings, model.settingsHasUnsavedChanges, tab != .settings {
+                                                    model.blockedNavigation = BlockedNavigation { model.selectedTab = tab }
+                                                } else {
+                                                    model.selectedTab = tab
+                                                }
+                                            },
                                             onToggleCollapse: { model.navTabsCollapsed = $0 })) { tab in
                     // The chats tab stays alive under the others (hidden), so coming back to it
                     // does not lay the whole timeline out again.
@@ -65,7 +72,67 @@ struct RootView: View {
                 }
                 #endif
                 if let e = session.composeError {
-                    ErrorModal(title: i18n(e.titleKey ?? "icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
+                    if e.untitled {
+                        AxoBaseDialog.Host {
+                            AxoConfirmDialog.Root(title: nil, description: i18n(e.key, e.args.mapValues { .string($0) })) {
+                                AxoConfirmDialog.Ok(i18n("icu:ok")) { session.composeError = nil }
+                            }
+                        }
+                    } else {
+                        ErrorModal(title: i18n(e.titleKey ?? "icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
+                    }
+                }
+                // LeftPaneChooseGroupMembersHelper's size dialogs (each once while choosing).
+                if session.groupAddition.maximumGroupSizeModalState == .showing {
+                    AxoBaseDialog.Host {
+                        AddGroupMemberMaximumGroupSizeErrorDialog(maximumNumberOfContacts: session.groupSizeHardLimit) {
+                            session.groupAddition.maximumGroupSizeModalState = .shown
+                        }
+                    }
+                } else if session.groupAddition.recommendedGroupSizeModalState == .showing {
+                    AxoBaseDialog.Host {
+                        AddGroupMemberRecommendedMaximumGroupSizeErrorDialog(recommendedMaximumNumberOfContacts: session.groupSizeRecommendedLimit) {
+                            session.groupAddition.recommendedGroupSizeModalState = .shown
+                        }
+                    }
+                }
+                if let e = session.attachmentEditor {
+                    // The composer's MediaEditor (not a story's): the caption is the draft text.
+                    MediaEditor(image: e.image, isHighQuality: session.sendsHighQuality, isViewOnce: session.draftViewOnce,
+                                showViewOnceToggle: SignalSession.isViewOnceEligible(session.staged.map(\.contentType), quoting: session.quotedMessageId),
+                                draftText: session.draft, stickers: session.mediaEditorStickers, onClose: { session.attachmentEditor = nil },
+                                onDone: { session.finishEditingStaged($0) })
+                }
+                if session.confirmGifSelection != nil {
+                    AxoBaseDialog.Host {
+                        AxoConfirmDialog.Root(title: i18n("icu:CompositionArea__ConfirmGifSelection__Title"),
+                                              description: i18n("icu:CompositionArea__ConfirmGifSelection__Body")) {
+                            AxoConfirmDialog.Cancel(i18n("icu:cancel")) { session.confirmGifSelection = nil }
+                            AxoConfirmDialog.Action(i18n("icu:CompositionArea__ConfirmGifSelection__ReplaceButton"), variant: .strongPrimary) {
+                                session.replaceAttachmentsWithGif()
+                            }
+                        }
+                    }
+                }
+                if let d = session.draftGif {
+                    AxoBaseDialog.Host {
+                        DraftGifMessageSendModal(draftText: Binding(get: { session.draftGif?.text ?? "" }, set: { session.draftGif?.text = $0 }),
+                                                 gifFrame: nil, gifWidth: CGFloat(d.gif.attachmentMedia.width),
+                                                 gifHeight: CGFloat(d.gif.attachmentMedia.height), loadingState: d.state, player: d.player,
+                                                 onSubmit: { session.sendDraftGif() }, onClose: { session.closeDraftGif() })
+                    }
+                }
+                if session.confirmLeaveCall != nil {
+                    AxoBaseDialog.Host {
+                        ConfirmLeaveCallModal(onCancel: { session.confirmLeaveCall = nil },
+                                              leaveCurrentCallAndStartCallingLobby: { session.leaveCurrentCallAndStart() })
+                    }
+                }
+                if session.keyTransparencyErrorOpen {
+                    AxoBaseDialog.Host {
+                        KeyTransparencyErrorDialog(canShareDebugLog: false, onClose: { session.closeKeyTransparencyError(openSupport: false) },
+                                                   onSubmit: { _ in session.closeKeyTransparencyError(openSupport: true) })
+                    }
                 }
                 if session.criticalIdleModalOpen {
                     // CriticalIdlePrimaryDeviceModal: again a day after each close.
@@ -137,13 +204,15 @@ struct RootView: View {
         .environment(\.i18n, i18n)
         .environment(\.layoutDirection, i18n.direction == .rightToLeft ? .rightToLeft : .leftToRight)
         .frame(minWidth: 300, minHeight: 200)
+        // A chat's or contact's stories open in the stories tab (it hands the request on).
+        .onChange(of: session.userStoriesRequest) { if session.userStoriesRequest != nil { model.selectedTab = .stories } }
         .ignoresSafeArea()    // content runs under the hidden title bar (fullSizeContentView)
     }
 
     var appView: AppViewType {
         switch session.phase {
         case .starting: .blank
-        case .linking, .linkError, .syncing, .failed, .deletingData: .installer
+        case .linking, .linkInProgress, .linkError, .syncing, .failed, .deletingData: .installer
         case .ready: model.appView
         }
     }
@@ -153,6 +222,8 @@ struct RootView: View {
         switch session.phase {
         case .linking(let url):
             InstallScreenQrCodeNotScannedStep(provisioningUrl: url, isStaging: session.isStaging, retryGetQrCode: { session.link() })
+        case .linkInProgress:
+            InstallScreenLinkInProgressStep()
         case .linkError(let error):
             InstallScreenErrorStep(error: error, quit: { NSApp.terminate(nil) }, tryAgain: { session.link() })
         case .syncing(let step, let error):
@@ -208,16 +279,16 @@ struct RootView: View {
         }
         context.renderNotificationProfilesMenu = { AnyView(notificationProfilesMenu) }
         // SmartToastManager's megaphone: "set a username" until done or dismissed, else the first
-        // remote megaphone.
-        let megaphone: AnyView? = {
+        // remote megaphone (full size unless the pane is narrow; clicked narrow, it widens).
+        func megaphone(_ breakpoint: WidthBreakpoint, _ expand: @escaping () -> Void) -> AnyView? {
             let s = session.accountSettings
             if !s.hasCompletedUsernameOnboarding, s.username == nil, !session.usernameOnboardingOpen {
                 return AnyView(UsernameMegaphone(onLearnMore: { session.usernameOnboardingOpen = true },
                                                  onDismiss: { session.markUsernameOnboardingComplete() }))
             }
-            return session.remoteMegaphoneView(isFullSize: !model.navTabsCollapsed)
-        }()
-        context.renderToastManager = {
+            return session.remoteMegaphoneView(isFullSize: breakpoint != .narrow, onClickNarrowMegaphone: expand)
+        }
+        context.renderToastManager = { breakpoint, expand in
             var actions = ToastManagerActions()
             actions.hideToast = { session.toast = nil }
             // "Undo" on "Chat archived": back to the inbox, pinned again if it was.
@@ -226,7 +297,7 @@ struct RootView: View {
                 if wasPinned { session.setPinnedChat(true, for: id) }
             }
             actions.openFileInFolder = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) }
-            return AnyView(ToastManager(toast: session.toast, actions: actions, megaphone: megaphone))
+            return AnyView(ToastManager(toast: session.toast, actions: actions, megaphone: megaphone(breakpoint, expand)))
         }
         context.updateSearchTerm = { if session.isComposing { session.composeSearch = $0 } else { session.updateSearch($0) } }
         context.clearSearchQuery = { if session.isComposing { session.composeSearch = "" } else { session.updateSearch("") } }
@@ -237,6 +308,7 @@ struct RootView: View {
         }
         context.updateFilterByUnread = { session.filterByUnread = $0 }
         var actions = ConversationListActions()
+        actions.showInvalidPhoneNumber = { session.composeError = .invalidPhoneNumber($0) }
         let helper: any LeftPaneHelper
         if session.isComposing {
             actions.onSelectConversation = { session.openFromCompose($0) }
@@ -370,6 +442,7 @@ struct RootView: View {
             return LeftPaneChooseGroupMembersHelper(candidateContacts: matches.map(item), selectedContacts: selected, searchTerm: session.composeSearch,
                                                     regionCode: session.phoneRegion, username: termIsUsername ? rawTerm : nil,
                                                     uuidFetchState: Set([session.groupLookupFetching].compactMap { $0 }),
+                                                    groupSizeRecommendedLimit: session.groupSizeRecommendedLimit, groupSizeHardLimit: session.groupSizeHardLimit,
                                                     selectedE164s: Set(session.groupLookups.compactMap(\.e164)),
                                                     selectedUsernames: Set(session.groupLookups.compactMap(\.username)))
         case .setGroupMetadata:
@@ -520,6 +593,7 @@ struct RootView: View {
     static func previewText(_ m: TimelineMessage, _ i18n: Localizer) -> String {
         // A poll: "Poll: {question}" (upstream's poll preview).
         if let poll = m.poll { return i18n("icu:Poll--preview", ["pollQuestion": .string(poll.question)]) }
+        if let key = m.notice?.textKey { return i18n(key) }
         return NotificationContent.messageText(m.body, content: m.content, i18n: i18n)
     }
 
@@ -531,6 +605,7 @@ struct RootView: View {
         case .read: .read
         case .viewed: .viewed
         case .failed: .error
+        case .partialSent: .partialSent
         }
     }
 

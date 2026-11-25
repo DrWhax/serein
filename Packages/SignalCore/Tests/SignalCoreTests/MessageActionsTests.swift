@@ -279,6 +279,27 @@ import Testing
         }
     }
 
+    /// getMessagePropStatus: a failed recipient makes the message partly sent when someone
+    /// else has it, failed otherwise; without failures, the best state.
+    @Test func partlySentMessages() throws {
+        let (db, _) = try LinkedClient.temporaryDatabase()
+        func status(_ states: [String]) throws -> TimelineMessage.Status? {
+            try db.pool.write { db in
+                let c = try MessageStore.privateConversation(db, serviceId: UUID().uuidString.lowercased())
+                let byConversation = Dictionary(uniqueKeysWithValues: states.enumerated().map { ("c\($0.offset)", ["status": $0.element]) })
+                try MessageStore.insert(db, .init(conversationId: c, type: "outgoing", body: "hi", sentAt: 1, source: nil, sourceDevice: 1,
+                                                  serverGuid: nil, serverTimestamp: nil, unidentified: false,
+                                                  extra: ["sendStateByConversationId": byConversation]))
+                return try ConversationQueries.messages(db, conversationId: c, limit: 1).first?.status
+            }
+        }
+        #expect(try status(["Sent", "Failed"]) == .partialSent)
+        #expect(try status(["Read", "Failed", "Pending"]) == .partialSent)
+        #expect(try status(["Pending", "Failed"]) == .failed)
+        #expect(try status(["Failed"]) == .failed)
+        #expect(try status(["Delivered", "Sent"]) == .delivered)
+    }
+
     /// A group send that gives up fails for every member still waiting, so the message shows
     /// "Send failed" (and can be retried), not "sending" for good with no job left.
     @Test func failedGroupSendFailsItsMembers() async throws {

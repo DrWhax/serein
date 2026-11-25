@@ -56,27 +56,102 @@ struct ComposerLinkPreview {
 
     /// `addLinkPreview`: the fetch (bounded by LinkPreviewService.timeout), then its image.
     private func fetchLinkPreview(_ url: String) async {
-        guard let service = linkPreviewService() else {
-            Self.trace("link preview: no service (session \(signalSession != nil), strings \(linkPreviewStrings != nil))")
-            return removeLinkPreview()
-        }
-        let result = await service.preview(for: url)
+        let loaded = await loadLinkPreview(url, maxDimension: Self.linkPreviewImageMaxDimension)
         guard !Task.isCancelled, linkPreview?.url == url else { return }
-        Self.trace("link preview: \(result == nil ? "no result" : "title \(result?.title?.isEmpty == false), image \(result?.image?.data.count ?? 0) bytes")")
-        // A preview needs a title or an image.
-        guard let result, result.title?.isEmpty == false || result.image != nil else {
+        guard let loaded else {
             linkPreviewExcluded.insert(url)
             return removeLinkPreview()
         }
+        linkPreview = loaded
+    }
+
+    /// A link's preview and its image decoded for display; nil without a title or an image.
+    private func loadLinkPreview(_ url: String, maxDimension: Int) async -> ComposerLinkPreview? {
+        guard let service = linkPreviewService() else {
+            Self.trace("link preview: no service (session \(signalSession != nil), strings \(linkPreviewStrings != nil))")
+            return nil
+        }
+        let result = await service.preview(for: url)
+        Self.trace("link preview: \(result == nil ? "no result" : "title \(result?.title?.isEmpty == false), image \(result?.image?.data.count ?? 0) bytes")")
+        // A preview needs a title or an image.
+        guard let result, result.title?.isEmpty == false || result.image != nil else { return nil }
         var image: RGBAImage?
-        if let data = result.image?.data,
-           let shown = try? await media.displayImage(data, maxDimension: Self.linkPreviewImageMaxDimension) {
+        if let data = result.image?.data, let shown = try? await media.displayImage(data, maxDimension: maxDimension) {
             image = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
         } else if result.image != nil {
             Self.trace("link preview: image not decodable")
         }
-        guard !Task.isCancelled, linkPreview?.url == url else { return }
-        linkPreview = ComposerLinkPreview(url: url, draft: result, image: image)
+        return ComposerLinkPreview(url: url, draft: result, image: image)
+    }
+
+    // MARK: the text story creator's (LinkPreviewSourceType.StoryCreator, mode 'story')
+
+    /// `debouncedMaybeGrabLinkPreview` for a story: with previews off, the link alone
+    /// (`disableFetch`); a failed fetch leaves it out.
+    func grabStoryLinkPreview(_ text: String) {
+        storyLinkPreviewDebounce?.cancel()
+        storyLinkPreviewDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            self?.findStoryLinkPreview(text)
+        }
+    }
+
+    private func findStoryLinkPreview(_ text: String) {
+        guard !text.isEmpty else { return removeStoryLinkPreview() }
+        let all = LinkPreviewRules.findLinks(text)
+        if let current = storyLinkPreview?.url, all.contains(current) { return }
+        guard let link = all.first(where: { LinkPreviewRules.shouldPreviewHref($0) && !storyLinkPreviewExcluded.contains($0) }) else {
+            return removeStoryLinkPreview()
+        }
+        removeStoryLinkPreview()
+        guard accountSettings.linkPreviews else {
+            storyLinkPreview = ComposerLinkPreview(url: link, draft: LinkPreviewDraft(url: link, title: nil, description: nil, date: nil, image: nil))
+            return
+        }
+        storyLinkPreview = ComposerLinkPreview(url: link)
+        storyLinkPreviewTask = Task { [weak self] in
+            let loaded = await self?.loadLinkPreview(link, maxDimension: Self.storyLinkPreviewImageMaxDimension)
+            guard !Task.isCancelled, let self, self.storyLinkPreview?.url == link else { return }
+            guard let loaded else {
+                self.storyLinkPreviewExcluded.insert(link)
+                return self.removeStoryLinkPreview()
+            }
+            self.storyLinkPreview = loaded
+        }
+    }
+
+    /// The story card's image at most this big (its full-width card at 2×).
+    static let storyLinkPreviewImageMaxDimension = 720
+
+    func removeStoryLinkPreview() {
+        storyLinkPreviewDebounce?.cancel()
+        storyLinkPreviewTask?.cancel()
+        storyLinkPreviewTask = nil
+        if storyLinkPreview != nil { storyLinkPreview = nil }
+    }
+
+    /// A new story, or one sent: nothing left out any more.
+    func resetStoryLinkPreview() {
+        storyLinkPreviewExcluded = []
+        removeStoryLinkPreview()
+    }
+
+    /// The creator's `linkPreview` (none while loading).
+    var storyCreatorLinkPreview: StoryCreatorLinkPreview? {
+        guard let p = storyLinkPreview, let d = p.draft else { return nil }
+        return StoryCreatorLinkPreview(url: d.url, title: d.title, description: d.description, image: p.image,
+                                       imageSize: p.image.map { CGSize(width: $0.width, height: $0.height) }, domain: LinkPreviewRules.domain(d.url))
+    }
+
+    /// The story's preview as sent: the fetched one for its link (with date and image), else
+    /// the card's own fields.
+    func storyLinkPreviewForSend(_ p: StoryLinkPreviewData) -> (preview: SignalCore.StoryLinkPreview, image: OutgoingAttachment?) {
+        guard let d = storyLinkPreview?.draft, d.url == p.url else {
+            return (SignalCore.StoryLinkPreview(url: p.url, title: p.title, description: p.description), nil)
+        }
+        return (SignalCore.StoryLinkPreview(url: d.url, title: d.title, description: d.description, date: d.date),
+                d.image.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType) })
     }
 
     private func linkPreviewService() -> LinkPreviewService? {

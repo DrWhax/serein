@@ -21,7 +21,16 @@ struct SettingsTab: View {
         get { model.settingsPage }
         nonmutating set { model.settingsPage = newValue }
     }
-    private var pageBinding: Binding<SettingsPage> { Binding(get: { model.settingsPage }, set: { model.settingsPage = $0 }) }
+    /// The sidebar's selection; leaving a page with unsaved changes asks first.
+    private var pageBinding: Binding<SettingsPage> {
+        Binding(get: { model.settingsPage }, set: { [model] next in
+            if model.settingsHasUnsavedChanges, next != model.settingsPage {
+                model.blockedNavigation = BlockedNavigation { model.settingsPage = next }
+            } else {
+                model.settingsPage = next
+            }
+        })
+    }
     @State private var editingFolderId: String?
     @State private var accountKey: String?
     @State private var internalSettings = InternalSettings()
@@ -440,7 +449,9 @@ struct SettingsTab: View {
             onDeleteChatFolder: { id in
                 session.editChatFolders { try ChatFolderStore.delete($0, id: id, at: Int64(Date().timeIntervalSince1970 * 1000)) }
                 page = .chatFolders
-            })
+            },
+            onChangedStateChange: { [model] in model.settingsHasUnsavedChanges = $0 },
+            blockedNavigation: model.blockedNavigation, onBlockedNavigationHandled: { [model] in model.blockedNavigation = nil })
     }
 
     // MARK: account

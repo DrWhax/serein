@@ -47,6 +47,10 @@ extension Messenger {
     /// place instead of appearing above what they have already read (upstream
     /// `findByConversationAndMarkOpened`).
     public func conversationOpened(_ conversationId: String) async throws {
+        try await database.pool.write { db in
+            try ChatEventNotices.universalTimerOnOpen(db, conversationId: conversationId)
+            try ChatEventNotices.contactRemovedOnOpen(db, conversationId: conversationId)
+        }
         try await database.pool.write { db in try RetryPlaceholders.markOpened(db, conversationId: conversationId) }
     }
 

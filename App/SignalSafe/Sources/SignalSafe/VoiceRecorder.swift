@@ -77,6 +77,23 @@ struct VoiceRecording {
         }
     }
 
+    /// `saveDraftRecordingIfNeeded`: a recording still going is finished and becomes a draft
+    /// voice message of its chat (on leaving the chat or the app, or answering a call).
+    func saveDraftRecordingIfNeeded(_ conversationId: String? = nil) {
+        guard let r = recording, let id = r.session, let conversationId = conversationId ?? selectedConversationId else { return }
+        recording = nil
+        let task = stopRecorderPolling(), media = media
+        Task {
+            await task?.value
+            do {
+                let note = try await media.finishVoiceNote(id)
+                stageRecording(note.data, conversationId: conversationId)
+            } catch {
+                Self.trace("voice note draft failed: \(error)")
+            }
+        }
+    }
+
     /// Send: the note is finished by the encoder and sent like an attachment (a voice message).
     func sendRecording() {
         guard let r = recording, let id = r.session, let session = signalSession, let c = selectedConversation else { return cancelRecording() }

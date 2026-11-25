@@ -44,12 +44,15 @@ public struct StoryImage<Children: View>: View {
     /// The viewer contains the picture in the window (`.StoryViewer__story img { object-fit: contain }`).
     let fitContain: Bool
     let videoSource: (any CallVideoFrameSource)?
+    /// A video story played from its file.
+    let player: VideoPlaybackEngine?
     let children: Children
     @Environment(\.i18n) var i18n
 
     public init(attachment: StoryAttachmentData?, firstName: String, isMe: Bool = false, isThumbnail: Bool = false, fitContain: Bool = false,
-                videoSource: (any CallVideoFrameSource)? = nil, @ViewBuilder children: () -> Children) {
+                videoSource: (any CallVideoFrameSource)? = nil, player: VideoPlaybackEngine? = nil, @ViewBuilder children: () -> Children) {
         self.fitContain = fitContain
+        self.player = player
         self.attachment = attachment
         self.firstName = firstName
         self.isMe = isMe
@@ -59,7 +62,7 @@ public struct StoryImage<Children: View>: View {
     }
 
     /// The image could not be shown (`hasImgError`): it failed to decode or there is none.
-    var hasError: Bool { attachment.map { $0.error || (!$0.isNotResolved && !$0.pending && $0.textAttachment == nil && $0.image == nil && videoSource == nil) } ?? false }
+    var hasError: Bool { attachment.map { $0.error || (!$0.isNotResolved && !$0.pending && $0.textAttachment == nil && $0.image == nil && videoSource == nil && player == nil) } ?? false }
 
     @ViewBuilder func content(_ a: StoryAttachmentData) -> some View {
         let isPending = a.pending && a.textAttachment == nil && !hasError
@@ -71,7 +74,11 @@ public struct StoryImage<Children: View>: View {
             if let image { PixelImage(image, fit: .fill).frame(width: CGFloat(a.width ?? 800), height: CGFloat(a.height ?? 600)) }
         } else if !isThumbnail, a.contentType.hasPrefix("video/") {
             // <video>: its frames, nothing until it plays (the image is only its screenshot).
-            if let videoSource { RemoteVideoStack(source: videoSource, fit: fitContain ? .contain : .cover) }
+            if let player {
+                VideoView(engine: player, fit: fitContain ? .contain : .cover, background: .clear)
+            } else if let videoSource {
+                RemoteVideoStack(source: videoSource, fit: fitContain ? .contain : .cover)
+            }
         } else if let image = (isThumbnail ? a.thumbnail ?? a.image : a.image) {
             PixelImage(image, fit: fitContain ? .contain : .cover)
         }
@@ -109,8 +116,9 @@ public struct StoryImage<Children: View>: View {
 
 extension StoryImage where Children == EmptyView {
     public init(attachment: StoryAttachmentData?, firstName: String, isMe: Bool = false, isThumbnail: Bool = false, fitContain: Bool = false,
-                videoSource: (any CallVideoFrameSource)? = nil) {
-        self.init(attachment: attachment, firstName: firstName, isMe: isMe, isThumbnail: isThumbnail, fitContain: fitContain, videoSource: videoSource) {
+                videoSource: (any CallVideoFrameSource)? = nil, player: VideoPlaybackEngine? = nil) {
+        self.init(attachment: attachment, firstName: firstName, isMe: isMe, isThumbnail: isThumbnail, fitContain: fitContain, videoSource: videoSource,
+                  player: player) {
             EmptyView()
         }
     }

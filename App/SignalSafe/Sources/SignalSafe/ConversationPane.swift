@@ -42,7 +42,8 @@ struct ConversationPane: View {
                                       scrollToIndex: session.scrollToMessageId.flatMap { index[$0] })
         let sets = Dictionary(mapped.sets.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return VStack(spacing: 0) {
-            ConversationHeader(conversation: header, isSelectMode: session.selectedMessageIds != nil, isSignalConversation: isSignalChat,
+            ConversationHeader(conversation: header, hasStories: session.storyRing(conversation), isSelectMode: session.selectedMessageIds != nil,
+                               isSignalConversation: isSignalChat,
                                outgoingCallButtonStyle: callButtonStyle,
                                contactSpoofingWarning: spoofingWarning, collidingAvatars: collidingAvatars, actions: headerActions) { EmptyView() }
             if session.activeAudioMessageId != nil {
@@ -114,10 +115,11 @@ struct ConversationPane: View {
         a.toggleProfileNameWarningModal = { [isGroup = conversation.kind == .group] in session.contactDialog = .profileNameWarning(isGroup: isGroup) }
         a.onShowSafetyTips = { session.contactDialog = .safetyTips }
         a.openConversationDetails = { session.pushPanel("ConversationDetails") }
+        a.viewUserStories = { [session, conversation] in session.viewUserStories(conversation) }
         // The members line (`getGroupMemberships`), by their titles.
         let members = (group?.membersV2 ?? []).map { m in HeroMember(isMe: m.aci == me, titleShort: m.aci == me ? nil : session.contactTitle(m.aci)) }
         return ConversationHero(conversationType: conversation.kind == .group ? .group : .direct, title: title(conversation),
-                                avatar: avatar(conversation), isMe: isNoteToSelf, isSignalConversation: isSignalChat,
+                                avatar: avatar(conversation), hasStories: session.storyRing(conversation), isMe: isNoteToSelf, isSignalConversation: isSignalChat,
                                 acceptedMessageRequest: conversation.isAccepted,
                                 hasProfileName: d?.hasProfileName ?? false, hasNickname: d?.hasNickname ?? false,
                                 isInSystemContacts: d?.isInSystemContacts ?? false, isGroupNameVerified: d?.isGroupNameVerified ?? true,
@@ -148,6 +150,7 @@ struct ConversationPane: View {
                 a.launchFilePicker = { session.pickAttachments(mediaOnly: false) }
                 a.onAddAttachment = { session.pickAttachments(mediaOnly: false) }
                 a.onCloseAttachment = { session.removeStaged(at: $0) }
+                a.onClickAttachment = { session.editStaged(at: $0) }
                 a.onClearAttachments = { session.clearStaged() }
                 a.onPaste = { session.pasteAttachments($0) }
                 a.onPickMention = { session.composer.insertMention($0) }
@@ -158,7 +161,8 @@ struct ConversationPane: View {
                 let r = session.recording
                 return AnyView(CompositionRecording(peaks: r?.peaks ?? [], errorDialog: r?.error, startedAt: r?.startedAt ?? .now,
                                                     onCancel: { session.cancelRecording() }, onSend: { session.sendRecording() },
-                                                    errorRecording: { _ in session.cancelRecording() }))
+                                                    errorRecording: { _ in session.cancelRecording() },
+                                                    saveDraftRecordingIfNeeded: { session.saveDraftRecordingIfNeeded() }))
             })
             .environment(\.composerController, session.composer)
             .fixedSize(horizontal: false, vertical: true)    // its own height; the timeline takes the rest
@@ -240,7 +244,7 @@ struct ConversationPane: View {
             && (m.direction == .outgoing || conversation.isAccepted) {
             a.download = { session.saveAttachments(m) }
         }
-        if m.direction == .outgoing, m.status == .failed { a.retrySend = { session.retrySend(id) } }
+        if m.direction == .outgoing, m.status == .failed || m.status == .partialSent { a.retrySend = { session.retrySend(id) } }
         // canEndPoll: our own poll, still running, in a group that has not ended.
         if m.direction == .outgoing, let poll = m.poll, !poll.terminated, !m.isDeleted, session.details?.group?.terminated != true {
             a.endPoll = { session.endPoll(id) }
@@ -363,6 +367,7 @@ struct ConversationPane: View {
     var headerActions: ConversationHeaderActions {
         var a = ConversationHeaderActions()
         a.onViewConversationDetails = { session.pushPanel("ConversationDetails") }
+        a.onViewUserStories = { [session, conversation] in session.viewUserStories(conversation) }
         a.onShowMembers = { session.pushPanel("ConversationDetails") }
         a.onViewAllMedia = { session.pushPanel("AllMedia") }
         a.onMuteExpirationChange = { session.setMute($0) }
@@ -487,7 +492,7 @@ struct ConversationPane: View {
         case .timerChange(let seconds, _, _): kind = .timerChange(seconds == 0 ? nil : seconds)
         case .call(let callId, let details): kind = isCurrentCall(callId, details) ? .other : .callEvent
         case .deliveryIssue, .chatSessionRefreshed, .joinedSignal, .titleTransition, .conversationMerge, .phoneNumberDiscovery,
-             .messageRequestResponse, nil: kind = .other
+             .messageRequestResponse, .universalTimer, .contactRemoved, .resetSession, .unsupported, nil: kind = .other
         }
         return CollapseSetItem(id: m.id, kind: kind, isUnseen: m.isUnseen, date: Date(milliseconds: m.sentAt))
     }
@@ -586,6 +591,17 @@ struct ConversationPane: View {
                 renderedContact: isGroup ? nil : Emojify.run(title(conversation)),
                 onBlockOrReport: { openRequestConfirmation(.reportingAndMaybeBlocking) },
                 onLearnMore: { [session] in session.contactDialog = .safetyTips }))
+        case .universalTimer:
+            // The universal timer as it is now (getPropsForUniversalTimerNotification).
+            let seconds = session.accountSettings.universalExpireTimer
+            return .universalTimerNotification(UniversalTimerNotification(expireTimer: seconds > 0 ? seconds : nil))
+        case .contactRemoved:
+            return .contactRemovedNotification
+        case .resetSession:
+            return .resetSessionNotification
+        case .unsupported(let canProcessNow):
+            return .unsupportedMessage(UnsupportedMessage(canProcessNow: canProcessNow, contactTitle: session.contactTitle(m.author),
+                                                          contactIsMe: m.author != nil && m.author == session.ourAci))
         }
     }
 
@@ -711,6 +727,8 @@ struct ConversationPane: View {
         // A delete for everyone that did not go out: "Delete failed" retries it.
         p.canRetryDeleteForEveryone = m.isDeleted && m.isDeleteForEveryoneFailed
         p.retryDeleteForEveryone = { [session, id = m.id] in session.retryDeleteForEveryone(id) }
+        p.retryMessageSend = { [session, id = m.id] in session.retrySend(id) }
+        p.showMessageDetails = { [session, id = m.id] in session.messageDetailId = id }
         p.isPinned = m.isPinned
         p.displayLimit = session.messageDisplayLimits[m.id]
         p.messageExpanded = { [session] limit in session.messageDisplayLimits[m.id] = limit }
@@ -795,6 +813,7 @@ struct ConversationPane: View {
         case .read: .read
         case .viewed: .viewed
         case .failed: .error
+        case .partialSent: .partialSent
         }
     }
 }
@@ -817,17 +836,15 @@ struct ComposerFunPicker: View {
             FunPanelEmojis(recentEmojis: session.recentEmojis, skinTone: session.emojiSkinTone, onSelectEmoji: { session.insertEmoji($0) },
                            onSelectSkinTone: { session.emojiSkinTone = $0 })
         } stickers: {
-            FunPanelStickers(packs: session.stickerPacks.map { p in
-                FunStickerPack(id: p.id, title: p.title, cover: session.stickerImage(packId: p.id, stickerId: p.coverStickerId),
-                               stickers: p.stickers.map { FunStickerItem(id: $0.id, packId: p.id, image: session.stickerImage(packId: p.id, stickerId: $0.id), emoji: $0.emoji) })
-            }, favorites: session.stickerState?.favorites.map(session.funSticker) ?? [], recents: session.stickerState?.recents.map(session.funSticker) ?? [],
+            FunPanelStickers(packs: session.funStickerPacks, favorites: session.stickerState?.favorites.map(session.funSticker) ?? [],
+                             recents: session.stickerState?.recents.map(session.funSticker) ?? [],
                isFavoriteStickersEnabled: session.favoriteStickersEnabled, showAddStickerPackButton: true,
                onSelectSticker: { s in session.sendSticker(packId: s.packId, stickerId: s.id); close() },
                onAddStickerPack: { close(); session.pushPanel("StickerManager") },
                onMarkStickerAsFavorite: { s, favorite in session.setStickerFavorite(packId: s.packId, stickerId: s.id, favorite) })
         } gifs: {
             FunPanelGifs(recentGifs: session.recentGifItems, source: session.gifSource, storedSearchInput: $gifSearch,
-                         onSelectGif: { g in session.sendGif(g.gif); close() }, onRemoveRecentGif: { session.removeRecentGif($0) }, onClose: { close() })
+                         onSelectGif: { g in close(); session.selectGif(g.gif) }, onRemoveRecentGif: { session.removeRecentGif($0) }, onClose: { close() })
         }
     }
 }

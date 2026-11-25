@@ -142,6 +142,7 @@ enum CallLinkJoinFailure: Equatable {
 
     /// The lobby for a call link's call.
     func openCallLinkLobby(_ roomId: String, audio: Bool = true, video: Bool = true) {
+        if deferCallStart(.callLink(roomId)) { return }
         guard activeCall == nil, let link = callLink(roomId) else { return }
         callLinkModal = nil
         activeCall = ActiveCallState(conversationId: roomId, isGroup: true, stage: .lobby, outgoingRing: false, isCallLink: true)

@@ -14,7 +14,6 @@ import SwiftUI
 
 public struct AddGroupMembersModal: View {
     enum Stage { case choosingContacts, confirmingAdds }
-    enum OneTimeModal { case neverShown, showing, shown }
 
     let candidateContacts: [ContactListItemData]
     let conversationIdsAlreadyInGroup: Set<String>
@@ -28,9 +27,8 @@ public struct AddGroupMembersModal: View {
     let onClose: () -> Void
     @State private var stage = Stage.choosingContacts
     @State private var searchTerm = ""
-    @State private var selected: [String] = []
-    @State private var maximumModal: OneTimeModal
-    @State private var recommendedModal: OneTimeModal
+    @State private var addition: GroupAddition
+    var selected: [String] { addition.selectedConversationIds }
 
     public init(candidateContacts: [ContactListItemData], conversationIdsAlreadyInGroup: Set<String> = [], groupTitle: String,
                 maxGroupSize: Int = 1001, maxRecommendedGroupSize: Int = 151, requestState: RequestState = .inactive,
@@ -46,8 +44,9 @@ public struct AddGroupMembersModal: View {
         self.makeRequest = makeRequest
         self.clearRequestError = clearRequestError
         self.onClose = onClose
-        _maximumModal = State(initialValue: conversationIdsAlreadyInGroup.count >= maxGroupSize ? .showing : .neverShown)
-        _recommendedModal = State(initialValue: conversationIdsAlreadyInGroup.count >= maxRecommendedGroupSize ? .shown : .neverShown)
+        _addition = State(initialValue: GroupAddition(
+            maximumGroupSizeModalState: conversationIdsAlreadyInGroup.count >= maxGroupSize ? .showing : .neverShown,
+            recommendedGroupSizeModalState: conversationIdsAlreadyInGroup.count >= maxRecommendedGroupSize ? .shown : .neverShown))
     }
 
     /// `filterAndSortConversations(candidateContacts, searchTerm, regionCode)`.
@@ -58,22 +57,17 @@ public struct AddGroupMembersModal: View {
     }
 
     func toggle(_ id: String) {
-        if let i = selected.firstIndex(of: id) {
-            selected.remove(at: i)
-            return
-        }
-        let total = selected.count + conversationIdsAlreadyInGroup.count + 1
-        guard total <= maxGroupSize else { return }
-        selected.append(id)
-        if total >= maxGroupSize { maximumModal = maximumModal == .neverShown ? .showing : maximumModal }
-        if total >= maxRecommendedGroupSize, recommendedModal == .neverShown { recommendedModal = .showing }
+        addition.toggle(id, maxGroupSize: maxGroupSize, maxRecommendedGroupSize: maxRecommendedGroupSize,
+                        numberOfContactsAlreadyInGroup: conversationIdsAlreadyInGroup.count)
     }
 
     public var body: some View {
-        if maximumModal == .showing {
-            AddGroupMemberMaximumGroupSizeErrorDialog(maximumNumberOfContacts: maxGroupSize) { maximumModal = .shown }
-        } else if recommendedModal == .showing {
-            AddGroupMemberRecommendedMaximumGroupSizeErrorDialog(recommendedMaximumNumberOfContacts: maxRecommendedGroupSize) { recommendedModal = .shown }
+        if addition.maximumGroupSizeModalState == .showing {
+            AddGroupMemberMaximumGroupSizeErrorDialog(maximumNumberOfContacts: maxGroupSize) { addition.maximumGroupSizeModalState = .shown }
+        } else if addition.recommendedGroupSizeModalState == .showing {
+            AddGroupMemberRecommendedMaximumGroupSizeErrorDialog(recommendedMaximumNumberOfContacts: maxRecommendedGroupSize) {
+                addition.recommendedGroupSizeModalState = .shown
+            }
         } else {
             switch stage {
             case .choosingContacts:
@@ -82,7 +76,7 @@ public struct AddGroupMembersModal: View {
                                         conversationIdsAlreadyInGroup: conversationIdsAlreadyInGroup,
                                         hasSelectedMaximum: selected.count + conversationIdsAlreadyInGroup.count >= maxGroupSize,
                                         searchTerm: $searchTerm, toggleSelectedContact: toggle,
-                                        removeSelectedContact: { id in selected.removeAll { $0 == id } },
+                                        removeSelectedContact: { id in addition.selectedConversationIds.removeAll { $0 == id } },
                                         confirmAdds: { stage = .confirmingAdds }, onClose: onClose)
             case .confirmingAdds:
                 ConfirmAdditionsModal(groupTitle: groupTitle, selectedContacts: selected.compactMap { id in candidateContacts.first { $0.id == id } },

@@ -17,6 +17,9 @@ struct ReceivedStory: Decodable {
     var hasFile: Bool
     var envelopeType: String
     var source: String?
+    var previewUrl: String?
+    var previewTitle: String?
+    var previewHasImage: Bool?
 }
 
 struct StorySyncSummary: Decodable {
@@ -74,6 +77,58 @@ extension LinkedClient {
 }
 
 @Suite(.serialized) struct StoryTests {
+    /// A text story's link preview goes out with its title and uploaded image, and is shown
+    /// with them here (the image as the story's preview attachment).
+    @Test func textStoryCarriesItsLinkPreview() async throws {
+        try await LinkedClient.with { c in
+            try await c.receiveFromAlice("hi", withProfileKey: true)
+            let aci = c.aliceAci
+            let listId = try await c.database.pool.write { db in try StoryDistributionLists.create(db, name: "Links", members: [aci]) }
+            var text = StoryText(text: "read https://signal.org/blog", color: 4_285_041_620)
+            text.preview = StoryLinkPreview(url: "https://signal.org/blog", title: "Signal Blog", description: "News", date: 1_700_000_000_000)
+            let png = OutgoingAttachment(data: AttachmentFlowTests.png(), contentType: "image/png")
+            let ids = try await c.messenger.sendStory(.text(text, previewImage: png), listIds: [listId])
+            let received = try await c.waitForStory()
+            #expect(received.previewUrl == "https://signal.org/blog" && received.previewTitle == "Signal Blog" && received.previewHasImage == true)
+            let item = try await c.database.pool.read { try StoryFeed.items($0) }.first { $0.id == ids.first }
+            #expect(item?.text?.preview?.url == "https://signal.org/blog" && item?.text?.preview?.title == "Signal Blog")
+            #expect(item?.text?.preview?.description == "News" && item?.text?.preview?.date == 1_700_000_000_000)
+            #expect(item?.text?.preview?.imageLocation?.type == .preview && item?.text?.preview?.image?.cdnKey != nil)
+            // Without a preview, an image given is not sent.
+            if case .text(let t, let image) = OutgoingStoryContent.text(StoryText(text: "plain"), previewImage: png) {
+                #expect(!t.hasPreview && image == nil)
+            }
+        }
+    }
+
+    /// A received text story's preview image is stored as its preview attachment (and fetched).
+    @Test func receivedTextStoryKeepsItsPreviewImage() throws {
+        let (db, _) = try LinkedClient.temporaryDatabase()
+        let alice = UUID().uuidString.lowercased()
+        let id = try db.pool.write { db throws -> String? in
+            let c = try MessageStore.privateConversation(db, serviceId: alice)
+            var story = Signalservice_StoryMessage()
+            var t = LinkedClient.text("")
+            t.clearText()
+            t.preview.url = "https://signal.org"
+            t.preview.title = "Signal"
+            var image = Signalservice_AttachmentPointer()
+            image.cdnKey = "preview-key"
+            image.cdnNumber = 2
+            image.key = Data(repeating: 1, count: 64)
+            image.digest = Data(repeating: 2, count: 32)
+            image.size = 10
+            image.contentType = "image/jpeg"
+            t.preview.image = image
+            story.textAttachment = t
+            return try StoryStore.insert(db, .init(conversationId: c, source: alice, sourceDevice: 1, sentAt: 1_000, serverTimestamp: 1_000, serverGuid: nil,
+                                                   story: story, outgoing: false, unidentified: true))
+        }
+        let item = try db.pool.read { try StoryFeed.items($0, now: 0) }.first { $0.id == id }
+        #expect(item?.text?.preview?.url == "https://signal.org" && item?.text?.preview?.title == "Signal")
+        #expect(item?.text?.preview?.image?.cdnKey == "preview-key" && item?.text?.preview?.imageLocation?.type == .preview)
+    }
+
     @Test func receivesAContactsStoryAndViewsIt() async throws {
         try await LinkedClient.with { c in
             try await c.receiveFromAlice("hi", withProfileKey: true)

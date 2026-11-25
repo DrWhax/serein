@@ -242,7 +242,9 @@ struct PinMessageRequest {
                                        favorites: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.stickerFavorites.prod", version: version),
                                        shareContact: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.shareContact.prod", version: version),
                                        terminateGroup: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.groupTerminate.send.prod", version: version),
-                                       remoteMute: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.remoteMute.send.prod", version: version))
+                                       remoteMute: try RemoteConfig.isFeatureEnabled(db, prodKey: "desktop.remoteMute.send.prod", version: version),
+                                       groupSizeRecommended: try RemoteConfig.int(db, "global.groupsv2.maxGroupSize"),
+                                       groupSizeHard: try RemoteConfig.int(db, "global.groupsv2.groupSizeHardLimit"))
                 }) {
                     self?.stickerPacks = o.state.installed
                     self?.stickerState = o.state
@@ -250,9 +252,26 @@ struct PinMessageRequest {
                     self?.shareContactEnabled = o.shareContact
                     self?.terminateGroupEnabled = o.terminateGroup
                     self?.remoteMuteSendEnabled = o.remoteMute
+                    let limits = GroupAddition.limits(recommended: o.groupSizeRecommended, hard: o.groupSizeHard)
+                    self?.groupSizeRecommendedLimit = limits.recommended
+                    self?.groupSizeHardLimit = limits.hard
                 }
             } catch {}
         }
+    }
+
+    /// The installed packs as the sticker panel's.
+    var funStickerPacks: [FunStickerPack] {
+        stickerPacks.map { p in
+            FunStickerPack(id: p.id, title: p.title, cover: stickerImage(packId: p.id, stickerId: p.coverStickerId),
+                           stickers: p.stickers.map { FunStickerItem(id: $0.id, packId: p.id, image: stickerImage(packId: p.id, stickerId: $0.id), emoji: $0.emoji) })
+        }
+    }
+
+    /// The media editor's sticker panel (it adds the time stickers and takes the selection).
+    var mediaEditorStickers: FunPanelStickers {
+        FunPanelStickers(packs: funStickerPacks, favorites: stickerState?.favorites.map(funSticker) ?? [],
+                         recents: stickerState?.recents.map(funSticker) ?? [], isFavoriteStickersEnabled: favoriteStickersEnabled)
     }
 
     /// A picker item for a sticker (its first frame, loaded on demand).
@@ -368,17 +387,14 @@ struct PinMessageRequest {
         }
     }
 
-    /// A GIF from the picker: the original MP4, sent as a looping GIF attachment; it joins the
-    /// recent GIFs (`addRecentGif`).
-    func sendGif(_ gif: FunGifItem) {
-        if let db = clientDatabase {
-            let recent = RecentGif(id: gif.id, title: gif.title, description: gif.description,
-                                   previewMedia: .init(url: gif.previewMedia.url.absoluteString, width: gif.previewMedia.width, height: gif.previewMedia.height),
-                                   attachmentMedia: .init(url: gif.attachmentMedia.url.absoluteString, width: gif.attachmentMedia.width,
-                                                          height: gif.attachmentMedia.height))
-            Task { try? await db.pool.write { try RecentGifs.add($0, recent) } }
-        }
-        sendGif(gif.attachmentMedia.url)
+    /// `addRecentGif`
+    func addRecentGif(_ gif: FunGifItem) {
+        guard let db = clientDatabase else { return }
+        let recent = RecentGif(id: gif.id, title: gif.title, description: gif.description,
+                               previewMedia: .init(url: gif.previewMedia.url.absoluteString, width: gif.previewMedia.width, height: gif.previewMedia.height),
+                               attachmentMedia: .init(url: gif.attachmentMedia.url.absoluteString, width: gif.attachmentMedia.width,
+                                                      height: gif.attachmentMedia.height))
+        Task { try? await db.pool.write { try RecentGifs.add($0, recent) } }
     }
 
     /// `removeRecentGif`
@@ -394,23 +410,6 @@ struct PinMessageRequest {
             return FunGifItem(id: g.id, title: g.title, description: g.description,
                               previewMedia: FunGifMedia(url: preview, width: g.previewMedia.width, height: g.previewMedia.height),
                               attachmentMedia: FunGifMedia(url: full, width: g.attachmentMedia.width, height: g.attachmentMedia.height))
-        }
-    }
-
-    func sendGif(_ url: URL) {
-        guard let giphy, let session = signalSession, let c = selectedConversation else { return }
-        Task {
-            do {
-                let data = try await giphy.file(url)
-                let a = [OutgoingAttachment(data: data, contentType: "video/mp4", flags: 8)]
-                if c.kind == .group, let key = c.masterKey {
-                    _ = try await session.messenger.sendGroupMessage("", attachments: a, masterKey: key)
-                } else if let to = c.serviceId {
-                    _ = try await session.messenger.sendMessage("", attachments: a, to: to)
-                }
-            } catch {
-                Self.trace("gif send failed: \(error)")
-            }
         }
     }
 
@@ -580,4 +579,7 @@ struct StickerObservation: Equatable, Sendable {
     var terminateGroup: Bool
     /// Muting someone else in a call (`desktop.remoteMute.send`).
     var remoteMute: Bool
+    /// `global.groupsv2.maxGroupSize` / `global.groupsv2.groupSizeHardLimit`
+    var groupSizeRecommended: Int?
+    var groupSizeHard: Int?
 }

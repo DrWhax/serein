@@ -12,13 +12,16 @@ public struct DraftGifMessageSendModal: View {
     let gifHeight: CGFloat
     let loadingState: FunLoadingState
     let emojiPicker: AnyView?
+    /// The downloaded GIF, playing (its first frame stands in until then).
+    let player: VideoPlaybackEngine?
     let onSubmit: () -> Void
     let onClose: () -> Void
     @Environment(\.i18n) var i18n
 
     public init(draftText: Binding<String>, gifFrame: RGBAImage?, gifWidth: CGFloat, gifHeight: CGFloat, loadingState: FunLoadingState,
-                emojiPicker: AnyView? = nil, onSubmit: @escaping () -> Void, onClose: @escaping () -> Void) {
+                emojiPicker: AnyView? = nil, player: VideoPlaybackEngine? = nil, onSubmit: @escaping () -> Void, onClose: @escaping () -> Void) {
         _draftText = draftText
+        self.player = player
         self.gifFrame = gifFrame
         self.gifWidth = gifWidth
         self.gifHeight = gifHeight
@@ -36,7 +39,7 @@ public struct DraftGifMessageSendModal: View {
                 AxoDialog.Close(action: onClose)
             }
             AxoDialog.Body(padding: .sm) {
-                FunGifPreview(frame: gifFrame, state: loadingState, width: gifWidth, height: gifHeight, maxHeight: 256)
+                FunGifPreview(frame: gifFrame, state: loadingState, width: gifWidth, height: gifHeight, maxHeight: 256, player: player)
                     .padding(.horizontal, 8)
                     .frame(maxWidth: .infinity)
                 CompositionTextArea(text: $draftText, isActive: true, emojiPicker: emojiPicker, onSubmit: onSubmit)

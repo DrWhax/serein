@@ -203,13 +203,17 @@ struct AddMembersDialog: View {
 
     var body: some View {
         let members = Set(session.details?.group?.membersV2.map(\.aci) ?? [])
+        // Every member counts towards the size limits (upstream's memberships), contact or not.
+        let candidateIds = Set(candidates.compactMap(\.serviceId))
         let inGroup = Set(candidates.filter { $0.serviceId.map(members.contains) ?? false }.map(\.id))
+            .union(members.subtracting(candidateIds).map { "member:\($0)" })
         let contacts = candidates.map { c in
             ContactListItemData(id: c.id, title: c.title, avatar: ConversationAvatarData(title: c.title, conversationType: .direct, color: c.color,
                                                                                          image: session.avatarImage(c.avatar)))
         }
         AddGroupMembersModal(candidateContacts: contacts, conversationIdsAlreadyInGroup: inGroup,
-                             groupTitle: session.selectedConversation?.title ?? "", requestState: session.addMembersState,
+                             groupTitle: session.selectedConversation?.title ?? "", maxGroupSize: session.groupSizeHardLimit,
+                             maxRecommendedGroupSize: session.groupSizeRecommendedLimit, requestState: session.addMembersState,
                              makeRequest: { [candidates] ids in session.addMembers(conversationIds: ids, candidates: candidates) },
                              clearRequestError: { session.addMembersState = .inactive }, onClose: { session.isAddingMembers = false })
             .task { candidates = await session.addMemberCandidates() }

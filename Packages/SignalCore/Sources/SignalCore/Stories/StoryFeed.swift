@@ -5,6 +5,22 @@
 import Foundation
 import GRDB
 
+/// A text story's link preview (`preview[0]`), its image once downloaded.
+public struct StoryLinkPreview: Sendable, Equatable {
+    public var url: String
+    public var title: String?
+    public var description: String?
+    public var date: Int64?
+    public var image: MessageAttachment?
+    public var imageLocation: MessageAttachments.Location?
+    public init(url: String, title: String? = nil, description: String? = nil, date: Int64? = nil) {
+        self.url = url
+        self.title = title
+        self.description = description
+        self.date = date
+    }
+}
+
 public struct StoryText: Sendable, Equatable {
     public var text: String?
     public var textStyle: Int
@@ -14,6 +30,7 @@ public struct StoryText: Sendable, Equatable {
     public var gradientAngle: Int?
     public var gradientColors: [UInt32] = []
     public var gradientPositions: [Float] = []
+    public var preview: StoryLinkPreview?
     public init(text: String? = nil, textStyle: Int = 0, textForegroundColor: UInt32? = nil, textBackgroundColor: UInt32? = nil,
                 color: UInt32? = nil, gradientAngle: Int? = nil, gradientColors: [UInt32] = [], gradientPositions: [Float] = []) {
         self.text = text
@@ -70,6 +87,14 @@ public enum StoryFeed {
                 views: states.filter { $0 == "Viewed" }.count, isHidden: (row["hidden"] as Int?) == 1)
             if let t = (json["attachments"] as? [[String: Any]])?.first?["textAttachment"] as? [String: Any] {
                 item.text = text(t)
+                if let p = (json["preview"] as? [[String: Any]])?.first, let url = p["url"] as? String {
+                    var preview = StoryLinkPreview(url: url, title: p["title"] as? String, description: p["description"] as? String, date: number(p["date"]))
+                    if let (loc, a) = try MessageAttachments.fetch(db, messageId: id).first(where: { $0.0.type == .preview }) {
+                        preview.image = a
+                        preview.imageLocation = loc
+                    }
+                    item.text?.preview = preview
+                }
             } else if let (loc, a) = try MessageAttachments.fetch(db, messageId: id).first(where: { $0.0.type == .attachment }) {
                 item.media = a
                 item.mediaLocation = loc

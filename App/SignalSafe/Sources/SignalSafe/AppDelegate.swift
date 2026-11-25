@@ -156,7 +156,8 @@ import SwiftUI
         let languages = ["ar", "bn", "de", "en-us", "es", "fr", "hi", "hi-in", "hc", "id", "it", "ja", "ko", "mr", "ms", "nl", "pl", "pt",
                          "ru", "sv", "ta", "te", "tr", "uk", "ur", "vi", "zh-cn", "zh-tw"]
         let language = languages.contains(locale) ? locale : "en-us"
-        return "https://support.signal.org/hc/\(language)/requests/new?desktop="
+        // The support page needs `?desktop`, not `?desktop=`.
+        return "https://support.signal.org/hc/\(language)/requests/new?desktop"
     }
 
     func open(_ string: String) {

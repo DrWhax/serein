@@ -13,15 +13,25 @@ import GRDB
 import LibSignalClient
 import SignalProtos
 
-/// What a story shows: text (with an optional link preview) or a picture / video.
+/// What a story shows: text (with an optional link preview, and its image to upload) or a
+/// picture / video.
 public enum OutgoingStoryContent: Sendable {
-    case text(Signalservice_TextAttachment)
+    case text(Signalservice_TextAttachment, previewImage: OutgoingAttachment? = nil)
     case file(OutgoingAttachment)
 
-    /// A text story from the creator's fields (no protobuf types needed by the caller).
-    public static func text(_ s: StoryText) -> OutgoingStoryContent {
+    /// A text story from the creator's fields (no protobuf types needed by the caller); its
+    /// link preview's image, if any, is uploaded with it.
+    public static func text(_ s: StoryText, previewImage: OutgoingAttachment? = nil) -> OutgoingStoryContent {
         var t = Signalservice_TextAttachment()
         if let text = s.text, !text.isEmpty { t.text = text }
+        if let p = s.preview {
+            var preview = Signalservice_Preview()
+            preview.url = p.url
+            if let title = p.title, !title.isEmpty { preview.title = title }
+            if let d = p.description, !d.isEmpty { preview.description_p = d }
+            if let date = p.date, date > 0 { preview.date = UInt64(date) }
+            t.preview = preview
+        }
         t.textStyle = Signalservice_TextAttachment.Style(rawValue: s.textStyle) ?? .default
         if let c = s.textForegroundColor { t.textForegroundColor = c }
         if let c = s.textBackgroundColor { t.textBackgroundColor = c }
@@ -36,7 +46,7 @@ public enum OutgoingStoryContent: Sendable {
         } else if let c = s.color {
             t.color = c
         }
-        return .text(t)
+        return .text(t, previewImage: s.preview == nil ? nil : previewImage)
     }
 }
 
@@ -48,19 +58,24 @@ extension Messenger {
     {
         let sentAt = timestamp ?? UInt64(MessageStore.now())
         var prepared: MessageAttachment?
+        var preparedPreview: MessageAttachment?
         if case .file(let o) = content {
             guard let services = attachments else { throw AttachmentDownloadError.missingPointer }
             let number = account.number
             let level = try await database.pool.read { try MediaQuality.level($0, e164: number) }
             prepared = try await services.prepare(o, level: level)
         }
+        if case .text(_, let image?) = content, let services = attachments {
+            preparedPreview = try await services.prepare(image, transcode: false)
+        }
         let ourAci = account.aci
         let deviceId = account.deviceId
         var story = Signalservice_StoryMessage()
         if let pk = account.profileKey { story.profileKey = pk }
-        if case .text(let t) = content { story.textAttachment = t }
+        if case .text(let t, _) = content { story.textAttachment = t }
         let draft = story
         let attachment = prepared
+        let previewImage = preparedPreview
 
         // Rows, recipients per list, group members.
         struct Plan {
@@ -73,11 +88,16 @@ extension Messenger {
             let connections = try StoryDistributionLists.signalConnections(db)
             let ours = try MessageStore.privateConversation(db, serviceId: ourAci)
             func addAttachment(_ id: String, conversationId: String) throws {
-                guard let attachment else { return }
                 let receivedAt = try Int64.fetchOne(db, sql: "SELECT received_at FROM messages WHERE id = ?", arguments: [id]) ?? MessageStore.now()
-                try MessageAttachments.upsert(db, .init(messageId: id, type: .attachment, order: 0), conversationId: conversationId, sentAt: Int64(sentAt),
-                                              receivedAt: receivedAt, messageType: "story", attachment)
-                try MessageAttachments.updateMessageFlags(db, messageId: id)
+                if let attachment {
+                    try MessageAttachments.upsert(db, .init(messageId: id, type: .attachment, order: 0), conversationId: conversationId, sentAt: Int64(sentAt),
+                                                  receivedAt: receivedAt, messageType: "story", attachment)
+                    try MessageAttachments.updateMessageFlags(db, messageId: id)
+                }
+                if let previewImage {
+                    try MessageAttachments.upsert(db, .init(messageId: id, type: .preview, order: 0), conversationId: conversationId, sentAt: Int64(sentAt),
+                                                  receivedAt: receivedAt, messageType: "story", previewImage)
+                }
             }
             for listId in listIds {
                 guard let list = try StoryDistributionLists.list(db, id: listId), list.deletedAt == nil else { continue }
@@ -118,6 +138,9 @@ extension Messenger {
         if attachment != nil, let firstId {
             guard let pointer = try await uploadAttachments(messageId: firstId).first else { throw JobError.permanent("story upload failed") }
             story.fileAttachment = pointer
+        }
+        if previewImage != nil, let firstId, let pointer = try await uploadAttachments(messageId: firstId, type: .preview).first {
+            story.textAttachment.preview.image = pointer
         }
 
         // Distribution lists: each recipient once.

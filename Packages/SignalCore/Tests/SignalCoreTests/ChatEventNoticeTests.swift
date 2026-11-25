@@ -36,6 +36,12 @@ import Testing
             try notice("conversation-merge", ["conversationMerge": ["renderInfo": ["type": "private", "e164": "+31600000000"]]])
             try notice("phone-number-discovery", ["phoneNumberDiscovery": ["e164": "+31611111111"]])
             try notice("message-request-response-event", ["messageRequestResponseEvent": "ACCEPT"])
+            try notice("universal-timer-notification", [:])
+            try notice("contact-removed-notification", [:])
+            try notice("incoming", source: contact, ["flags": 1])
+            try notice("incoming", source: contact, ["requiredProtocolVersion": 99, "supportedVersionAtReceive": 8])
+            try notice("incoming", source: contact, ["requiredProtocolVersion": 7, "supportedVersionAtReceive": 6])
+            try notice("incoming", source: contact, ["requiredProtocolVersion": 7, "supportedVersionAtReceive": 7])   // supported: a message
             return (c, target)
         }
         let ref = TimelineMessageRef(author: contact, sentAt: 1_000, messageId: target)
@@ -49,7 +55,77 @@ import Testing
             .conversationMerge(obsoleteTitle: "+31600000000", obsoleteNumber: "+31600000000"),
             .phoneNumberDiscovery(e164: "+31611111111"),
             .messageRequestResponse(event: "ACCEPT"),
+            .universalTimer,
+            .contactRemoved,
+            .resetSession,
+            .unsupported(canProcessNow: false),
+            .unsupported(canProcessNow: true),
         ])
+    }
+
+    /// `maybeSetPendingUniversalTimer`: only a 1:1 chat with nothing said, no timer of its own and
+    /// a universal timer set; once something is said, opening it removes the notice.
+    @Test func universalTimerNotice() throws {
+        let (db, _) = try LinkedClient.temporaryDatabase()
+        func open(_ c: String) throws -> Int {
+            try db.pool.write { try ChatEventNotices.universalTimerOnOpen($0, conversationId: c) }
+            return try Self.notices(db, c).filter { $0 == .universalTimer }.count
+        }
+        let (fresh, timed, signal, group) = try db.pool.write { db throws -> (String, String, String, String) in
+            let fresh = try MessageStore.privateConversation(db, serviceId: UUID().uuidString.lowercased())
+            let timed = try MessageStore.privateConversation(db, serviceId: UUID().uuidString.lowercased())
+            try MessageStore.updateConversationJSON(db, conversationId: timed) { $0["expireTimer"] = 60 }
+            let signal = try MessageStore.privateConversation(db, serviceId: StorageLocal.signalAci)
+            let group = "group-\(UUID().uuidString)"
+            try db.execute(sql: "INSERT INTO conversations (id, type, json) VALUES (?, 'group', ?)",
+                           arguments: [group, try MessageStore.jsonString(["id": group, "type": "group"])])
+            return (fresh, timed, signal, group)
+        }
+        #expect(try open(fresh) == 0)                                     // no universal timer
+        try db.pool.write { try Items.set($0, "universalExpireTimer", 3600) }
+        #expect(try open(fresh) == 1 && open(fresh) == 1)
+        #expect(try open(timed) == 0 && open(signal) == 0 && open(group) == 0)
+        _ = try db.pool.write { db in
+            try MessageStore.insert(db, .init(conversationId: fresh, type: "incoming", body: "hi", sentAt: 1, source: nil, sourceDevice: 1,
+                                              serverGuid: nil, serverTimestamp: nil, unidentified: false))
+        }
+        #expect(try open(fresh) == 0)
+    }
+
+    /// `maybeSetContactRemoved` / `maybeClearContactRemoved`: a removed contact's chat says so
+    /// once; restored, the notice goes.
+    @Test func contactRemovedNotice() throws {
+        let (db, _) = try LinkedClient.temporaryDatabase()
+        let c = try db.pool.write { try MessageStore.privateConversation($0, serviceId: UUID().uuidString.lowercased()) }
+        func open(removal: String?) throws -> Int {
+            try db.pool.write { db in
+                try MessageStore.updateConversationJSON(db, conversationId: c) { $0["removalStage"] = removal }
+                try ChatEventNotices.contactRemovedOnOpen(db, conversationId: c)
+            }
+            return try Self.notices(db, c).filter { $0 == .contactRemoved }.count
+        }
+        #expect(try open(removal: nil) == 0)
+        #expect(try open(removal: "messageRequest") == 0)
+        #expect(try open(removal: "justNotification") == 1 && open(removal: "justNotification") == 1)
+        #expect(try open(removal: nil) == 0)
+    }
+
+    /// `showKeyTransparencyErrorDialog`: only when the self-check turns to failing.
+    @Test func keyTransparencyErrorDialogIsDueOnceFailing() throws {
+        let (db, _) = try LinkedClient.temporaryDatabase()
+        func record(_ old: KeyTransparencyHealth?, _ new: KeyTransparencyHealth?) throws -> Bool {
+            try db.pool.write { db in
+                try Items.remove(db, "keyTransparencyErrorPending")
+                try KeyTransparencyService.recordSelfCheck(db, old: old, new: new)
+                return try Items.get(db, "keyTransparencyErrorPending", as: Bool.self) ?? false
+            }
+        }
+        #expect(try record(.intermittent, .fail))
+        #expect(try record(nil, .fail))
+        #expect(try record(.fail, .fail) == false)
+        #expect(try record(.ok, .intermittent) == false)
+        #expect(try record(.fail, .ok) == false)
+        #expect(try db.pool.read { try Items.get($0, "keyTransparencySelfHealth", as: String.self) } == KeyTransparencyHealth.ok.rawValue)
     }
 
     /// `applyMessageRequestResponse`: accepting notes an accept (an unblock when blocked); a

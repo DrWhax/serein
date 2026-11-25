@@ -14,6 +14,13 @@ struct ComposeError {
     var key: String
     var args: [String: String]
     var titleKey: String? = nil
+    /// Upstream's untitled confirm dialog with just OK (an invalid phone number).
+    var untitled = false
+
+    /// StartNewConversation's / PhoneNumberCheckbox's "not a valid number".
+    static func invalidPhoneNumber(_ p: ParsedPhoneNumber) -> ComposeError {
+        ComposeError(key: "icu:startConversation--phone-number-not-valid", args: ["phoneNumber": p.userInput], untitled: true)
+    }
 }
 
 /// A new-group member found by number or username (`togglePhoneNumber` / `toggleUsername`):
@@ -33,14 +40,12 @@ struct GroupLookup: Equatable {
         composeSearch = ""
     }
 
-    /// `toggleConversationInChooseMembers`
+    /// `toggleConversationInChooseMembers`: within the group size limits (we count as already in
+    /// the group, though it does not exist yet).
     func toggleGroupMember(_ conversationId: String) {
-        if let i = groupSelection.firstIndex(of: conversationId) {
-            groupSelection.remove(at: i)
-            groupLookups.removeAll { $0.conversationId == conversationId }
-        } else {
-            groupSelection.append(conversationId)
-        }
+        groupAddition.toggle(conversationId, maxGroupSize: groupSizeHardLimit, maxRecommendedGroupSize: groupSizeRecommendedLimit,
+                             numberOfContactsAlreadyInGroup: 1)
+        if !groupSelection.contains(conversationId) { groupLookups.removeAll { $0.conversationId == conversationId } }
     }
 
     /// `togglePhoneNumber` in "choose members": the number looked up (CDSI) and its account added,
@@ -48,7 +53,7 @@ struct GroupLookup: Equatable {
     func toggleGroupPhoneNumber(_ p: ParsedPhoneNumber) {
         if let found = groupLookups.first(where: { $0.e164 == p.e164 }) { return toggleGroupMember(found.conversationId) }
         guard p.isValid else {
-            composeError = ComposeError(key: "icu:startConversation--phone-number-not-valid", args: ["phoneNumber": p.userInput])
+            composeError = .invalidPhoneNumber(p)
             return
         }
         guard let session = signalSession, !isLookingUp else { return }
@@ -100,7 +105,7 @@ struct GroupLookup: Equatable {
     private func addGroupLookup(_ l: GroupLookup) {
         groupLookups.removeAll { $0.conversationId == l.conversationId }
         groupLookups.append(l)
-        if !groupSelection.contains(l.conversationId) { groupSelection.append(l.conversationId) }
+        if !groupSelection.contains(l.conversationId) { toggleGroupMember(l.conversationId) }
         composeSearch = ""
     }
 
@@ -158,7 +163,7 @@ struct GroupLookup: Equatable {
     func lookUpPhoneNumber(_ p: ParsedPhoneNumber) {
         guard let session = signalSession, !isLookingUp else { return }
         guard p.isValid else {
-            composeError = ComposeError(key: "icu:startConversation--phone-number-not-valid", args: ["phoneNumber": p.userInput])
+            composeError = .invalidPhoneNumber(p)
             return
         }
         isLookingUp = true

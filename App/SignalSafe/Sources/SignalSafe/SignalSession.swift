@@ -20,6 +20,8 @@ import SignalUI
         case starting
         /// Install screen: the QR code (or its loading/error state).
         case linking(InstallScreenProvisioningURL)
+        /// The code was scanned: the link is being finished (InstallScreenLinkInProgressStep).
+        case linkInProgress
         case linkError(InstallScreenError)
         /// Link and sync: the primary's message history being prepared, downloaded and
         /// imported (and an error or a cancel on the way).
@@ -55,6 +57,10 @@ import SignalUI
     private(set) var contacts: [String: ContactInfo] = [:]
     /// The Stories tab: unexpired stories (newest first) and the distribution lists.
     private(set) var stories: [StoryFeedItem] = []
+    /// Story videos play with sound (`hasAllStoriesUnmuted`; off at launch, as upstream).
+    var hasAllStoriesUnmuted = false
+    /// Stories to open from a chat or a contact (StoryActions.swift).
+    var userStoriesRequest: UserStoriesRequest?
     private(set) var storyLists: [StoryDistributionLists.List] = []
     private var storiesTask: Task<Void, Never>?
     /// Chat folders (the left pane's folder bar) and the selected one (nil: All chats).
@@ -121,6 +127,11 @@ import SignalUI
     /// Links whose preview was closed or failed (`excludedPreviewUrls`), until the next send.
     var linkPreviewExcluded: Set<String> = []
     var linkPreviewTask: Task<Void, Never>?
+    /// The text story creator's preview (LinkPreviews.swift), apart from the composer's.
+    var storyLinkPreview: ComposerLinkPreview?
+    var storyLinkPreviewExcluded: Set<String> = []
+    @ObservationIgnored var storyLinkPreviewTask: Task<Void, Never>?
+    @ObservationIgnored var storyLinkPreviewDebounce: Task<Void, Never>?
     var linkPreviewDebounce: Task<Void, Never>?
     /// Previews are fetched by SignalLinkPreviewFetcher.xpc (straight from the site, as upstream
     /// Desktop does), which has the page parsed by SignalLinkPreviewParser.xpc: the app only
@@ -152,6 +163,8 @@ import SignalUI
     var callLocalAudio = true
     var callLocalVideo = false
     var callPip = false
+    /// The call to start once the current one is left (ConfirmLeaveCallModal).
+    var confirmLeaveCall: PendingCallStart?
     @ObservationIgnored var camera: (any CallCamera)?
     @ObservationIgnored var cameraSends = false
     /// Starts and stops the camera to match `cameraWanted`, rechecking after every wait.
@@ -340,7 +353,15 @@ import SignalUI
     var forwardMessageIds: [String]?
     /// Compose's sub-screens (new group, find by username / phone number) and their state.
     var composeMode = ComposeMode.compose
-    var groupSelection: [String] = []
+    /// The new group's chosen members and its one-time size dialogs (`toggleConversationInChooseMembers`).
+    var groupAddition = GroupAddition()
+    var groupSelection: [String] {
+        get { groupAddition.selectedConversationIds }
+        set { groupAddition.selectedConversationIds = newValue }
+    }
+    /// `getGroupSizeRecommendedLimit` / `getGroupSizeHardLimit` (remote config).
+    var groupSizeRecommendedLimit = 151
+    var groupSizeHardLimit = 1001
     /// New-group members found by number or username (ComposeActions.swift), and the lookup running.
     var groupLookups: [GroupLookup] = []
     var groupLookupFetching: String?
@@ -382,6 +403,8 @@ import SignalUI
     var serverAlerts: [SignalCore.ServerAlert: ServerAlertInfo] = [:]
     var criticalIdleModalOpen = false
     @ObservationIgnored var criticalModalTask: Task<Void, Never>?
+    /// The key transparency self-check started failing (`showKeyTransparencyErrorDialog`).
+    var keyTransparencyErrorOpen = false
     /// The remote megaphones to show, first first.
     var megaphones: [RemoteMegaphoneRecord] = []
     @ObservationIgnored var announcementsTask: Task<Void, Never>?
@@ -672,6 +695,9 @@ import SignalUI
                     Self.trace("link: QR code shown")
                     if let path = Self.mockReadyPath { try? Data(url.utf8).write(to: URL(fileURLWithPath: path + ".url")) }
                     Task { @MainActor in self.phase = .linking(.loaded(url)) }
+                }, onScanned: {
+                    Self.trace("link: code scanned")
+                    Task { @MainActor in if case .linking = self.phase { self.phase = .linkInProgress } }
                 }, onSync: syncProgress(), control: control)
                 guard let session = await client.session else { throw InstallError() }
                 Self.trace("link: linked as device \(session.account.deviceId)")
@@ -696,7 +722,7 @@ import SignalUI
                 if let e = error as? ChatRequestError, case .http(_, _, let body) = e {
                     Self.trace("link failed: server said \(String(decoding: body.prefix(300), as: UTF8.self))")
                 }
-                phase = Self.failure(error, scanned: { if case .linking(.loaded) = phase { true } else { false } }())
+                phase = Self.failure(error, scanned: { if case .linking(.loaded) = phase { true } else { phase == .linkInProgress } }())
             }
         }
     }
@@ -880,7 +906,14 @@ import SignalUI
     }
 
     private func observeTimeline(leaving previous: String? = nil) {
-        if let previous { saveDraft(previous) }
+        if let previous {
+            saveDraft(previous)
+            // The chat left keeps its attachments, and a recording in progress joins them
+            // (ChatsTab's saveDraftRecordingIfNeeded); the chat opened gets its own back.
+            stagedByConversation[previous] = staged.isEmpty ? nil : staged
+            saveDraftRecordingIfNeeded(previous)
+        }
+        staged = selectedConversationId.flatMap { stagedByConversation.removeValue(forKey: $0) } ?? []
         composer.cancelPendingDraft()
         restoredDraftText = nil
         unreadMarker = nil
@@ -892,7 +925,7 @@ import SignalUI
         }
         timelineTask?.cancel()
         messages = []
-        cancelRecording()
+        cancelRecording()    // (one still going was saved as a draft above)
         stopInlineVideo()
         resetLinkPreview()
         draft = ""
@@ -1107,7 +1140,7 @@ import SignalUI
         isComposing = false
         composeSearch = ""
         composeMode = .compose
-        groupSelection = []
+        groupAddition = GroupAddition()
         groupLookups = []
         newGroupName = ""
         newGroupTimer = 0
@@ -1240,7 +1273,19 @@ import SignalUI
         var preview: RGBAImage?
         var width: Int?
         var height: Int?
+        /// AttachmentPointer flags (a saved recording is a voice message).
+        var flags: Int?
     }
+    /// The staged attachments of the chats not open (upstream's per-conversation
+    /// `draftAttachments`, kept while Serein runs).
+    @ObservationIgnored var stagedByConversation: [String: [StagedAttachment]] = [:]
+    /// The staged image open in the media editor.
+    var attachmentEditor: AttachmentEditing?
+    /// A picked GIF waiting to be sent (GifDrafts.swift), and the one waiting for "replace the
+    /// attachments?".
+    var draftGif: DraftGif?
+    var confirmGifSelection: FunGifItem?
+    @ObservationIgnored var draftGifTask: Task<Void, Never>?
     private(set) var staged: [StagedAttachment] = [] {
         // "If we have attachments, don't add link preview".
         didSet {
@@ -1381,6 +1426,59 @@ import SignalUI
 
     func removeStaged(at index: Int) { if staged.indices.contains(index) { staged.remove(at: index) } }
     func clearStaged() { staged.removeAll() }
+
+    /// `isImageTypeSupported` (GoogleChrome.std.ts): what the media editor opens.
+    static let editableImageTypes: Set<String> = ["image/avif", "image/bmp", "image/gif", "image/jpeg", "image/webp", "image/x-xbitmap",
+                                                  "image/vnd.microsoft.icon", "image/ico", "image/icon", "image/x-icon", "image/apng", "image/png"]
+
+    /// CompositionArea's `maybeEditAttachment`: a staged image opens in the media editor.
+    func editStaged(at index: Int) {
+        guard staged.indices.contains(index), Self.editableImageTypes.contains(staged[index].contentType) else { return }
+        let item = staged[index], media = media
+        Task {
+            guard let shown = try? await media.displayImage(item.data, maxDimension: Self.mediaEditorMaxDimension) else {
+                toast = .unableToLoadAttachment
+                return
+            }
+            guard staged.contains(where: { $0.id == item.id }) else { return }
+            attachmentEditor = AttachmentEditing(id: item.id, image: RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 1))
+        }
+    }
+
+    /// The editor's image at most this big on its longer side.
+    static let mediaEditorMaxDimension = 4096
+
+    /// The editor's Done: the edited image replaces the staged one; view-once, HD and the
+    /// composer's text follow the editor (the caption becomes the message's text).
+    func finishEditingStaged(_ r: MediaEditorResult) {
+        guard let e = attachmentEditor else { return }
+        attachmentEditor = nil
+        guard let i = staged.firstIndex(where: { $0.id == e.id }) else { return }
+        staged[i].data = r.data
+        staged[i].contentType = r.contentType
+        staged[i].width = r.width
+        staged[i].height = r.height
+        if Self.isViewOnceEligible(staged.map(\.contentType), quoting: quotedMessageId) { draftViewOnce = r.isViewOnce }
+        if r.isHighQuality != sendsHighQuality { composerHighQuality = r.isHighQuality }
+        composer.load(body: r.caption ?? "", ranges: [])
+        let id = e.id, media = media, data = r.data
+        Task {
+            guard let shown = try? await media.displayImage(data, maxDimension: 512),
+                  let j = staged.firstIndex(where: { $0.id == id }) else { return }
+            staged[j].preview = RGBAImage(width: shown.width, height: shown.height, pixels: shown.rgba, scale: 2)
+        }
+    }
+
+    /// A finished recording as a draft voice message of `conversationId` (its composer's if it
+    /// is open, else kept for when it is).
+    func stageRecording(_ data: Data, conversationId: String) {
+        let item = StagedAttachment(data: data, contentType: "audio/mpeg", fileName: "", flags: Self.voiceMessageFlag)
+        if selectedConversationId == conversationId {
+            staged.append(item)
+        } else {
+            stagedByConversation[conversationId, default: []].append(item)
+        }
+    }
 
     /// A received message's notification (upstream maybeNotify): nil when the policy says
     /// none (muted, profile, read already, our own, a story we do not show…).
@@ -1711,7 +1809,8 @@ import SignalUI
             return
         }
         guard !body.isEmpty || !staged.isEmpty, let session, let c = selectedConversation else { return }
-        let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName.isEmpty ? nil : $0.fileName) }
+        let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName.isEmpty ? nil : $0.fileName,
+                                                          flags: $0.flags) }
         // `canSendInHighQuality` (an image among the drafts) and the HD choice.
         let highQuality = sendsHighQuality && staged.contains { AttachmentPolicy.isImage($0.contentType) }
         let coreRanges = Self.coreRanges(bodyRanges)
@@ -1767,4 +1866,23 @@ import SignalUI
     static func isViewOnceEligible(_ contentTypes: [String], quoting: String?) -> Bool {
         contentTypes.count == 1 && (AttachmentPolicy.isImage(contentTypes[0]) || AttachmentPolicy.isVideo(contentTypes[0])) && quoting == nil
     }
+}
+
+/// `ConfirmLeaveCallModal`'s data: a chat's call or a call link's.
+enum PendingCallStart: Equatable {
+    case conversation(String, video: Bool)
+    case callLink(String)
+
+    var conversationId: String {
+        switch self {
+        case .conversation(let id, _): id
+        case .callLink(let roomId): roomId
+        }
+    }
+}
+
+/// A staged image in the media editor (its decoded pixels).
+struct AttachmentEditing {
+    let id: UUID
+    let image: RGBAImage
 }

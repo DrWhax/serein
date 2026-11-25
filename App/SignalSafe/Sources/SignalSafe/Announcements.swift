@@ -23,6 +23,9 @@ extension SignalSession {
                     do { for try await visible in db.megaphoneUpdates(store: store) { await MainActor.run { self?.megaphones = visible } } } catch {}
                 }
                 group.addTask {
+                    do { for try await due in db.keyTransparencyErrorUpdates() { await MainActor.run { self?.keyTransparencyErrorOpen = due } } } catch {}
+                }
+                group.addTask {
                     // `initMegaphoneCheckService` / the fetcher's timer: hourly, each runs when due.
                     while !Task.isCancelled {
                         await service.runIfDue(locales: Self.releaseNoteLocales)
@@ -67,6 +70,15 @@ extension SignalSession {
         Task { try? await db.dismissCriticalIdlePrimaryDeviceModal() }
     }
 
+    /// SmartKeyTransparencyErrorDialog: closed, or submitted (Signal's support form opens; no
+    /// debug log, which Serein does not keep).
+    func closeKeyTransparencyError(openSupport: Bool) {
+        keyTransparencyErrorOpen = false
+        if openSupport, let url = URL(string: AppDelegate.supportURL(locale: AppLanguage.resolvedLocale.lowercased())) { NSWorkspace.shared.open(url) }
+        guard let db = clientDatabase else { return }
+        Task { try? await db.clearKeyTransparencyError() }
+    }
+
     /// The chat list's server-alert banner (`ServerAlerts`), if one is to be shown.
     func serverAlertBanner(_ breakpoint: WidthBreakpoint) -> AnyView? {
         switch ServerAlerts.toShow(serverAlerts, now: Self.nowMs) {
@@ -81,12 +93,12 @@ extension SignalSession {
     }
 
     /// The first visible remote megaphone (`RemoteMegaphone`), finish or snooze on its buttons.
-    func remoteMegaphoneView(isFullSize: Bool) -> AnyView? {
+    func remoteMegaphoneView(isFullSize: Bool, onClickNarrowMegaphone: @escaping () -> Void = {}) -> AnyView? {
         guard let m = megaphones.first else { return nil }
         let image = m.image.flatMap { avatarImage($0) }
         return AnyView(RemoteMegaphone(remoteMegaphoneId: m.id, title: m.title, body: m.body, image: image, primaryCtaId: m.primaryCtaId,
                                        secondaryCtaId: m.secondaryCtaId, primaryCtaText: m.primaryCtaText, secondaryCtaText: m.secondaryCtaText,
-                                       isFullSize: isFullSize, onInteractWithMegaphone: { [weak self] id, cta in
+                                       isFullSize: isFullSize, onClickNarrowMegaphone: onClickNarrowMegaphone, onInteractWithMegaphone: { [weak self] id, cta in
                                            guard let db = self?.clientDatabase else { return }
                                            Task { try? await db.interactWithMegaphone(id: id, ctaId: cta) }
                                        }))

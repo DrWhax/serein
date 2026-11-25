@@ -31,6 +31,8 @@ public enum NotificationContent {
             let body: String
             if (p.isExpiringMessage && hideExpiringMessageBody) || setting == .name {
                 body = i18n("icu:newMessage")
+            } else if let key = p.noticeTextKey {
+                body = i18n(key)
             } else if p.storyId != nil {
                 body = p.body
             } else if case .reaction(let emoji) = p.kind {

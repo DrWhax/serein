@@ -44,8 +44,9 @@ extension LeftPaneHelper {
 /// The actions a helper's views can call (LeftPane's props, forwarded).
 public struct LeftPaneContext {
     public var i18n: Localizer
-    /// `renderToastManager`: the app's toasts, over the left pane (NavSidebar's overlay).
-    public var renderToastManager: (() -> AnyView)?
+    /// `renderToastManager`: the app's toasts, over the left pane (NavSidebar's overlay), given
+    /// the pane's width breakpoint and `expandNarrowLeftPane`.
+    public var renderToastManager: ((WidthBreakpoint, @escaping () -> Void) -> AnyView)?
     public var showInbox: () -> Void = {}
     public var startComposing: () -> Void = {}
     public var showChooseGroupMembers: () -> Void = {}
@@ -172,8 +173,8 @@ public struct LeftPane: View {
             LeftPaneMoreActions(context: context)
         } content: {
             LeftPaneContent(helper: helper, context: context, dialogs: dialogs, listActions: listActions)
-        } renderToastManager: { _, _ in
-            context.renderToastManager?() ?? AnyView(EmptyView())
+        } renderToastManager: { breakpoint, expand in
+            context.renderToastManager?(breakpoint, expand) ?? AnyView(EmptyView())
         }
     }
 }

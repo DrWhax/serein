@@ -72,6 +72,8 @@ public final class AudioPlaybackEngine {
     }
     /// Called when playback reaches the end.
     @ObservationIgnored public var onEnded: (() -> Void)?
+    /// Silent while it plays on (a story's `muted`).
+    public var isMuted = false { didSet { player.volume = isMuted ? 0 : 1 } }
 
     @ObservationIgnored let engine = AVAudioEngine()
     @ObservationIgnored let player = AVAudioPlayerNode()

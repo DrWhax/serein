@@ -8,6 +8,7 @@ import CryptoKit
 import GRDB
 import SignalText
 import LibSignalClient
+import SignalProtos
 
 public struct ConversationSummary: Sendable, Equatable, Identifiable {
     public enum Kind: String, Sendable { case `private`, group }
@@ -96,12 +97,32 @@ public enum TimelineNotice: Sendable, Equatable {
     case phoneNumberDiscovery(e164: String)
     /// `message-request-response-event`: ACCEPT, BLOCK, UNBLOCK or SPAM.
     case messageRequestResponse(event: String)
+    /// `universal-timer-notification`: disappearing messages are on for new chats.
+    case universalTimer
+    /// `contact-removed-notification`
+    case contactRemoved
+    /// A message with the END_SESSION flag ("Secure session reset").
+    case resetSession
+    /// A message that needs a newer app (`isUnsupportedMessage`); `canProcessNow` once this one
+    /// supports it.
+    case unsupported(canProcessNow: Bool)
+
+    /// What a message shown as a notice says in the chat list and notifications
+    /// (getNotificationDataForMessage), as a string key.
+    public var textKey: String? {
+        switch self {
+        case .resetSession: "icu:sessionEnded"
+        case .unsupported: "icu:message--getDescription--unsupported-message"
+        default: nil
+        }
+    }
 
     /// The message types the timeline shows as notices.
     static let types = ["keychange", "verified-change", "delivery-issue", "chat-session-refreshed",
                         "call-history", "group-v2-change", "timer-notification", "pinned-message-notification", "poll-terminate",
                         "profile-change", "change-number-notification", "joined-signal-notification", "title-transition-notification",
-                        "conversation-merge", "phone-number-discovery", "message-request-response-event"]
+                        "conversation-merge", "phone-number-discovery", "message-request-response-event", "universal-timer-notification",
+                        "contact-removed-notification"]
 
     /// getTitleNoDefault of a stored render info (`renderInfo`).
     static func title(_ renderInfo: [String: Any]?) -> String? {
@@ -149,6 +170,17 @@ public enum TimelineNotice: Sendable, Equatable {
         case "message-request-response-event":
             guard let event = json["messageRequestResponseEvent"] as? String else { return nil }
             self = .messageRequestResponse(event: event)
+        case "universal-timer-notification": self = .universalTimer
+        case "contact-removed-notification": self = .contactRemoved
+        case "incoming":
+            let required = (json["requiredProtocolVersion"] as? NSNumber)?.intValue, supported = (json["supportedVersionAtReceive"] as? NSNumber)?.intValue
+            if ((json["flags"] as? NSNumber)?.intValue ?? 0) & 1 != 0 {
+                self = .resetSession
+            } else if let required, let supported, supported < required {
+                self = .unsupported(canProcessNow: Signalservice_DataMessage.ProtocolVersion.current.rawValue >= required)
+            } else {
+                return nil
+            }
         default: return nil
         }
     }
@@ -156,7 +188,11 @@ public enum TimelineNotice: Sendable, Equatable {
 
 public struct TimelineMessage: Sendable, Equatable, Identifiable {
     public enum Direction: String, Sendable { case incoming, outgoing }
-    public enum Status: String, Sendable { case pending = "Pending", sent = "Sent", delivered = "Delivered", read = "Read", viewed = "Viewed", failed = "Failed" }
+    public enum Status: String, Sendable {
+        case pending = "Pending", sent = "Sent", delivered = "Delivered", read = "Read", viewed = "Viewed", failed = "Failed"
+        /// Some recipients have it, others failed (`partial-sent`).
+        case partialSent = "PartialSent"
+    }
     public var id: String
     public var conversationId: String
     public var direction: Direction
@@ -593,9 +629,12 @@ public enum ConversationQueries {
         var status: TimelineMessage.Status?
         if outgoing {
             let states = json["sendStateByConversationId"] as? [String: [String: Any]] ?? [:]
-            // Best state across recipients, failed only when every recipient failed (upstream getMessagePropStatus).
             let all = states.values.compactMap { ($0["status"] as? String).flatMap(SendStatus.init(rawValue:)) }
-            if let best = all.max(by: { $0.rank < $1.rank }) { status = TimelineMessage.Status(rawValue: best.rawValue) }
+            // getMessagePropStatus: a failed recipient makes it partly sent when another has
+            // it (isSent of the best successful status), else failed.
+            if all.contains(.failed) {
+                status = all.contains { $0 != .failed && $0.rank >= SendStatus.sent.rank } ? .partialSent : .failed
+            } else if let best = all.max(by: { $0.rank < $1.rank }) { status = TimelineMessage.Status(rawValue: best.rawValue) }
             // No one else to send to (a group with only us): upstream's `isMessageJustForMe`,
             // sent — not "sending" forever.
             else if states.isEmpty { status = .sent }

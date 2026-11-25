@@ -150,7 +150,10 @@ extension Messenger {
         var story = Signalservice_StoryMessage()
         if let pk = account.profileKey { story.profileKey = pk }
         story.allowsReplies = item.canReply
-        if let t = item.text, case .text(let attachment) = OutgoingStoryContent.text(t) {
+        if let t = item.text, case .text(var attachment, _) = OutgoingStoryContent.text(t) {
+            if t.preview?.image != nil, let pointer = try await uploadAttachments(messageId: storyId, type: .preview).first {
+                attachment.preview.image = pointer
+            }
             story.textAttachment = attachment
         } else if let pointer = try await uploadAttachments(messageId: storyId).first {
             story.fileAttachment = pointer

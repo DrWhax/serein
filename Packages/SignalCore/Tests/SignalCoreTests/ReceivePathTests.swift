@@ -450,9 +450,10 @@ import Testing
         return try await c.database.pool.write { db in try c.receiver.dispatch(d, envelope: e, db) }
     }
 
-    /// processDataMessage and #handleDataMessage: a body past 2 KiB, unknown flags and a legacy
-    /// end-session drop the message, as does one with nothing to show; past 32 attachments,
-    /// the first preview and the first quoted attachment are ignored.
+    /// processDataMessage and #handleDataMessage: a body past 2 KiB and unknown flags drop the
+    /// message, as does one with nothing to show; a legacy end-session is kept without its
+    /// body, and one needing a newer app is kept even when empty; past 32 attachments, the
+    /// first preview and the first quoted attachment are ignored.
     @Test func messagesAreHeldToUpstreamLimits() async throws {
         try await LinkedClient.with { c in
             func text(_ body: String, _ change: (inout Signalservice_DataMessage) -> Void = { _ in }) async throws -> UInt64 {
@@ -467,9 +468,22 @@ import Testing
             _ = try await text(edge)
             #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = ?", [long]) == 0)
             #expect(try await count(c, "SELECT count(*) FROM messages WHERE body = ?", [edge]) == 1)
-            _ = try await text("end session") { $0.flags = 1 }
+            let endSession = try await text("end session") { $0.flags = 1 }
             _ = try await text("unknown flag") { $0.flags = 8 }
             #expect(try await count(c, "SELECT count(*) FROM messages WHERE body IN ('end session', 'unknown flag')") == 0)
+            let newer = try await text("") { $0.requiredProtocolVersion = 99 }
+            let alice = try await c.database.pool.write { try MessageStore.privateConversation($0, serviceId: c.aliceAci) }
+            let timeline = try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: alice, limit: 100) }
+            let kinds = [endSession, newer].map { t in timeline.first { $0.sentAt == Int64(t) }?.notice }
+            #expect(kinds == [.resetSession, .unsupported(canProcessNow: false)])
+            // Their notifications say so (getNotificationDataForMessage), not an empty body.
+            let keys = try await c.database.pool.read { db in
+                try [endSession, newer].map { t in
+                    try MessageStore.find(db, author: c.aliceAci, sentAt: t).flatMap { try NotificationPolicy.pending(db, messageId: $0, ourAci: c.account.aci) }?
+                        .noticeTextKey
+                }
+            }
+            #expect(keys == ["icu:sessionEnded", "icu:message--getDescription--unsupported-message"])
             let quoteOnly = try await text("") { $0.quote.id = 1; $0.quote.authorAci = c.aliceAci; $0.quote.text = "quoted" }
             #expect(try await count(c, "SELECT count(*) FROM messages WHERE sent_at = ?", [Int64(quoteOnly)]) == 0)
 

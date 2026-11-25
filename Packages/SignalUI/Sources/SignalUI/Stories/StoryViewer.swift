@@ -30,6 +30,8 @@ public struct StoryViewerData {
     public var replyCount: Int
     public var isHidden: Bool
     public var isSignalConversation: Bool
+    /// A video story's player (its frames; sound as `hasAllStoriesUnmuted` says).
+    public var videoPlayer: VideoPlaybackEngine?
 
     public init(story: StoryViewData, caption: String? = nil, group: StoryConversation? = nil, distributionListName: String? = nil, isMe: Bool = false,
                 numStories: Int = 1, currentIndex: Int = 0, progress: Double = 0, hasAudio: Bool = false, hasAllStoriesUnmuted: Bool = true,
@@ -287,7 +289,8 @@ public struct StoryViewer: View {
                 // __protection--top
                 LinearGradient(colors: [Color(rgba: LegacyColor.blackAlpha16), .clear], startPoint: .top, endPoint: .bottom)
                     .frame(height: 80).frame(maxHeight: .infinity, alignment: .top)
-                StoryImage(attachment: data.story.attachment, firstName: data.story.sender.firstName ?? data.story.sender.title, isMe: data.isMe, fitContain: true)
+                StoryImage(attachment: data.story.attachment, firstName: data.story.sender.firstName ?? data.story.sender.title, isMe: data.isMe, fitContain: true,
+                           player: data.videoPlayer)
                     .frame(width: g.size.width, height: g.size.height)
                 // __protection--bottom (taller and darker under a caption)
                 LinearGradient(colors: [.clear, Color(rgba: data.caption != nil ? LegacyColor.blackAlpha80 : LegacyColor.blackAlpha60)], startPoint: .top,

@@ -82,6 +82,7 @@ public enum StoryStore {
                 var p: [String: Any] = ["url": t.preview.url]
                 if t.preview.hasTitle { p["title"] = t.preview.title }
                 if t.preview.hasDescription_p { p["description"] = t.preview.description_p }
+                if t.preview.hasDate { p["date"] = Int64(t.preview.date) }
                 preview.append(p)
             }
         }
@@ -113,6 +114,11 @@ public enum StoryStore {
                         receivedAt, s.source, s.serverGuid, s.sourceDevice.map { Int($0) }, expirationStart, s.distributionListId])
         if case .fileAttachment(let pointer)? = story.attachment {
             try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: s.conversationId, sentAt: Int64(s.sentAt), attachments: [pointer])
+        }
+        // The link preview's image (ours, being sent, has none yet: it is stored as prepared).
+        if case .textAttachment(let t)? = story.attachment, t.hasPreview, t.preview.hasImage {
+            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: s.conversationId, sentAt: Int64(s.sentAt),
+                                                      attachments: [t.preview.image], type: .preview)
         }
         if !s.outgoing {
             try MessageStore.updateConversationJSON(db, conversationId: s.conversationId) { $0["hasPostedStory"] = true }

@@ -114,10 +114,12 @@ public final class Messenger: Sendable {
         let quoteThumbnail = await prepareQuoteThumbnail(quoting)
         let id = try await database.pool.write { db -> String in
             let conversationId = try MessageStore.privateConversation(db, serviceId: serviceId)
-            // `maybeApplyUniversalTimer`: a new chat starts with the universal timer.
+            // `maybeApplyUniversalTimer`: a new chat starts with the universal timer (its notice goes).
+            let hadNotice = try ChatEventNotices.removeUniversalTimerNotice(db, conversationId: conversationId)
             if let universal = try Items.get(db, "universalExpireTimer", as: Int.self), universal > 0,
                try ConversationState.timer(db, conversationId: conversationId).seconds == nil,
-               try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE conversationId = ?", arguments: [conversationId]) == 0 {
+               try hadNotice || Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE conversationId = ? AND type IN ('incoming', 'outgoing')",
+                                             arguments: [conversationId]) == 0 {
                 try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["expireTimer"] = universal }
                 try ConversationState.insertTimerNotification(db, conversationId: conversationId, seconds: UInt32(universal), from: self.account.aci, sentAt: sentAt - 1)
             }

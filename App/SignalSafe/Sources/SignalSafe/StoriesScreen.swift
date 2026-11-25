@@ -6,6 +6,7 @@
 import Foundation
 import SignalCore
 import SignalI18n
+import SignalText
 import SignalUI
 import SwiftUI
 
@@ -30,6 +31,17 @@ struct StoriesScreen: View {
     /// MyStories "Forward", and the story settings.
     @State private var forwardStoryId: String?
     @State private var showingSettings = false
+    /// Where closing the viewer goes, when it was opened from a chat or contact.
+    @State private var returnTo: NavTab?
+    /// The video story on screen, playing (its sound per `hasAllStoriesUnmuted`).
+    @State private var storyVideo: StoryVideo?
+
+    struct StoryVideo {
+        var storyId: String
+        var player: VideoPlaybackEngine
+        var hasAudio: Bool
+        var duration: Double
+    }
     /// The send dialog's groups (members, announcements only, admin), read when it opens.
     @State private var storyGroups: [String: StoryGroupState] = [:]
     /// What the send dialog picked so far: each list's or group's members (`onSelectedStoryList`),
@@ -46,19 +58,54 @@ struct StoriesScreen: View {
         case media(SignalSession.StagedAttachment)
     }
 
-    static let storyDuration = 5.0
+    /// getStoryDuration (ms → s): text 5 s, +1 s per 15 characters past the first 15, +2 s with
+    /// a link; a video its length (at most 30 s), a GIF three loops (5–30 s); a caption as
+    /// text; nil while the media is not here (the story waits).
+    static func storyDuration(_ item: StoryFeedItem, videoDuration: Double?) -> Double? {
+        let media = item.media.map { a in
+            StoryMediaTiming(failed: a.pending == false && !a.isDownloaded && a.cdnKey == nil, isDownloaded: a.isDownloaded,
+                             isGIF: (a.flags ?? 0) & 8 != 0, isVideo: AttachmentPolicy.isVideo(a.contentType), caption: a.caption)
+        }
+        return storyDuration(text: item.text.map { $0.text ?? "" }, hasLinkPreview: item.text?.preview != nil, media: media,
+                             videoDuration: videoDuration)
+    }
+
+    struct StoryMediaTiming {
+        var failed: Bool
+        var isDownloaded: Bool
+        var isGIF: Bool
+        var isVideo: Bool
+        var caption: String?
+    }
+
+    static func storyDuration(text: String?, hasLinkPreview: Bool, media: StoryMediaTiming?, videoDuration: Double?) -> Double? {
+        let base = 5.0, maxVideo = 30.0
+        func extra(_ s: String) -> Double { (ceil(Double(s.count) / 15) - 1) }
+        if let text { return base + extra(text) + (hasLinkPreview ? 2 : 0) }
+        guard let a = media, !a.failed else { return base }
+        guard a.isDownloaded else { return nil }
+        if a.isGIF || a.isVideo {
+            guard let d = videoDuration else { return nil }
+            return a.isGIF ? min(max(d * 3, base), maxVideo) : min(d, maxVideo)
+        }
+        if let caption = a.caption, !caption.isEmpty { return base + extra(caption) }
+        return base
+    }
 
     var body: some View {
         StoriesTab(me: me, myStories: myStories, stories: incoming(hidden: false), hiddenStories: incoming(hidden: true),
                    hasViewReceiptSetting: session.accountSettings.storyViewReceipts,
                    preferredLeftPaneWidth: model.preferredLeftPaneWidth, navTabsCollapsed: model.navTabsCollapsed, isCreatingStory: creatingText,
                    actions: actions) {
-            TextStoryCreator(onClose: { creatingText = false }, onDone: { t in
+            TextStoryCreator(linkPreview: session.storyCreatorLinkPreview, debouncedMaybeGrabLinkPreview: { session.grabStoryLinkPreview($0) },
+                             onClose: { creatingText = false; session.resetStoryLinkPreview() }, onDone: { t in
                 creatingText = false
                 draft = .text(t)
             })
         }
         .overlay { viewer }
+        .onAppear(perform: openRequestedStories)
+        .onChange(of: session.userStoriesRequest) { openRequestedStories() }
         .overlay { sendModal }
         .overlay { forwardModal }
         .overlay { settingsModal }
@@ -91,6 +138,11 @@ struct StoriesScreen: View {
             if !t.gradientColors.isEmpty {
                 data.gradient = StoryGradient(angle: Double(t.gradientAngle ?? 0), startColor: t.gradientColors.first, endColor: t.gradientColors.last,
                                               colors: t.gradientColors, positions: t.gradientPositions.isEmpty ? nil : t.gradientPositions.map(Double.init))
+            }
+            if let p = t.preview {
+                let size = p.image.flatMap { a in a.width.flatMap { w in a.height.map { CGSize(width: w, height: $0) } } }
+                data.preview = StoryLinkPreviewData(url: p.url, title: p.title, description: p.description, image: p.image.flatMap { session.image(for: $0) },
+                                                    imageSize: size, domain: LinkPreviewRules.domain(p.url))
             }
             return StoryAttachmentData(contentType: "text/x-signal-story", textAttachment: data, width: nil, height: nil)
         }
@@ -148,7 +200,10 @@ struct StoriesScreen: View {
 
     var actions: StoriesActions {
         var a = StoriesActions()
-        a.onAddText = { creatingText = true }
+        a.onAddText = {
+            session.resetStoryLinkPreview()
+            creatingText = true
+        }
         a.onAddMedia = {
             Task { if let staged = await session.pickStoryMedia() { draft = .media(staged) } }
         }
@@ -194,9 +249,46 @@ struct StoriesScreen: View {
     }
 
     func close() {
+        stopStoryVideo()
         viewing = []
         detailsStoryId = nil
         viewsNReplies = nil
+        if let returnTo {
+            self.returnTo = nil
+            model.selectedTab = returnTo
+        }
+    }
+
+    /// A chat's or contact's stories, asked for from outside the tab.
+    func openRequestedStories() {
+        guard let request = session.userStoriesRequest else { return }
+        session.userStoriesRequest = nil
+        guard incomingGroups.contains(where: { $0.key == request.key }) else { return }
+        actions.viewUserStories(request.key, false)
+        if !viewing.isEmpty { returnTo = request.returnTo }
+    }
+
+    /// What the duration depends on, so the timer restarts once it is known.
+    func durationKey(_ item: StoryFeedItem) -> String {
+        "\(item.media?.isDownloaded ?? true)-\(storyVideo?.storyId == item.id ? storyVideo?.duration ?? 0 : 0)"
+    }
+
+    /// A downloaded video (or GIF) story plays, muted unless stories were unmuted; the one
+    /// before stops.
+    func loadStoryVideo(_ item: StoryFeedItem) async {
+        if storyVideo?.storyId != item.id { stopStoryVideo() }
+        guard let a = item.media, a.isDownloaded, AttachmentPolicy.isVideo(a.contentType), storyVideo == nil else { return }
+        guard let (player, info) = try? await session.makeVideoPlayer(a) else { return }
+        guard !Task.isCancelled, viewing.indices.contains(index), viewing[index].id == item.id else { return await player.unload() }
+        player.audio?.isMuted = !session.hasAllStoriesUnmuted
+        storyVideo = StoryVideo(storyId: item.id, player: player, hasAudio: info.hasAudio, duration: info.duration)
+        if !paused { await player.play() }
+    }
+
+    func stopStoryVideo() {
+        guard let v = storyVideo else { return }
+        storyVideo = nil
+        Task { await v.player.unload() }
     }
 
     func step(_ delta: Int) {
@@ -216,12 +308,18 @@ struct StoriesScreen: View {
                                               isMe: current.isOutgoing, numStories: viewing.count, currentIndex: index, progress: progress,
                                               canReply: current.canReply && !current.isOutgoing, isGroupStory: current.groupConversationId != nil,
                                               isSent: current.isOutgoing, hasViewReceiptSetting: session.accountSettings.storyViewReceipts,
-                                              viewCount: current.views, isHidden: current.isHidden),
+                                              viewCount: current.views, isHidden: current.isHidden,
+                                              playing: storyVideo?.storyId == current.id ? storyVideo : nil,
+                                              unmuted: session.hasAllStoriesUnmuted),
                         actions: {
                 var a = StoryViewerActions()
                 a.onClose = { close() }
                 // The speaker button on a story without sound.
                 a.showNoSoundToast = { session.toast = .storyMuted }
+                a.setHasAllStoriesUnmuted = { on in
+                    session.hasAllStoriesUnmuted = on
+                    storyVideo?.player.audio?.isMuted = !on
+                }
                 a.viewNext = { step(1) }
                 a.viewPrevious = { step(-1) }
                 a.setPaused = { paused = $0 }
@@ -255,14 +353,20 @@ struct StoriesScreen: View {
                 return a
             }())
             .overlay { storyModals(current) }
-            .task(id: "\(item.id)-\(paused)") {
-                // Five seconds per story (upstream DEFAULT_DURATION), then the next one.
-                guard !paused else { return }
-                let start = ContinuousClock.now - .milliseconds(Int(progress * Self.storyDuration * 1000))
+            .task(id: "\(current.id)-\(current.media?.isDownloaded ?? false)") { await loadStoryVideo(current) }
+            .onChange(of: paused) { _, now in
+                guard let player = storyVideo?.player else { return }
+                if now { player.pause() } else { Task { await player.play() } }
+            }
+            .task(id: "\(item.id)-\(paused)-\(durationKey(current))") {
+                // The story's duration (getStoryDuration), then the next one.
+                guard !paused, let duration = Self.storyDuration(current, videoDuration: storyVideo?.storyId == current.id ? storyVideo?.duration : nil)
+                else { return }
+                let start = ContinuousClock.now - .milliseconds(Int(progress * duration * 1000))
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(50))
                     let elapsed = Double((ContinuousClock.now - start).components.attoseconds) / 1e18 + Double((ContinuousClock.now - start).components.seconds)
-                    progress = min(1, elapsed / Self.storyDuration)
+                    progress = min(1, elapsed / duration)
                     if progress >= 1 { step(1); return }
                 }
             }
@@ -284,7 +388,7 @@ struct StoriesScreen: View {
                 a.onClose = { self.draft = nil }
                 a.onSend = { listIds, conversationIds in
                     let content: OutgoingStoryContent = switch draft {
-                    case .text(let t): .text(Self.storyText(t))
+                    case .text(let t): textStory(t)
                     case .media(let m): .file(OutgoingAttachment(data: m.data, contentType: m.contentType, fileName: m.fileName))
                     }
                     // `blockSendUntilConversationsAreVerified` for the story's recipients.
@@ -309,6 +413,16 @@ struct StoriesScreen: View {
             }
             .task { await loadStoryGroups() }
         }
+    }
+
+    /// A text story with its link preview (and the preview's image to upload).
+    func textStory(_ t: TextAttachmentData) -> OutgoingStoryContent {
+        var s = Self.storyText(t)
+        guard let p = t.preview else { return .text(s) }
+        let sent = session.storyLinkPreviewForSend(p)
+        s.preview = sent.preview
+        session.resetStoryLinkPreview()
+        return .text(s, previewImage: sent.image)
     }
 
     static func storyText(_ t: TextAttachmentData) -> StoryText {
@@ -565,5 +679,17 @@ struct StoryViewsNRepliesLoader: View {
                 return reply
             } : []
         }
+    }
+}
+
+extension StoryViewerData {
+    /// With the story's video playing (and whether it has sound to unmute).
+    init(story: StoryViewData, group: StoryConversation?, distributionListName: String?, isMe: Bool, numStories: Int, currentIndex: Int,
+         progress: Double, canReply: Bool, isGroupStory: Bool, isSent: Bool, hasViewReceiptSetting: Bool, viewCount: Int, isHidden: Bool,
+         playing: StoriesScreen.StoryVideo?, unmuted: Bool) {
+        self.init(story: story, group: group, distributionListName: distributionListName, isMe: isMe, numStories: numStories, currentIndex: currentIndex,
+                  progress: progress, hasAudio: playing?.hasAudio ?? false, hasAllStoriesUnmuted: unmuted, canReply: canReply, isGroupStory: isGroupStory,
+                  isSent: isSent, hasViewReceiptSetting: hasViewReceiptSetting, viewCount: viewCount, isHidden: isHidden)
+        videoPlayer = playing?.player
     }
 }

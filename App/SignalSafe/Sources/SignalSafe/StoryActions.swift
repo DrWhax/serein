@@ -114,3 +114,35 @@ extension SignalSession {
         }
     }
 }
+
+/// A chat's or contact's stories opened from outside the stories tab (`viewUserStories` with
+/// `StoryViewMode.User`): the stories tab opens their viewer, and closing it goes back.
+struct UserStoriesRequest: Equatable {
+    /// The stories' row: the sender's service id, or the group's conversation id.
+    var key: String
+    var returnTo: NavTab
+}
+
+extension SignalSession {
+    /// getHasStoriesSelector: a group's, or a contact's, incoming stories; unread when one is.
+    func storyRing(groupConversationId: String? = nil, serviceId: String? = nil) -> HasStories? {
+        guard !accountSettings.storiesDisabled else { return nil }
+        let theirs = stories.filter { s in
+            guard !s.isOutgoing else { return false }
+            if let groupConversationId { return s.groupConversationId == groupConversationId }
+            return s.groupConversationId == nil && s.author == serviceId
+        }
+        guard !theirs.isEmpty else { return nil }
+        return theirs.contains(where: \.isUnread) ? .unread : .read
+    }
+
+    /// The story ring of a chat (its group's or its contact's).
+    func storyRing(_ c: ConversationSummary) -> HasStories? {
+        c.kind == .group ? storyRing(groupConversationId: c.id) : c.serviceId.flatMap { storyRing(serviceId: $0) }
+    }
+
+    func viewUserStories(_ c: ConversationSummary, returnTo: NavTab = .chats) {
+        guard let key = c.kind == .group ? c.id : c.serviceId else { return }
+        userStoriesRequest = UserStoriesRequest(key: key, returnTo: returnTo)
+    }
+}

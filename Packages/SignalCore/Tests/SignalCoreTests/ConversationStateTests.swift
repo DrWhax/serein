@@ -48,12 +48,23 @@ import Testing
             #expect(m["expireTimer"] as? Int == 30)
             #expect(try await c.messageJSON(sentAt: sent.timestamp)["expirationStartTimestamp"] != nil)
 
-            // A new chat starts with the universal timer.
+            // A new chat says it will start with the universal timer (once, however often it is
+            // opened), and does; the notice goes then.
             try await c.database.pool.write { try Items.set($0, "universalExpireTimer", 3600) }
             let bob = try await c.server.json("addAccount", ["name": "bob"])
-            _ = try await c.messenger.sendText("hello bob", to: try #require(bob["aci"] as? String).lowercased())
+            let bobAci = try #require(bob["aci"] as? String).lowercased()
+            let bobConv = try await c.database.pool.write { try MessageStore.privateConversation($0, serviceId: bobAci) }
+            func universalNotices() async throws -> Int {
+                try await c.database.pool.read { try ConversationQueries.messages($0, conversationId: bobConv, limit: 20) }
+                    .filter { $0.notice == .universalTimer }.count
+            }
+            try await c.messenger.conversationOpened(bobConv)
+            try await c.messenger.conversationOpened(bobConv)
+            #expect(try await universalNotices() == 1)
+            _ = try await c.messenger.sendText("hello bob", to: bobAci)
             let toBob = try await c.server.json("waitForMessage", ["account": "bob"])
             #expect(toBob["expireTimer"] as? Int == 3600)
+            #expect(try await universalNotices() == 0)
         }
     }
 

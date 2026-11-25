@@ -3,10 +3,12 @@
 // unread-only and muted switches, delete), with Cancel / Save in the page actions.
 //
 // Upstream's nav blocker asks to save or discard when leaving with unsaved changes. Here the
-// page's own back button asks; `onChangedStateChange` reports unsaved changes so the shell can
-// block sidebar navigation the same way. An emoji is appended to the name (the legacy Input
+// page's own back button asks; `onChangedStateChange` reports unsaved changes, and the shell
+// hands a navigation it held back (`blockedNavigation`) to the page, which asks the same way
+// (Save, Discard, or dismissed: stay). An emoji is appended to the name (the legacy Input
 // does not expose its caret).
 
+import Foundation
 import SignalI18n
 import SwiftUI
 
@@ -44,7 +46,11 @@ public struct PreferencesEditChatFolderPage: View {
     let onUpdateChatFolder: (String, ChatFolderParams) -> Void
     let onDeleteChatFolder: (String) -> Void
     let onChangedStateChange: (Bool) -> Void
+    let blockedNavigation: BlockedNavigation?
+    let onBlockedNavigationHandled: () -> Void
     @State private var params: ChatFolderParams
+    /// Where Save / Discard go: a held-back navigation, else back.
+    @State private var leaveAction: (() -> Void)?
     @State private var emojiPickerOpen = false
     @State private var showInclusionsDialog = false
     @State private var showExclusionsDialog = false
@@ -56,7 +62,10 @@ public struct PreferencesEditChatFolderPage: View {
                 conversations: [SearchableConversation] = [], conversationSelector: @escaping (String) -> SelectedChatPill,
                 onBack: @escaping () -> Void = {}, onCreateChatFolder: @escaping (ChatFolderParams) -> Void = { _ in },
                 onUpdateChatFolder: @escaping (String, ChatFolderParams) -> Void = { _, _ in }, onDeleteChatFolder: @escaping (String) -> Void = { _ in },
-                onChangedStateChange: @escaping (Bool) -> Void = { _ in }) {
+                onChangedStateChange: @escaping (Bool) -> Void = { _ in }, blockedNavigation: BlockedNavigation? = nil,
+                onBlockedNavigationHandled: @escaping () -> Void = {}) {
+        self.blockedNavigation = blockedNavigation
+        self.onBlockedNavigationHandled = onBlockedNavigationHandled
         self.existingChatFolderId = existingChatFolderId
         self.initChatFolderParams = initChatFolderParams
         self.conversations = conversations
@@ -72,6 +81,20 @@ public struct PreferencesEditChatFolderPage: View {
     var normalized: ChatFolderParams { params.normalized }
     var isChanged: Bool { !initChatFolderParams.isSame(normalized) }
     var isValid: Bool { normalized.isValid }
+
+    /// SaveChangesFolderDialog's Save / Discard: then back, or the navigation held back.
+    func leave(saving: Bool) {
+        let next = leaveAction
+        leaveAction = nil
+        confirmLeave = false
+        if saving { save() }
+        if let next {
+            onBlockedNavigationHandled()
+            next()
+        } else {
+            onBack()
+        }
+    }
 
     func save() {
         guard isChanged, isValid else { return }
@@ -153,6 +176,24 @@ public struct PreferencesEditChatFolderPage: View {
             }
         }
         .onChange(of: isChanged, initial: true) { _, changed in onChangedStateChange(changed) }
+        .onDisappear { onChangedStateChange(false) }
+        .onChange(of: blockedNavigation, initial: true) { _, attempt in
+            guard let attempt else { return }
+            if isChanged {
+                leaveAction = attempt.proceed
+                confirmLeave = true
+            } else {
+                onBlockedNavigationHandled()
+                attempt.proceed()
+            }
+        }
+        .onChange(of: confirmLeave) { _, open in
+            // Dismissed without a choice: the navigation is not made.
+            if !open, leaveAction != nil {
+                leaveAction = nil
+                onBlockedNavigationHandled()
+            }
+        }
         .viewportPortal {
             if showInclusionsDialog {
                 AxoBaseDialog.Host {
@@ -196,17 +237,23 @@ public struct PreferencesEditChatFolderPage: View {
                     // SaveChangesFolderDialog
                     AxoConfirmDialog.Root(title: i18n(p + "SaveChangesFolderDialog__Title"), description: i18n(p + "SaveChangesFolderDialog__Description")) {
                         AxoConfirmDialog.Action(i18n(p + "SaveChangesFolderDialog__DiscardButton"), variant: .subtleSecondary) {
-                            confirmLeave = false
-                            onBack()
+                            leave(saving: false)
                         }
                         AxoConfirmDialog.Action(i18n(p + "SaveChangesFolderDialog__SaveButton"), variant: .strongPrimary) {
-                            confirmLeave = false
-                            save()
-                            onBack()
+                            leave(saving: true)
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// A navigation the shell held back for a page with unsaved changes (`useNavBlocker`):
+/// `proceed` makes it.
+public struct BlockedNavigation: Equatable {
+    public let id = UUID()
+    public let proceed: () -> Void
+    public init(proceed: @escaping () -> Void) { self.proceed = proceed }
+    public static func == (a: BlockedNavigation, b: BlockedNavigation) -> Bool { a.id == b.id }
 }

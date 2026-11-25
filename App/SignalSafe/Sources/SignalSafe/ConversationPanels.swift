@@ -399,6 +399,10 @@ struct MemberContactModal: View {
             }
         }
         actions.toggleGroupMemberLabelInfoModal = { _ in session.contactDialog = .memberLabelInfo }
+        actions.viewUserStories = { _ in
+            session.contactModalId = nil
+            session.userStoriesRequest = UserStoriesRequest(key: serviceId, returnTo: .chats)
+        }
         // Opened from a call's participant list: mute them, or (a call link's admin) remove or
         // block them from the call (SmartContactModal's isRemoteMuteVisible / isRemoveFromCallVisible).
         let call = session.activeCall
@@ -413,7 +417,7 @@ struct MemberContactModal: View {
         return ContactModal(contact: contact, conversation: conversation, areWeAdmin: group?.isAdmin(me) ?? false, isAdmin: member?.role == GroupRole.administrator,
                             isMember: member != nil, hasActiveCall: session.activeCall != nil, activeCallDemuxId: demux.map(Int.init),
                             isMuted: !(participant?.hasRemoteAudio ?? true), isRemoteMuteVisible: session.remoteMuteSendEnabled && participant != nil,
-                            isRemoveFromCallVisible: removable, contactLabel: label,
+                            isRemoveFromCallVisible: removable, hasStories: session.storyRing(serviceId: serviceId), contactLabel: label,
                             contactNameColor: label != nil ? ContactNameColors.colors(group)[serviceId] : nil, actions: actions)
     }
 }

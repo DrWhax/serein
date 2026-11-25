@@ -642,7 +642,8 @@ const commands = {
     const t = e.storyMessage.attachment?.textAttachment;
     return { text: t?.text ?? null, color: t?.background?.color ?? null, allowsReplies: e.storyMessage.allowsReplies === true,
       hasGroup: e.storyMessage.group != null, hasFile: e.storyMessage.attachment?.fileAttachment != null, envelopeType: e.envelopeType,
-      source: e.source?.aci ?? null };
+      source: e.source?.aci ?? null, previewUrl: t?.preview?.url ?? null, previewTitle: t?.preview?.title ?? null,
+      previewHasImage: t?.preview?.image != null };
   },
   // A reply to one of our stories (storyContext), optionally a reaction.
   async sendStoryReply({ from = 'alice', storyAuthor, storyTimestamp, text = '', emoji, timestamp }) {

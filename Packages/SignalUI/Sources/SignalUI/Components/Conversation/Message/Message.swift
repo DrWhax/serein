@@ -68,6 +68,10 @@ public struct MessageProps {
     public var canRetryDeleteForEveryone = false
     /// `retryDeleteForEveryone`: "Delete failed" sends the delete again.
     public var retryDeleteForEveryone: () -> Void = {}
+    /// `retryMessageSend`: "Edit failed" sends the edit again.
+    public var retryMessageSend: () -> Void = {}
+    /// `showMessageDetails`: "Partially sent" / "Partially deleted" opens the details.
+    public var showMessageDetails: () -> Void = {}
     public var deletedByAdmin: (title: String, isMe: Bool, contactNameColor: String?)?
     public var contactNameColor: String?
     public var contactLabel: ContactLabel?
@@ -299,6 +303,8 @@ public struct Message: View {
                             var a = MessageMetadata.Actions()
                             a.showEditHistory = props.showEditHistory
                             a.retryDeleteForEveryone = props.retryDeleteForEveryone
+                            a.retryMessageSend = props.retryMessageSend
+                            a.showMessageDetails = props.showMessageDetails
                             return a
                         }())
     }

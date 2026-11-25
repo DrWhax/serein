@@ -380,6 +380,13 @@ public struct KeyTransparencyService: Sendable {
         try await socket.keyTransparencyCheck(isSelf: nil, aci: aci, identityKey: key, e164: e164, accessKey: accessKey, usernameHash: nil, store: store)
     }
 
+    /// The self-check's result; one that turns to failing asks for the error dialog
+    /// (`showKeyTransparencyErrorDialog`).
+    static func recordSelfCheck(_ db: Database, old: KeyTransparencyHealth?, new: KeyTransparencyHealth?) throws {
+        if let new { try Items.set(db, "keyTransparencySelfHealth", new.rawValue) } else { try Items.remove(db, "keyTransparencySelfHealth") }
+        if new == .fail, old != .fail { try Items.set(db, "keyTransparencyErrorPending", true) }
+    }
+
     /// `selfCheck`: our own entry; the result goes to `keyTransparencySelfHealth` with
     /// upstream's rules (a verification failure twice in a row is `fail`; network trouble
     /// keeps a failed state until a success).
@@ -408,9 +415,21 @@ public struct KeyTransparencyService: Sendable {
             new = .fail
         }
         try await database.pool.write { db in
-            if let new { try Items.set(db, "keyTransparencySelfHealth", new.rawValue) } else { try Items.remove(db, "keyTransparencySelfHealth") }
+            try Self.recordSelfCheck(db, old: old, new: new)
             try Items.set(db, "lastKeyTransparencySelfCheck", MessageStore.now())
         }
         return new
+    }
+}
+
+extension SignalDatabase {
+    /// Whether the key transparency error dialog is due (the self-check started failing).
+    public func keyTransparencyErrorUpdates() -> AsyncThrowingStream<Bool, Error> {
+        observe { try Items.get($0, "keyTransparencyErrorPending", as: Bool.self) ?? false }
+    }
+
+    /// The dialog was shown.
+    public func clearKeyTransparencyError() async throws {
+        try await pool.write { try Items.remove($0, "keyTransparencyErrorPending") }
     }
 }

@@ -119,6 +119,54 @@ enum ChatEventNotices {
         try db.execute(sql: "UPDATE conversations SET active_at = ? WHERE id = ? AND active_at IS NULL", arguments: [MessageStore.now(), conversationId])
     }
 
+    // MARK: pending notices on opening a chat
+
+    /// `maybeSetPendingUniversalTimer`: a 1:1 chat (not Signal's) with nothing said yet, no
+    /// timer of its own and a universal timer set shows "disappearing messages are on for new
+    /// chats"; once something has been said, the notice goes.
+    static func universalTimerOnOpen(_ db: Database, conversationId: String) throws {
+        guard let row = try Row.fetchOne(db, sql: "SELECT type, serviceId, json FROM conversations WHERE id = ?", arguments: [conversationId]),
+              (row["type"] as String?) == "private", (row["serviceId"] as String?) != StorageLocal.signalAci else { return }
+        let json = try MessageStore.jsonObject(row["json"] ?? "{}")
+        let said = try Int.fetchOne(db, sql: "SELECT count(*) FROM messages WHERE conversationId = ? AND type IN ('incoming', 'outgoing')",
+                                    arguments: [conversationId]) ?? 0
+        if said > 0 {
+            try removeUniversalTimerNotice(db, conversationId: conversationId)
+            return
+        }
+        let universal = try Items.get(db, "universalExpireTimer", as: Int.self) ?? 0
+        guard json["pendingUniversalTimer"] == nil, ((json["expireTimer"] as? NSNumber)?.intValue ?? 0) == 0, universal > 0 else { return }
+        let id = try insert(db, conversationId: conversationId, type: "universal-timer-notification", sentAt: MessageStore.now(), seenStatus: .notApplicable)
+        try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["pendingUniversalTimer"] = id }
+    }
+
+    /// `maybeRemoveUniversalTimer`
+    @discardableResult
+    static func removeUniversalTimerNotice(_ db: Database, conversationId: String) throws -> Bool {
+        let json = try MessageStore.jsonObject(try String.fetchOne(db, sql: "SELECT json FROM conversations WHERE id = ?", arguments: [conversationId]) ?? "{}")
+        guard let id = json["pendingUniversalTimer"] as? String else { return false }
+        try db.execute(sql: "DELETE FROM messages WHERE id = ?", arguments: [id])
+        try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["pendingUniversalTimer"] = nil }
+        return true
+    }
+
+    /// `maybeSetContactRemoved` / `maybeClearContactRemoved`: a removed contact's chat says so
+    /// until the contact is back.
+    static func contactRemovedOnOpen(_ db: Database, conversationId: String) throws {
+        guard let row = try Row.fetchOne(db, sql: "SELECT type, json FROM conversations WHERE id = ?", arguments: [conversationId]),
+              (row["type"] as String?) == "private" else { return }
+        let json = try MessageStore.jsonObject(row["json"] ?? "{}")
+        let pending = json["pendingRemovedContactNotification"] as? String
+        if json["removalStage"] as? String == "justNotification" {
+            guard pending == nil else { return }
+            let id = try insert(db, conversationId: conversationId, type: "contact-removed-notification", sentAt: MessageStore.now(), seenStatus: .notApplicable)
+            try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["pendingRemovedContactNotification"] = id }
+        } else if let pending {
+            try db.execute(sql: "DELETE FROM messages WHERE id = ?", arguments: [pending])
+            try MessageStore.updateConversationJSON(db, conversationId: conversationId) { $0["pendingRemovedContactNotification"] = nil }
+        }
+    }
+
     // MARK: polls
 
     /// `addPollTerminateNotification`: `terminator` ended the poll asking `question`, sent at

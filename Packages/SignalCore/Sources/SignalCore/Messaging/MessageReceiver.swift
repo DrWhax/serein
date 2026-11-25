@@ -552,10 +552,18 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         guard m.timestamp == e.clientTimestamp || !e.hasClientTimestamp else {
             throw ReceiveError.invalidEnvelope("timestamp mismatch \(m.timestamp) != \(e.clientTimestamp)")
         }
-        // Dropped (the sender key it carried is kept): unknown flags (processDataMessage), a
-        // legacy end-session (whose body and attachments upstream clears), a body past 2 KiB.
-        if m.flags & ~InboundLimits.knownFlags != 0 || m.flags & InboundLimits.endSessionFlag != 0 || InboundLimits.bodyTooLong(m.body) { return [] }
+        // Dropped (the sender key it carried is kept): unknown flags (processDataMessage), a body
+        // past 2 KiB.
+        if m.flags & ~InboundLimits.knownFlags != 0 || InboundLimits.bodyTooLong(m.body) { return [] }
         if try MessageStore.find(db, author: d.sender, sentAt: m.timestamp) != nil { return [] }   // duplicate
+        // A legacy END_SESSION is kept as "Secure session reset", its body and attachments
+        // cleared (processDataMessage).
+        var m = m
+        let isEndSession = m.flags & InboundLimits.endSessionFlag != 0
+        if isEndSession {
+            m.body = ""
+            m.attachments = []
+        }
         let conversation: String
         var groupId: Data? = nil
         var events: [ReceiveEvent] = []
@@ -613,9 +621,19 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             // A pin also makes a message of its own (the notification), others none.
             return events + [.other(kind: "modifier:\(m.timestamp)", sender: d.sender)]
         }
-        // `isMessageEmpty`: nothing to show (a quote or preview alone, say) is not stored.
-        if InboundLimits.isEmpty(m) { return events }
+        // `requiredProtocolVersion` / `supportedVersionAtReceive`: a message needing a newer
+        // app is shown as unsupported.
+        let current = Signalservice_DataMessage.ProtocolVersion.current.rawValue
+        let isUnsupported = Int(m.requiredProtocolVersion) > current
+        // `isMessageEmpty`: nothing to show (a quote or preview alone, say) is not stored; a
+        // session reset and an unsupported message are something to show.
+        if !isEndSession && !isUnsupported && InboundLimits.isEmpty(m) { return events }
         var extra: [String: Any] = [:]
+        if isEndSession { extra["flags"] = Int(InboundLimits.endSessionFlag) }
+        if isUnsupported {
+            extra["requiredProtocolVersion"] = Int(m.requiredProtocolVersion)
+            extra["supportedVersionAtReceive"] = current
+        }
         if m.isViewOnce { extra["isViewOnce"] = true }
         if m.hasPollCreate, let poll = MessageModifiers.pollJSON(m.pollCreate) { extra["poll"] = poll }
         if let storyId {

@@ -11,6 +11,10 @@ import SignalUI
     var selectedTab: NavTab = .chats
     /// The Settings tab's page (other places open a page: chat folders, notifications).
     var settingsPage: SettingsPage = .general
+    /// A settings page with unsaved changes (the chat folder editor), and the navigation held
+    /// back for it to ask about.
+    var settingsHasUnsavedChanges = false
+    var blockedNavigation: BlockedNavigation?
     /// A new chat folder started from a chat's context menu ("Create new folder"): that chat.
     var newChatFolderWith: String?
     var navTabsCollapsed = false

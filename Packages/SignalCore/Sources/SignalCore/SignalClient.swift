@@ -117,10 +117,11 @@ public actor SignalClient {
     /// taking the user's cancel or retry. Throws `LinkAndSyncError.canceled` or
     /// `.relinkRequested` when the device is to be unlinked (and its data deleted).
     public func link(deviceName: String, onURL: @escaping @Sendable (String) -> Void,
+                     onScanned: @escaping @Sendable () -> Void = {},
                      onSync: @escaping @Sendable (LinkAndSyncProgress) -> Void = { _ in },
                      control: LinkAndSyncControl = LinkAndSyncControl()) async throws -> Account {
         let linker = DeviceLinker(net: net, socket: socket, database: database)
-        let account = try await linker.link(LinkOptions(deviceName: deviceName), onURL: onURL)
+        let account = try await linker.link(LinkOptions(deviceName: deviceName), onURL: onURL, onScanned: onScanned)
         guard try await hasLinkAndSync() else {
             try await start(account, uploadOneTimeKeys: linker)
             return account

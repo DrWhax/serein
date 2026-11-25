@@ -91,6 +91,9 @@ public struct PendingNotification: Sendable, Hashable {
     public var text: String
     public var isExpiringMessage: Bool
     public var sentAt: UInt64
+    /// A message shown as a notice (a session reset, one needing a newer app): its text's key
+    /// in place of the body (getNotificationDataForMessage).
+    public var noticeTextKey: String?
 
     public init(kind: Kind, conversationId: String, messageId: String, storyId: String? = nil, senderName: String?, groupTitle: String? = nil,
                 body: String, content: MessageContentKind = .text, text: String? = nil, isExpiringMessage: Bool = false, sentAt: UInt64) {
@@ -160,11 +163,13 @@ public enum NotificationPolicy {
             try Row.fetchOne(db, sql: "SELECT json FROM conversations WHERE serviceId = ?", arguments: [aci]).flatMap { try title(MessageStore.jsonObject($0["json"])) }
         }
         let content = try MessageContentKind.of(db, messageId: messageId, json: json)
-        return PendingNotification(kind: .message, conversationId: conversationId, messageId: messageId, storyId: isGroup ? storyId : nil,
-                                   senderName: sender, groupTitle: isGroup ? (conv.json["name"] as? String) : nil,
-                                   body: notificationText(json, content: content), content: content, text: json["body"] as? String ?? "",
-                                   isExpiringMessage: (row["expireTimer"] as Int? ?? 0) > 0,
-                                   sentAt: UInt64(row["sent_at"] as Int64))
+        var p = PendingNotification(kind: .message, conversationId: conversationId, messageId: messageId, storyId: isGroup ? storyId : nil,
+                                    senderName: sender, groupTitle: isGroup ? (conv.json["name"] as? String) : nil,
+                                    body: notificationText(json, content: content), content: content, text: json["body"] as? String ?? "",
+                                    isExpiringMessage: (row["expireTimer"] as Int? ?? 0) > 0,
+                                    sentAt: UInt64(row["sent_at"] as Int64))
+        p.noticeTextKey = TimelineNotice(type: "incoming", json: json, source: nil)?.textKey
+        return p
     }
 
     /// `shouldStoryReplyNotifyUser` (groups): replies to our story, or one we replied to.

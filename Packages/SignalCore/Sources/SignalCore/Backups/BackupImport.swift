@@ -817,8 +817,9 @@ struct BackupImporter {
             case .joinedSignal: b.json["type"] = "joined-signal-notification"
             case .badDecrypt: b.json["type"] = "delivery-issue"
             case .unsupportedProtocolMessage:
-                b.json["supportedVersionAtReceive"] = 5
-                b.json["requiredProtocolVersion"] = 6
+                // CURRENT - 2 and CURRENT - 1, as upstream.
+                b.json["supportedVersionAtReceive"] = Signalservice_DataMessage.ProtocolVersion.current.rawValue - 2
+                b.json["requiredProtocolVersion"] = Signalservice_DataMessage.ProtocolVersion.current.rawValue - 1
             case .reportedSpam, .blocked, .unblocked, .messageRequestAccepted:
                 b.json["type"] = "message-request-response-event"
                 b.json["messageRequestResponseEvent"] = [.reportedSpam: "SPAM", .blocked: "BLOCK", .unblocked: "UNBLOCK",

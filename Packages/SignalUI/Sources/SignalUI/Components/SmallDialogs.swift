@@ -155,17 +155,20 @@ public struct CriticalIdlePrimaryDeviceModal: View {
     }
 }
 
-/// `KeyTransparencyErrorDialog`: report a failed check, optionally with the debug log.
+/// `KeyTransparencyErrorDialog`: report a failed check, optionally with the debug log (a
+/// client without debug logs passes `canShareDebugLog: false`, which leaves that row out).
 public struct KeyTransparencyErrorDialog: View {
     let isSubmitting: Bool
+    let canShareDebugLog: Bool
     let onClose: () -> Void
     let onSubmit: (Bool) -> Void
     let onViewDebugLog: () -> Void
     @State private var shareDebugLog = false
     @Environment(\.i18n) var i18n
-    public init(isSubmitting: Bool = false, onClose: @escaping () -> Void = {}, onSubmit: @escaping (Bool) -> Void = { _ in },
-                onViewDebugLog: @escaping () -> Void = {}) {
+    public init(isSubmitting: Bool = false, canShareDebugLog: Bool = true, onClose: @escaping () -> Void = {},
+                onSubmit: @escaping (Bool) -> Void = { _ in }, onViewDebugLog: @escaping () -> Void = {}) {
         self.isSubmitting = isSubmitting
+        self.canShareDebugLog = canShareDebugLog
         self.onClose = onClose
         self.onSubmit = onSubmit
         self.onViewDebugLog = onViewDebugLog
@@ -178,14 +181,14 @@ public struct KeyTransparencyErrorDialog: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.bottom, 10)
                 // flex items-center gap-3: checkbox, label (grow, truncate), View button.
-                HStack(spacing: 12) {
+                if canShareDebugLog { HStack(spacing: 12) {
                     AxoCheckbox.Root(variant: .square, checked: $shareDebugLog, label: i18n("icu:KeyTransparencyErrorDialog__ShareDebugLog__Label-v2"))
                     CSSText(i18n("icu:KeyTransparencyErrorDialog__ShareDebugLog__Label-v2"), type: .bodyMedium, wrap: .truncate, color: .labelPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .onTapGesture { shareDebugLog.toggle() }
                     AxoButton.Root(i18n("icu:KeyTransparencyErrorDialog__ShareDebugLog__ViewButton"), variant: .subtlePrimary, size: .sm,
                                    action: onViewDebugLog)
-                }
+                } }
             }
             AxoDialog.Footer {
                 AxoDialog.Actions {

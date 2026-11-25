@@ -322,8 +322,33 @@ extension CallingService: CallControl {
 
     // MARK: actions
 
+    /// startCallingLobby / startCallLinkLobby while a call is on screen: its own button toggles
+    /// the small call window (once in the call), another call asks to leave this one first
+    /// (`toggleConfirmLeaveCallModal`). True when the start is handled so.
+    func deferCallStart(_ target: PendingCallStart) -> Bool {
+        guard let a = activeCall else { return false }
+        if a.conversationId == target.conversationId {
+            if a.stage == .inCall { callPip.toggle() }
+        } else {
+            confirmLeaveCall = target
+        }
+        return true
+    }
+
+    /// `leaveCurrentCallAndStartCallingLobby`
+    func leaveCurrentCallAndStart() {
+        guard let target = confirmLeaveCall else { return }
+        confirmLeaveCall = nil
+        hangUp()
+        switch target {
+        case .conversation(let id, let video): openCallLobby(id, video: video)
+        case .callLink(let roomId): openCallLinkLobby(roomId)
+        }
+    }
+
     /// The header's call buttons: the lobby for a direct call or a group call.
     func openCallLobby(_ conversationId: String, video: Bool) {
+        if deferCallStart(.conversation(conversationId, video: video)) { return }
         guard activeCall == nil, let c = conversation(conversationId) else { return }
         activeCall = ActiveCallState(conversationId: conversationId, isGroup: c.kind == .group, stage: .lobby)
         callLocalAudio = true
@@ -397,7 +422,8 @@ extension CallingService: CallControl {
         guard let calling = callControl else { return }
         let callId = ringingCall?.conversationId == conversationId ? ringingCall?.callId : nil
         // A call (or lobby) on screen is torn down first, as every other ending does; the
-        // ringing call is spared (`hangup(excludeRinging: true)`).
+        // ringing call is spared (`hangup(excludeRinging: true)`). A recording becomes a draft.
+        saveDraftRecordingIfNeeded()
         if activeCall != nil { endCallUI() }
         applyAudioDevices()
         ringingCall = nil
