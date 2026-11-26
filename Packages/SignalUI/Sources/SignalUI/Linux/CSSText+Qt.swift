@@ -15,7 +15,8 @@ private extension CSSTextRun {
     /// The same character runs are used for measuring, painting, native selection and link hit testing.
     func attributed(style: CSSTextStyle, scheme: ColorScheme?, index: Int) -> AttributedString {
         var span = AttributedString(text)
-        span.font = style.font(face: fontName)
+        let face = style.font(face: fontName)
+        span.font = face
         if let scheme {
             if let color { span.foregroundColor = color.value(for: scheme).color }
             if let background = inlineBlock?.background ?? background { span.backgroundColor = background.value(for: scheme).color }
@@ -32,6 +33,20 @@ private extension CSSTextRun {
                 }
                 start = end
             }
+        }
+        if let box = inlineBlock, span.characters.count >= 2 {
+            // CSSTextRun.inlineBlock encloses the label in two nonbreaking spaces.
+            // Give each space exactly the CSS padding and border width, including in an empty spacer.
+            let space = QtTextLayout.lines(in: "\u{00A0}", font: face).first?.advance ?? 0
+            let kern = box.paddingInline + box.border - space
+            let first = span.startIndex
+            let last = span.characters.index(before: span.endIndex)
+            span[first..<span.characters.index(after: first)].kern = kern
+            span[last..<span.endIndex].kern = kern
+        }
+        if marginEnd != 0, !span.characters.isEmpty {
+            let last = span.characters.index(before: span.endIndex)
+            span[last..<span.endIndex].kern = marginEnd + style.letterSpacing
         }
         return span
     }
