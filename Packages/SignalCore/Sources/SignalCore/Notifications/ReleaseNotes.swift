@@ -13,6 +13,9 @@
 // Serein has no donations: megaphones asking for one are never shown.
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import GRDB
 import MediaXPCInterface
 
@@ -54,7 +57,13 @@ public struct URLSessionReleaseNotesTransport: ReleaseNotesTransport {
     }
 
     public func get(_ url: URL, maxBytes: Int) async throws -> Data {
+        #if os(Linux)
+        let request = URLRequest(url: url, timeoutInterval: 60)
+        let (bytes, response) = try await LinuxHTTPSession(roots: []).bytes(for: request)
+        defer { bytes.cancel() }
+        #else
         let (bytes, response) = try await session.bytes(from: url)
+        #endif
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw ReleaseNotesError.badStatus(http.statusCode) }
         if response.expectedContentLength > Int64(maxBytes) { throw ReleaseNotesError.tooLarge }
         var data = Data()

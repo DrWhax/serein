@@ -5,6 +5,9 @@
 
 import CryptoKit
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct OptionalResource: Sendable, Equatable {
     public var name: String

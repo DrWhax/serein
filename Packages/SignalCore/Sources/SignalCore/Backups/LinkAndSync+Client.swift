@@ -171,6 +171,11 @@ extension SignalClient {
     }
 }
 
+#if os(Linux)
+// Linux Foundation uses Swift ARC and has no Objective-C autorelease pool.
+private func autoreleasepool<T>(_ body: () throws -> T) rethrows -> T { try body() }
+#endif
+
 extension LinkAndSync {
     /// Imports an archive file: its MAC checked, then decrypted piece by piece and parsed by the
     /// keyless parser (one source, so one parser process, for the whole backup), the frames

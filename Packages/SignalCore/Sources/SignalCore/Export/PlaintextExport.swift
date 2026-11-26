@@ -38,7 +38,12 @@ public enum PlaintextExport {
                               onProgress: @escaping @Sendable (_ current: Int64, _ total: Int64) -> Void = { _, _ in }) async throws
         -> PlaintextExportResult
     {
+        #if os(Linux)
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: target.path)
+        let free = (attributes?[.systemFreeSize] as? NSNumber)?.int64Value ?? Int64.max
+        #else
         let free = (try? target.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage) ?? Int64.max
+        #endif
         if free < minimumDiskSpace { throw PlaintextExportError.notEnoughStorage(bytesNeeded: minimumDiskSpace - free) }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
