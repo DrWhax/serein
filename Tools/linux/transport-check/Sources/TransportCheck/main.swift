@@ -1,6 +1,7 @@
 import Foundation
 import MediaXPCInterface
 import LinkPreviewParser
+import VoiceNoteService
 
 struct TestService: XPCMessageHandler {
     let maxRequestBytes = 256 * 1024
@@ -37,6 +38,8 @@ case "service":
 case "parser":
     let handler = EndpointService(requirement: .fetcher, LinkPreviewXPCHandler())
     XPCServer.serve(LinkPreviewParserClient.serviceName, requirement: .app, handler)
+case "voice":
+    XPCServer.serve(MediaXPCClient.voiceServiceName, requirement: .app, VoiceNoteXPCHandler())
 case "fetcher":
     XPCServer.serve(LinkPreviewFetcherClient.serviceName, requirement: .app, FixtureFetcher())
 default:
@@ -75,7 +78,7 @@ do {
 } catch MediaProcessingError.invalidResult {}
 
 for target in [XPCChannel(.service(name), peer: .voice, timeout: .seconds(1)),
-               XPCChannel(.service(MediaXPCClient.voiceServiceName), peer: .voice, timeout: .seconds(1))] {
+               XPCChannel(.service("org.signalsafe.SignalCalling"), peer: .calling, timeout: .seconds(1))] {
     do {
         _ = try target.sendSync(Data(), timeout: .seconds(1), maxReply: 0)
         throw CheckFailure(message: "client connected without the designated route")
@@ -88,3 +91,18 @@ print("PASS: separate processes, concurrent and bounded replies, timeout recover
 let preview = try await LinkPreviewFetcherClient(timeout: .seconds(5)).page("https://example.invalid/")
 try check(preview?.title == "Linux service test", "delegated parser did not return its decoded title")
 print("PASS: app → fetcher → production HTML parser over the delegated endpoint")
+
+// verify.py supplies known float samples through an isolated ALSA file device.
+let recorder = MediaXPCClient()
+let noteID = try await recorder.recordVoiceNote()
+let deadline = ContinuousClock.now + .seconds(5)
+var heardTone = false
+while ContinuousClock.now < deadline {
+    let progress = try await recorder.voiceNoteProgress(noteID)
+    if progress.levels.contains(where: { $0 > 0.1 }) { heardTone = true }
+    if heardTone && progress.seconds >= 0.25 { break }
+    try await Task.sleep(for: .milliseconds(15))
+}
+let note = try await recorder.finishVoiceNote(noteID)
+try check(heardTone && note.duration >= 0.25 && !note.data.isEmpty, "capture or MP3 encoding failed")
+print("PASS: ALSA fixture capture, microphone level reporting and MP3 output")

@@ -115,6 +115,11 @@ for target in package.targets where cryptoConsumers.contains(target.name) {
 #if os(Linux)
 package.products.append(.library(name: "LinuxServiceTransport", targets: ["LinuxServiceTransport"]))
 package.targets.append(.target(name: "CLinuxServiceSocket"))
+package.targets.append(.target(name: "CLinuxMicrophone", linkerSettings: [.linkedLibrary("asound")]))
+if let voice = package.targets.first(where: { $0.name == "VoiceNoteService" }) {
+    voice.dependencies.append("CLinuxMicrophone")
+    voice.swiftSettings?.append(.enableExperimentalFeature("SafeInteropWrappers"))
+}
 package.targets.append(.target(name: "LinuxServiceTransport", dependencies: ["CLinuxServiceSocket"], swiftSettings: strict))
 if let transport = package.targets.first(where: { $0.name == "MediaXPCInterface" }) {
     transport.dependencies += ["LinuxServiceTransport", "CLinuxServiceSocket"]

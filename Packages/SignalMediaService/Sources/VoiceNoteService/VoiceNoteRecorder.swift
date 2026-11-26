@@ -9,11 +9,15 @@
 // upstream), stopped and discarded when the app has not asked for progress in `unwatched`, and
 // stopped when the app's session ends (VoiceNoteXPCHandler).
 
+#if canImport(AVFAudio)
 import AVFAudio
+typealias MicrophoneEngine = AVAudioEngine
+#endif
 import Foundation
 import MediaXPCInterface
 import VoiceNoteEncoder
 
+#if !os(Linux)
 /// Microphone samples from the audio thread, in order.
 final class MicSamples: Sendable {
     let continuation: AsyncStream<[Float]>.Continuation
@@ -21,10 +25,12 @@ final class MicSamples: Sendable {
     init() { (stream, continuation) = AsyncStream<[Float]>.makeStream() }
 }
 
+#endif
+
 public actor VoiceNoteRecorder {
     struct Recording {
         let id: UUID
-        let engine: AVAudioEngine
+        let engine: MicrophoneEngine
         let samples: MicSamples
         var pump: Task<Void, Never>?
         var levels: [Float] = []
@@ -42,6 +48,7 @@ public actor VoiceNoteRecorder {
 
     public init(sessions: VoiceNoteSessions) { self.sessions = sessions }
 
+    #if !os(Linux)
     /// Permission (asked once; macOS shows the app's prompt), then the input's tap and an
     /// encoder session.
     public func record() async throws -> UUID {
@@ -74,6 +81,8 @@ public actor VoiceNoteRecorder {
         return id
     }
 
+    #endif
+
     /// Feeds the encoder half a second at a time and keeps each chunk's level.
     func pump(_ id: UUID, _ samples: MicSamples, rate: Int) async {
         var pending: [Float] = []
@@ -87,6 +96,12 @@ public actor VoiceNoteRecorder {
             }
         }
         if !pending.isEmpty { try? await sessions.append(id, pending) }
+        #if os(Linux)
+        if let r = recording, r.id == id {
+            stopInput()
+            if ContinuousClock.now - r.watched > Self.unwatched { Task { await cancel(id) } }
+        }
+        #endif
     }
 
     func noted(_ id: UUID, _ count: Int, _ rms: Float, rate: Int) {
@@ -106,9 +121,13 @@ public actor VoiceNoteRecorder {
     /// The microphone off (the recorded audio stays for `finish`).
     func stopInput() {
         guard let r = recording, !r.stopped else { return }
+        #if os(Linux)
+        r.engine.stop()
+        #else
         r.engine.inputNode.removeTap(onBus: 0)
         r.engine.stop()
         r.samples.continuation.finish()
+        #endif
         recording?.stopped = true
     }
 
