@@ -290,7 +290,7 @@ struct PinMessageRequest {
     /// The previewed pack, once something of it is known here.
     var previewedStickerPack: StickerPack? {
         guard let id = stickerPackPreview?.id, let s = stickerState else { return nil }
-        return (s.installed + s.received + s.blessed + s.known).first { $0.id == id }.map(uiStickerPack)
+        return s.packsById[id].map(uiStickerPack)
     }
 
     /// `markStickerAsFavorite` (storage sync follows in StickerService).
@@ -301,15 +301,12 @@ struct PinMessageRequest {
         }
     }
 
-    /// `showStickerPackPreview`: a pack not seen before downloads as ephemeral (kept only while
-    /// previewed unless installed).
+    /// `showStickerPackPreview`: the service chooses the download using the stored pack status.
     func showStickerPackPreview(packId: String, packKey: String) {
         stickerPackPreview = (packId, packKey)
         guard let session = signalSession else { return }
-        let known = stickerState.map { s in (s.installed + s.received + s.blessed + s.known).contains { $0.id == packId && !$0.stickers.isEmpty } } ?? false
-        guard !known else { return }
         Task {
-            do { try await session.stickers.download(packId: packId, packKey: packKey, finalStatus: .ephemeral, actionSource: .ui) } catch {
+            do { try await session.stickers.loadPackForPreview(packId: packId, packKey: packKey) } catch {
                 Self.trace("sticker pack preview failed: \(error)")
             }
         }
