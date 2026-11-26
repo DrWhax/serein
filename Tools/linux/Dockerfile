@@ -30,10 +30,25 @@ RUN CC=clang CC_FOR_BUILD=clang ./configure --with-tempstore=yes --enable-fts5 &
     && ln -s libsqlcipher.so.4 /out/lib/libsqlcipher.so \
     && cp sqlite3.h sqlite3ext.h /out/include/sqlcipher/
 
+# libdispatch's optional Linux worker monitor reads /proc/<tid>/stat and traps
+# when procfs is inaccessible. Build its existing no-monitor backend only for
+# services running under the fileless seccomp filter.
+FROM swift:6.4-noble AS worker-dispatch
+RUN apt-get update && apt-get install -y --no-install-recommends cmake ninja-build && rm -rf /var/lib/apt/lists/*
+WORKDIR /build/dispatch
+RUN git init && git fetch --depth=1 https://github.com/swiftlang/swift-corelibs-libdispatch.git 2017c8a7ed86a201604cec55cd648b725afadab5 \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(grep -c '^#define HAVE_DISPATCH_WORKQ_MONITORING 1$' src/event/workqueue_internal.h)" = 1 \
+    && sed -i 's/^#define HAVE_DISPATCH_WORKQ_MONITORING 1$/#define HAVE_DISPATCH_WORKQ_MONITORING 0/' src/event/workqueue_internal.h \
+    && cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DENABLE_SWIFT=ON \
+    && cmake --build build --target dispatch --parallel 4 \
+    && cp build/libdispatch.so /build/libdispatch.so
+
 # Serein uses lifetime features and type checking from the Swift 6.4 toolchain.
 FROM swift:6.4-noble AS toolchain
-RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev libsoup-3.0-dev glib-networking \
+RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev libsoup-3.0-dev glib-networking libseccomp-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlcipher /out/ /usr/local/
 COPY --from=libsignal /libsignal_ffi.a /usr/local/lib/
+COPY --from=worker-dispatch /build/libdispatch.so /usr/local/lib/serein/workers/libdispatch.so
 RUN ldconfig

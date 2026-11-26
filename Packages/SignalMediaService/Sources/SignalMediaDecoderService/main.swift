@@ -8,6 +8,9 @@ import Foundation
 import MediaXPCInterface
 import SignalMediaDecoder
 
+#if os(Linux)
+MediaDecoder.prepareLinuxMemoryCounters()
+#endif
 ServiceSandbox.requireConfinement("SignalMediaDecoder")
 MediaDecoder.shedVideosUnderMemoryPressure()
 

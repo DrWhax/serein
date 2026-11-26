@@ -33,6 +33,14 @@ struct FixtureFetcher: XPCMessageHandler {
 
 let name = MediaXPCClient.serviceName
 switch CommandLine.arguments.dropFirst().first {
+case "confined":
+    let preview = try await LinkPreviewFetcherClient(timeout: .seconds(5)).page("https://example.invalid/")
+    try check(preview?.title == "Linux service test", "confined parser did not return the title")
+    let image = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2]))
+    let info = try await MediaXPCClient().imageInfo(image)
+    try check(info.width == 3 && info.height == 2, "confined decoder did not return the image dimensions")
+    print("Confined production services returned the HTML title and PNG image information.")
+    exit(0)
 case "service":
     XPCServer.serve(name, requirement: .app, TestService())
 case "parser":

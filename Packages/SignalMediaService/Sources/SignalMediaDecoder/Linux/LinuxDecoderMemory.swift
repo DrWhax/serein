@@ -1,5 +1,6 @@
 #if os(Linux)
 import Foundation
+import Synchronization
 
 enum LinuxDecoderMemory {
     /// In Docker's cgroup namespace the process group is the mount root.
@@ -11,10 +12,30 @@ enum LinuxDecoderMemory {
         return root.appendingPathComponent(String(path.dropFirst(4)), isDirectory: true)
     }()
 
+    // Only these two read-only kernel counters survive entry into the decoder's
+    // fileless sandbox. Serialize seek/read so samples always start at offset 0.
+    private static let limitFile = counter("memory.max"), eventsFile = counter("memory.events")
+    private static func counter(_ name: String) -> Mutex<FileHandle?> {
+        Mutex(try? FileHandle(forReadingFrom: directory.appendingPathComponent(name)))
+    }
+    private static func read(_ file: borrowing Mutex<FileHandle?>) -> String? {
+        file.withLock { handle in
+            guard let handle else { return nil }
+            do {
+                try handle.seek(toOffset: 0)
+                let bytes = try handle.read(upToCount: 4096) ?? Data()
+                return String(decoding: bytes, as: UTF8.self)
+            } catch { return nil }
+        }
+    }
+
+    static func prepare() {
+        _ = read(limitFile)
+        _ = read(eventsFile)
+    }
     static var availableBytes: UInt64 {
         let physical = ProcessInfo.processInfo.physicalMemory
-        let file = directory.appendingPathComponent("memory.max")
-        guard let text = try? String(contentsOf: file, encoding: .utf8),
+        guard let text = read(limitFile),
               let limit = UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return physical }
         return min(physical, limit)
     }
@@ -37,14 +58,14 @@ enum LinuxDecoderMemory {
         }
 
         static func current() -> Self? {
-            guard let text = try? String(contentsOf: directory.appendingPathComponent("memory.events"), encoding: .utf8)
-            else { return nil }
+            guard let text = read(eventsFile) else { return nil }
             return Self(text)
         }
     }
 }
 
 extension MediaDecoder {
+    public static func prepareLinuxMemoryCounters() { LinuxDecoderMemory.prepare() }
     static let memoryPressure = Task(priority: .utility) {
         var previous = LinuxDecoderMemory.Events.current()
         while !Task.isCancelled {
