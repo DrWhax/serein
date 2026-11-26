@@ -46,17 +46,7 @@ public struct AvatarDataImage: View {
 
     /// `getFittedFontSize(1024, text)` with Inter's ink bounds.
     static func fittedFontSize(_ text: String) -> CGFloat {
-        let diameter = (canvas * 0.75).rounded(.up)
-        var candidate = (canvas * (text.count == 1 && text.first.map(CSSTextLayout.isEmoji) == true ? 0.6 : 0.45)).rounded(.up)
-        let smol = (canvas * 0.05).rounded(.up)
-        while candidate >= smol {
-            let font = CTFontCreateWithName(AxoFonts.interName(weight: 400) as CFString, candidate, nil)
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
-            let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
-            if ink.width < diameter && ink.height < diameter { return candidate }
-            candidate -= 1
-        }
-        return candidate
+        AvatarTextMetrics.fittedSize(text, canvas: canvas, ink: true)
     }
 
     public var body: some View {

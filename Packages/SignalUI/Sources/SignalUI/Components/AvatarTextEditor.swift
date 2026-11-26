@@ -36,33 +36,22 @@ public struct AvatarTextEditor: View {
 
     /// `getFittedFontSize` measuring the text's box in Inter (line-height 20px).
     nonisolated public static func fittedFontSize(_ text: String) -> CGFloat {
-        let diameter = (bubbleSize * 0.75).rounded(.up)
-        var candidate = (bubbleSize * (text.count == 1 && text.first.map(CSSTextLayout.isEmoji) == true ? 0.6 : 0.45)).rounded(.up)
-        let smol = (bubbleSize * 0.05).rounded(.up)
-        while candidate >= smol {
-            let font = CTFontCreateWithName(AxoFonts.interName(weight: 400) as CFString, candidate, nil)
-            let width = CTLineGetTypographicBounds(CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font])), nil, nil, nil)
-            if CGFloat(width) < diameter && 20 < diameter { return candidate }
-            candidate -= 1
-        }
-        return candidate
+        AvatarTextMetrics.fittedSize(text, canvas: bubbleSize, ink: false)
     }
 
     var input: some View {
         let fontSize = fittedFontSize(inputText)
-        let style = CSSTextStyle(fontName: AxoFonts.interName(weight: 400), size: fontSize, lineHeight: 20)
-        let font = style.ctFont
-        // The input's box: its line-height or the font's content area, whichever is taller.
-        let height = max(20, CTFontGetAscent(font).rounded() + CTFontGetDescent(font).rounded())
+        let family = AxoFonts.interName(weight: 400)
+        let height = AvatarTextMetrics.inputHeight(fontName: family, size: fontSize)
         return Group {
             if staticRendering {
-                CSSText(runs: [Emojify.run(inputText)], style: CSSTextStyle(fontName: style.fontName, size: fontSize, lineHeight: height),
+                CSSText(runs: [Emojify.run(inputText)], style: CSSTextStyle(fontName: family, size: fontSize, lineHeight: height),
                         wrap: .nowrap, alignment: .center)
             } else {
                 TextField("", text: Binding(get: { inputText }, set: { if $0.count <= Self.maxLength { inputText = $0 } }))
                     .textFieldStyle(.plain)
                     .multilineTextAlignment(.center)
-                    .font(.custom(style.fontName, fixedSize: fontSize))
+                    .font(.custom(family, fixedSize: fontSize))
                     .focused($inputFocused)
                     .onAppear { inputFocused = true }
             }

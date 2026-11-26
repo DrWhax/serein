@@ -75,6 +75,10 @@ struct CustomColorEditing {
 
     /// A picked photo file: its bytes and type, and its pixels decoded by the media service.
     static func loadPhoto(_ url: URL, media: MediaXPCClient) async -> ((data: Data, contentType: String), RGBAImage)? {
+        #if os(macOS)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        #endif
         guard let data = try? Data(contentsOf: url), data.count <= 20 << 20,
               let shown = try? await media.displayImage(data, maxDimension: 512) else { return nil }
         let type = url.pathExtension.lowercased()

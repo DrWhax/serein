@@ -2,7 +2,7 @@
 // AvatarUploadButton.dom.tsx (stylesheets/components/AvatarEditor.scss), the parts the avatar
 // editors share.
 
-import AppKit
+import Foundation
 import SignalI18n
 import SwiftUI
 
@@ -137,6 +137,7 @@ public struct AvatarModalButtons: View {
 public struct AvatarUploadButton<Label: View>: View {
     let onChange: (URL) -> Void
     let label: (String) -> Label
+    @State private var isPickingPhoto = false
     @Environment(\.i18n) var i18n
 
     public init(onChange: @escaping (URL) -> Void, @ViewBuilder label: @escaping (String) -> Label) {
@@ -146,14 +147,14 @@ public struct AvatarUploadButton<Label: View>: View {
 
     public var body: some View {
         SwiftUI.Button {
-            let panel = NSOpenPanel()
-            panel.allowedContentTypes = [.gif, .jpeg, .png, .webP]
-            panel.allowsMultipleSelection = false
-            if panel.runModal() == .OK, let url = panel.url { onChange(url) }
+            isPickingPhoto = true
         } label: {
             label(i18n("icu:photo"))
         }
         .buttonStyle(.plain)
+        .fileImporter(isPresented: $isPickingPhoto, allowedContentTypes: [.gif, .jpeg, .png, .webP]) { result in
+            if case .success(let url) = result { onChange(url) }
+        }
     }
 }
 
