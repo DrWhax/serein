@@ -2,7 +2,6 @@
 // and InstallScreenErrorStep (stylesheets/components/InstallScreen*.scss, the `install-screen`
 // mixin): full-window steps of linking this device.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -149,6 +148,8 @@ public struct InstallScreenErrorStep: View {
     let tryAgain: () -> Void
     @Environment(\.i18n) var i18n
 
+    @Environment(\.openURL) var openURL
+
     static let downloadURL = URL(string: "https://signal.org/download")!
     /// `LINK_SIGNAL_DESKTOP`
     static let desktopSupportURL = URL(string: "https://support.signal.org/hc/articles/360007320451#desktop_multiple_device")!
@@ -162,9 +163,9 @@ public struct InstallScreenErrorStep: View {
     var content: (message: String, button: String, action: () -> Void, showQuit: Bool) {
         switch error {
         case .tooManyDevices: (i18n("icu:installTooManyDevices"), i18n("icu:installTryAgain"), tryAgain, false)
-        case .tooOld: (i18n("icu:installTooOld"), i18n("icu:upgrade"), { NSWorkspace.shared.open(Self.downloadURL) }, true)
+        case .tooOld: (i18n("icu:installTooOld"), i18n("icu:upgrade"), { openURL(Self.downloadURL) }, true)
         case .connectionFailed: (i18n("icu:installConnectionFailed"), i18n("icu:installTryAgain"), tryAgain, false)
-        case .qrCodeFailed: (i18n("icu:installUnknownError"), i18n("icu:Install__learn-more"), { NSWorkspace.shared.open(Self.desktopSupportURL) }, true)
+        case .qrCodeFailed: (i18n("icu:installUnknownError"), i18n("icu:Install__learn-more"), { openURL(Self.desktopSupportURL) }, true)
         }
     }
 

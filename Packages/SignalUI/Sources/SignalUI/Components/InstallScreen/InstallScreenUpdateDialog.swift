@@ -2,7 +2,6 @@
 // screen shows when this version may not link (expired, or an update in progress): checking /
 // downloading progress centred on the screen, or a confirm dialog for each update state.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -17,6 +16,7 @@ public struct InstallScreenUpdateDialog: View {
     let startUpdate: () -> Void
     let onClose: () -> Void
     @Environment(\.i18n) var i18n
+    @Environment(\.openURL) var openURL
 
     public init(dialogType: UpdateDialogType, isCheckingForUpdates: Bool = false, downloadSize: Int? = nil, downloadedSize: Int? = nil,
                 currentVersion: String, os: String, forceCheck: @escaping () -> Void = {}, startUpdate: @escaping () -> Void = {},
@@ -73,7 +73,7 @@ public struct InstallScreenUpdateDialog: View {
         }
     }
 
-    static func open(_ url: String) { if let u = URL(string: url) { NSWorkspace.shared.open(u) } }
+    func open(_ url: String) { if let u = URL(string: url) { openURL(u) } }
 
     var modal: AnyView? {
         switch dialogType {
@@ -87,7 +87,7 @@ public struct InstallScreenUpdateDialog: View {
                                        tags: ["learnMoreLink": I18nTagStyle(color: .labelPrimary, action: UnsupportedOSDialog.unsupportedOSURL)])
                 .map { run -> CSSTextRun in var r = run; if r.action != nil { r.underline = true }; return r }
             return AnyView(AxoConfirmDialog.Root(title: i18n("icu:InstallScreenUpdateDialog--unsupported-os__title"), description: {
-                AxoAlertDialog.Description(runs: runs, onTap: Self.open)
+                AxoAlertDialog.Description(runs: runs, onTap: open)
             }, actions: {}))
         case .downloadedUpdate:
             return AnyView(AxoConfirmDialog.Root(title: i18n("icu:DialogUpdate__downloaded"), description: i18n("icu:InstallScreenUpdateDialog--downloaded__body")) {
@@ -111,7 +111,7 @@ public struct InstallScreenUpdateDialog: View {
             let runs = CSSTextRun.runs(i18n.richText("icu:InstallScreenUpdateDialog--cannot-update__body", ["downloadUrl": .element("url")]), elements: ["url": link])
             let manual = dialogType == .cannotUpdateRequireManual
             return AnyView(AxoConfirmDialog.Root(title: i18n("icu:cannotUpdate"), description: {
-                AxoAlertDialog.Description(runs: runs, onTap: Self.open)
+                AxoAlertDialog.Description(runs: runs, onTap: open)
             }, actions: {
                 if !manual { AxoConfirmDialog.Action(i18n("icu:autoUpdateRetry"), variant: .strongPrimary, action: startUpdate) }
             }))

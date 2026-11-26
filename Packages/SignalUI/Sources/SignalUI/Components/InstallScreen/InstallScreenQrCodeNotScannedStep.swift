@@ -4,7 +4,6 @@
 // confirms deleting this device's data before relinking. Standalone registration (the back
 // button) is not offered: this app only links.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -28,6 +27,7 @@ public struct InstallScreenQrCodeNotScannedStep: View {
     /// Shown instead of the step when the build has expired or an update is downloading.
     let updateDialog: InstallScreenUpdateDialog?
     @Environment(\.i18n) var i18n
+    @Environment(\.openURL) var openURL
     @Environment(\.colorScheme) var scheme
 
     static let supportPage = URL(string: "https://support.signal.org/hc/articles/360007320551-Linked-Devices")!
@@ -109,7 +109,7 @@ public struct InstallScreenQrCodeNotScannedStep: View {
                 if isStaging {
                     CSSText("THIS IS A STAGING DESKTOP", style: LegacyType.body1(), color: Self.black)
                 } else {
-                    Button { NSWorkspace.shared.open(Self.supportPage) } label: {
+                    Button { openURL(Self.supportPage) } label: {
                         CSSText(i18n("icu:Install__support-link"), style: LegacyType.body1(), color: Self.ultramarine)
                     }
                     .buttonStyle(.plain)
@@ -127,6 +127,7 @@ struct InstallScreenQrCode: View {
     let provisioningUrl: InstallScreenProvisioningURL
     let retryGetQrCode: () -> Void
     @Environment(\.i18n) var i18n
+    @Environment(\.openURL) var openURL
 
     static let gray60 = AxoColor(LegacyColor.gray60)
 
@@ -209,7 +210,7 @@ struct InstallScreenQrCode: View {
 
     /// `__get-help`
     func link(_ label: String) -> some View {
-        Button { NSWorkspace.shared.open(InstallScreenQrCodeNotScannedStep.supportPage) } label: {
+        Button { openURL(InstallScreenQrCodeNotScannedStep.supportPage) } label: {
             HStack(spacing: 4) {
                 SignalIcon("v3/open/open-compact-bold", size: 16, color: InstallScreenQrCodeNotScannedStep.ultramarine, mask: true)
                 CSSText(label, style: LegacyType.body2(weight: 600), color: InstallScreenQrCodeNotScannedStep.ultramarine)
