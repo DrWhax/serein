@@ -32,3 +32,17 @@ docker cp serein-first-launch:/tmp/serein.png ./serein.png
 ```
 
 Pass `--about` after the output path to exercise Help → About. The check captures the second window, sends Escape, and verifies the original window is still open on the same process. Pass `--shortcuts` to capture the keyboard shortcut guide opened by Ctrl+/ and verify that Escape dismisses it.
+
+## Exercise a linked conversation
+
+Prepare the local test server with `Tools/build-mock-server.sh`. The `conversation-check` target adds Node to the capture image. The server runs inside the same network namespace as Serein, using loopback and disposable accounts. The test checks that the phone receives the desktop composer's reply before capturing the conversation and General settings from the running release executable.
+
+```sh
+docker build --target conversation-check -t serein-conversation -f Tools/linux/Desktop.Dockerfile /path/to/output
+docker run --name serein-linked-check --network none --cap-drop ALL --security-opt no-new-privileges \
+  --mount "type=bind,src=$PWD/Tests/MockServer,dst=/fixture,readonly" \
+  --mount "type=bind,src=$PWD/Tools/linux/desktop-check,dst=/checks,readonly" \
+  --entrypoint dbus-run-session serein-conversation -- xvfb-run -a -f /run/serein/Xauthority \
+  python3 /checks/conversation.py /fixture/harness.mjs /tmp/screens
+docker cp serein-linked-check:/tmp/screens ./serein-linked-screens
+```

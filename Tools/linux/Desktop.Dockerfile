@@ -17,8 +17,14 @@ USER serein
 ENTRYPOINT ["python3", "/opt/serein/serein-session.py"]
 
 # Test tools run outside the application process and its confinement domain.
-FROM desktop AS capture
+FROM desktop AS capture-tools
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth xdotool python3-pil \
     && rm -rf /var/lib/apt/lists/*
 USER serein
+
+FROM node:22-bookworm-slim AS test-node
+FROM capture-tools AS conversation-check
+COPY --from=test-node /usr/local/bin/node /usr/local/bin/node
+
+FROM capture-tools AS capture
