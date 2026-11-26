@@ -7,6 +7,10 @@ import SignalRingRTC
 extension RemoteCallEndpoint {
     /// Only test bundles staged with Tools/stage-call-test-peer.py contain this service.
     public static func testPeerFactory() -> RingRTCEndpointFactory? {
+        #if os(Linux)
+        // This optional QA fixture is an XPC service inside the macOS test bundle.
+        return nil
+        #else
         let bundle = Bundle.main
         let url = bundle.bundleURL.appendingPathComponent("Contents/XPCServices/SignalCallTestPeer.xpc")
         guard let host = bundle.bundleIdentifier,
@@ -17,6 +21,7 @@ extension RemoteCallEndpoint {
         let peer = XPCPeer.requirement(identifier: identifier,
                                        sameTeam: bundle.object(forInfoDictionaryKey: XPCPeer.sameTeamKey) as? Bool ?? false)
         return factory(.service(identifier), peer: peer)
+        #endif
     }
 }
 

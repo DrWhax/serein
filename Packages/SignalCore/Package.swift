@@ -13,8 +13,12 @@
 import Foundation
 import PackageDescription
 
+#if os(Linux)
+let ffiDir = "/usr/local/lib"
+#else
 let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
 let ffiDir = repoRoot + "/vendor/libsignal/target/aarch64-apple-darwin/release"
+#endif
 
 // Strict memory safety (SE-0458, `-strict-memory-safety`) on every target, as an error.
 // Unavoidable unsafe calls (CommonCrypto, Security, C globals) are spelled `unsafe`
@@ -112,3 +116,19 @@ let package = Package(
         ),
     ]
 )
+
+#if os(Linux)
+// Map imports in these consumers only. Crypto itself builds its normal Linux implementation.
+package.dependencies.append(.package(url: "https://github.com/apple/swift-crypto.git", exact: "5.1.1"))
+let cryptoConsumers: Set<String> = ["SignalCore", "SignalCoreTests"]
+for target in package.targets where cryptoConsumers.contains(target.name) {
+    target.dependencies.append(.product(name: "Crypto", package: "swift-crypto"))
+    target.swiftSettings?.append(.unsafeFlags(["-module-alias", "CryptoKit=Crypto"]))
+}
+#endif
+
+#if os(Linux)
+package.targets.first { $0.name == "MessageParsing" }?.dependencies.append(
+    .product(name: "LinuxServiceTransport", package: "SignalMediaService")
+)
+#endif

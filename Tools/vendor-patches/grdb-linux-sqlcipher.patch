@@ -1,0 +1,65 @@
+diff --git a/Package.swift b/Package.swift
+--- a/Package.swift
++++ b/Package.swift
+@@ -113,3 +113,21 @@
+     ],
+     swiftLanguageModes: [.v6]
+ )
++
++#if os(Linux)
++// SQLCipher.swift ships an Apple XCFramework. Both GRDB targets use the
++// system module backed by libsqlcipher on Linux.
++package.dependencies.removeAll { dependency in
++    guard case let .sourceControl(_, url, _) = dependency.kind else { return false }
++    return url == "https://github.com/sqlcipher/SQLCipher.swift.git"
++}
++for target in package.targets {
++    target.dependencies = target.dependencies.map { dependency in
++        if case .productItem("SQLCipher", "SQLCipher.swift", nil, nil) = dependency {
++            return .target(name: "SQLCipher")
++        }
++        return dependency
++    }
++}
++package.targets.append(.systemLibrary(name: "SQLCipher"))
++#endif
+diff --git a/Sources/GRDBSQLCipher/include/SQLCipher_config.h b/Sources/GRDBSQLCipher/include/SQLCipher_config.h
+index a405306f6..28d93dccf 100644
+--- a/Sources/GRDBSQLCipher/include/SQLCipher_config.h
++++ b/Sources/GRDBSQLCipher/include/SQLCipher_config.h
+@@ -1,7 +1,11 @@
+ #ifndef grdb_config_h
+ #define grdb_config_h
+
++#ifdef __linux__
++#include <sqlcipher/sqlite3.h>
++#else
+ #include <SQLCipher/sqlite3.h>
++#endif
+
+ typedef void(*_errorLogCallback)(void *pArg, int iErrCode, const char *zMsg);
+
+diff --git a/Sources/SQLCipher/module.modulemap b/Sources/SQLCipher/module.modulemap
+new file mode 100644
+index 000000000..1d51eb637
+--- /dev/null
++++ b/Sources/SQLCipher/module.modulemap
+@@ -0,0 +1,5 @@
++module SQLCipher [system] {
++    header "shim.h"
++    link "sqlcipher"
++    export *
++}
+diff --git a/Sources/SQLCipher/shim.h b/Sources/SQLCipher/shim.h
+new file mode 100644
+index 000000000..bda4a8c81
+--- /dev/null
++++ b/Sources/SQLCipher/shim.h
+@@ -0,0 +1,7 @@
++#ifndef GRDB_LINUX_SQLCIPHER_H
++#define GRDB_LINUX_SQLCIPHER_H
++
++#define SQLITE_HAS_CODEC 1
++#include <sqlcipher/sqlite3.h>
++
++#endif

@@ -18,12 +18,12 @@ if grep -nE '^\s*(@preconcurrency\s+)?(public\s+|internal\s+|private\s+)?import\
   echo "lint: forbidden framework import in a SignalCodecs library target" >&2; fail=1
 fi
 
-# Scoped libm imports (import func Darwin.cosf, ...) only in CodecCore/Math/LibM.swift.
-if grep -nE '^\s*import\s+(func|var|struct|class|enum|typealias)\s+Darwin\.' $libs | grep -v "^$SRC/CodecCore/Math/LibM.swift:" | grep -q .; then
-  grep -nE '^\s*import\s+(func|var|struct|class|enum|typealias)\s+Darwin\.' $libs | grep -v "^$SRC/CodecCore/Math/LibM.swift:"
-  echo "lint: Darwin import outside CodecCore/Math/LibM.swift" >&2; fail=1
+# Keep scoped system imports in the codec math boundary.
+if grep -nE '^\s*import\s+(func|var|struct|class|enum|typealias)\s+(Darwin|Glibc)\.' $libs | grep -v "^$SRC/CodecCore/Math/LibM.swift:" | grep -q .; then
+  grep -nE '^\s*import\s+(func|var|struct|class|enum|typealias)\s+(Darwin|Glibc)\.' $libs | grep -v "^$SRC/CodecCore/Math/LibM.swift:"
+  echo "lint: system import outside CodecCore/Math/LibM.swift" >&2; fail=1
 fi
-if grep -nE '^\s*import\s+(var|struct|class|enum|typealias)\s+Darwin\.' "$SRC/CodecCore/Math/LibM.swift"; then
+if grep -nE '^\s*import\s+(var|struct|class|enum|typealias)\s+(Darwin|Glibc)\.' "$SRC/CodecCore/Math/LibM.swift"; then
   echo "lint: LibM.swift may only import functions" >&2; fail=1
 fi
 
@@ -91,6 +91,16 @@ fi
 # Every package manifest we own enables strict memory safety on every target.
 for manifest in Packages/*/Package.swift; do
   targets=$(grep -cE '\.(target|executableTarget|testTarget)\(' "$manifest" || true)
+  # A C or C++ target has no Swift compiler settings. Count it separately
+  # only while its actual sources are native and contain no Swift files.
+  for source_dir in "${manifest%/*}"/Sources/C*; do
+    [ -d "$source_dir" ] || continue
+    [ -n "$(find "$source_dir" \( -name '*.c' -o -name '*.cpp' \) -print -quit)" ] || continue
+    [ -z "$(find "$source_dir" -name '*.swift' -print -quit)" ] || continue
+    if grep -Fq ".target(name: \"${source_dir##*/}\"" "$manifest"; then
+      targets=$((targets - 1))
+    fi
+  done
   enabled=$(grep -cE 'swiftSettings: *(strict|memorySafety|memorySafety *\+|\[\.swiftLanguageMode\(\.v5\)\] *\+ *memorySafety)' "$manifest" || true)
   if ! grep -q 'strictMemorySafety()' "$manifest" || ! grep -q 'treatWarning("StrictMemorySafety", as: .error)' "$manifest" || [ "$enabled" -lt "$targets" ]; then
     echo "lint: $manifest: strict memory safety not enabled on all $targets targets ($enabled found)" >&2; fail=1

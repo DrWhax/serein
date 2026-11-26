@@ -7,7 +7,9 @@
 
 import Foundation
 import Synchronization
+#if canImport(XPC)
 import XPC
+#endif
 
 public enum MediaRequest: Codable, Sendable {
     case stickerImage(Data)

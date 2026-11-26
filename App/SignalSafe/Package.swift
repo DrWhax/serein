@@ -66,3 +66,13 @@ let package = Package(
         ),
     ]
 )
+
+#if os(Linux)
+package.dependencies.append(.package(path: "../../../QtSwiftUI"))
+if let target = package.targets.first(where: { $0.name == "SignalSafe" }) {
+    target.dependencies.append(.product(name: "SwiftUI", package: "QtSwiftUI"))
+    target.exclude += ["main.swift", "AppDelegate.swift"]
+}
+#else
+package.targets.first { $0.name == "SignalSafe" }?.exclude.append("Linux")
+#endif

@@ -9,7 +9,9 @@
 // Every result is untrusted and re-validated here before the app uses it.
 
 import Foundation
+#if canImport(XPC)
 import XPC
+#endif
 
 // MARK: Link previews
 

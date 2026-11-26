@@ -9,7 +9,9 @@ import Foundation
 import MediaXPCInterface
 import SignalText
 import WebFetch
+#if canImport(XPC)
 import XPC
+#endif
 
 public struct LinkPreviewPageFetcher: LinkPreviewFetching {
     static let userAgent = "WhatsApp/2"

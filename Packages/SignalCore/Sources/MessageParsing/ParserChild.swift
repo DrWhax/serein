@@ -16,6 +16,12 @@ import Foundation
 import MediaXPCInterface
 import Synchronization
 
+#if os(Linux)
+import LinuxServiceTransport
+
+public typealias ParserPipe = LinuxServiceTransport
+public typealias ParserPipeError = ServicePipeError
+#else
 public enum ParserPipeError: Error, Equatable {
     case tooLarge(Int)
     case truncated
@@ -58,13 +64,17 @@ public enum ParserPipe {
     }
 }
 
+#endif
+
 /// The child's side: requests from `input` parsed by `handler` (on this thread: the child does
 /// nothing else), replies to `output`, until the service closes the stream or it fails. No time
 /// limit here: a child still parsing when its client gives up is ended with its session.
 public enum ParserChild {
     public static func serve(input: FileHandle, output: FileHandle, handler: MessageParserXPCHandler) {
         // A reply to a service that has gone fails instead of raising SIGPIPE.
+        #if !os(Linux)
         _ = fcntl(output.fileDescriptor, F_SETNOSIGPIPE, 1)
+        #endif
         while let frame = try? ParserPipe.read(input, maxBytes: handler.maxRequestBytes) {
             var reply = Data([0])
             do {
@@ -135,7 +145,9 @@ public final class ParserChildProcess: Sendable {
         let holder = ProcessHolder()
         holder.process.withLock { $0 = p }
         // A write to a child that has died fails instead of raising SIGPIPE in the service.
+        #if !os(Linux)
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        #endif
         return ParserChildProcess(requests: input.fileHandleForWriting, replies: output.fileHandleForReading,
                                   isRunning: { holder.process.withLock { $0?.isRunning ?? false } },
                                   stop: { _ = kill(pid, SIGKILL) },
@@ -219,7 +231,11 @@ public final class ParserChildPool: Sendable {
 /// The relay blocks on the child's pipes, so it runs on a serial queue of the session's own
 /// (bridged with a continuation), never on the shared concurrency pool.
 public final class ParserChildSession: XPCMessageHandler {
+    #if os(Linux)
+    let queue = DispatchQueue(label: "org.signalsafe.parser.session")
+    #else
     let queue = DispatchSerialQueue(label: "org.signalsafe.parser.session")
+    #endif
     let child: Mutex<ParserChildProcess?>
     let ended = Atomic<Bool>(false)
     let start: @Sendable () throws -> ParserChildProcess

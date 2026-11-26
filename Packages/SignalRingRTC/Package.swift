@@ -65,3 +65,13 @@ let package = Package(
         ),
     ]
 )
+
+#if os(Linux)
+// Map imports in these consumers only. Crypto itself builds its normal Linux implementation.
+package.dependencies.append(.package(url: "https://github.com/apple/swift-crypto.git", exact: "5.1.1"))
+let cryptoConsumers: Set<String> = ["SignalRingRTC", "SwiftCalling", "SwiftCallingServiceAdapter", "SignalRingRTCTests"]
+for target in package.targets where cryptoConsumers.contains(target.name) {
+    target.dependencies.append(.product(name: "Crypto", package: "swift-crypto"))
+    target.swiftSettings?.append(.unsafeFlags(["-module-alias", "CryptoKit=Crypto"]))
+}
+#endif

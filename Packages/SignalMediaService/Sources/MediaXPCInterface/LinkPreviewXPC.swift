@@ -6,7 +6,9 @@
 // endpoint the parser service hands the app for that (LinkPreviewFetcherClient).
 
 import Foundation
+#if canImport(XPC)
 import XPC
+#endif
 
 /// The link-preview page parser.
 public protocol LinkPreviewParsing: Sendable {
