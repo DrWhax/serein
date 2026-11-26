@@ -3,7 +3,7 @@
 // release-notes fetcher run when due (checked hourly); and the remote megaphones, shown in the
 // banner slot below the toasts after the username onboarding one.
 
-import AppKit
+import Foundation
 import SignalCore
 import SignalUI
 import SwiftUI
@@ -74,7 +74,7 @@ extension SignalSession {
     /// debug log, which Serein does not keep).
     func closeKeyTransparencyError(openSupport: Bool) {
         keyTransparencyErrorOpen = false
-        if openSupport, let url = URL(string: AppDelegate.supportURL(locale: AppLanguage.resolvedLocale.lowercased())) { NSWorkspace.shared.open(url) }
+        if openSupport, let url = URL(string: DesktopActions.supportURL(locale: AppLanguage.resolvedLocale.lowercased())) { DesktopActions.openURL(url) }
         guard let db = clientDatabase else { return }
         Task { try? await db.clearKeyTransparencyError() }
     }

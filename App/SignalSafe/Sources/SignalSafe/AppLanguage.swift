@@ -2,7 +2,7 @@
 // startup): nil follows the system's preferred languages. Changing it relaunches the app, as
 // upstream's language dialog says ("Restart Signal to apply").
 
-import AppKit
+import Foundation
 import SignalI18n
 
 enum AppLanguage {
@@ -17,13 +17,9 @@ enum AppLanguage {
     static var resolvedLocale: String { override ?? Localizer.match(Locale.preferredLanguages) }
 
     /// Saves the choice (nil: the system language) and relaunches.
-    @MainActor static func change(to locale: String?) {
+    @MainActor static func change(to locale: String?, session: SignalSession) {
         guard locale != override else { return }
         if let locale { UserDefaults.standard.set(locale, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
-            Task { @MainActor in NSApp.terminate(nil) }
-        }
+        DesktopActions.relaunch(session)
     }
 }

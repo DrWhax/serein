@@ -670,11 +670,7 @@ import SignalUI
         Task {
             await client.deleteAllData(keyStore: keys)
             Self.trace("deleted all data; relaunching")
-            let config = NSWorkspace.OpenConfiguration()
-            config.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
-                Task { @MainActor in NSApp.terminate(nil) }
-            }
+            DesktopActions.relaunch(self)
         }
     }
 

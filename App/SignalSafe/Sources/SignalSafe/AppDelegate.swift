@@ -119,7 +119,7 @@ import SwiftUI
         case .zoomIn: model.zoomLevel += 1
         case .zoomOut: model.zoomLevel -= 1
         case .zoomReset: model.zoomLevel = 0
-        case .openContactUs: open(Self.supportURL(locale: Locale.preferredLanguages.first ?? "en-us"))
+        case .openContactUs: open(DesktopActions.supportURL(locale: Locale.preferredLanguages.first ?? "en-us"))
         case .openReleaseNotes: open("https://github.com/signalapp/Signal-Desktop/releases")
         case .openForums: open("https://community.signalusers.org/")
         case .openSupportPage: open("https://support.signal.org/hc/sections/360001602812")
@@ -149,15 +149,6 @@ import SwiftUI
         window.center()
         aboutWindow = window
         window.makeKeyAndOrderFront(nil)
-    }
-
-    /// ts/util/createSupportUrl.std.ts
-    static func supportURL(locale: String) -> String {
-        let languages = ["ar", "bn", "de", "en-us", "es", "fr", "hi", "hi-in", "hc", "id", "it", "ja", "ko", "mr", "ms", "nl", "pl", "pt",
-                         "ru", "sv", "ta", "te", "tr", "uk", "ur", "vi", "zh-cn", "zh-tw"]
-        let language = languages.contains(locale) ? locale : "en-us"
-        // The support page needs `?desktop`, not `?desktop=`.
-        return "https://support.signal.org/hc/\(language)/requests/new?desktop"
     }
 
     func open(_ string: String) {

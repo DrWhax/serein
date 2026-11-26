@@ -58,7 +58,7 @@ struct SettingsTab: View {
                                               ?? i18n("icu:Preferences__Language__SystemLanguage"),
                                           themeSetting: theme, zoomFactor: zoom,
                                           languageSetting: (AppLanguage.resolvedLocale, Locale.preferredLanguages, AppLanguage.override),
-                                          onLocaleChange: { AppLanguage.change(to: $0) }, onOpenChatColor: { self.page = .chatColor })
+                                          onLocaleChange: { AppLanguage.change(to: $0, session: session) }, onOpenChatColor: { self.page = .chatColor })
             case .chatColor: chatColorPage
             case .chats: PreferencesChatsPage(settings: chats, onOpenChatFolders: { self.page = .chatFolders },
                                               startPlaintextExport: { session.startPlaintextExport() },
