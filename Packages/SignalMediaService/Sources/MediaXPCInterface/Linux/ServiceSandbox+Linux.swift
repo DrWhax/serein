@@ -11,8 +11,8 @@ public enum ServiceSandbox {
     public static func requireConfinement(_ service: String, systemFiles: Bool = false) {
         if systemFiles && service == "SignalCalling" && serein_confine_call_worker() != 0 { return }
         if systemFiles && service == "SignalCallingSocketBroker" && serein_confine_call_broker() != 0 { return }
-        if !systemFiles && (service == "SignalMediaDecoder" || service == "SignalLinkPreviewParser"),
-           serein_confine_memory_worker() != 0 { return }
+        let memoryWorkers = ["SignalMediaDecoder", "SignalLinkPreviewParser", "SignalMessageParser", "SignalMessageParserChild"]
+        if !systemFiles && memoryWorkers.contains(service) && serein_confine_memory_worker() != 0 { return }
         FileHandle.standardError.write(Data("\(service): required Linux confinement profile is unavailable\n".utf8))
         exit(78)
     }

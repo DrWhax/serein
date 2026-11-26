@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <poll.h>
+#include <sys/time.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -89,6 +91,18 @@ int serein_accept_channel(int route, int stream, uint64_t high, uint64_t low) {
         if (valid && connected_unix_socket(accepted, stream ? SOCK_STREAM : SOCK_SEQPACKET)) return accepted;
         close(accepted);
     }
+}
+
+int serein_bound_channel_receive(int fd, unsigned seconds) {
+    struct timeval timeout = { .tv_sec = seconds };
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+}
+
+int serein_channel_idle(int fd) {
+    struct pollfd status = { .fd = fd, .events = POLLIN };
+    int result;
+    do { result = poll(&status, 1, 0); } while (result < 0 && errno == EINTR);
+    return result == 0;
 }
 
 void serein_interrupt_channel(int fd) { shutdown(fd, SHUT_RDWR); }

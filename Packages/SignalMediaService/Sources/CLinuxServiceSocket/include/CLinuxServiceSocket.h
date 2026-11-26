@@ -9,6 +9,8 @@ int serein_open_channel(int route, int stream, uint64_t high, uint64_t low);
 int serein_accept_channel(int route, int stream, uint64_t high, uint64_t low);
 int serein_duplicate_route(int route);
 void serein_interrupt_channel(int fd);
+int serein_bound_channel_receive(int fd, unsigned seconds);
+int serein_channel_idle(int fd);
 
 /* Save and restore SIGPIPE on the writing thread, including any pre-existing
  * pending signal, so writing to a dead peer reports EPIPE to Swift. */

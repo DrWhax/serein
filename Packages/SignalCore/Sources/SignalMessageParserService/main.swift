@@ -16,13 +16,12 @@ import Synchronization
 ServiceSandbox.requireConfinement("SignalMessageParser")
 
 #if os(Linux)
-// The Linux package installs the service and its child in the same directory.
-guard let executable = Bundle.main.executableURL else { exit(78) }
-let childExecutable = executable.deletingLastPathComponent().appendingPathComponent("SignalMessageParserChild")
+let startChild: @Sendable () throws -> ParserChildProcess = { try ParserChildProcess.supervised() }
 #else
 let childExecutable = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SignalMessageParserChild")
+let startChild: @Sendable () throws -> ParserChildProcess = { try ParserChildProcess.spawn(childExecutable) }
 #endif
-let pool = ParserChildPool { try ParserChildProcess.spawn(childExecutable) }
+let pool = ParserChildPool(spawn: startChild)
 /// Sessions open now; at most `maxSessions` (the app keeps one per parser client).
 let open = Atomic<Int>(0)
 let maxSessions = 8
@@ -46,7 +45,7 @@ XPCServer.serve(XPCMessageParser.serviceName, requirement: XPCPeer.required(.app
     }
     _ = idle.add(1, ordering: .relaxed)
     do {
-        return ParserChildSession(child: try pool.take(), start: { try ParserChildProcess.spawn(childExecutable) }, onEnd: sessionEnded)
+        return ParserChildSession(child: try pool.take(), start: startChild, onEnd: sessionEnded)
     } catch {
         sessionEnded()
         throw error
