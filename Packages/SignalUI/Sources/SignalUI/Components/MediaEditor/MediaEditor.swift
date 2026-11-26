@@ -157,7 +157,7 @@ public struct MediaEditor: View {
         let binding = Binding(get: { state.editingText }, set: { state.setText($0) })
         return TextField("", text: binding, axis: .vertical)
             .textFieldStyle(.plain)
-            .font(Font(MediaEditorText.font(fontSize * o.scale * zoom)))
+            .font(MediaEditorText.editorFont(fontSize * o.scale * zoom))
             .foregroundStyle(colors.fill.swiftUIColor)
             .multilineTextAlignment(.center)
             .background(colors.background?.swiftUIColor ?? .clear)

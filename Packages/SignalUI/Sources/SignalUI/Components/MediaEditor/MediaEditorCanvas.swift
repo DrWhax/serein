@@ -22,9 +22,13 @@
 // Images become CGImages through CoreImage's raw-bitmap initialiser (CGImage's own takes a
 // decode pointer), premultiplied first.
 
+#if os(Linux)
+@_spi(Qt) import SwiftUI
+#else
 import AppKit
 import CoreImage
 import CoreText
+#endif
 import SwiftUI
 import Synchronization
 
@@ -40,6 +44,9 @@ public final class MediaEditorBitmap: Sendable, Equatable {
 
     public static func == (a: MediaEditorBitmap, b: MediaEditorBitmap) -> Bool { a === b }
 
+    #if os(Linux)
+    static func makeCGImage(_ img: RGBAImage) -> CGImage? { CGImage.rgba8(img.pixels, width: img.width, height: img.height) }
+    #else
     static let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
 
     static func makeCGImage(_ img: RGBAImage) -> CGImage? {
@@ -58,10 +65,13 @@ public final class MediaEditorBitmap: Sendable, Equatable {
                          colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
         return context.createCGImage(ci, from: ci.extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
     }
+    #endif
 }
 
 extension RGBA {
+    #if canImport(CoreText)
     var cgColor: CGColor { CGColor(srgbRed: r, green: g, blue: b, alpha: a) }
+    #endif
     var swiftUIColor: Color { Color(.sRGB, red: r, green: g, blue: b, opacity: a) }
 }
 
@@ -69,6 +79,7 @@ extension RGBA {
 enum MediaEditorText {
     static let lineHeight: CGFloat = 1.16, sizeMult: CGFloat = 1.13, sizeFraction: CGFloat = 0.222
 
+    #if canImport(CoreText)
     static func font(_ size: CGFloat, name: String = AxoFonts.interName(weight: 700)) -> CTFont {
         AxoFonts.register()
         return CTFontCreateWithName(name as CFString, size, nil)
@@ -79,6 +90,9 @@ enum MediaEditorText {
         return NSAttributedString(string: s, attributes: [.font: font as NSFont]).size().width
     }
 
+    static func editorFont(_ size: CGFloat) -> Font { Font(font(size)) }
+    #endif
+
     /// Size of a text object (an empty one is the 2px cursor wide).
     static func size(_ text: String, fontSize: CGFloat) -> CGSize {
         let f = font(fontSize)
@@ -86,6 +100,14 @@ enum MediaEditorText {
         let w = max(2, lines.map { width($0, font: f) }.max() ?? 0)
         let h = fontSize * sizeMult * (lineHeight * CGFloat(lines.count - 1) + 1)
         return CGSize(width: w, height: h)
+    }
+
+    #if canImport(CoreText)
+    static func draw(_ text: String, fontSize: CGFloat, fontName: String = AxoFonts.interName(weight: 700), fill: RGBA, stroke: RGBA?,
+                     background: RGBA?, in context: GraphicsContext) {
+        context.withCGContext { cg in
+            draw(text, fontSize: fontSize, fontName: fontName, fill: fill, stroke: stroke, background: background, in: cg)
+        }
     }
 
     /// Draws centred lines in object coordinates (the origin at the object's centre).
@@ -127,6 +149,7 @@ enum MediaEditorText {
             top += lineH
         }
     }
+    #endif
 }
 
 /// The digital clock's parts (`MediaEditorFabricDigitalTimeSticker`).
@@ -148,7 +171,11 @@ struct DigitalClockLayout {
         f.locale = locale
         f.setLocalizedDateFormatFromTemplate("jmm")
         let full = f.string(from: date)
+        #if os(Linux)
+        let am = f.amSymbol, pm = f.pmSymbol
+        #else
         let am = f.amSymbol ?? "AM", pm = f.pmSymbol ?? "PM"
+        #endif
         var period = "", t = full
         for s in [am, pm] where !s.isEmpty && full.contains(s) {
             period = s
@@ -277,9 +304,7 @@ struct MediaEditorRenderer {
             c.stroke(p, with: .color(color.swiftUIColor), style: style)
         case .text(let text, let style, let hue, let fontSize):
             let colors = MediaEditorColor.text(style, hue: hue)
-            c.withCGContext { cg in
-                MediaEditorText.draw(text, fontSize: fontSize, fill: colors.fill, stroke: colors.stroke, background: colors.background, in: cg)
-            }
+            MediaEditorText.draw(text, fontSize: fontSize, fill: colors.fill, stroke: colors.stroke, background: colors.background, in: c)
         case .sticker(let img):
             let bitmap = MediaEditorBitmapCache.shared.bitmap(for: o.id, img)
             if let cg = bitmap.cgImage {
@@ -304,14 +329,12 @@ struct MediaEditorRenderer {
         }
         var c = ctx
         c.concatenate(o.transform)
-        c.withCGContext { cg in
-            cg.saveGState()
-            cg.translateBy(x: l.timeCenter.x, y: l.timeCenter.y)
-            MediaEditorText.draw(l.time, fontSize: 72, fontName: DigitalClockLayout.timeFont, fill: colors.fill, stroke: nil, background: nil, in: cg)
-            cg.restoreGState()
-            cg.translateBy(x: l.dayCenter.x, y: l.dayCenter.y)
-            MediaEditorText.draw(l.dayPeriod, fontSize: 11, fontName: DigitalClockLayout.dayFont, fill: colors.fill, stroke: nil, background: nil, in: cg)
-        }
+        var time = c
+        time.translateBy(x: l.timeCenter.x, y: l.timeCenter.y)
+        MediaEditorText.draw(l.time, fontSize: 72, fontName: DigitalClockLayout.timeFont, fill: colors.fill, stroke: nil, background: nil, in: time)
+        var day = c
+        day.translateBy(x: l.dayCenter.x, y: l.dayCenter.y)
+        MediaEditorText.draw(l.dayPeriod, fontSize: 11, fontName: DigitalClockLayout.dayFont, fill: colors.fill, stroke: nil, background: nil, in: day)
     }
 
     func drawAnalog(_ o: MediaEditorObject, time: AnalogTime, style: AnalogClockStyle, ctx: GraphicsContext) {
@@ -392,15 +415,26 @@ struct MediaEditorRenderer {
     /// `moreStyles`: 11px Inter on a black 4px-rounded box (1.5 × the text wide, twice its ascent tall).
     func drawMoreStyles(at p: CGPoint, in ctx: GraphicsContext) {
         let f = MediaEditorText.font(11, name: AxoFonts.interName(weight: 400))
-        let w = MediaEditorText.width(moreStylesLabel, font: f), ascent = CTFontGetAscent(f)
+        let w = MediaEditorText.width(moreStylesLabel, font: f)
+        #if os(Linux)
+        let ascent = QtFontDatabase.metrics(family: AxoFonts.interName(weight: 400), size: 11).ascent
+        #else
+        let ascent = CTFontGetAscent(f)
+        #endif
         let boxH = ascent * 2, boxW = w * 1.5
         ctx.fill(Path(roundedRect: CGRect(x: p.x - boxW / 2, y: p.y, width: boxW, height: boxH), cornerRadius: 4), with: .color(.black))
+        #if os(Linux)
+        let label = ctx.resolve(Text(verbatim: moreStylesLabel).font(f).foregroundColor(.white))
+        let baseline = label.firstBaseline(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+        ctx.draw(label, at: CGPoint(x: p.x, y: p.y + boxH / 1.5 - baseline), anchor: .top)
+        #else
         ctx.withCGContext { cg in
             let attr = NSAttributedString(string: moreStylesLabel, attributes: [.font: f as NSFont, .foregroundColor: NSColor.white])
             cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
             cg.textPosition = CGPoint(x: p.x - w / 2, y: p.y + boxH / 1.5)
             CTLineDraw(CTLineCreateWithAttributedString(attr), cg)
         }
+        #endif
     }
 }
 

@@ -6,6 +6,9 @@
 import Blurhash
 import CodecCore
 import EncodeJPEG
+#if os(Linux)
+@_spi(Qt) import CoreGraphics
+#endif
 import SwiftUI
 
 /// `MediaEditorResultType`
@@ -39,7 +42,12 @@ enum MediaEditorExport {
 
     /// The rendered pixels as RGBA (from the image's own data provider, any 8-bit layout).
     static func pixels(_ image: CGImage) -> PixelBuffer? {
-        guard image.bitsPerComponent == 8, image.bitsPerPixel == 32, let data = image.dataProvider?.data as Data? else { return nil }
+        #if os(Linux)
+        let pixelData = image.dataProvider?.bytes
+        #else
+        let pixelData = image.dataProvider?.data as Data?
+        #endif
+        guard image.bitsPerComponent == 8, image.bitsPerPixel == 32, let data = pixelData else { return nil }
         let alpha = image.alphaInfo
         let little = image.byteOrderInfo == .order32Little
         let first = alpha == .premultipliedFirst || alpha == .first || alpha == .noneSkipFirst

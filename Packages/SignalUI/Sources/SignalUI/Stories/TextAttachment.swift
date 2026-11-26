@@ -4,7 +4,11 @@
 // story styles (59 / 42 / 32px by length, centred unless small), an optional text background
 // pill, and the link preview card below it.
 
+#if canImport(CoreText)
 import CoreText
+#else
+@_spi(Qt) import SwiftUI
+#endif
 import SignalI18n
 import SwiftUI
 
@@ -349,7 +353,11 @@ extension CSSTextStyle {
     /// gap, each rounded.
     public static func normalLineHeight(fontName: String, size: CGFloat) -> CGFloat {
         AxoFonts.register()
+        #if os(Linux)
+        return QtFontDatabase.normalLineHeight(family: fontName, size: size)
+        #else
         let font = CTFontCreateWithName(fontName as CFString, size, nil)
         return CTFontGetAscent(font).rounded() + CTFontGetDescent(font).rounded() + CTFontGetLeading(font).rounded()
+        #endif
     }
 }

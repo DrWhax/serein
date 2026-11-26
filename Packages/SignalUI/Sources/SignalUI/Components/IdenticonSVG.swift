@@ -2,7 +2,6 @@
 // an r40 circle in the avatar colour with the initials (sans-serif 24px, centred, baseline
 // 8px below the middle), the group glyph, or the call-link glyph.
 
-import CoreText
 import SwiftUI
 
 public struct IdenticonSVG: View {
@@ -29,18 +28,10 @@ public struct IdenticonSVG: View {
             ctx.fill(Path(ellipseIn: CGRect(x: 10, y: 10, width: 80, height: 80)), with: .color(background.color))
             switch kind {
             case .contact(let text):
-                // Chromium's sans-serif on macOS: Helvetica.
-                let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
-                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
-                    NSAttributedString.Key(kCTFontAttributeName as String): font,
-                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(srgbRed: foreground.r, green: foreground.g, blue: foreground.b, alpha: foreground.a),
-                ]))
-                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-                ctx.withCGContext { cg in
-                    cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-                    cg.textPosition = CGPoint(x: 50 - width / 2, y: 58)
-                    CTLineDraw(line, cg)
-                }
+                let initials = ctx.resolve(Text(verbatim: text).font(.custom("Helvetica", fixedSize: 24)).foregroundColor(foreground.color))
+                let size = initials.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity))
+                let top = 58 - initials.firstBaseline(in: size)
+                ctx.draw(initials, at: CGPoint(x: 50, y: top), anchor: .top)
             case .group:
                 // viewBox 0 0 20 20 in 60×45 at (20, 27.5): scale 2.25, centred (x 27.5).
                 let t = CGAffineTransform(translationX: 27.5, y: 27.5).scaledBy(x: 2.25, y: 2.25)

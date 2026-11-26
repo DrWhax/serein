@@ -153,8 +153,8 @@ struct SystemMessageContents: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let l = layout(ProposedViewSize(width: bounds.width, height: nil))
         subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
-        let font = style.ctFont
-        let a = CTFontGetAscent(font).rounded(), d = CTFontGetDescent(font).rounded()
+        let font = style.fontMetrics
+        let a = font.ascent.rounded(), d = font.descent.rounded()
         let halfLeading = ((style.lineHeight - (a + d)) / 2).rounded(.down)
         let x0 = (bounds.width - (l.widths.first ?? 0)) / 2
         if hasLeading, subviews.count > 1 {
@@ -166,7 +166,7 @@ struct SystemMessageContents: Layout {
             let xEnd = (bounds.width - w) / 2 + w
             // middle: the box's centre at the baseline − half the x-height.
             let baseline = CGFloat(last) * style.lineHeight + halfLeading + a
-            let mid = baseline - CTFontGetXHeight(font) / 2
+            let mid = baseline - font.xHeight / 2
             subviews[2].place(at: CGPoint(x: bounds.minX + xEnd - 12, y: bounds.minY + mid - 6), proposal: .unspecified)
         }
     }

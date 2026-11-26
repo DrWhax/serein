@@ -86,8 +86,8 @@ public struct ContactName: View {
 
     /// The text baseline from the line top (Blink: half-leading floored, ascent rounded).
     static func baseline(_ style: CSSTextStyle) -> CGFloat {
-        let font = style.ctFont
-        let a = CTFontGetAscent(font).rounded(), d = CTFontGetDescent(font).rounded()
+        let font = style.fontMetrics
+        let a = font.ascent.rounded(), d = font.descent.rounded()
         return ((style.lineHeight - (a + d)) / 2).rounded(.down) + a
     }
 }

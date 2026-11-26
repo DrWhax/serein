@@ -29,8 +29,14 @@ public struct CSSBlockText: View {
     }
 
     public var body: some View {
-        let rgba = (color ?? inherited).value(for: scheme)
         BlockTextFrame(string: string, style: style) {
+            #if os(Linux)
+            GeometryReader { geometry in
+                CSSText(string, style: style, wrap: .wrap, alignment: alignment, color: color)
+                    .environment(\.cssTextWrapWidth, geometry.size.width)
+            }
+            #else
+            let rgba = (color ?? inherited).value(for: scheme)
             Canvas(opaque: false, rendersAsynchronously: false) { context, size in
                 let layout = Self.layout(string, style, width: size.width)
                 context.withCGContext { cg in
@@ -38,6 +44,7 @@ public struct CSSBlockText: View {
                                 color: CGColor(srgbRed: rgba.r, green: rgba.g, blue: rgba.b, alpha: rgba.a))
                 }
             }
+            #endif
         }
         .accessibilityElement()
         .accessibilityLabel(string)

@@ -4,8 +4,12 @@
 // and placed on a PDFKit page: a raster page (upstream's printToPDF is vector), since a
 // CoreGraphics PDF context can only be created through pointer APIs.
 
+#if os(Linux)
+@_spi(Qt) import SwiftUI
+#else
 import AppKit
 import PDFKit
+#endif
 import SignalI18n
 import SwiftUI
 
@@ -26,9 +30,13 @@ public enum AccountKeysPDF {
         let renderer = ImageRenderer(content: page)
         renderer.proposedSize = ProposedViewSize(pageSize)
         renderer.scale = 3
+        #if os(Linux)
+        return renderer.pdfData(pageSize: pageSize) ?? Data()
+        #else
         guard let image = renderer.cgImage, let pdfPage = PDFPage(image: NSImage(cgImage: image, size: pageSize)) else { return Data() }
         let document = PDFDocument()
         document.insert(pdfPage, at: 0)
         return document.dataRepresentation() ?? Data()
+        #endif
     }
 }
