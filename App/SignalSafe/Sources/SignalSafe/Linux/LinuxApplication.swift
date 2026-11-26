@@ -7,7 +7,7 @@ import SwiftUI
 
 @main
 @MainActor
-struct LinuxApplication: App {
+struct LinuxApplication: SwiftUI.App {
     let model: AppModel
     let session: SignalSession
     let i18n: Localizer
@@ -27,6 +27,7 @@ struct LinuxApplication: App {
     var body: some Scene {
         WindowGroup(i18n("icu:signalDesktop")) {
             RootView(model: model, session: session, i18n: i18n)
+                .environment(\.openURL, OpenURLAction { DesktopPortal.open($0) ? .handled : .discarded })
                 .environment(\.spellCheckEnabled, model.spellCheckAtLaunch)
                 .environment(\.brandLogo, BundledImage.named("serein-logo"))
         }

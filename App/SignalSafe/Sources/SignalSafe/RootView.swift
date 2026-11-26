@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import SignalCore
 import SignalI18n
 import SignalSafeSystem
@@ -52,7 +52,7 @@ struct RootView: View {
                 if let step = session.exportStep {
                     PlaintextExportWorkflow(workflow: step, cancelWorkflow: { session.cancelPlaintextExport() },
                                             clearWorkflow: { session.cancelPlaintextExport() },
-                                            openFileInFolder: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) },
+                                            openFileInFolder: DesktopActions.revealFile,
                                             verifyWithOSForExport: { includeMedia in
                                                 Task {
                                                     if await SettingsTab.promptOSAuth() == .unauthorized { return session.cancelPlaintextExport() }
@@ -225,10 +225,10 @@ struct RootView: View {
         case .linkInProgress:
             InstallScreenLinkInProgressStep()
         case .linkError(let error):
-            InstallScreenErrorStep(error: error, quit: { NSApp.terminate(nil) }, tryAgain: { session.link() })
+            InstallScreenErrorStep(error: error, quit: { DesktopActions.quit(session) }, tryAgain: { session.link() })
         case .syncing(let step, let error):
             InstallScreenBackupImportStep(step: step, error: error, onCancel: { session.cancelSync() }, onRetry: { session.retrySync() },
-                                          openURL: { NSWorkspace.shared.open($0) })
+                                          openURL: DesktopActions.openURL)
         case .failed(let reason):
             Text(reason).font(.system(size: 13)).foregroundStyle(.secondary).padding(40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(AxoColor.surfacePrimary)
@@ -296,7 +296,7 @@ struct RootView: View {
                 session.setArchived(false, for: id)
                 if wasPinned { session.setPinnedChat(true, for: id) }
             }
-            actions.openFileInFolder = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: $0)]) }
+            actions.openFileInFolder = DesktopActions.revealFile
             return AnyView(ToastManager(toast: session.toast, actions: actions, megaphone: megaphone(breakpoint, expand)))
         }
         context.updateSearchTerm = { if session.isComposing { session.composeSearch = $0 } else { session.updateSearch($0) } }

@@ -3,7 +3,6 @@
 // the invite link, member labels, requests and invites, and permissions. Each is
 // SignalUI's port; this maps SignalCore's state into it and its callbacks to the session.
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalI18n
@@ -202,7 +201,7 @@ struct ConversationPanelView: View {
             session.isEditingGroup = true
         }
         c.setMuteExpiration = { session.setMute($0) }
-        c.openLink = { NSWorkspace.shared.open($0) }
+        c.openLink = DesktopActions.openURL
         let id = conversation.id, serviceId = conversation.kind == .private ? conversation.serviceId : nil
         c.searchInConversation = { session.startConversationSearch() }
         c.onOutgoingVideoCall = { session.openCallLobby(id, video: true) }

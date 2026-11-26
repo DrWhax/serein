@@ -73,6 +73,7 @@ package.targets.append(.target(name: "CLinuxDesktop", dependencies: ["CLinuxGIO"
                                linkerSettings: [.linkedLibrary("seccomp")]))
 if let system = package.targets.first(where: { $0.name == "SignalSafeSystem" }) {
     system.dependencies += ["CLinuxDesktop", .product(name: "MediaXPCInterface", package: "SignalMediaService")]
+    system.swiftSettings = (system.swiftSettings ?? []) + [.enableExperimentalFeature("SafeInteropWrappers")]
     system.exclude += ["AppSandbox.swift", "ContentProtection.swift", "LoginItem.swift", "PreventDisplaySleep.swift"]
 }
 package.dependencies.append(.package(path: "../../../QtSwiftUI"))

@@ -712,7 +712,7 @@ struct ConversationPane: View {
         // A preview opens its (https) link in the browser.
         p.openLink = { [session] href in
             guard LinkPreviewRules.shouldPreviewHref(href), let url = URL(string: href) else { return }
-            if !session.openInAppLink(url) { NSWorkspace.shared.open(url) }
+            if !session.openInAppLink(url) { DesktopActions.openURL(url) }
         }
         if !viewOnce { p.showLightbox = { [session] i in session.openLightbox(m, index: i) } }
         if m.attachments.contains(where: { !$0.attachment.isDownloaded }) { p.kickOffAttachmentDownload = { [session] in session.downloadAttachments(m) } }
