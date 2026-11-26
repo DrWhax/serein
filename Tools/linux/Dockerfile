@@ -32,7 +32,7 @@ RUN CC=clang CC_FOR_BUILD=clang ./configure --with-tempstore=yes --enable-fts5 &
 
 # Serein uses lifetime features and type checking from the Swift 6.4 toolchain.
 FROM swift:6.4-noble AS toolchain
-RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev libsoup-3.0-dev glib-networking \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlcipher /out/ /usr/local/
 COPY --from=libsignal /libsignal_ffi.a /usr/local/lib/

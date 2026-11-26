@@ -4,7 +4,11 @@
 // exactly those roots (Signal pins its own CA; tests pin the mock server's CA).
 
 import Foundation
+#if os(Linux)
+import FoundationNetworking
+#else
 import Security
+#endif
 
 /// Base URLs of the non-chat services (Desktop config: storageUrl, cdn{0,2,3}).
 public struct ServiceEndpoints: Sendable {
@@ -38,6 +42,7 @@ public enum HTTPError: Error, Equatable {
     case insecureURL
 }
 
+#if canImport(Security)
 /// Server-trust evaluation against pinned roots only; redirects must stay on https.
 final class PinnedTrustDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     let rootsDER: [Data]
@@ -73,18 +78,28 @@ final class PinnedTrustDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     }
 }
 
+#endif
+
 public struct HTTPClient: Sendable {
+    #if os(Linux)
+    let session: LinuxHTTPSession
+    #else
     let session: URLSession
+    #endif
     /// Responses larger than this are rejected (storage manifests/items and contact blobs are small).
     public var maxResponseBytes = 64 << 20
 
     public init(rootCertificatesDER: [Data]) {
+        #if os(Linux)
+        session = LinuxHTTPSession(roots: rootCertificatesDER)
+        #else
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.urlCache = nil
         config.httpShouldSetCookies = false
         config.timeoutIntervalForRequest = 30
         session = URLSession(configuration: config, delegate: PinnedTrustDelegate(rootsDER: rootCertificatesDER), delegateQueue: nil)
+        #endif
     }
 
     public static func basicAuth(_ username: String, _ password: String) -> String {

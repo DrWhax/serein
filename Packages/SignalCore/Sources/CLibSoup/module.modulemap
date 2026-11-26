@@ -1,0 +1,5 @@
+module CLibSoup [system] {
+    header "shim.h"
+    link "soup-3.0"
+    export *
+}

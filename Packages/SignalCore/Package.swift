@@ -130,8 +130,10 @@ for target in package.targets where cryptoConsumers.contains(target.name) {
 #if os(Linux)
 package.targets.append(.systemLibrary(name: "CLibSecret", pkgConfig: "libsecret-1", providers: [.apt(["libsecret-1-dev"])]))
 package.targets.append(.target(name: "CLinuxKeyStore", dependencies: ["CLibSecret"]))
+package.targets.append(.systemLibrary(name: "CLibSoup", pkgConfig: "libsoup-3.0", providers: [.apt(["libsoup-3.0-dev", "glib-networking"])]))
+package.targets.append(.target(name: "CLinuxHTTP", dependencies: ["CLibSoup"]))
 if let core = package.targets.first(where: { $0.name == "SignalCore" }) {
-    core.dependencies.append("CLinuxKeyStore")
+    core.dependencies += ["CLinuxKeyStore", "CLinuxHTTP"]
     core.swiftSettings?.append(.enableExperimentalFeature("SafeInteropWrappers"))
 }
 package.targets.first { $0.name == "MessageParsing" }?.dependencies.append(
