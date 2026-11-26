@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "CLinuxCallNetwork.h"
+#include "Broker.h"
 #include <gio/gio.h>
 #include <arpa/inet.h>
 #include <errno.h>
@@ -13,6 +14,7 @@ typedef struct {
     GSocket *socket;
     GIOStream *stream;
     int anchor_fd;
+    int lease_fd;
 } CallSocket;
 
 static GMutex lock;
@@ -21,6 +23,7 @@ static uint64_t next_id;
 
 static void destroy(void *value) {
     CallSocket *s = value;
+    if (s->lease_fd >= 0) close(s->lease_fd);
     g_clear_object(&s->stream);
     g_clear_object(&s->socket);
     g_clear_object(&s->cancel);
@@ -39,6 +42,7 @@ static CallSocket *lookup(uint64_t id) {
 static uint64_t register_socket(GSocket *socket) {
     CallSocket *s = g_atomic_rc_box_new0(CallSocket);
     s->anchor_fd = -1;
+    s->lease_fd = -1;
     s->cancel = g_cancellable_new();
     s->socket = socket;
     g_mutex_lock(&lock);
@@ -56,8 +60,11 @@ void call_net_cancel(uint64_t id) {
 void call_net_release(uint64_t id) {
     call_net_cancel(id);
     g_mutex_lock(&lock);
-    if (sockets) g_hash_table_remove(sockets, &id);
+    gpointer key = NULL, value = NULL;
+    if (sockets) g_hash_table_steal_extended(sockets, &id, &key, &value);
     g_mutex_unlock(&lock);
+    g_free(key);
+    if (value) unref(value);
 }
 
 static GSocket *datagram(GInetAddress *local, uint16_t port, int reuse) {
@@ -99,7 +106,9 @@ static gboolean set_anchor(CallSocket *s, GTlsConnection *tls, const uint8_t *de
     g_string_append(pem, "-----END CERTIFICATE-----\n");
     g_autoptr(GTlsCertificate) cert = g_tls_certificate_new_from_pem(pem->str, pem->len, NULL);
     if (!cert) return FALSE;
-    s->anchor_fd = memfd_create("serein-call-trust", MFD_CLOEXEC);
+    // Confined callers may use only anonymous, permanently non-executable certificate data.
+    const unsigned noexec_seal = 0x0008U;  // MFD_NOEXEC_SEAL on Linux 6.3+
+    s->anchor_fd = memfd_create("serein-call-trust", MFD_CLOEXEC | (call_broker_active() ? noexec_seal : 0));
     if (s->anchor_fd < 0 || write(s->anchor_fd, pem->str, pem->len) != (ssize_t)pem->len) return FALSE;
     g_autofree char *path = g_strdup_printf("/proc/self/fd/%d", s->anchor_fd);
     g_autoptr(GTlsDatabase) db = g_tls_file_database_new(path, NULL);
@@ -113,16 +122,30 @@ int call_net_connect(uint64_t id, const uint8_t *name, size_t n, uint16_t port, 
     g_autoptr(CallSocket) s = lookup(id);
     if (!s || !port || !name || !n || n > 1024 || memchr(name, 0, n)) return 0;
     g_autofree char *host = g_strndup((const char *)name, n);
-    if (mode == CallDatagram) return connect_udp(s, host, port, family, local_port, reuse);
-
-    g_autoptr(GSocketClient) client = g_socket_client_new();
-    g_socket_client_set_enable_proxy(client, FALSE);
-    g_socket_client_set_timeout(client, 15);
-    g_autoptr(GSocketConnectable) target = g_network_address_new(host, port);
-    g_autoptr(GSocketConnection) connection = g_socket_client_connect(client, target, s->cancel, NULL);
-    if (!connection) return 0;
-    GSocket *socket = g_socket_connection_get_socket(connection);
-    g_socket_set_option(socket, IPPROTO_TCP, TCP_NODELAY, 1, NULL);
+    g_autoptr(GSocket) socket = NULL;
+    g_autoptr(GIOStream) connection = NULL;
+    if (call_broker_active()) {
+        struct CallSocketRequest req = {.op=mode == CallDatagram ? CallUDP : CallTCP,
+            .family=family, .port=port, .local_port=local_port, .reuse=reuse};
+        if (g_strlcpy(req.host, host, sizeof(req.host)) >= sizeof(req.host)) return 0;
+        int fd = call_broker_socket(&req, s->cancel);
+        if (fd < 0) return 0;
+        socket = g_socket_new_from_fd(fd, NULL);
+        if (!socket) { close(fd); return 0; }
+        if (mode == CallDatagram) { s->socket = g_steal_pointer(&socket); return 1; }
+        g_socket_set_timeout(socket, 15);
+        connection = G_IO_STREAM(g_socket_connection_factory_create_connection(socket));
+    } else {
+        if (mode == CallDatagram) return connect_udp(s, host, port, family, local_port, reuse);
+        g_autoptr(GSocketClient) client = g_socket_client_new();
+        g_socket_client_set_enable_proxy(client, FALSE);
+        g_socket_client_set_timeout(client, 15);
+        g_autoptr(GSocketConnectable) target = g_network_address_new(host, port);
+        connection = G_IO_STREAM(g_socket_client_connect(client, target, s->cancel, NULL));
+        if (!connection) return 0;
+        socket = g_object_ref(g_socket_connection_get_socket(G_SOCKET_CONNECTION(connection)));
+        g_socket_set_option(socket, IPPROTO_TCP, TCP_NODELAY, 1, NULL);
+    }
     if (mode == CallTLS) {
         if (!m || !identity || m > 1024 || memchr(identity, 0, m)) return 0;
         g_autofree char *tls_name = g_strndup((const char *)identity, m);
@@ -151,6 +174,13 @@ int call_net_connect(uint64_t id, const uint8_t *name, size_t n, uint16_t port, 
 int call_net_listen(uint64_t id, int reuse) {
     g_autoptr(CallSocket) s = lookup(id);
     if (!s) return 0;
+    if (call_broker_active()) {
+        int fd = call_broker_listen(reuse, s->cancel, &s->lease_fd);
+        if (fd < 0) return 0;
+        s->socket = g_socket_new_from_fd(fd, NULL);
+        if (!s->socket) { close(fd); return 0; }
+        return 1;
+    }
     const GSocketFamily families[] = {G_SOCKET_FAMILY_IPV6, G_SOCKET_FAMILY_IPV4};
     for (size_t i = 0; i < G_N_ELEMENTS(families); i++) {
         GSocketFamily family = families[i];
@@ -228,11 +258,24 @@ struct CallNetPeer call_net_accept(uint64_t id, uint8_t *packet, size_t n, uint8
         g_autoptr(GInetAddress) local_ip = g_inet_address_new_from_bytes(local, family);
         g_autoptr(GSocketAddress) listener_addr = g_socket_get_local_address(s->socket, NULL);
         if (!listener_addr) break;
-        g_autoptr(GSocket) child = datagram(local_ip, g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(listener_addr)), TRUE);
-        g_autoptr(GInetAddress) remote_ip = g_inet_address_new_from_bytes(ip, family);
         uint16_t port = g_inet_socket_address_get_port(peer);
-        g_autoptr(GSocketAddress) endpoint = g_inet_socket_address_new(remote_ip, port);
-        if (!child || !g_socket_connect(child, endpoint, s->cancel, NULL)) continue;
+        uint16_t local_port = g_inet_socket_address_get_port(G_INET_SOCKET_ADDRESS(listener_addr));
+        g_autoptr(GSocket) child = NULL;
+        if (call_broker_active()) {
+            struct CallSocketRequest req = {.op=CallUDP, .family=width == 4 ? 4 : 6,
+                .port=port, .local_port=local_port, .reuse=1};
+            if (!inet_ntop(family, ip, req.host, sizeof(req.host)) ||
+                !inet_ntop(family, local, req.source, sizeof(req.source))) continue;
+            int connected = call_broker_socket(&req, s->cancel);
+            if (connected < 0) continue;
+            child = g_socket_new_from_fd(connected, NULL);
+            if (!child) { close(connected); continue; }
+        } else {
+            child = datagram(local_ip, local_port, TRUE);
+            g_autoptr(GInetAddress) remote_ip = g_inet_address_new_from_bytes(ip, family);
+            g_autoptr(GSocketAddress) endpoint = g_inet_socket_address_new(remote_ip, port);
+            if (!child || !g_socket_connect(child, endpoint, s->cancel, NULL)) continue;
+        }
         return (struct CallNetPeer){register_socket(g_steal_pointer(&child)), (int)count, port, width};
     }
     return (struct CallNetPeer){0};

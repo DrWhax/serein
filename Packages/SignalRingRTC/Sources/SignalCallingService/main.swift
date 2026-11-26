@@ -10,6 +10,17 @@ import Foundation
 import MediaXPCInterface
 import SwiftCallingServiceAdapter
 
+#if os(Linux)
+import CLinuxCallNetwork
+if CommandLine.arguments.dropFirst().elementsEqual(["--linux-call-socket-broker"]) {
+    ServiceSandbox.requireConfinement("SignalCallingSocketBroker", systemFiles: true)
+    exit(call_net_serve_broker())
+}
+guard call_net_start_broker() != 0 else {
+    FileHandle.standardError.write(Data("SignalCalling: could not start confined socket broker\n".utf8))
+    exit(78)
+}
+#endif
 ServiceSandbox.requireConfinement("SignalCalling", systemFiles: true)
 
 let handler = CallXPCHandler(makeEndpoint: SwiftVoiceEndpoint.factory, onSessionEnd: { exit(0) })

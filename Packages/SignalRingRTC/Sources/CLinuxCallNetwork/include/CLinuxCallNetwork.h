@@ -26,3 +26,6 @@ int call_net_parse_ip(const uint8_t * __counted_by(n) text __attribute__((noesca
 int call_net_format_ip(const uint8_t * __counted_by(n) ip __attribute__((noescape)), size_t n,
     uint8_t * __counted_by(k) text __attribute__((noescape)), size_t k);
 int call_net_interfaces(uint8_t * __counted_by(n) result __attribute__((noescape)), size_t n);
+
+int call_net_start_broker(void);
+int call_net_serve_broker(void);

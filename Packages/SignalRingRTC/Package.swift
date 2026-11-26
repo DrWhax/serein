@@ -80,6 +80,7 @@ for target in package.targets where cryptoConsumers.contains(target.name) {
 package.targets.append(.systemLibrary(name: "CCallGIO", pkgConfig: "gio-2.0"))
 package.targets.append(.target(name: "CLinuxCallNetwork", dependencies: ["CCallGIO"]))
 package.targets.append(.target(name: "CLinuxCallAudio", linkerSettings: [.linkedLibrary("asound")]))
+package.targets.first { $0.name == "SignalCallingService" }?.dependencies.append("CLinuxCallNetwork")
 if let calling = package.targets.first(where: { $0.name == "SwiftCalling" }) {
     calling.dependencies += ["CLinuxCallAudio", "CLinuxCallNetwork", .product(name: "CryptoExtras", package: "swift-crypto")]
     calling.exclude += ["CallSpeaker.swift", "CallMicrophone.swift", "EngineMicrophone.swift", "TURNConnection.swift"]

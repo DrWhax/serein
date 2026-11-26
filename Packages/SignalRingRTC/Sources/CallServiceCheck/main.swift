@@ -105,7 +105,18 @@ do {
     if staged {
         guard XPCPeer.requirement(.calling) != nil, let value = ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_PORT"],
               let port = UInt16(value), port > 0 else { throw RingRTCError.native("Missing staged peer identity or loopback TURN port") }
+        #if os(Linux)
+        // The production profile requires the test relay to be in a different network namespace.
+        guard let host = ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_HOST"],
+              !host.isEmpty, host.utf8.allSatisfy({ (48...57).contains($0) || $0 == 46 }) else {
+            throw RingRTCError.native("Expected the test relay's IPv4 address")
+        }
+        let transport = ProcessInfo.processInfo.environment["SEREIN_TEST_TURN_TRANSPORT"] ?? "udp"
+        guard transport == "udp" || transport == "tcp" else { throw RingRTCError.native("Invalid test relay transport") }
+        servers = [IceServer(username: "serein", password: "serein-test-relay", urls: ["turn:\(host):\(port)?transport=\(transport)"])]
+        #else
         servers = [IceServer(username: "serein", password: "serein-test-relay", urls: ["turn:127.0.0.1:\(port)?transport=udp"])]
+        #endif
     }
     for (me, other, myId) in [(a, b, DeviceId(1)), (b, a, DeviceId(2))] {
         me.rtc.handleOutgoingSignaling = { [weak other] _, message in

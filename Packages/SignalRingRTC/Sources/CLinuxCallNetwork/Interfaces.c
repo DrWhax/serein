@@ -1,8 +1,11 @@
 #include "CLinuxCallNetwork.h"
+#include "Broker.h"
 #include <arpa/inet.h>
 #include <gio/gio.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <net/if_arp.h>
+#include <netpacket/packet.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,7 +49,7 @@ static void route_source(int family, char *source, size_t n) {
     close(fd);
 }
 
-int call_net_interfaces(uint8_t *result, size_t n) {
+int call_net_local_interfaces(uint8_t *result, size_t n) {
     struct ifaddrs *interfaces;
     if (getifaddrs(&interfaces) < 0) return -1;
     g_autoptr(GString) list = g_string_new(NULL);
@@ -63,15 +66,19 @@ int call_net_interfaces(uint8_t *result, size_t n) {
         if (!inet_ntop(family, ip, address, sizeof(address)) || strpbrk(i->ifa_name, "\t\n/")) continue;
         const char *name = i->ifa_name;
         g_autofree char *wireless = g_build_filename("/sys/class/net", name, "wireless", NULL);
-        g_autofree char *ether = g_build_filename("/sys/class/net", name, "type", NULL);
-        g_autofree char *type = NULL;
-        g_file_get_contents(ether, &type, NULL, NULL);
+        int ethernet = 0;
+        for (struct ifaddrs *link = interfaces; link; link = link->ifa_next) {
+            if (link->ifa_addr && link->ifa_addr->sa_family == AF_PACKET && !strcmp(link->ifa_name, name)) {
+                ethernet = ((struct sockaddr_ll *)link->ifa_addr)->sll_hatype == ARPHRD_ETHER;
+                break;
+            }
+        }
         const char *kind = "other";
         if (i->ifa_flags & IFF_LOOPBACK) kind = "loopback";
         else if (g_str_has_prefix(name, "tun") || g_str_has_prefix(name, "wg") || g_str_has_prefix(name, "ppp")) kind = "vpn";
         else if (g_file_test(wireless, G_FILE_TEST_IS_DIR)) kind = "wifi";
         else if (g_str_has_prefix(name, "wwan") || g_str_has_prefix(name, "rmnet")) kind = "cellular";
-        else if (type && atoi(type) == 1) kind = "ethernet";
+        else if (ethernet) kind = "ethernet";
         int routed = strcmp(address, family == AF_INET ? route4 : route6) == 0;
         g_string_append_printf(list, "%s\t%s\t%s\t%d\n", name, address, kind, routed);
     }
@@ -79,4 +86,8 @@ int call_net_interfaces(uint8_t *result, size_t n) {
     if (list->len > 1024 * 1024) return -1;
     if (result && list->len <= n) memcpy(result, list->str, list->len);
     return (int)list->len;
+}
+
+int call_net_interfaces(uint8_t *result, size_t n) {
+    return call_broker_active() ? call_broker_interfaces(result, n) : call_net_local_interfaces(result, n);
 }
