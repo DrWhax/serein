@@ -1,0 +1,27 @@
+diff --git a/GRDB/Core/Support/CoreGraphics/CGFloat.swift b/GRDB/Core/Support/CoreGraphics/CGFloat.swift
+index 99d615350..9eccc2b7b 100644
+--- a/GRDB/Core/Support/CoreGraphics/CGFloat.swift
++++ b/GRDB/Core/Support/CoreGraphics/CGFloat.swift
+@@ -1,4 +1,6 @@
+-#if canImport(CoreGraphics)
++#if os(Linux)
++import Foundation
++#elseif canImport(CoreGraphics)
+ import CoreGraphics
+ #elseif !canImport(Darwin)
+ import Foundation
+diff --git a/Tests/GRDBTests/Support/CGFloatTests.swift b/Tests/GRDBTests/Support/CGFloatTests.swift
+index 4c9ebd93b..310c631c3 100644
+--- a/Tests/GRDBTests/Support/CGFloatTests.swift
++++ b/Tests/GRDBTests/Support/CGFloatTests.swift
+@@ -1,7 +1,9 @@
+ import XCTest
+ import GRDB
+ 
+-#if canImport(CoreGraphics)
++#if os(Linux)
++import Foundation
++#elseif canImport(CoreGraphics)
+ import CoreGraphics
+ #elseif !canImport(Darwin)
+ import Foundation
