@@ -8,6 +8,8 @@ import Testing
 
     @Test(arguments: ["light", "dark"])
     func stories(theme: String) throws {
+        // The Storybook capture below shows the two notes shipped with Desktop 8.34.
+        let releaseNotes = ["icu:WhatsNew__8.34--0", "icu:WhatsNew__8.34--1"].map { DefaultLocalizer.english($0) }
         let cases: [(String, AnyView)] = [
             ("components-errormodal--normal", AnyView(ErrorModal(title: "Real bad!", description: "Just avoid that next time, kay?"))),
             ("components-terminategroupfailedmodal--modal", AnyView(TerminateGroupFailedModal())),
@@ -22,7 +24,7 @@ import Testing
             ("components-keytransparencyerrordialog--default", AnyView(KeyTransparencyErrorDialog())),
             ("components-keytransparencyonboardingdialog--default", AnyView(KeyTransparencyOnboardingDialog())),
             // getBuildCreation: the capture day; no version in Storybook.
-            ("components-whatsnewmodal--modal", AnyView(WhatsNewModal(date: Date(timeIntervalSince1970: 1_793_793_600), version: ""))),
+            ("components-whatsnewmodal--modal", AnyView(WhatsNewModal(date: Date(timeIntervalSince1970: 1_793_793_600), version: "", features: releaseNotes))),
             ("components-signalconnectionsmodal--default", AnyView(SignalConnectionsModal())),
             ("components-safetynumbermodal--not-ready", AnyView(SafetyNumberModal(isAvailable: false) { EmptyView() })),
             ("components-usernameonboardingmodal--normal", AnyView(UsernameOnboardingModal())),

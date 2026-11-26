@@ -271,7 +271,10 @@ struct PinMessageRequest {
     /// The media editor's sticker panel (it adds the time stickers and takes the selection).
     var mediaEditorStickers: FunPanelStickers {
         FunPanelStickers(packs: funStickerPacks, favorites: stickerState?.favorites.map(funSticker) ?? [],
-                         recents: stickerState?.recents.map(funSticker) ?? [], isFavoriteStickersEnabled: favoriteStickersEnabled)
+                         recents: stickerState?.recents.map(funSticker) ?? [], isFavoriteStickersEnabled: favoriteStickersEnabled,
+                         onMarkStickerAsFavorite: { sticker, favorite in
+                             self.setStickerFavorite(packId: sticker.packId, stickerId: sticker.id, favorite)
+                         })
     }
 
     /// A picker item for a sticker (its first frame, loaded on demand).
