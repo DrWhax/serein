@@ -1,8 +1,10 @@
 #!/bin/sh
 # Needs a session bus, PipeWire, WirePlumber, GStreamer test tools and python3-gi.
-# Pass the CameraProbe executable built for Linux.
+# Pass the CameraProbe executable built for Linux. Add --confined when running as the desktop
+# user with its private /var/lib/serein and /run/serein and the packaged libdispatch installed.
 set -eu
 probe=$(realpath "${1:?pass the CameraProbe executable}")
+shift
 test_dir=$(cd "$(dirname "$0")" && pwd)
 runtime_dir=$(mktemp -d)
 trap 'rm -rf "$runtime_dir"' EXIT
@@ -33,5 +35,7 @@ dbus-run-session -- sh -eu -c '
         [ "$i" -lt 80 ] || { cat "$XDG_RUNTIME_DIR/camera.log"; exit 1; }
         sleep .05
     done
-    /usr/bin/python3 "$1/portal.py" "$2"
-' sh "$test_dir" "$probe"
+    test_dir=$1
+    shift
+    /usr/bin/python3 "$test_dir/portal.py" "$@"
+' sh "$test_dir" "$probe" "$@"

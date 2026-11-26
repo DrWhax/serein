@@ -2,11 +2,11 @@
 // the debug log window — fetch the log (the first lines shown, monospace), save it, or
 // submit it and then copy the published link or report an issue.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
 public struct DebugLogWindow: View {
+    @Environment(\.openURL) private var openURL
     public enum Mode: Sendable { case submit, close }
     enum LoadState { case notStarted, started, loaded, submitting }
 
@@ -41,7 +41,7 @@ public struct DebugLogWindow: View {
 
     /// The text area shows the first lines (window height / 5), then the hint to save.
     func preview(_ text: String) -> String {
-        let lines = Int((min(NSScreen.main.map { $0.frame.height } ?? 900, 2000) / 5).rounded(.up))
+        let lines = Int((min(DesktopDisplay.screenSize?.height ?? 900, 2000) / 5).rounded(.up))
         return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(lines).joined(separator: "\n") + "\n\n\n" + i18n("icu:debugLogLogIsIncomplete")
     }
 
@@ -64,10 +64,9 @@ public struct DebugLogWindow: View {
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(AxoColor(light: LegacyColor.gray25, dark: LegacyColor.gray45), lineWidth: 1))
                     .frame(maxHeight: .infinity)
                 footer {
-                    LegacyButton(i18n("icu:reportIssue"), variant: .secondary) { if let url = supportURL(publicLogURL) { NSWorkspace.shared.open(url) } }
+                    LegacyButton(i18n("icu:reportIssue"), variant: .secondary) { if let url = supportURL(publicLogURL) { openURL(url) } }
                     LegacyButton(i18n("icu:debugLogCopy")) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(publicLogURL, forType: .string)
+                        DesktopDisplay.copy(publicLogURL)
                         toast = i18n("icu:debugLogLinkCopied")
                     }
                 }

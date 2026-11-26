@@ -3,22 +3,9 @@ import CLinuxVideo
 import Foundation
 
 public actor CameraCapture {
-    private final class Stream {
-        let handle: UInt64
-        let width, height: Int
-        var bytes: [UInt8]
-        init(_ handle: UInt64, width: Int, height: Int) {
-            self.handle = handle
-            self.width = width
-            self.height = height
-            self.bytes = .init(repeating: 0, count: width * height * 3 / 2)
-        }
-        deinit { serein_capture_close(handle) }
-    }
-
     private let onFrame: @Sendable (CapturedFrame) -> Void
     private var task: Task<Void, Never>?
-    private var stream: Stream?
+    private var stream: LinuxCaptureStream?
     private var generation: UInt64 = 0
     public var isCapturing: Bool { stream != nil }
 
@@ -63,7 +50,7 @@ public actor CameraCapture {
             default: throw CameraCaptureError.cannotAddOutput
             }
         }
-        stream = Stream(result.handle, width: maxWidth, height: maxHeight)
+        stream = LinuxCaptureStream(result.handle, width: maxWidth, height: maxHeight)
         let token = generation
         task = Task { [weak self] in
             while !Task.isCancelled, await self?.deliver(token) == true {
@@ -72,23 +59,15 @@ public actor CameraCapture {
         }
     }
 
-    private static func read(_ handle: UInt64, into bytes: inout [UInt8]) -> SereinCaptureFrame {
-        var output = bytes.mutableSpan
-        return serein_capture_read(handle, &output)
-    }
-
     private func deliver(_ token: UInt64) -> Bool {
         guard token == generation, let stream else { return false }
-        let frame = Self.read(stream.handle, into: &stream.bytes)
-        if frame.status == 0 { return true }
-        let width = Int(frame.width), height = Int(frame.height)
-        guard frame.status > 0, (2...stream.width).contains(width), (2...stream.height).contains(height),
-              let capture = CapturedFrame(width: width, height: height, nv12: Array(stream.bytes.prefix(width * height * 3 / 2))) else {
+        do {
+            if let frame = try stream.read() { onFrame(frame) }
+            return true
+        } catch {
             stop()
             return false
         }
-        onFrame(capture)
-        return true
     }
 
     public func stop() {

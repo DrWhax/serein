@@ -5,9 +5,15 @@
 // centred 24px below the top of the primary display, #2e2e2e) — "Sharing <window>" and "Stop
 // sharing" while presenting.
 
+#if canImport(AppKit)
 import AppKit
+#endif
 import SignalI18n
+#if os(Linux)
+@_spi(Qt) import SwiftUI
+#else
 import SwiftUI
+#endif
 
 public struct CallingSelectPresentingSourcesModal: View {
     let sources: [PresentableSource]
@@ -73,9 +79,15 @@ struct SourceCard: View {
                 SourceThumbnail(image: source.thumbnail, size: source.thumbnailSize)
                     .clipShape(SuperellipseRect.curved(6))
                 HStack(spacing: 4) {
+                    #if canImport(AppKit)
                     if let icon = ScreenShareCapture.icon(bundleId: source.appBundleId) {
                         Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit).frame(width: 16, height: 16)
                     }
+                    #else
+                    if let id = source.appBundleId, let icon = QtDesktop.icon(named: id, size: 32) {
+                        icon.resizable().aspectRatio(contentMode: .fit).frame(width: 16, height: 16)
+                    }
+                    #endif
                     CSSText(source.name, type: .bodySmall, wrap: .truncate, color: isSelected ? .labelPrimaryOncolor : .labelPrimary)
                 }
                 .frame(maxWidth: .infinity)
@@ -131,15 +143,23 @@ struct AspectBox: Layout {
 }
 
 public struct NeedsScreenRecordingPermissionsModal: View {
+    #if canImport(AppKit)
     let openSystemPreferencesAction: () -> Void
+    #endif
     let toggleScreenRecordingPermissionsDialog: (Bool) -> Void
     @Environment(\.i18n) var i18n
 
+    #if canImport(AppKit)
     public init(openSystemPreferencesAction: @escaping () -> Void = { ScreenRecordingPermission.openSystemSettings() },
                 toggleScreenRecordingPermissionsDialog: @escaping (Bool) -> Void) {
         self.openSystemPreferencesAction = openSystemPreferencesAction
         self.toggleScreenRecordingPermissionsDialog = toggleScreenRecordingPermissionsDialog
     }
+    #else
+    public init(toggleScreenRecordingPermissionsDialog: @escaping (Bool) -> Void) {
+        self.toggleScreenRecordingPermissionsDialog = toggleScreenRecordingPermissionsDialog
+    }
+    #endif
 
     static var style: CSSTextStyle { CSSTextStyle(AxoType.bodyMedium) }
 
@@ -158,6 +178,7 @@ public struct NeedsScreenRecordingPermissionsModal: View {
         AxoAlertDialog.Content {
             AxoAlertDialog.Body {
                 AxoAlertDialog.Title(i18n("icu:calling__presenting--permission-title"))
+                #if canImport(AppKit)
                 VStack(alignment: .leading, spacing: 0) {
                     CSSText(i18n("icu:calling__presenting--macos-permission-description"), style: Self.style, color: .labelPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
@@ -167,13 +188,16 @@ public struct NeedsScreenRecordingPermissionsModal: View {
                         item(3, i18n("icu:calling__presenting--permission-instruction-step3"))
                     }
                 }
+                #endif
             }
             AxoAlertDialog.Footer {
                 AxoAlertDialog.Cancel(i18n("icu:calling__presenting--permission-cancel")) { toggleScreenRecordingPermissionsDialog(false) }
+                #if canImport(AppKit)
                 AxoAlertDialog.Action(i18n("icu:calling__presenting--permission-open"), variant: .strongPrimary) {
                     openSystemPreferencesAction()
                     toggleScreenRecordingPermissionsDialog(false)
                 }
+                #endif
             }
         }
     }
@@ -234,6 +258,7 @@ public struct CallingScreenSharingController: View {
     }
 }
 
+#if canImport(AppKit)
 /// The floating "presenting" controller window. It is left out of screen captures
 /// (`sharingType = .none`), so sharing the screen never shows it to the call.
 @MainActor
@@ -277,3 +302,4 @@ public final class ScreenShareControllerWindow {
         panel = nil
     }
 }
+#endif

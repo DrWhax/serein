@@ -7,9 +7,7 @@
 // - Presenting: the screen-recording permission, ScreenCaptureKit's displays and windows to
 //   pick from, then that source's frames go out instead of the camera's until stopped.
 
-import AppKit
 import Foundation
-import ScreenCaptureKit
 import SignalCore
 import SignalRingRTC
 import SignalUI
@@ -128,8 +126,7 @@ enum CallLinkJoinFailure: Equatable {
 
     func copyCallLink(_ roomId: String) {
         guard let link = callLink(roomId), let url = callLinkURL(link) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
+        DesktopDisplay.copy(url)
         toast = .copiedCallLink
     }
 
@@ -216,9 +213,16 @@ enum CallLinkJoinFailure: Equatable {
         var isGranted: () -> Bool
         var sources: @MainActor (ScreenShareCapture) async throws -> [PresentableSource]
         var start: @MainActor (ScreenShareCapture, String) async throws -> Void
-        var pickFilter: @MainActor (ScreenShareCapture) async throws -> SCContentFilter? = { try await $0.pickFilter() }
+        var pickFilter: @MainActor (ScreenShareCapture) async throws -> ScreenShareFilter? = { try await $0.pickFilter() }
 
-        static let system = ScreenShareBackend(isGranted: { ScreenRecordingPermission.isGranted },
+        static let system = ScreenShareBackend(isGranted: {
+            #if canImport(ScreenCaptureKit)
+            ScreenRecordingPermission.isGranted
+            #else
+            // The Linux desktop grants access to one selection through its picker on each share.
+            false
+            #endif
+        },
                                                sources: { try await $0.sources() },
                                                start: { capture, sourceId in try await capture.start(try capture.filter(for: sourceId)) })
     }

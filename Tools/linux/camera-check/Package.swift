@@ -2,5 +2,6 @@
 import PackageDescription
 
 let package = Package(name: "CameraProbe", dependencies: [.package(path: "../../../Packages/SignalUI")], targets: [
-    .executableTarget(name: "CameraProbe", dependencies: ["SignalUI"], swiftSettings: [.strictMemorySafety(), .treatAllWarnings(as: .error)]),
+    .target(name: "ProbeDesktop", linkerSettings: [.linkedLibrary("seccomp")]),
+    .executableTarget(name: "CameraProbe", dependencies: ["SignalUI", "ProbeDesktop"], swiftSettings: [.strictMemorySafety(), .treatAllWarnings(as: .error)]),
 ])

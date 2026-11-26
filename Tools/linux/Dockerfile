@@ -31,8 +31,8 @@ RUN CC=clang CC_FOR_BUILD=clang ./configure --with-tempstore=yes --enable-fts5 &
     && cp sqlite3.h sqlite3ext.h /out/include/sqlcipher/
 
 # libdispatch's optional Linux worker monitor reads /proc/<tid>/stat and traps
-# when procfs is inaccessible. Build its existing no-monitor backend only for
-# services running under the fileless seccomp filter.
+# when procfs is inaccessible. Use its no-monitor backend in the confined
+# desktop and services that have no access to other threads' procfs paths.
 FROM swift:6.4-noble AS worker-dispatch
 RUN apt-get update && apt-get install -y --no-install-recommends cmake ninja-build && rm -rf /var/lib/apt/lists/*
 WORKDIR /build/dispatch

@@ -5,10 +5,15 @@
 // system content-sharing picker, and the screen-recording permission (CGPreflight/Request
 // ScreenCaptureAccess, then System Settings).
 
+import Foundation
+#if canImport(ScreenCaptureKit)
 import AppKit
 import CoreMedia
 import ScreenCaptureKit
 import Synchronization
+#else
+@_spi(Qt) import CoreGraphics
+#endif
 
 /// `PresentableSource` (ts/types/Calling.std.ts).
 public struct PresentableSource: Identifiable, Sendable {
@@ -34,6 +39,14 @@ public struct PresentableSource: Identifiable, Sendable {
     /// `PRESENTABLE_SOURCE_THUMBNAIL_REQUESTED_*`
     public static let thumbnailSize = CGSize(width: 184, height: 102)
 }
+
+public enum ScreenShareError: Error, Equatable {
+    case notAuthorized
+    case sourceGone
+}
+
+#if canImport(ScreenCaptureKit)
+public typealias ScreenShareFilter = SCContentFilter
 
 public enum ScreenRecordingPermission {
     public static var isGranted: Bool { CGPreflightScreenCaptureAccess() }
@@ -95,11 +108,6 @@ final class ScreenStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, Send
     }
 
     func stop() { state.withLock { $0.running = false } }
-}
-
-public enum ScreenShareError: Error, Equatable {
-    case notAuthorized
-    case sourceGone
 }
 
 /// What `ScreenShareCapture` needs of an SCStream (tests stand in one that starts slowly).
@@ -396,11 +404,18 @@ public final class SystemScreenPicker: NSObject, SCContentSharingPickerObserver 
     }
 }
 
+#endif
+
 extension RGBAImage {
     /// The pixels of a 32-bit CGImage (a local screenshot), converted to RGBA through its
     /// data provider's bytes; nil for other layouts.
     public init?(cgImage cg: CGImage, scale: CGFloat = 1) {
-        guard cg.bitsPerPixel == 32, cg.bitsPerComponent == 8, let data = cg.dataProvider?.data as Data? else { return nil }
+        #if os(Linux)
+        let pixels = cg.dataProvider?.bytes
+        #else
+        let pixels = cg.dataProvider?.data as Data?
+        #endif
+        guard cg.bitsPerPixel == 32, cg.bitsPerComponent == 8, let data = pixels else { return nil }
         let w = cg.width, h = cg.height, stride = cg.bytesPerRow
         guard w > 0, h > 0, w <= 16384, h <= 16384, stride >= w * 4, data.count >= stride * (h - 1) + w * 4 else { return nil }
         let little = cg.bitmapInfo.contains(.byteOrder32Little)

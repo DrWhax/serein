@@ -4,11 +4,11 @@
 // - ts/components/conversation/About.dom.tsx (`.module-about__text`): a contact's about text,
 //   body-1 in gray-60 (gray-25), at most 400px wide and two lines.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
 public struct About: View {
+    @Environment(\.openURL) private var openURL
     let appEnv: String
     let arch: String
     let platform: String
@@ -57,7 +57,7 @@ public struct About: View {
     }
 
     func link(_ label: String, _ url: String) -> some View {
-        Button { if let u = URL(string: url) { NSWorkspace.shared.open(u) } } label: { line(label, color: Self.link) }
+        Button { if let u = URL(string: url) { openURL(u) } } label: { line(label, color: Self.link) }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isLink)
     }

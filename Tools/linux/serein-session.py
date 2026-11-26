@@ -19,7 +19,8 @@ SERVICES = {
     164: "SignalVoiceNoteEncoderService", 165: "SignalCallingService",
     166: "SignalMessageParserService",
 }
-NO_WORKER_MONITOR = {SERVICES[160], SERVICES[161], SERVICES[166]}
+# The Swift worker monitor reads /proc/<tid>/stat outside the confined filesystem.
+NO_WORKER_MONITOR = {APP, SERVICES[160], SERVICES[161], SERVICES[166]}
 RESTART_DESKTOP = 75
 CONFIG_ERROR = 78
 
@@ -34,8 +35,8 @@ def environment(name):
         env.update(HOME="/var/lib/serein", XDG_RUNTIME_DIR="/run/serein", TMPDIR="/run/serein")
     else:
         env["HOME"] = "/nonexistent"
-        if name in NO_WORKER_MONITOR:
-            env["LD_LIBRARY_PATH"] = "/usr/local/lib/serein/workers"
+    if name in NO_WORKER_MONITOR:
+        env["LD_LIBRARY_PATH"] = "/usr/local/lib/serein/workers"
     return env
 
 

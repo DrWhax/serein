@@ -20,8 +20,10 @@ void serein_capture_close(uint64_t handle) {
     g_free(capture);
 }
 
-SereinCameraOpen serein_capture_from_remote(int fd, const char *node, int max_width, int max_height, int fps) {
+SereinCameraOpen serein_capture_from_remote(int fd, const char *node, uint32_t node_id, int max_width, int max_height, int fps) {
     if (fd < 0) return (SereinCameraOpen){ .error = 1 };
+    // The desktop cannot launch a plugin scanner after confinement.
+    gst_registry_fork_set_enabled(FALSE);
     if (max_width < 2 || max_width > 8192 || max_height < 2 || max_height > 8192 ||
         fps < 1 || fps > 120 || !gst_init_check(NULL, NULL, NULL)) {
         close(fd);
@@ -42,7 +44,15 @@ SereinCameraOpen serein_capture_from_remote(int fd, const char *node, int max_wi
     rate = gst_bin_get_by_name(GST_BIN(capture->pipeline), "rate");
     capture->sink = GST_APP_SINK(gst_bin_get_by_name(GST_BIN(capture->pipeline), "sink"));
     if (!source || !rate || !capture->sink) goto failed;
-    g_object_set(source, "fd", fd, "target-object", node, NULL);
+    g_object_set(source, "fd", fd, NULL);
+    if (node_id == UINT32_MAX) {
+        g_object_set(source, "target-object", node, NULL);
+    } else {
+        // ScreenCast identifies the selected node by its PipeWire registry id.
+        // target-object accepts serials and names. The path property accepts registry ids.
+        g_autofree char *id = g_strdup_printf("%u", node_id);
+        g_object_set(source, "path", id, "keepalive-time", 1000, NULL);
+    }
     g_object_set(rate, "max-rate", fps, NULL);
     GstCaps *caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "NV12", NULL);
     GstStructure *output = gst_caps_get_structure(caps, 0);
@@ -65,7 +75,7 @@ failed:
 SereinCameraOpen serein_camera_open(const uint8_t *device, size_t length, int max_width, int max_height, int fps) {
     if (length > 4095 || (length && (!device || memchr(device, 0, length)))) return (SereinCameraOpen){ .error = 2 };
     g_autofree char *name = length ? g_strndup((const char *)device, length) : NULL;
-    return serein_capture_from_remote(serein_camera_remote(), name, max_width, max_height, fps);
+    return serein_capture_from_remote(serein_camera_remote(), name, UINT32_MAX, max_width, max_height, fps);
 }
 
 SereinCaptureFrame serein_capture_read(uint64_t handle, uint8_t *bytes, size_t capacity) {
