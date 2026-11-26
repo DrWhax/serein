@@ -35,8 +35,10 @@ struct LinuxApplication: SwiftUI.App {
         .defaultSize(width: 800, height: 610)
         .commands { LinuxDesktopMenus(model: model, session: session, i18n: i18n) }
 
-        Window(i18n("icu:aboutSignalDesktop"), id: "about") { LinuxAbout(i18n: i18n) }
-            .defaultSize(width: 500, height: 500)
+        Window(i18n("icu:aboutSignalDesktop"), id: "about") {
+            LinuxAbout(i18n: i18n).frame(width: 500, height: 500)
+        }
+        .windowResizability(.contentSize)
     }
 }
 #endif
