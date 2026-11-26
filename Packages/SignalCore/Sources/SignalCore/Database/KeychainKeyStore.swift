@@ -1,14 +1,9 @@
+#if canImport(Security)
 // The SQLCipher key lives in the macOS Keychain (replaces Electron safeStorage +
 // `encryptedKey` in Signal Desktop's user config, app/main.main.ts getSQLKey).
 
 import Foundation
 import Security
-
-public protocol DatabaseKeyStore: Sendable {
-    /// Returns the 32-byte database key, creating and storing one on first use.
-    func loadOrCreateKey() throws -> Data
-    func deleteKey() throws
-}
 
 public enum KeychainError: Error, Equatable {
     case status(OSStatus)
@@ -60,3 +55,4 @@ public struct KeychainDatabaseKeyStore: DatabaseKeyStore {
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError.status(status) }
     }
 }
+#endif

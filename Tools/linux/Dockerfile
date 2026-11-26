@@ -31,7 +31,7 @@ RUN CC=clang CC_FOR_BUILD=clang ./configure --with-tempstore=yes --enable-fts5 &
     && cp sqlite3.h sqlite3ext.h /out/include/sqlcipher/
 
 FROM swift:6.2-noble AS toolchain
-RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlcipher /out/ /usr/local/
 COPY --from=libsignal /libsignal_ffi.a /usr/local/lib/
