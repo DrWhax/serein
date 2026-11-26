@@ -8,7 +8,6 @@
 // text over the trigger's value, the item's middle on the trigger's middle. Opening
 // highlights the selected item (with the focus ring when opened from the keyboard).
 
-import CoreText
 import SwiftUI
 
 public enum AxoSelect {
@@ -283,11 +282,11 @@ public enum AxoSelect {
 
     /// Top of a `size`px icon (line-height 1) baseline-aligned in a line box of `text`.
     static func baselineOffset(text: AxoType, iconSize: CGFloat) -> CGFloat {
-        let t = CSSTextStyle(text).ctFont
-        let tAscent = CTFontGetAscent(t), tDescent = CTFontGetDescent(t)
+        let t = CSSTextStyle(text).fontMetrics
+        let tAscent = t.ascent, tDescent = t.descent
         let textBaseline = (text.lineHeight - (tAscent + tDescent)) / 2 + tAscent
-        let s = AxoSymbol.style(size: iconSize, weight: 400).ctFont
-        let sAscent = CTFontGetAscent(s), sDescent = CTFontGetDescent(s)
+        let s = AxoSymbol.style(size: iconSize, weight: 400).fontMetrics
+        let sAscent = s.ascent, sDescent = s.descent
         let iconBaseline = (iconSize - (sAscent + sDescent)) / 2 + sAscent
         return textBaseline - iconBaseline
     }

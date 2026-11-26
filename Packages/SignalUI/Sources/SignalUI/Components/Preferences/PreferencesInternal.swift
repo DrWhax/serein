@@ -3,7 +3,6 @@
 // overrides, key transparency). The backup validation and donation receipt sections are left
 // out with backups and donations.
 
-import CoreText
 import SignalI18n
 import SwiftUI
 
@@ -328,8 +327,8 @@ struct InternalFlowRow<Content: View>: View {
 
 /// The strut's top and bottom and the middle line, relative to the baseline (y down).
 private let internalFlowStrut: (top: CGFloat, bottom: CGFloat, middle: CGFloat) = {
-    let font = LegacyType.body1().ctFont
-    let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+    let font = LegacyType.body1().fontMetrics
+    let ascent = font.ascent, descent = font.descent
     let halfLeading = (20 - ascent - descent) / 2
-    return (-(ascent + halfLeading), descent + halfLeading, -CTFontGetXHeight(font) / 2)
+    return (-(ascent + halfLeading), descent + halfLeading, -font.xHeight / 2)
 }()

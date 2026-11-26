@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 // A continuous rotation run by Core Animation (in the render server, as Chromium runs a CSS
 // `animation: spin`), not by per-frame SwiftUI updates: a TimelineView(.animation) re-ran the
 // whole window's view graph 60–120 times a second for as long as one "sending" icon was on
@@ -129,3 +130,4 @@ final class CASpinView: NSView {
         spin.add(a, forKey: "spin")
     }
 }
+#endif

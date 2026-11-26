@@ -12,7 +12,6 @@
 // its parts and switches to the stacked template when the item would overflow the group
 // (upstream measures that with a ResizeObserver: item.clientWidth > group.clientWidth).
 
-import CoreText
 import SwiftUI
 
 public enum AxoBaseItem {
@@ -314,10 +313,10 @@ extension AxoBaseItem {
 
         /// (top of the icon, height of the span's line box) for the inherited text.
         static func metrics(size: CGFloat, lineHeight: CGFloat) -> (top: CGFloat, height: CGFloat) {
-            let font = CSSTextStyle(fontName: AxoFonts.interName(weight: 400), size: size, lineHeight: lineHeight).ctFont
-            let a = CTFontGetAscent(font).rounded(), d = CTFontGetDescent(font).rounded()
+            let font = CSSTextStyle(fontName: AxoFonts.interName(weight: 400), size: size, lineHeight: lineHeight).fontMetrics
+            let a = font.ascent.rounded(), d = font.descent.rounded()
             let baseline = ((lineHeight - (a + d)) / 2).rounded(.down) + a
-            let top = baseline - CTFontGetXHeight(font) / 2 - 9
+            let top = baseline - font.xHeight / 2 - 9
             let lineTop = min(0, top)
             return (top - lineTop, max(lineHeight, top + 18) - lineTop)
         }

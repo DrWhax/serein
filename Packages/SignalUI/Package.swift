@@ -66,3 +66,15 @@ let package = Package(
         ),
     ]
 )
+
+#if os(Linux)
+package.targets.append(.target(name: "CLinuxPCM", linkerSettings: [.linkedLibrary("asound"), .linkedLibrary("SoundTouch")]))
+package.dependencies.append(.package(path: "../../../QtSwiftUI"))
+if let target = package.targets.first(where: { $0.name == "SignalUI" }) {
+    target.dependencies += [.product(name: "SwiftUI", package: "QtSwiftUI"), "CLinuxPCM"]
+    target.exclude += ["Audio/AudioPlaybackEngine.swift", "Audio/PCMBuffer.swift"]
+    target.swiftSettings = (target.swiftSettings ?? []) + [.enableExperimentalFeature("SafeInteropWrappers")]
+}
+#else
+package.targets.first(where: { $0.name == "SignalUI" })?.exclude.append("Linux")
+#endif

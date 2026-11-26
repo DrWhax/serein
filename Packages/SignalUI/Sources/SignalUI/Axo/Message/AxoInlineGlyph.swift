@@ -3,15 +3,14 @@
 // it sits on the baseline of the surrounding line box (line-height of the text around it).
 // Used by AxoOutgoingStatus / AxoExpireTimer, whose glyphs flow with caption or body text.
 
-import CoreText
 import SwiftUI
 
 enum AxoInlineText {
     /// Distance from the top of a line box to its baseline, placed like Blink (and CSSText):
     /// ascent and descent rounded to whole pixels, the top half-leading floored.
     static func baseline(_ style: CSSTextStyle) -> CGFloat {
-        let font = style.ctFont
-        let a = CTFontGetAscent(font).rounded(), d = CTFontGetDescent(font).rounded()
+        let font = style.fontMetrics
+        let a = font.ascent.rounded(), d = font.descent.rounded()
         return ((style.lineHeight - (a + d)) / 2).rounded(.down) + a
     }
 }

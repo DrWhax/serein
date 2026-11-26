@@ -4,7 +4,6 @@
 // switch: images/macos-switch.svg, a 30×20 inline-block, `vertical-align: middle` from
 // Tailwind's preflight, which deepens that line's box).
 
-import CoreText
 import SignalI18n
 import SwiftUI
 
@@ -68,11 +67,11 @@ public struct MediaPermissionsModal: View {
     /// middle-aligned 20px image extends below the strut.
     var macStepTwo: some View {
         let style = Self.style
-        let font = style.ctFont
-        let a = CTFontGetAscent(font).rounded(), d = CTFontGetDescent(font).rounded()
+        let font = style.fontMetrics
+        let a = font.ascent.rounded(), d = font.descent.rounded()
         let halfLeading = ((style.lineHeight - (a + d)) / 2).rounded(.down)
         let strutAbove = halfLeading + a, strutBelow = style.lineHeight - strutAbove
-        let imageCentre = CTFontGetXHeight(font) / 2            // above the baseline
+        let imageCentre = font.xHeight / 2            // above the baseline
         let above = max(strutAbove, imageCentre + 10), below = max(strutBelow, 10 - imageCentre)
         let marker = Self.markerWidth(2)
         return ZStack(alignment: .topLeading) {

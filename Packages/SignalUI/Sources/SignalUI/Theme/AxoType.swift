@@ -2,7 +2,6 @@
 // that lays text out the way CSS does: font-size, font-weight, letter-spacing (em), and a
 // fixed line-height whose extra space (half-leading) is split above and below each line.
 
-import CoreText
 import SwiftUI
 
 public struct AxoType: Sendable, Hashable {

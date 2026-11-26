@@ -1,8 +1,11 @@
 // Bundled fonts (Resources/Fonts, converted from upstream's WOFF2 by Tools/gen-fonts.sh),
 // registered for this process with CoreText.
 
-import AppKit
+#if canImport(CoreText)
 import CoreText
+#elseif os(Linux)
+@_spi(Qt) import SwiftUI
+#endif
 import Foundation
 import SwiftUI
 
@@ -17,8 +20,16 @@ public enum AxoFonts {
               let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
         else { return false }
         let urls = files.filter { $0.pathExtension == "ttf" }.sorted { $0.path < $1.path }
+        #if os(Linux)
+        var registered = true
+        for url in urls {
+            if !QtFontDatabase.registerFont(at: url) { registered = false }
+        }
+        return registered
+        #else
         CTFontManagerRegisterFontURLs(urls as CFArray, .process, true, nil)
         return true
+        #endif
     }()
 
     /// Inter face for a CSS font-weight, matching how upstream's @font-face rules resolve
