@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 int64_t serein_audio_host_frame(void);
-uint64_t serein_call_pcm_open(const uint8_t * __counted_by(size) name __attribute__((noescape)), size_t size, int capture);
+struct SereinPCMOpen { uint64_t handle; int error; };
+struct SereinPCMOpen serein_call_pcm_open(const uint8_t * __counted_by(size) name __attribute__((noescape)), size_t size, int capture);
 void serein_call_pcm_close(uint64_t id);
 struct SereinPlayout { int status; int64_t first_frame; };
 // status 1 means the samples were queued, 0 requests a timeline reset, -1 is a device failure.

@@ -1,5 +1,6 @@
 #include "CLinuxCallAudio.h"
 #include <alsa/asoundlib.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,25 +31,28 @@ static Stream *lookup(uint64_t id) {
     return NULL;
 }
 
-uint64_t serein_call_pcm_open(const uint8_t *name, size_t size, int capture) {
-    if (size > 4096 || (size && (!name || memchr(name, 0, size)))) return 0;
+struct SereinPCMOpen serein_call_pcm_open(const uint8_t *name, size_t size, int capture) {
+    if (size > 4096 || (size && (!name || memchr(name, 0, size)))) return (struct SereinPCMOpen){.error = EINVAL};
     char *device_name = size ? strndup((const char *)name, size) : strdup("default");
-    if (!device_name) return 0;
+    if (!device_name) return (struct SereinPCMOpen){.error = ENOMEM};
     snd_pcm_t *pcm = NULL;
     int ret = snd_pcm_open(&pcm, device_name, capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
     free(device_name);
-    if (ret < 0) return 0;
-    if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 1, rate, 1,
-                           capture ? 100000 : 400000) < 0) goto failed;
-    if (capture && snd_pcm_start(pcm) < 0) goto failed;
+    if (ret < 0) return (struct SereinPCMOpen){.error = -ret};
+    ret = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 1, rate, 1,
+                             capture ? 100000 : 400000);
+    if (ret < 0) goto failed;
+    if (capture && (ret = snd_pcm_start(pcm)) < 0) goto failed;
     if (!capture) {
         snd_pcm_sw_params_t *sw;
         snd_pcm_sw_params_alloca(&sw);
-        if (snd_pcm_sw_params_current(pcm, sw) < 0 || snd_pcm_sw_params_set_start_threshold(pcm, sw, 1) < 0 ||
-            snd_pcm_sw_params(pcm, sw) < 0) goto failed;
+        ret = snd_pcm_sw_params_current(pcm, sw);
+        if (ret >= 0) ret = snd_pcm_sw_params_set_start_threshold(pcm, sw, 1);
+        if (ret >= 0) ret = snd_pcm_sw_params(pcm, sw);
+        if (ret < 0) goto failed;
     }
     Stream *s = calloc(1, sizeof(*s));
-    if (!s) goto failed;
+    if (!s) { ret = -ENOMEM; goto failed; }
     s->device = pcm;
     s->capture = capture;
     pthread_mutex_lock(&lock);
@@ -56,10 +60,10 @@ uint64_t serein_call_pcm_open(const uint8_t *name, size_t size, int capture) {
     s->next = streams;
     streams = s;
     pthread_mutex_unlock(&lock);
-    return id;
+    return (struct SereinPCMOpen){.handle = id};
 failed:
     snd_pcm_close(pcm);
-    return 0;
+    return (struct SereinPCMOpen){.error = -ret};
 }
 
 void serein_call_pcm_close(uint64_t id) {

@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory() as directory:
         (swift / (name + ".swift")).symlink_to(sources / (name + ".swift"))
     for name in ("CallSpeaker+Linux", "CallMicrophone+Linux", "VoiceAudioRoutes+Linux"):
         (swift / (name + ".swift")).symlink_to(sources / "Linux" / (name + ".swift"))
-    for name in ("CallEchoControlTests", "CallSpeakerTests"):
+    for name in ("CallEchoControlTests", "CallSpeakerTests", "CallMicrophoneTests"):
         (tests / (name + ".swift")).symlink_to(ring / "Tests/SignalRingRTCTests" / (name + ".swift"))
     (root / "Package.swift").write_text("""// swift-tools-version:6.2
 import PackageDescription

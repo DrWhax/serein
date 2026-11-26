@@ -1,6 +1,7 @@
 #if os(Linux)
 import CLinuxCallAudio
 import Foundation
+import Glibc
 
 actor CallMicrophone {
     enum Failure: Error { case busy, permissionDenied, unavailable, closed }
@@ -32,12 +33,13 @@ actor CallMicrophone {
 
     private func open(_ sink: AsyncStream<[Int16]>.Continuation?) throws {
         guard token == nil else { throw Failure.busy }
-        handle = serein_call_pcm_open(Array((uid ?? "").utf8).span, 1)
-        if handle == 0, uid != nil {
+        try Task.checkCancellation()
+        do {
+            handle = try Self.openDevice(uid)
+        } catch Failure.unavailable where uid != nil {
+            handle = try Self.openDevice(nil)
             uid = nil
-            handle = serein_call_pcm_open([UInt8]().span, 1)
         }
-        guard handle != 0 else { throw Failure.unavailable }
         let generation = UUID()
         token = generation
         packets = sink
@@ -47,6 +49,16 @@ actor CallMicrophone {
                 guard let delay = await self?.read(generation) else { return }
                 do { try await Task.sleep(for: delay) } catch { return }
             }
+        }
+    }
+
+    private static func openDevice(_ uid: String?) throws -> UInt64 {
+        let result = serein_call_pcm_open(Array((uid ?? "").utf8).span, 1)
+        switch result.error {
+        case 0: return result.handle
+        case EACCES, EPERM: throw Failure.permissionDenied
+        case EBUSY: throw Failure.busy
+        default: throw Failure.unavailable
         }
     }
 
@@ -65,11 +77,12 @@ actor CallMicrophone {
         if token != nil {
             let previous = uid
             serein_call_pcm_close(handle)
-            handle = serein_call_pcm_open(Array((next ?? "").utf8).span, 1)
-            if handle == 0 {
-                handle = serein_call_pcm_open(Array((previous ?? "").utf8).span, 1)
+            do {
+                handle = try Self.openDevice(next)
+            } catch {
+                handle = (try? Self.openDevice(previous)) ?? 0
                 if handle == 0 { stop() }
-                throw Failure.unavailable
+                throw error
             }
             echo?.reset()
         }

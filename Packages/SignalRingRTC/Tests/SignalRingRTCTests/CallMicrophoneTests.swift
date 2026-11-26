@@ -3,6 +3,21 @@ import Testing
 @testable import SwiftCalling
 
 struct CallMicrophoneTests {
+    #if os(Linux)
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEREIN_ALSA_CHECK"] != nil))
+    func runningCaptureSurvivesAFailedDeviceChange() async throws {
+        let mic = CallMicrophone(uid: "checkin")
+        let stream = try await mic.start()
+        await #expect(throws: CallMicrophone.Failure.busy) { try await mic.warmUp() }
+        await #expect(throws: CallMicrophone.Failure.unavailable) { try await mic.select("missing-device") }
+        var reader = stream.makeAsyncIterator()
+        let frame = try #require(await reader.next())
+        #expect(frame == (0..<960).map { Int16($0 % 400 - 200) })
+        await mic.stop()
+        try await mic.warmUp()
+        await mic.stop()
+    }
+    #else
     @Test func cancellationDoesNotWaitForAStalledDevice() async throws {
         let queue = DispatchQueue(label: "call.microphone.test")
         let release = DispatchSemaphore(value: 0)
@@ -55,4 +70,5 @@ struct CallMicrophoneTests {
         #expect(frames.first?.at == 30_000)
         #expect(frames.first?.samples == [Int16](repeating: 0, count: 960))
     }
+    #endif
 }

@@ -33,7 +33,7 @@ actor CallSpeaker {
 
     func start() throws {
         guard handle == 0 else { return }
-        handle = serein_call_pcm_open(Array((uid ?? "").utf8).span, 0)
+        handle = serein_call_pcm_open(Array((uid ?? "").utf8).span, 0).handle
         started?(handle != 0, uid)
         guard handle != 0 else { throw Failure.unavailable }
     }
