@@ -87,7 +87,7 @@ public struct CompositionAreaActions {
     public var onCloseLinkPreview: () -> Void = {}
     public var onPickMention: (ComposerController.Mention) -> Void = { _ in }
     /// ⌘V in the input: files or an image on the pasteboard become attachments (true: taken).
-    public var onPaste: ((NSPasteboard) -> Bool)?
+    public var onPaste: ((ComposerPasteboard) -> Bool)?
     public var onClickQuote: (() -> Void)?
     public var onAddAttachment: () -> Void = {}
     public var onClickAttachment: (Int) -> Void = { _ in }
