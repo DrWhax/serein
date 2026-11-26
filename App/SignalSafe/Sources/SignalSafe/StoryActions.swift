@@ -3,7 +3,6 @@
 // everyone, retry, hide a sender's stories, the viewers and replies of a story, and the story
 // settings (lists, group stories, view receipts, turning stories off).
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalUI
@@ -21,10 +20,8 @@ extension SignalSession {
             toast = .dangerousFileType
             return
         }
-        let panel = NSSavePanel()
-        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        panel.nameFieldStringValue = name
-        guard panel.runModal() == .OK, let url = panel.url, let store = signalSession?.attachmentStore, let db = clientDatabase else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard let url = DesktopActions.saveFile(named: name, directory: downloads), let store = signalSession?.attachmentStore, let db = clientDatabase else { return }
         do {
             // Checked again after the panel: the story may have expired or been deleted meanwhile.
             try MediaAvailability.exportStory(media, storyId: id, to: url, database: db, store: store)

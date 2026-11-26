@@ -3,8 +3,11 @@
 // AccountSettings (synced to the account through the storage service). Other pages are blank
 // until wired.
 
-import AppKit
+#if os(macOS)
 import LocalAuthentication
+#else
+import SignalSafeSystem
+#endif
 import UniformTypeIdentifiers
 import Foundation
 import SignalCore
@@ -252,7 +255,9 @@ struct SettingsTab: View {
             return s
         } set: { s in
             #if os(macOS)
+            #if os(macOS)
             if let on = s.hasAutoLaunch, on != model.openAtLogin { model.setOpenAtLogin(on) }
+            #endif
             #endif
         }
     }
@@ -467,6 +472,9 @@ struct SettingsTab: View {
 
     /// `promptOSAuth`: Touch ID or the login password before showing the account keys.
     static func promptOSAuth() async -> PromptOSAuthResult {
+        #if os(Linux)
+        return await DesktopPortal.authenticateOwner() ? .success : .unauthorized
+        #else
         do {
             return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "show your Signal account keys") ? .success : .unauthorized
         } catch let e as LAError where e.code == .biometryNotAvailable || e.code == .passcodeNotSet || e.code == .notInteractive {
@@ -474,16 +482,14 @@ struct SettingsTab: View {
         } catch {
             return .unauthorized
         }
+        #endif
     }
 
     /// The account keys PDF (AccountKeysPDF) saved where the user picks.
     func saveAccountKeysPDF() async {
         guard let key = await session.accountEntropyPool() else { return }
         let pdf = AccountKeysPDF.generate(serviceId: session.ourAci, backupKey: key, i18n: i18n)
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Signal Account Keys.pdf"
-        panel.allowedContentTypes = [.pdf]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = DesktopActions.saveFile(named: "Signal Account Keys.pdf", types: [.pdf]) else { return }
         try? pdf.write(to: url, options: [.atomic, .completeFileProtection])
     }
 
@@ -502,7 +508,7 @@ struct SettingsTab: View {
                              hasCompletedUsernameLinkOnboarding: session.accountSettings.hasCompletedUsernameLinkOnboarding,
                              editState: $session.profileEditorPage, usernameEditState: $usernameEdit, actions: {
             var a = ProfileEditor.Actions()
-            a.copyUsername = { NSPasteboard.general.clearContents(); NSPasteboard.general.setString($0, forType: .string) }
+            a.copyUsername = { DesktopDisplay.copy($0) }
             a.openUsernameReservationModal = { session.openUsernameEditor() }
             a.deleteUsername = {
                 usernameEdit = .deleting
@@ -557,15 +563,11 @@ struct UsernameLinkSave: View {
             Text(link).textSelection(.enabled).font(.system(size: 13))
             HStack {
                 Button(i18n("icu:UsernameLinkModalBody__copy")) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(link, forType: .string)
+                    DesktopDisplay.copy(link)
                 }
                 Button(i18n("icu:UsernameLinkModalBody__save")) {
                     guard let png = UsernameLinkCard.png(link: link, username: username, color: .blue, i18n: i18n) else { return }
-                    let panel = NSSavePanel()
-                    panel.nameFieldStringValue = "signal-username-qr.png"
-                    panel.allowedContentTypes = [.png]
-                    if panel.runModal() == .OK, let url = panel.url { try? Data(png).write(to: url) }
+                    if let url = DesktopActions.saveFile(named: "signal-username-qr.png", types: [.png]) { try? Data(png).write(to: url) }
                 }
                 Button(i18n("icu:close"), action: close)
             }

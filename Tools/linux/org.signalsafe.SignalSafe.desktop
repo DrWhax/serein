@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Serein
+Exec=python3 /opt/serein/serein-session.py
+Icon=org.signalsafe.SignalSafe
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=SignalSafe

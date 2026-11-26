@@ -16,6 +16,16 @@ public enum DesktopPortal {
         return true
     }
 
+    /// The desktop authentication agent verifies the session owner. An absent
+    /// agent, unknown action or cancelled prompt must deny access to the keys.
+    public static func authenticateOwner() async -> Bool {
+        await Task.detached { serein_authenticate_owner() != 0 }.value
+    }
+
+    public static func setBadgeCount(_ count: Int) {
+        requests.async { serein_desktop_badge(Int64(clamping: count)) }
+    }
+
     public static func revealFile(at path: String) {
         requests.async {
             if serein_portal_reveal(Array(path.utf8).span) == 0 {

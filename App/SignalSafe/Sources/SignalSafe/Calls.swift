@@ -5,11 +5,13 @@
 // media, CameraCapture supplies the camera, and LocalVideoModel shows its preview. While
 // a call is up the display stays awake (AppModel.isCallActive).
 
+#if os(macOS)
 import AppKit
+import OSLog
+#endif
 import CallXPC
 import Foundation
 import GRDB
-import OSLog
 import SignalCore
 import SignalRingRTC
 import SignalUI
@@ -110,7 +112,9 @@ extension CallingService: CallControl {
 
 @MainActor extension SignalSession {
     /// The calling engine's diagnostics, forwarded by RingRTC.handleLogMessage.
+    #if os(macOS)
     static let callLog = Logger(subsystem: "org.signalsafe.SignalSafe", category: "Calling")
+    #endif
 
     /// The calling service as the call lifecycle sees it (`callControlOverride` in tests).
     var callControl: (any CallControl)? {
@@ -138,11 +142,15 @@ extension CallingService: CallControl {
                 // The service is untrusted, so each line is flattened and capped.
                 service.rtc.handleLogMessage = { level, file, _, message in
                     let line = String(String(message.prefix(300)).map { $0.isNewline ? " " : $0 })
+                    #if os(Linux)
+                    Self.trace("Calling [\(level)] \(file): \(line)")
+                    #else
                     switch level {
                     case .error: Self.callLog.error("\(file, privacy: .public): \(line, privacy: .public)")
                     case .warn: Self.callLog.warning("\(file, privacy: .public): \(line, privacy: .public)")
                     default: Self.callLog.info("\(file, privacy: .public): \(line, privacy: .public)")
                     }
+                    #endif
                 }
                 service.rtc.handleOutputDeviceChanged = { [weak self] list in self?.callDevices.speakers = Self.callDeviceList(list) }
                 calling = service
@@ -206,7 +214,7 @@ extension CallingService: CallControl {
         case .incomingDirectCall(let id, let isVideo, let callId):
             guard activeCall == nil else { return }
             ringingCall = (id, isVideo, callId)
-            if accountSettings.incomingCallNotification { NSApp.requestUserAttention(.criticalRequest) }
+            if accountSettings.incomingCallNotification { DesktopActions.requestAttention() }
         case .callStateChange(let id, let state, let reason, let acceptedTime, let callId):
             if ringingCall?.callId == callId, state == .ended { ringingCall = nil }
             // Only the call on screen: not an earlier or later call with the same contact, nor a
@@ -651,6 +659,7 @@ extension CallingService: CallControl {
 
     // MARK: ringtone
 
+    #if os(macOS)
     func playRingtone() {
         guard ringtone == nil, accountSettings.callRingtoneNotification else { return }
         // Our own bundled WAV (generated at build time), not received media.
@@ -664,6 +673,7 @@ extension CallingService: CallControl {
         ringtone?.stop()
         ringtone = nil
     }
+    #endif
 }
 
 @MainActor extension SignalSession {

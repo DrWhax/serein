@@ -1,7 +1,7 @@
 // Window-level state (upstream: the main process + the redux `app`/`nav` slices that the
 // shell needs). Persisted bits use the upstream item keys once SignalCore is wired in.
 
-import AppKit
+import Foundation
 import Observation
 import SignalSafeSystem
 import SignalUI
@@ -70,11 +70,7 @@ import SignalUI
         }
     }
     func applyTheme() {
-        NSApplication.shared.appearance = switch themeSetting {
-        case "light": NSAppearance(named: .aqua)
-        case "dark": NSAppearance(named: .darkAqua)
-        default: nil
-        }
+        DesktopActions.applyTheme(themeSetting)
     }
     /// Crashes since the last launch (CrashReportDialog when > 0).
     var pendingCrashReports = 0
@@ -84,10 +80,13 @@ import SignalUI
     /// summaries are saved to a file the user picks (to share as they like), then dismissed.
     func saveCrashReports() {
         let text = crashReports.writeToLog().map(\.logText).joined(separator: "\n\n")
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Serein crash reports.txt"
-        if panel.runModal() == .OK, let url = panel.url { try? Data(text.utf8).write(to: url) }
-        eraseCrashReports()
+        guard let url = DesktopActions.saveFile(named: "Serein crash reports.txt") else { return }
+        do {
+            try Data(text.utf8).write(to: url)
+            eraseCrashReports()
+        } catch {
+            SignalSession.trace("Could not save the crash reports: \(error)")
+        }
     }
 
     func eraseCrashReports() {
@@ -97,6 +96,6 @@ import SignalUI
 
     /// `app.setBadgeCount`: the dock tile shows the count, nothing at 0.
     var badgeCount = 0 {
-        didSet { NSApplication.shared.dockTile.badgeLabel = badgeCount > 0 ? String(badgeCount) : nil }
+        didSet { DesktopActions.setBadgeCount(badgeCount) }
     }
 }

@@ -21,6 +21,7 @@ struct LinuxApplication: SwiftUI.App {
             "icu:signalNonProfit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
             "icu:EntryPoint--nonprofit": "{appName} is not affiliated with or endorsed by Signal Messenger LLC.",
         ]))
+        model.applyTheme()
         session.start()
     }
 

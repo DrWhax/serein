@@ -32,7 +32,8 @@ def environment(name):
                     "LC_ALL", "LC_MESSAGES", "LC_CTYPE", "TZ"):
             if key in os.environ:
                 env[key] = os.environ[key]
-        env.update(HOME="/var/lib/serein", XDG_RUNTIME_DIR="/run/serein", TMPDIR="/run/serein")
+        env.update(HOME="/var/lib/serein", XDG_RUNTIME_DIR="/run/serein", TMPDIR="/run/serein",
+                   QT_QPA_PLATFORMTHEME="xdgdesktopportal")
     else:
         env["HOME"] = "/nonexistent"
     if name in NO_WORKER_MONITOR:

@@ -11,9 +11,11 @@
 // but copies a hard link as a plain file. Making a hard link to one of our files needs access
 // to our container in the first place.
 
-import AppKit
 import Foundation
+#if os(macOS)
+import AppKit
 import System
+#endif
 import UniformTypeIdentifiers
 
 /// A dropped or pasted file, read: its bytes, MIME type and name.
@@ -30,8 +32,10 @@ struct DroppedFile: Sendable, Equatable {
     /// security-scoped one opened for the read), at most `maxAttachmentBytes`.
     nonisolated static func readDropped(_ url: URL) -> DroppedFile? {
         guard url.isFileURL else { return nil }
+        #if os(macOS)
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        #endif
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maxAttachmentBytes,
               let data = try? Data(contentsOf: url) else { return nil }
         return DroppedFile(data: data, contentType: mimeType(url), fileName: url.lastPathComponent)
@@ -41,6 +45,7 @@ struct DroppedFile: Sendable, Equatable {
         UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 
+    #if os(macOS)
     /// A file a drag's source delivered into `folder`: read only if it is directly in `folder`
     /// (after resolving links), and then as `readSourceWritten` reads it.
     nonisolated static func readDelivered(_ url: URL, in folder: URL) -> DroppedFile? {
@@ -131,4 +136,5 @@ struct DroppedFile: Sendable, Equatable {
             }
         }
     }
+    #endif
 }

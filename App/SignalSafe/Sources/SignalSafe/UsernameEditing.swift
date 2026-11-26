@@ -4,8 +4,8 @@
 // deletes it. The onboarding banner and dialog (UsernameMegaphone, UsernameOnboardingModal)
 // lead to the editor, and `signal.me` links open the chat they name.
 
-import AppKit
 import LibSignalClient
+import Foundation
 import SignalCore
 import SignalUI
 

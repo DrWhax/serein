@@ -2,8 +2,10 @@
 // durations, adding members, editing the group (name, description, avatar), chat colours
 // (presets and custom colours), forwarding messages, and the banned members.
 
-import AppKit
 import CodecCore
+#if os(Linux)
+@_spi(Qt) import CoreGraphics
+#endif
 import EncodePNG
 import Foundation
 import MediaXPCInterface
@@ -157,8 +159,12 @@ struct CustomColorEditing {
     /// pixels in any channel order (RGBA, ARGB, either byte order), premultiplied or not, or nil.
     static func rgba(_ image: CGImage) -> PixelBuffer? {
         let (w, h) = (image.width, image.height)
-        guard w > 0, h > 0, image.bitsPerComponent == 8, image.bitsPerPixel == 32,
-              let data = image.dataProvider?.data as Data? else { return nil }
+        #if os(Linux)
+        let pixelData = image.dataProvider?.bytes
+        #else
+        let pixelData = image.dataProvider?.data as Data?
+        #endif
+        guard w > 0, h > 0, image.bitsPerComponent == 8, image.bitsPerPixel == 32, let data = pixelData else { return nil }
         let bytes = [UInt8](data), stride = image.bytesPerRow
         guard stride >= w * 4, bytes.count >= stride * (h - 1) + w * 4 else { return nil }
         let info = image.bitmapInfo

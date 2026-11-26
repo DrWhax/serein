@@ -3,7 +3,6 @@
 // / for everyone, DeleteMessagesModal), pin / unpin (PinMessageDialog), and the message
 // details panel. The work is SignalCore's Messenger; this is the state and the glue.
 
-import AppKit
 import Foundation
 import MediaXPCInterface
 import SignalCore
@@ -43,8 +42,7 @@ struct PinMessageRequest {
     /// `copyMessageText`
     func copyText(_ messageId: String) {
         guard let m = messages.first(where: { $0.id == messageId }), !m.body.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(m.body, forType: .string)
+        DesktopDisplay.copy(m.body)
     }
 
     /// `toggleSelectMessage`: enters select mode with the message, or toggles it (shift: the

@@ -1,7 +1,37 @@
 #if os(macOS)
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor enum DesktopActions {
+    static var isActive: Bool { NSApp.isActive }
+    static func requestAttention() { NSApp.requestUserAttention(.criticalRequest) }
+    static func setBadgeCount(_ count: Int) { NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil }
+    static func applyTheme(_ setting: String) {
+        NSApp.appearance = switch setting {
+        case "light": NSAppearance(named: .aqua)
+        case "dark": NSAppearance(named: .darkAqua)
+        default: nil
+        }
+    }
+    static func saveFile(named name: String, directory: URL? = nil, types: [UTType] = []) -> URL? {
+        let panel = NSSavePanel()
+        panel.directoryURL = directory
+        panel.nameFieldStringValue = name
+        if !types.isEmpty { panel.allowedContentTypes = types }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+    static func chooseFiles(types: [UTType] = [], directory: URL? = nil, folders: Bool = false,
+                            multiple: Bool = false, prompt: String? = nil) -> [URL] {
+        let panel = NSOpenPanel()
+        panel.directoryURL = directory
+        panel.canChooseDirectories = folders
+        panel.canChooseFiles = !folders
+        panel.canCreateDirectories = folders
+        panel.allowsMultipleSelection = multiple
+        if let prompt { panel.prompt = prompt }
+        if !types.isEmpty { panel.allowedContentTypes = types }
+        return panel.runModal() == .OK ? panel.urls : []
+    }
     static func openURL(_ url: URL) { NSWorkspace.shared.open(url) }
     static func revealFile(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])

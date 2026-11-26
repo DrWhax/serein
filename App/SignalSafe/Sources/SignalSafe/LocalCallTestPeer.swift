@@ -3,7 +3,9 @@
 import CallXPC
 import Foundation
 import Observation
+#if os(macOS)
 import OSLog
+#endif
 import SignalCore
 import SignalRingRTC
 
@@ -61,7 +63,16 @@ enum LocalCallTestPeerState: Equatable {
 
 @MainActor extension SignalSession {
     private static let testPeerInstalled = RemoteCallEndpoint.testPeerFactory() != nil
+    #if os(macOS)
     private static let testPeerLog = Logger(subsystem: "org.signalsafe.SignalSafe", category: "CallTestPeer")
+    #endif
+    private static func log(_ message: String) {
+        #if os(macOS)
+        testPeerLog.notice("\(message, privacy: .public)")
+        #else
+        SignalSession.trace("CallTestPeer: \(message)")
+        #endif
+    }
     var hasLocalCallTestPeer: Bool { Self.testPeerInstalled }
 
     /// A single user-selected link on stdin keeps its root key out of process arguments.
@@ -108,12 +119,12 @@ enum LocalCallTestPeerState: Equatable {
                 if activeCall?.stage == .inCall { startLocalCallTestPeer(); return }
                 if callSetupTask != nil || callLinkJoinTimeoutTask != nil { automaticTestPeerRoom = link.roomId; return }
                 if calling.ownCallLinkDevices(in: peek) != nil {
-                    if !peek.devices.isEmpty { Self.testPeerLog.notice("The selected room contains another device from this account") }
+                    if !peek.devices.isEmpty { Self.log("The selected room contains another device from this account") }
                     break
                 }
                 if !waitingForTestRoom {
                     waitingForTestRoom = true
-                    Self.testPeerLog.notice("Waiting for previously joined devices to leave the test room")
+                    Self.log("Waiting for previously joined devices to leave the test room")
                 }
                 guard ContinuousClock.now < deadline else {
                     reportTestPeerLaunchError("This room still has a participant. You can join from this lobby and start the peer once you have the room to yourself.")
@@ -122,7 +133,7 @@ enum LocalCallTestPeerState: Equatable {
                 try await Task.sleep(for: .seconds(3))
             }
             automaticTestPeerRoom = link.roomId
-            Self.testPeerLog.notice("Joining selected test room with capture off")
+            Self.log("Joining selected test room with capture off")
             startCallFromLobby()
         } catch CallingError.callLinkRequestFailed(let status) {
             guard generation == callGeneration else { return }
@@ -135,7 +146,7 @@ enum LocalCallTestPeerState: Equatable {
 
     private func reportTestPeerLaunchError(_ message: String) {
         localCallTestPeerLaunchError = message
-        Self.testPeerLog.notice("Test call: \(message, privacy: .public)")
+        Self.log("Test call: \(message)")
     }
 
     func startLocalCallTestPeer() {
@@ -145,7 +156,7 @@ enum LocalCallTestPeerState: Equatable {
         let attempt = UUID()
         localCallTestPeerAttempt = attempt
         localCallTestPeerState = .starting
-        Self.testPeerLog.notice("Starting local RingRTC peer")
+        Self.log("Starting local RingRTC peer")
         localCallTestPeerTask = Task { [weak self] in
             do {
                 let peer = try await calling.startLocalCallLinkTestPeer(link, endpoint: endpoint) { [weak self] in
@@ -155,11 +166,11 @@ enum LocalCallTestPeerState: Equatable {
                 guard let self, localCallTestPeerAttempt == attempt, !Task.isCancelled else { return }
                 localCallTestPeerDemuxId = peer.localDeviceState.demuxId
                 localCallTestPeerState = .running
-                Self.testPeerLog.notice("Local RingRTC peer joined and exchanged media keys")
+                Self.log("Local RingRTC peer joined and exchanged media keys")
                 if let id = localCallTestPeerDemuxId {
                     groupVideoSource(link.roomId, id).onNextFrame = { [weak self] in
                         guard self?.localCallTestPeerAttempt == attempt else { return }
-                        Self.testPeerLog.notice("Call screen received test peer video")
+                        Self.log("Call screen received test peer video")
                     }
                 }
                 var receivedAudio = false
@@ -169,7 +180,7 @@ enum LocalCallTestPeerState: Equatable {
                     if !receivedAudio, let remote = calling.groupCall(for: link.roomId)?.remoteDeviceStates?.first(where: { $0.demuxId == localCallTestPeerDemuxId }),
                        remote.audioLevel > 0 {
                         receivedAudio = true
-                        Self.testPeerLog.notice("Received nonzero test peer audio")
+                        Self.log("Received nonzero test peer audio")
                     }
                     let sent = peer.sendVideoFrame(width: CallTestPeerVideo.width, height: CallTestPeerVideo.height,
                                                    format: .i420, buffer: CallTestPeerVideo.frame(index))
@@ -197,7 +208,7 @@ enum LocalCallTestPeerState: Equatable {
     }
 
     private func finishLocalCallTestPeer(_ state: LocalCallTestPeerState) {
-        if case .failed(let message) = state { Self.testPeerLog.notice("Local test peer stopped: \(message, privacy: .public)") }
+        if case .failed(let message) = state { Self.log("Local test peer stopped: \(message)") }
         localCallTestPeerAttempt = nil
         localCallTestPeerTask?.cancel()
         localCallTestPeerTask = nil

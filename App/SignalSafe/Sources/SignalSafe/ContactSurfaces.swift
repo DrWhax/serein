@@ -3,7 +3,6 @@
 // the safety tips, the nickname and note editor, "Add to a group", calls, and their avatar shown
 // large.
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalI18n

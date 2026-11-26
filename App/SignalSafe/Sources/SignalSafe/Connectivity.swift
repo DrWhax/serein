@@ -2,6 +2,7 @@
 // 'online' event and after sleep): the chat connections may have died unnoticed, and a socket
 // waiting out its reconnect backoff would otherwise come back up to 30 s later.
 
+#if os(macOS)
 import AppKit
 import Network
 
@@ -50,3 +51,4 @@ import Network
         wakeObserver = nil
     }
 }
+#endif

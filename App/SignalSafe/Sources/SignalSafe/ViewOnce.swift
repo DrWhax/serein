@@ -5,7 +5,6 @@
 // shows it in the Lightbox's view-once mode (no save, forward or browsing; videos loop). Closing
 // drops it.
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalI18n

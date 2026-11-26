@@ -4,7 +4,6 @@
 // invites, permissions, the invite link, and our member label. SignalCore does the work
 // (Messenger for the chat's state, GroupsService for group changes).
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalUI
@@ -248,8 +247,7 @@ import SignalUI
     }
 
     func copyToPasteboard(_ s: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
+        DesktopDisplay.copy(s)
     }
 
     /// `updateGroupMemberLabel`: our own label (nil clears it); `done` reports success.

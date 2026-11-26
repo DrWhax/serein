@@ -2,7 +2,6 @@
 // larger by the media service, videos played from a media-service decode session (frames as
 // validated YUV planes) with their AAC audio decoded the same way. Nothing here parses media.
 
-import AppKit
 import Foundation
 import MediaXPCInterface
 import SignalCore
@@ -180,10 +179,8 @@ extension SignalSession {
         let a = l.attachments[l.index]
         let name = Self.suggestedFilename(a, sentAt: Int64(l.timestamp.timeIntervalSince1970 * 1000), index: l.index + 1)
         if Self.isFileDangerous(name) { return toast = .dangerousFileType }
-        let panel = NSSavePanel()
-        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        panel.nameFieldStringValue = name
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard let url = DesktopActions.saveFile(named: name, directory: downloads) else { return }
         do {
             guard let db = clientDatabase else { return }
             try MediaAvailability.export(a, of: l.messageId, to: url, database: db, store: session.attachmentStore)

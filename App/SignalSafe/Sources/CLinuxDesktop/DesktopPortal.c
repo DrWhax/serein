@@ -28,6 +28,36 @@ static int request(const char *method, GVariant *arguments, GUnixFDList *fds) {
     return reply != NULL;
 }
 
+int serein_authenticate_owner(void) {
+    g_autoptr(GDBusConnection) bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
+    if (!bus) return 0;
+    const char *name = g_dbus_connection_get_unique_name(bus);
+    if (!name) return 0;
+    GVariantBuilder identity;
+    g_variant_builder_init(&identity, G_VARIANT_TYPE_VARDICT);
+    g_variant_builder_add(&identity, "{sv}", "name", g_variant_new_string(name));
+    g_autoptr(GVariant) reply = g_dbus_connection_call_sync(bus, "org.freedesktop.PolicyKit1",
+        "/org/freedesktop/PolicyKit1/Authority", "org.freedesktop.PolicyKit1.Authority", "CheckAuthorization",
+        g_variant_new("((sa{sv})sa{ss}us)", "system-bus-name", &identity, "org.signalsafe.SignalSafe.authenticate",
+                      NULL, 1u, ""), G_VARIANT_TYPE("((bba{ss}))"), G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL, NULL);
+    if (!reply) return 0;
+    g_autoptr(GVariant) result = g_variant_get_child_value(reply, 0);
+    gboolean authorized;
+    g_variant_get_child(result, 0, "b", &authorized);
+    return authorized;
+}
+
+void serein_desktop_badge(int64_t count) {
+    g_autoptr(GDBusConnection) bus = session_bus();
+    if (!bus) return;
+    GVariantBuilder props;
+    g_variant_builder_init(&props, G_VARIANT_TYPE_VARDICT);
+    g_variant_builder_add(&props, "{sv}", "count", g_variant_new_int64(MAX(count, 0)));
+    g_variant_builder_add(&props, "{sv}", "count-visible", g_variant_new_boolean(count > 0));
+    g_dbus_connection_emit_signal(bus, NULL, "/org/signalsafe/SignalSafe", "com.canonical.Unity.LauncherEntry",
+        "Update", g_variant_new("(sa{sv})", "application://org.signalsafe.SignalSafe.desktop", &props), NULL);
+}
+
 int serein_portal_open(const uint8_t *uri, size_t size) {
     if (!size || memchr(uri, 0, size)) return 0;
     g_autofree char *copy = g_strndup((const char *)uri, size);

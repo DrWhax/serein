@@ -3,7 +3,11 @@
 // keep the inbox and the open conversation's timeline live from the database and send through
 // the messenger. Untrusted media goes to SignalMediaDecoder.xpc (MediaXPCClient).
 
+#if os(macOS)
 import AppKit
+#else
+import SignalSafeSystem
+#endif
 import Foundation
 import GRDB
 import LibSignalClient
@@ -211,7 +215,11 @@ import SignalUI
     /// Sharing presenting: the ScreenCaptureKit sources to pick from, and the capture running.
     var presentingSources: [PresentableSource]?
     @ObservationIgnored var screenCapture: ScreenShareCapture?
+    #if os(Linux)
+    @ObservationIgnored var ringtone: AudioPlaybackEngine?
+    #else
     @ObservationIgnored var ringtone: NSSound?
+    #endif
     /// The voice note being recorded (VoiceRecorder.swift), and its engine, samples and task.
     var recording: VoiceRecording?
     @ObservationIgnored var recorderTask: Task<Void, Never>?
@@ -978,7 +986,7 @@ import SignalUI
                     // marks everything up to the newest message it shows), so they fold into
                     // their collapse sets once the chat is opened again.
                     let unseen = Set(rows.lazy.filter { $0.notice != nil && $0.isUnseen }.map(\.id))
-                    if !unseen.isEmpty, NSApp.isActive, !unseen.isSubset(of: self.markedSeenNotices), let messenger = self.session?.messenger {
+                    if !unseen.isEmpty, DesktopActions.isActive, !unseen.isSubset(of: self.markedSeenNotices), let messenger = self.session?.messenger {
                         self.markedSeenNotices.formUnion(unseen)
                         Task { try? await messenger.markNoticesSeen(conversationId: id) }
                     }
@@ -1072,7 +1080,7 @@ import SignalUI
     func markVisibleRead(upTo receivedAt: Int64) {
         guard let id = selectedConversationId else { return }
         newestVisibleReceivedAt = max(newestVisibleReceivedAt ?? 0, receivedAt)
-        guard NSApp.isActive, unreadCounts.unread > 0, let session else { return }
+        guard DesktopActions.isActive, unreadCounts.unread > 0, let session else { return }
         Task { _ = try? await session.messenger.markRead(conversationId: id, upTo: receivedAt) }
     }
 
@@ -1298,12 +1306,8 @@ import SignalUI
 
     /// The 📎 menu: an open panel for photos and videos, or any file.
     func pickAttachments(mediaOnly: Bool) {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        if mediaOnly { panel.allowedContentTypes = [.image, .movie] }
-        guard panel.runModal() == .OK else { return }
-        for url in panel.urls { stage(url) }
+        let urls = DesktopActions.chooseFiles(types: mediaOnly ? [.image, .movie] : [], multiple: true)
+        for url in urls { stage(url) }
     }
 
     /// Reads a chosen file; images get a preview decoded by the media service (never here).
@@ -1321,6 +1325,7 @@ import SignalUI
     /// browser's unavailable file URL can fall back to its promise or its inline image bytes.
     /// A Finder file that cannot be attached (a folder, one too large) never does: its item's
     /// image is the file's icon.
+    #if os(macOS)
     func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
         guard selectedConversationId != nil, editingMessageId == nil else { return false }
         // The fallback class keeps one object per pasteboard item, so a Finder URL and an
@@ -1374,6 +1379,8 @@ import SignalUI
         }
         return nil
     }
+
+    #endif
 
     func stage(_ data: Data, contentType type: String, fileName: String) {
         guard selectedConversationId != nil, editingMessageId == nil else { return }
@@ -1606,12 +1613,7 @@ import SignalUI
     func runPlaintextExport(includeMedia: Bool) {
         guard let session, let db = client?.database else { return }
         exportStep = .choosingLocation(includeMedia: includeMedia)
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Export"
-        guard panel.runModal() == .OK, let target = panel.url else { exportStep = nil; return }
+        guard let target = DesktopActions.chooseFiles(folders: true, prompt: "Export").first else { exportStep = nil; return }
         exportStep = .exportingMessages(exportPath: target.path)
         let account = session.account, store = session.attachmentStore
         exportTask = Task {
@@ -1685,9 +1687,7 @@ import SignalUI
 
     /// An image or video for a media story, chosen in an open panel (preview via the service).
     func pickStoryMedia() async -> StagedAttachment? {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image, .movie]
-        guard panel.runModal() == .OK, let url = panel.url,
+        guard let url = DesktopActions.chooseFiles(types: [.image, .movie]).first,
               let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= Self.maxAttachmentBytes,
               let data = try? Data(contentsOf: url) else { return nil }
         let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"

@@ -4,7 +4,6 @@
 // properties a browser download gets, and a "Saved" toast with "Show in Finder". Dangerous file
 // types are refused, as upstream does.
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalUI
@@ -82,18 +81,10 @@ import SignalUI
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         var targets: [URL] = []
         if files.count == 1 {
-            let panel = NSSavePanel()
-            panel.directoryURL = downloads
-            panel.nameFieldStringValue = names[0]
-            guard panel.runModal() == .OK, let url = panel.url else { return }
+            guard let url = DesktopActions.saveFile(named: names[0], directory: downloads) else { return }
             targets = [url]
         } else {
-            let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.canCreateDirectories = true
-            panel.directoryURL = downloads
-            guard panel.runModal() == .OK, let dir = panel.url else { return }
+            guard let dir = DesktopActions.chooseFiles(directory: downloads, folders: true).first else { return }
             targets = names.map { Self.unusedURL(dir.appendingPathComponent($0)) }
         }
         guard let store = signalSession?.attachmentStore, let db = clientDatabase else { return }

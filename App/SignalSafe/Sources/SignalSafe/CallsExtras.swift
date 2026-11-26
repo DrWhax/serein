@@ -4,7 +4,6 @@
 // a group ring accepted joins through the lobby's own path (`openCallLobby`, then
 // `startCallFromLobby`), which the call/capture slice covers.
 
-import AppKit
 import Foundation
 import GRDB
 import SignalCore
@@ -20,7 +19,7 @@ import SignalUI
             // lobby (or a 1:1 ring) is up is not shown either, as upstream's ringing bar is not.
             guard activeCall == nil, ringingCall == nil else { return }
             ringingGroupCall = (id, ringId, ringer, [])
-            if accountSettings.incomingCallNotification { NSApp.requestUserAttention(.criticalRequest) }
+            if accountSettings.incomingCallNotification { DesktopActions.requestAttention() }
             // The bar names the other members the ring went to.
             if let db = clientDatabase {
                 Task { [weak self] in

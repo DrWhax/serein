@@ -1,7 +1,6 @@
 // The open conversation (upstream ConversationView: ConversationHeader, Timeline, CompositionArea)
 // over SignalSession's live timeline, and the mappings from SignalCore rows to SignalUI props.
 
-import AppKit
 import Foundation
 import SignalCore
 import SignalI18n
