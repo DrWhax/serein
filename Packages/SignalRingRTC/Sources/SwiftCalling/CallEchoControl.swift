@@ -1,4 +1,8 @@
+#if os(Linux)
+import CLinuxCallAudio
+#else
 import CoreMedia
+#endif
 import Synchronization
 
 /// Far-end PCM is tagged with its presentation time on the host clock, including the renderer's
@@ -14,7 +18,12 @@ final class CallEchoControl: Sendable {
     }
     private let state: Mutex<State>
     private static let maxDelay = 12_000  // 250 ms at 48 kHz
+    #if os(Linux)
+    static var hostFrame: Int64 { serein_audio_host_frame() }
+    #else
     static var hostFrame: Int64 { CMClock.hostTimeClock.time.convertScale(48_000, method: .default).value }
+
+    #endif
 
     // AEC measurements can isolate the canceller with all other capture processing bypassed.
     private let conditionMicrophone: Bool

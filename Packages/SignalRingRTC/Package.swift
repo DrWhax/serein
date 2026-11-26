@@ -75,3 +75,13 @@ for target in package.targets where cryptoConsumers.contains(target.name) {
     target.swiftSettings?.append(.unsafeFlags(["-module-alias", "CryptoKit=Crypto"]))
 }
 #endif
+
+#if os(Linux)
+package.targets.append(.target(name: "CLinuxCallAudio", linkerSettings: [.linkedLibrary("asound")]))
+if let calling = package.targets.first(where: { $0.name == "SwiftCalling" }) {
+    calling.dependencies.append("CLinuxCallAudio")
+    calling.exclude += ["CallSpeaker.swift", "CallMicrophone.swift", "EngineMicrophone.swift"]
+}
+#else
+package.targets.first { $0.name == "SwiftCalling" }?.exclude.append("Linux")
+#endif

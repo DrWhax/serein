@@ -1,4 +1,6 @@
+#if !os(Linux)
 import CoreAudio
+#endif
 import Foundation
 import Synchronization
 
@@ -11,6 +13,7 @@ package struct VoiceAudioRoutes: Sendable, Equatable {
     package let devices: [VoiceAudioRoute]
     package let currentDefault: VoiceAudioRoute?
 
+    #if !os(Linux)
     package static func read(input: Bool) throws -> Self {
         let system = AudioHardwareSystem.shared
         let preferred = try (input ? system.defaultInputDevice : system.defaultOutputDevice)?.uid
@@ -23,6 +26,7 @@ package struct VoiceAudioRoutes: Sendable, Equatable {
         }
         return Self(devices: devices, currentDefault: devices.first { $0.uid == preferred })
     }
+    #endif
 }
 
 /// Each call leg owns its capture and playout. Preferences outlive a leg, including settings
@@ -117,6 +121,7 @@ package final class VoiceAudioHardware: Sendable {
     }
 }
 
+#if !os(Linux)
 package final class VoiceAudioMonitor: Sendable {
     private final class Listener: PropertyListenerDelegate, Sendable {
         let changed: @Sendable () -> Void
@@ -136,3 +141,4 @@ package final class VoiceAudioMonitor: Sendable {
 
     deinit { try? system.removeListener(forProperties: properties, dispatchQueue: queue) }
 }
+#endif

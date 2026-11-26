@@ -1,9 +1,45 @@
+#if os(Linux)
+import Foundation
+#else
 import CoreAudio
 import CoreMedia
+#endif
 import Testing
 @testable import SwiftCalling
 
 struct CallSpeakerTests {
+    #if os(Linux)
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEREIN_ALSA_CHECK"] != nil))
+    func captureAndPlayThroughALSA() async throws {
+        let directory = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["SEREIN_ALSA_CHECK"]))
+        let expected = (0..<960).map { Int16($0 % 400 - 200) }
+        let mic = CallMicrophone(uid: "checkin")
+        let stream = try await mic.start()
+        var reader = stream.makeAsyncIterator()
+        let frame = try #require(await reader.next())
+        #expect(frame == expected)
+        await mic.stop()
+
+        let before = CallEchoControl.hostFrame
+        let speaker = CallSpeaker(uid: "checkout")
+        try await speaker.start()
+        let presentation = try #require(try await speaker.enqueueForPresentation(frame, timestamp: .max - 400))
+        #expect(presentation > .now)
+        #expect(try await speaker.enqueueForPresentation(frame, timestamp: .max - 400) == nil)
+        await speaker.stop()
+        let output = try Data(contentsOf: directory.appendingPathComponent("speaker.raw"))
+        let raw = expected.flatMap { [UInt8(truncatingIfNeeded: $0), UInt8(truncatingIfNeeded: $0 >> 8)] }
+        #expect(output.count > raw.count && output.suffix(raw.count).elementsEqual(raw))
+        #expect(output.dropLast(raw.count).allSatisfy { $0 == 0 })
+        #expect(CallEchoControl.hostFrame > before)
+        let muted = CallSpeaker(muted: true, uid: "checkmuted")
+        try await muted.start()
+        try await muted.enqueue(expected, timestamp: 0)
+        await muted.stop()
+        let silence = try Data(contentsOf: directory.appendingPathComponent("muted.raw"))
+        #expect(silence.count >= raw.count && silence.allSatisfy { $0 == 0 })
+    }
+    #else
     @Test func rendersOnlyFixedFormatPCM() throws {
         let samples: [Int16] = [.min, -1, 0, 1, .max]
         let buffer = try SpeakerPCM().buffer(samples, at: 5760)
@@ -20,6 +56,8 @@ struct CallSpeakerTests {
         #expect(buffer.presentationTimeStamp == CMTime(value: 5760, timescale: 48_000))
         #expect(buffer.duration == CMTime(value: 5, timescale: 48_000))
     }
+
+    #endif
 
     @Test func schedulesContiguousFramesAcrossWrapAndPreservesLoss() throws {
         var timeline = SpeakerTimeline()
