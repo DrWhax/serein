@@ -7,7 +7,9 @@
 //   * `letter-spacing` added after every character, as CSS does;
 //   * word wrapping, or a single line with an ellipsis (`truncate`), or `nowrap` overflow.
 
+#if canImport(CoreText)
 import CoreText
+#endif
 import Synchronization
 import SwiftUI
 
@@ -69,6 +71,7 @@ public struct CSSTextStyle: Sendable, Hashable {
                   letterSpacing: type.tracking * type.size)
     }
 
+    #if canImport(CoreText)
     var ctFont: CTFont {
         AxoFonts.register()
         var attributes: [CFString: Any] = [kCTFontNameAttribute: fontName]
@@ -91,6 +94,7 @@ public struct CSSTextStyle: Sendable, Hashable {
         attributes[kCTFontCascadeListAttribute] = fallbacks.map { CTFontDescriptorCreateWithNameAndSize($0 as CFString, size) }
         return CTFontCreateWithFontDescriptor(CTFontDescriptorCreateWithAttributes(attributes as CFDictionary), size, nil)
     }
+    #endif
 }
 
 public enum CSSTextWrap: Sendable, Hashable {
@@ -102,6 +106,7 @@ public enum CSSTextWrap: Sendable, Hashable {
     case clamp(Int)      // -webkit-line-clamp: n (display: -webkit-box; overflow: hidden)
 }
 
+#if canImport(CoreText)
 struct CSSTextLayout {
     struct Decoration {
         var range: NSRange
@@ -905,6 +910,8 @@ struct CSSTextLayout {
     }
 }
 
+#endif
+
 public enum CSSTextAlign: Sendable, Hashable { case start, center, end }
 
 /// Chromium's soft-wrap opportunities for the scripts the UI shows, applied on top of
@@ -1155,11 +1162,13 @@ public struct CSSText: View {
     /// Mouse selection and ⌘C (message bodies in the live timeline).
     @Environment(\.cssTextSelectable) var selectable
     @Environment(\.textSelectionCenter) var selectionCenter
+    #if canImport(CoreText)
     /// The selected UTF-16 range, and where the drag started.
     @State private var selection: Range<Int>?
     @State private var anchor: Int?
     @State private var selectionId = UUID()
     @FocusState private var focused: Bool
+    #endif
 
     public init(_ string: String, style: CSSTextStyle, wrap: CSSTextWrap = .wrap, alignment: CSSTextAlign = .start, color: AxoColor? = nil) {
         self.init(runs: [CSSTextRun(string)], style: style, wrap: wrap, alignment: alignment, color: color)
@@ -1183,6 +1192,7 @@ public struct CSSText: View {
 
     var string: String { runs.map(\.text).joined() }
 
+    #if canImport(CoreText)
     /// The frame is the widest line of the wrap done in sizeThatFits, possibly rounded down a
     /// fraction by SwiftUI; re-wrapping at +1pt reproduces exactly those lines.
     func layout(width: CGFloat, colors: ((AxoColor) -> CGColor)?, base: AxoColor? = nil) -> CSSTextLayout {
@@ -1329,6 +1339,7 @@ public struct CSSText: View {
         }
         return nil
     }
+    #endif
 }
 
 /// Which selectable text holds the selection: starting one clears the others.

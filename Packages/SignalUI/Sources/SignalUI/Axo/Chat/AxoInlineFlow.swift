@@ -3,7 +3,6 @@
 // are aligned per line and clamped to N lines with an ellipsis (`line-clamp`). Drawn with
 // CoreText like CSSText; inline buttons are hit-tested by string index.
 
-import CoreText
 import SwiftUI
 
 /// One piece of inline content.
@@ -16,6 +15,36 @@ public enum AxoInlinePiece: Sendable {
     /// An inline button (`id` is reported to `onAction`).
     case action(String, id: Int)
 }
+
+struct AxoInlineAccessibility: ViewModifier {
+    let pieces: [AxoInlinePiece]
+    let onAction: (Int) -> Void
+
+    var plainText: String {
+        pieces.map {
+            switch $0 {
+            case .text(let s), .action(let s, _), .styled(let s, _, _): s
+            case .glyph: ""
+            }
+        }.joined()
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityElement()
+            .accessibilityLabel(plainText)
+            .accessibilityActions {
+                ForEach(Array(pieces.enumerated()), id: \.offset) { _, p in
+                    if case .action(let label, let id) = p {
+                        Button(label) { onAction(id) }
+                    }
+                }
+            }
+    }
+}
+
+#if canImport(CoreText)
+import CoreText
 
 struct AxoInlineFlowLayout {
     var lines: [CTLine]
@@ -208,15 +237,6 @@ struct AxoInlineFlowText: View {
     @Environment(\.layoutDirection) var direction
     @State private var drawnWidth: CGFloat = 0
 
-    var plainText: String {
-        pieces.map {
-            switch $0 {
-            case .text(let s), .action(let s, _), .styled(let s, _, _): s
-            case .glyph: ""
-            }
-        }.joined()
-    }
-
     var body: some View {
         let rtl = direction == .rightToLeft
         let rgba = color.value(for: scheme)
@@ -240,14 +260,7 @@ struct AxoInlineFlowText: View {
             let layout = AxoInlineFlowLayout.make(pieces, style, maxWidth: drawnWidth + 1, maxLines: maxLines, rtl: rtl)
             if let id = layout.action(at: tap.location, width: drawnWidth, alignment: alignment, rtl: rtl) { onAction(id) }
         })
-        .accessibilityElement()
-        .accessibilityLabel(plainText)
-        .accessibilityActions {
-            ForEach(Array(pieces.enumerated()), id: \.offset) { _, p in
-                if case .action(let label, let id) = p {
-                    Button(label) { onAction(id) }
-                }
-            }
-        }
+        .modifier(AxoInlineAccessibility(pieces: pieces, onAction: onAction))
     }
 }
+#endif

@@ -2,7 +2,11 @@
 // last line when it fits, otherwise it wraps onto its own line, as in CSS inline flow. The
 // box shares the line's top (its height should not exceed the line height).
 
+#if canImport(CoreText)
 import CoreText
+#elseif os(Linux)
+@_spi(Qt) import SwiftUI
+#endif
 import SwiftUI
 
 public struct CSSInlineTail<Tail: View>: View {
@@ -31,9 +35,11 @@ struct InlineTailLayout: Layout {
     /// Where the tail goes for a given width: its origin and the total height.
     func arrange(width: CGFloat?, tail: CGSize) -> (CGPoint, CGFloat, CGFloat) {
         let layout = CSSTextLayout.make(text, style, wrap: .wrap, maxWidth: width)
-        let lastLine = layout.lines.last
-        var last: CGFloat = 0
-        if let lastLine { last = CGFloat(CTLineGetTypographicBounds(lastLine, nil, nil, nil)) }    // includes the trailing space
+        #if os(Linux)
+        let last = layout.lines.last?.advance ?? 0
+        #else
+        let last = layout.lines.last.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) } ?? 0
+        #endif
         let lines = CGFloat(max(layout.lines.count, 1))
         let textWidth = layout.width
         if layout.isEmpty { return (.zero, tail.height, tail.width) }

@@ -2,7 +2,11 @@
 //   InlineGlyph — text-sized glyph (CSS: font-size and weight inherited, line-height 1)
 //   Icon        — square icon of a fixed size (font-regular), centred in a size×size box
 
+#if canImport(CoreText)
 import CoreText
+#elseif os(Linux)
+@_spi(Qt) import SwiftUI
+#endif
 import SwiftUI
 
 public enum AxoSymbol {
@@ -28,12 +32,16 @@ public enum AxoSymbol {
     /// The variable symbol font at a size and CSS weight (wght axis 200…600).
     public static func font(size: CGFloat, weight: Int) -> Font {
         AxoFonts.register()
+        #if os(Linux)
+        return QtFontDatabase.font(family: "SignalSymbols-Thin", size: size, weight: min(600, max(200, weight)))
+        #else
         let wght: Int = 0x7767_6874   // 'wght'
         let descriptor = CTFontDescriptorCreateWithAttributes([
             kCTFontNameAttribute: "SignalSymbols-Thin",
             kCTFontVariationAttribute: [wght: Double(min(600, max(200, weight)))],
         ] as CFDictionary)
         return Font(CTFontCreateWithFontDescriptor(descriptor, size, nil))
+        #endif
     }
 
     static func style(size: CGFloat, weight: Int) -> CSSTextStyle {
