@@ -49,6 +49,8 @@ public func toPeak(_ meanSquare: Double) -> Int {
 public enum AudioLimits {
     /// `MAX_AUDIO_DURATION` (VoiceNotesPlaybackContext): longer audio gets no waveform.
     public static let maxWaveformDuration: Double = 15 * 60
+    /// Upper bound (exclusive) on audio durations accepted from a decoder or an attachment pointer.
+    public static let maxDuration: Double = 24 * 3600
     /// Bounds on what the service may return.
     public static let sampleRates = 8000 ... 96000
     public static let maxChannels = 2
@@ -115,7 +117,7 @@ public struct AudioSummary: Codable, Equatable, Sendable {
 
     public func validated() throws -> AudioSummary {
         guard waveform.count <= WaveformBuilder.maxSize, waveform.allSatisfy({ (0 ... 255).contains($0) }),
-              duration.isFinite, duration >= 0, duration < 24 * 3600,
+              duration.isFinite, duration >= 0, duration < AudioLimits.maxDuration,
               AudioLimits.sampleRates.contains(sampleRate), (1 ... AudioLimits.maxChannels).contains(channels)
         else { throw MediaProcessingError.invalidResult }
         return self

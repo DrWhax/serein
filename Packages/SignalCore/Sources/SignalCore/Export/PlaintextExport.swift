@@ -327,6 +327,8 @@ struct FrameBuilder {
         p.height = UInt32(a.height ?? 0)
         p.caption = a.caption ?? ""
         p.blurHash = a.blurHash ?? ""
+        if let waveform = MessageAttachment.waveform(a.audioWaveform) { p.audioWaveform = waveform }
+        if let duration = a.audioDurationSeconds { p.audioDurationSeconds = duration }
         var l = BackupProto_FilePointer.LocatorInfo()
         l.size = UInt32(a.size)
         if let key = a.key.flatMap({ Data(base64Encoded: $0) }) { l.key = key }

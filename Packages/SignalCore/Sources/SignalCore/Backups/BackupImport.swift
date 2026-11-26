@@ -721,7 +721,8 @@ struct BackupImporter {
             a.incrementalMac = p.incrementalMac.base64EncodedString()
             a.chunkSize = Int(p.incrementalMacChunkSize)
         }
-        if p.hasAudioDurationSeconds { a.duration = Double(p.audioDurationSeconds) }
+        a.audioWaveform = MessageAttachment.waveform(p.audioWaveform)
+        if p.hasAudioDurationSeconds { a.setAudioDuration(p.audioDurationSeconds) }
         return a
     }
 

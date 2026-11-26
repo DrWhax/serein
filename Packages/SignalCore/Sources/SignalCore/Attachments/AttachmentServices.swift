@@ -11,13 +11,18 @@ public struct OutgoingAttachment: Sendable {
     public var fileName: String?
     public var caption: String?
     public var flags: Int?
+    public var audioWaveform: Data?
+    public var duration: Double?
 
-    public init(data: Data, contentType: String, fileName: String? = nil, caption: String? = nil, flags: Int? = nil) {
+    public init(data: Data, contentType: String, fileName: String? = nil, caption: String? = nil, flags: Int? = nil,
+                audioWaveform: Data? = nil, duration: Double? = nil) {
         self.data = data
         self.contentType = contentType
         self.fileName = fileName
         self.caption = caption
         self.flags = flags
+        self.audioWaveform = audioWaveform
+        self.duration = duration
     }
 }
 
@@ -93,6 +98,8 @@ public struct AttachmentServices: Sendable {
         a.fileName = o.fileName
         a.caption = o.caption
         a.flags = o.flags
+        a.audioWaveform = MessageAttachment.waveform(o.audioWaveform)
+        a.duration = o.duration
         a.clientUuid = UUID().uuidString.lowercased()
         let local = try store.storeLocally(o.data)
         a.path = local.path
