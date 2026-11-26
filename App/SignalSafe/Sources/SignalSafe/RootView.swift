@@ -11,6 +11,14 @@ struct RootView: View {
     @Bindable var session: SignalSession
     let i18n: Localizer
 
+    private var shortcutPlatform: String {
+        #if os(Linux)
+        "linux"
+        #else
+        "darwin"
+        #endif
+    }
+
     var body: some View {
         Zoomed(factor: model.zoomFactor) {
             App(appView: appView, renderInstallScreen: { installScreen }, renderInbox: {
@@ -193,7 +201,7 @@ struct RootView: View {
                                      onPinnedMessageAdd: { session.pin(r.messageId, durationSeconds: $0) }, onClose: { session.pinRequest = nil })
                 }
                 if model.isShowingShortcutGuide {
-                    ShortcutGuideModal(platform: "darwin") { model.isShowingShortcutGuide = false }
+                    ShortcutGuideModal(platform: shortcutPlatform) { model.isShowingShortcutGuide = false }
                 }
             })
             .environment(\.titleBarDragAreaHeight, model.isFullScreen ? 0 : 28 / model.zoomFactor)

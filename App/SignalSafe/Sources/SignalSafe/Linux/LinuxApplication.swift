@@ -26,13 +26,17 @@ struct LinuxApplication: SwiftUI.App {
     }
 
     var body: some Scene {
-        WindowGroup(i18n("icu:signalDesktop")) {
+        Window(i18n("icu:signalDesktop"), id: "main") {
             RootView(model: model, session: session, i18n: i18n)
                 .environment(\.openURL, OpenURLAction { DesktopPortal.open($0) ? .handled : .discarded })
                 .environment(\.spellCheckEnabled, model.spellCheckAtLaunch)
                 .environment(\.brandLogo, BundledImage.named("serein-logo"))
         }
         .defaultSize(width: 800, height: 610)
+        .commands { LinuxDesktopMenus(model: model, session: session, i18n: i18n) }
+
+        Window(i18n("icu:aboutSignalDesktop"), id: "about") { LinuxAbout(i18n: i18n) }
+            .defaultSize(width: 500, height: 500)
     }
 }
 #endif

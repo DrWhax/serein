@@ -7,6 +7,7 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 pkg="$root/App/SignalSafe"
+version=$(cat "$pkg/VERSION")
 
 # --- Check upstream Signal dependencies for new releases ---
 check_signal_dep() {
@@ -118,7 +119,7 @@ service() {   # name product [extra Info.plist lines] [package directory] [Swift
   <key>CFBundleIdentifier</key><string>org.signalsafe.$name</string>
   <key>CFBundleName</key><string>$name</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
-  <key>CFBundleShortVersionString</key><string>0.2.6</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>XPCService</key>
@@ -270,7 +271,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Serein</string>
   <key>CFBundleIconFile</key><string>Serein</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.6</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>

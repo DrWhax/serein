@@ -15,11 +15,9 @@ upload=1
 [ "${2:-}" = "--no-upload" ] && upload=0
 version=${tag#v}
 
-# The app's version is hardcoded in build-app.sh (CFBundleShortVersionString, twice): a binary
-# for this tag must carry the same number.
-built=$(sed -n 's/.*<key>CFBundleShortVersionString<\/key><string>\([^<]*\)<\/string>.*/\1/p' "$root/Tools/build-app.sh" | sort -u)
+built=$(cat "$root/App/SignalSafe/VERSION")
 if [ "$built" != "$version" ]; then
-  echo "error: tag $tag, but Tools/build-app.sh builds version $built; bump CFBundleShortVersionString (twice) first" >&2
+  echo "error: tag $tag, but Tools/build-app.sh builds version $built; update App/SignalSafe/VERSION first" >&2
   exit 1
 fi
 # Build what the tag points at, not uncommitted work (vendor/ patches are build-app's own).

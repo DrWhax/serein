@@ -38,6 +38,7 @@ else
         ffmpeg -nostdin -loglevel error -i "$sound" -c:a pcm_s16le "$stage/share/sounds/$(basename "$sound" .ogg).wav"
     done
 fi
+cp "$root/App/SignalSafe/VERSION" "$stage/share/version"
 cp "$root/Packages/SignalRingRTC/LICENSE-Opus.txt" "$stage/share/licenses/"
 for codec in ImageWebP VideoVP8 VideoVP9; do
     mkdir -p "$stage/share/licenses/$codec"

@@ -30,3 +30,5 @@ docker run --name serein-first-launch --network none --cap-drop ALL --security-o
   python3 /tmp/capture.py /tmp/serein.png
 docker cp serein-first-launch:/tmp/serein.png ./serein.png
 ```
+
+Pass `--about` after the output path to exercise Help → About. The check captures the second window, sends Escape, and verifies the original window is still open on the same process.
