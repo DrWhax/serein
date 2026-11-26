@@ -1,0 +1,5 @@
+module CVideoGStreamer [system] {
+    header "shim.h"
+    link "gstapp-1.0"
+    export *
+}

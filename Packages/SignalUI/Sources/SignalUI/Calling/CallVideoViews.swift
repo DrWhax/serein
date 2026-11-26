@@ -2,9 +2,11 @@
 // refresh (CanvasVideoRenderer's requestAnimationFrame loop), as RGBA into Metal; and the
 // mirrored local camera preview from the frames CameraCapture produces.
 
+#if canImport(Metal)
 import AppKit
 import Metal
 import QuartzCore
+#endif
 import SwiftUI
 import Foundation
 
@@ -15,6 +17,7 @@ public protocol CallVideoFrameSource: AnyObject {
     func receiveVideoFrame(into buffer: inout [UInt8], maxWidth: Int, maxHeight: Int) -> (width: Int, height: Int)?
 }
 
+#if canImport(Metal)
 /// A remote participant's video.
 public final class RemoteVideoLayerView: VideoLayerView {
     weak var source: (any CallVideoFrameSource)?
@@ -58,6 +61,8 @@ public final class RemoteVideoLayerView: VideoLayerView {
     }
 }
 
+#endif
+
 /// Remote video in static rendering (snapshots, previews): one frame pulled from the source
 /// and drawn as an image, since a Metal layer is not captured by ImageRenderer.
 struct StaticRemoteVideo: View {
@@ -66,8 +71,10 @@ struct StaticRemoteVideo: View {
     let maxWidth: Int, maxHeight: Int
 
     var body: some View {
-        var buffer = [UInt8](repeating: 0, count: maxWidth * maxHeight * 4)
-        if let s = source.receiveVideoFrame(into: &buffer, maxWidth: maxWidth, maxHeight: maxHeight), s.width > 0, s.height > 0 {
+        let valid = (1...CallVideoConstants.maxFrame.width).contains(maxWidth) && (1...CallVideoConstants.maxFrame.height).contains(maxHeight)
+        var buffer = [UInt8](repeating: 0, count: valid ? maxWidth * maxHeight * 4 : 0)
+        if valid, let s = source.receiveVideoFrame(into: &buffer, maxWidth: maxWidth, maxHeight: maxHeight),
+           (1...maxWidth).contains(s.width), (1...maxHeight).contains(s.height), s.width * s.height * 4 <= buffer.count {
             let n = s.width * s.height * 4
             PixelImage(RGBAImage(width: s.width, height: s.height, pixels: Data(buffer[0..<n])), fit: fit == .cover ? .cover : .contain)
         }
@@ -95,6 +102,7 @@ public struct RemoteVideoStack: View {
     }
 }
 
+#if canImport(Metal)
 public struct RemoteVideoView: NSViewRepresentable {
     let source: (any CallVideoFrameSource)?
     let fit: VideoRenderer.Fit
@@ -174,3 +182,4 @@ public struct LocalVideoView: NSViewRepresentable {
 
     public static func dismantleNSView(_ v: VideoLayerView, coordinator: ()) { v.frame_ = nil }
 }
+#endif

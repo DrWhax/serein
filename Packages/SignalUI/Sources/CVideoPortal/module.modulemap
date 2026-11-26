@@ -1,0 +1,5 @@
+module CVideoPortal [system] {
+    header "shim.h"
+    link "portal"
+    export *
+}

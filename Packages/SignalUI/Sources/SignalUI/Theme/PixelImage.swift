@@ -172,11 +172,15 @@ public struct PixelImage: View {
             let natural = Self.rect(for: image.size, in: geo.size, fit: fit)
             let fitted = snapsContentRect ? Self.snapped(natural, origin: geo.frame(in: .global).origin, fit: fit) : natural
             let rect = snapsOutward ? Self.outward(fitted, scale: displayScale) : fitted
+            #if os(Linux)
+            qtRaster.frame(width: rect.width, height: rect.height).offset(x: rect.minX, y: rect.minY)
+            #else
             Rectangle()
                 .fill(ShaderLibrary.bundle(.module).pixelImage(
                     .data(image.pixels), .float(Float(image.width)), .float(Float(image.height)),
                     .float(Float(rect.minX)), .float(Float(rect.minY)), .float(Float(rect.width)), .float(Float(rect.height)),
                     .float(Float(displayScale))))
+            #endif
         }
         .clipped()
         .accessibilityHidden(true)

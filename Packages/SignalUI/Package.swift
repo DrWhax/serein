@@ -68,10 +68,17 @@ let package = Package(
 )
 
 #if os(Linux)
+package.targets += [
+    .systemLibrary(name: "CVideoPortal", pkgConfig: "libportal"),
+    .systemLibrary(name: "CVideoPipeWire", pkgConfig: "libpipewire-0.3"),
+    .systemLibrary(name: "CVideoGStreamer", pkgConfig: "gstreamer-app-1.0"),
+    .target(name: "CLinuxVideo", dependencies: ["CVideoPortal", "CVideoPipeWire", "CVideoGStreamer"],
+            linkerSettings: [.linkedLibrary("gstvideo-1.0")]),
+]
 package.targets.append(.target(name: "CLinuxPCM", linkerSettings: [.linkedLibrary("asound"), .linkedLibrary("SoundTouch")]))
 package.dependencies.append(.package(path: "../../../QtSwiftUI"))
 if let target = package.targets.first(where: { $0.name == "SignalUI" }) {
-    target.dependencies += [.product(name: "SwiftUI", package: "QtSwiftUI"), "CLinuxPCM"]
+    target.dependencies += [.product(name: "SwiftUI", package: "QtSwiftUI"), "CLinuxPCM", "CLinuxVideo"]
     target.exclude += ["Audio/AudioPlaybackEngine.swift", "Audio/PCMBuffer.swift"]
     target.swiftSettings = (target.swiftSettings ?? []) + [.enableExperimentalFeature("SafeInteropWrappers")]
 }

@@ -1,0 +1,5 @@
+module CVideoPipeWire [system] {
+    header "shim.h"
+    link "pipewire-0.3"
+    export *
+}

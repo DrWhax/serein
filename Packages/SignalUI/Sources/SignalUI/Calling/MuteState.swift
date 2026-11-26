@@ -2,6 +2,7 @@
 // indicator and AirPods' stem press) kept in step with the call's mute — set when the user
 // mutes in the app, and reported when they mute from the system.
 
+#if canImport(AVFAudio)
 import AVFAudio
 
 @MainActor
@@ -43,3 +44,4 @@ public final class MuteState {
         for s in subscribers.values { s(muted) }
     }
 }
+#endif

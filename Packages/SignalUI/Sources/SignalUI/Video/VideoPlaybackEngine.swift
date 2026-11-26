@@ -6,6 +6,7 @@
 // no larger than that: a paused frame is fetched again, sharper, when the view grows.
 
 import Foundation
+import Observation
 
 /// How large a view shows a video: backing pixels, in display orientation (after rotation),
 /// contained in it or covering it (the media service's VideoFit).
@@ -70,7 +71,14 @@ public final class VideoPlaybackEngine {
     public var isLooping = false
 
     /// The frame on screen, for a view that attaches later.
+    #if os(Linux)
+    @ObservationIgnored var frameSubscribers: [UUID: AsyncStream<VideoPlanes?>.Continuation] = [:]
+    @ObservationIgnored public private(set) var currentFrame: VideoPlanes? {
+        didSet { for subscriber in frameSubscribers.values { subscriber.yield(currentFrame) } }
+    }
+    #else
     @ObservationIgnored public private(set) var currentFrame: VideoPlanes?
+    #endif
     /// Called with every frame to show.
     @ObservationIgnored public var onFrame: ((VideoPlanes) -> Void)?
     @ObservationIgnored public var onEnded: (() -> Void)?

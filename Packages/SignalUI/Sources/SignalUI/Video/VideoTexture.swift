@@ -1,3 +1,4 @@
+#if canImport(Metal)
 // The one audited `unsafe` for video display (approved 2026-11-05; Tools/lint-codecs.sh allows
 // exactly this line): Metal has no safe way to fill a texture, so validated planes (their byte
 // counts checked against the texture size below) are copied in with MTLTexture.replace, which
@@ -25,3 +26,4 @@ enum VideoTexture {
         return t
     }
 }
+#endif

@@ -4,7 +4,9 @@
 // Dimensions, plane geometry and strides are checked before any raw read. Only visible bytes
 // are copied, excluding padding; everything after the copy is safe Swift over [UInt8].
 
+#if canImport(CoreVideo)
 import CoreVideo
+#endif
 
 /// A packed NV12 frame for ringrtc: the Y plane (width × height), then interleaved CbCr
 /// (width × height/2). Width and height are even.
@@ -23,6 +25,7 @@ public struct CapturedFrame: Sendable, Equatable {
 }
 
 public enum CaptureFrames {
+    #if canImport(CoreVideo)
     /// 4:2:0 bi-planar formats (video and full range) the capture outputs are configured for.
     static let nv12Formats: Set<OSType> = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
 
@@ -54,6 +57,8 @@ public enum CaptureFrames {
         }
         return pack(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer), planes: planes)
     }
+
+    #endif
 
     /// Packs copied planes (Y, then CbCr with 2-byte samples) after checking every size.
     static func pack(width w: Int, height h: Int, planes: [(rows: Int, width: Int, stride: Int, bytes: [UInt8])]) -> CapturedFrame? {

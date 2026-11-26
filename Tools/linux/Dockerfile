@@ -47,6 +47,7 @@ RUN git init && git fetch --depth=1 https://github.com/swiftlang/swift-corelibs-
 # Serein uses lifetime features and type checking from the Swift 6.4 toolchain.
 FROM swift:6.4-noble AS toolchain
 RUN apt-get update && apt-get install -y --no-install-recommends qt6-base-dev pkg-config fonts-dejavu-core libasound2-dev libsoundtouch-dev libsecret-1-dev libsoup-3.0-dev glib-networking libseccomp-dev \
+    libportal-dev libpipewire-0.3-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-pipewire gstreamer1.0-plugins-base \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=sqlcipher /out/ /usr/local/
 COPY --from=libsignal /libsignal_ffi.a /usr/local/lib/

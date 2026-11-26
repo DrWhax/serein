@@ -1,3 +1,4 @@
+#if canImport(Metal)
 // Shows a VideoPlaybackEngine's frames: an NSView backed by a CAMetalLayer, drawn by the
 // shared VideoRenderer (contained, rotated, letterboxed in `background`) whenever the
 // engine presents a frame or the view changes size. The view tells the engine its size in
@@ -144,3 +145,4 @@ public struct VideoView: NSViewRepresentable {
         v.frame_ = nil
     }
 }
+#endif

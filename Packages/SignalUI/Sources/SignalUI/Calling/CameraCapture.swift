@@ -3,18 +3,10 @@
 // frame rate (960×720@30 for 1:1 calls, 640×480 for group calls), frames delivered as packed
 // NV12 (CaptureFrames) for ringrtc and the local preview.
 
+#if canImport(AVFoundation)
 import AVFoundation
 import CoreMedia
 import Foundation
-
-/// `REQUESTED_VIDEO_*` / `REQUESTED_GROUP_VIDEO_*` / `REQUESTED_SCREEN_SHARE_*` (ts/calling/constants).
-public enum CallVideoConstants {
-    public static let direct = (width: 960, height: 720, framerate: 30)
-    public static let group = (width: 640, height: 480, framerate: 30)
-    public static let screenShare = (width: 2880, height: 1800, framerate: 5)
-    /// `MAX_FRAME_WIDTH` / `MAX_FRAME_HEIGHT`: remote frames larger than this are dropped.
-    public static let maxFrame = (width: 2880, height: 1800)
-}
 
 /// Receives frames on the capture queue.
 final class CaptureFrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, Sendable {
@@ -27,6 +19,8 @@ final class CaptureFrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 }
 
+#endif
+
 public enum CameraCaptureError: Error, Equatable {
     case notAuthorized
     case noCamera
@@ -34,6 +28,7 @@ public enum CameraCaptureError: Error, Equatable {
     case cannotAddOutput
 }
 
+#if canImport(AVFoundation)
 public actor CameraCapture {
     let session = AVCaptureSession()
     let output = AVCaptureVideoDataOutput()
@@ -157,6 +152,8 @@ public actor CameraCapture {
     }
 }
 
+#endif
+
 /// The camera as the call lifecycle drives it (`CameraCapture`; the conformance tests use a
 /// stand-in device behind the same frame callback).
 public protocol CallCamera: AnyObject, Sendable {
@@ -167,19 +164,4 @@ public protocol CallCamera: AnyObject, Sendable {
 extension CameraCapture: CallCamera {
     public func startCapture(deviceId: String?) async throws { try start(deviceId: deviceId) }
     public func stopCapture() async { stop() }
-}
-
-extension CapturedFrame {
-    /// The frame as I420 planes for the local preview (VideoRenderer); limited range.
-    public var planes: VideoPlanes {
-        let ySize = width * height, cw = width / 2, ch = height / 2
-        var u = [UInt8](repeating: 0, count: cw * ch), v = u
-        var i = 0
-        for k in 0..<(cw * ch) {
-            u[k] = nv12[ySize + i]
-            v[k] = nv12[ySize + i + 1]
-            i += 2
-        }
-        return VideoPlanes(width: width, height: height, y: Array(nv12[0..<ySize]), u: u, v: v, fullRange: false, matrix: 2, time: 0)
-    }
 }
