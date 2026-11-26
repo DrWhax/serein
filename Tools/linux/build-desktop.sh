@@ -15,6 +15,8 @@ build_products() {
     package=$1
     shift
     build_root=${SEREIN_BUILD_CACHE:-"$root/.cache/linux-desktop"}/$(basename "$package")
+    mkdir -p "$build_root"
+    build_root=$(cd "$build_root" && pwd -P)
     for product do
         swift build --package-path "$root/$package" --scratch-path "$build_root" -c "$configuration" -j "$jobs" --product "$product"
     done

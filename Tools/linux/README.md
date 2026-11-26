@@ -31,4 +31,4 @@ docker run --name serein-first-launch --network none --cap-drop ALL --security-o
 docker cp serein-first-launch:/tmp/serein.png ./serein.png
 ```
 
-Pass `--about` after the output path to exercise Help → About. The check captures the second window, sends Escape, and verifies the original window is still open on the same process.
+Pass `--about` after the output path to exercise Help → About. The check captures the second window, sends Escape, and verifies the original window is still open on the same process. Pass `--shortcuts` to capture the keyboard shortcut guide opened by Ctrl+/ and verify that Escape dismisses it.

@@ -25,7 +25,7 @@ def application_window(*, title=None):
             continue
     return None
 
-def main(output, about=False):
+def main(output, about=False, shortcuts=False):
     if os.getuid() == 0:
         raise RuntimeError("Run the desktop check as the image's serein user")
     # An isolated, initially empty Secret Service login collection.
@@ -47,6 +47,24 @@ def main(output, about=False):
         time.sleep(1.2)
         if application_window() != found:
             raise RuntimeError("The original SignalSafe window closed")
+        def guide_backdrop():
+            # This point is outside the guide panel on the fresh 800-point desktop.
+            root = dict(line.split("=", 1) for line in xdo("getwindowgeometry", "--shell", window).splitlines())
+            x, y = int(root["X"]) + 10, int(root["Y"]) + 40
+            return ImageGrab.grab(bbox=(x, y, x + 1, y + 1), xdisplay=os.environ["DISPLAY"]).getpixel((0, 0))[0]
+
+        def wait_for_backdrop(predicate):
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if predicate(guide_backdrop()):
+                    return
+                time.sleep(0.1)
+            raise RuntimeError("The shortcut guide did not complete its visibility change")
+
+        if shortcuts:
+            initial = guide_backdrop()
+            xdo("key", "ctrl+slash")
+            wait_for_backdrop(lambda value: value < initial - 30)
         if about:
             # With the default English locale, the window menu order is File, Edit, View, Window, Help.
             # Open File with the pointer, then traverse the actual menu bar to Help > About.
@@ -80,6 +98,9 @@ def main(output, about=False):
         if not (Path.home() / ".local/share/keyrings/login.keyring").is_file():
             raise RuntimeError("The desktop keyring was not created")
         image.save(output, format="PNG")
+        if shortcuts:
+            xdo("key", "Escape")
+            wait_for_backdrop(lambda value: abs(value - initial) < 8)
         if about:
             xdo("key", "Escape")
             deadline = time.monotonic() + 5
@@ -97,6 +118,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output")
-    parser.add_argument("--about", action="store_true")
+    screens = parser.add_mutually_exclusive_group()
+    screens.add_argument("--about", action="store_true")
+    screens.add_argument("--shortcuts", action="store_true")
     args = parser.parse_args()
-    main(args.output, args.about)
+    main(args.output, args.about, args.shortcuts)
