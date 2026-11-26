@@ -113,6 +113,15 @@ for target in package.targets where cryptoConsumers.contains(target.name) {
 #endif
 
 #if os(Linux)
+package.targets.append(.systemLibrary(name: "CLibSoup", pkgConfig: "libsoup-3.0", providers: [.apt(["libsoup-3.0-dev", "glib-networking"])]))
+package.targets.append(.target(name: "CLinuxHTTP", dependencies: ["CLibSoup"]))
+package.products.append(.library(name: "LinuxHTTP", targets: ["LinuxHTTP"]))
+package.targets.append(.target(name: "LinuxHTTP", dependencies: ["CLinuxHTTP"],
+                               swiftSettings: strict + [.enableExperimentalFeature("SafeInteropWrappers")]))
+if let web = package.targets.first(where: { $0.name == "WebFetch" }) {
+    web.dependencies += ["LinuxHTTP", "CLinuxHTTP"]
+    web.swiftSettings?.append(.enableExperimentalFeature("SafeInteropWrappers"))
+}
 package.products.append(.library(name: "LinuxServiceTransport", targets: ["LinuxServiceTransport"]))
 package.targets.append(.target(name: "CLinuxServiceSocket"))
 package.targets.append(.target(name: "CLinuxSandbox", linkerSettings: [.linkedLibrary("seccomp")]))

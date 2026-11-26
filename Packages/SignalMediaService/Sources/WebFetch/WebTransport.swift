@@ -6,8 +6,11 @@
 // (URLSession's task metrics), so a destination policy can check where it really went.
 
 import Foundation
+
+#if !os(Linux)
 import Security
 import Synchronization
+#endif
 
 public struct WebResponse: Sendable {
     public var status: Int
@@ -63,6 +66,7 @@ public enum WebError: Error, Equatable {
     case forbiddenDestination
 }
 
+#if !os(Linux)
 /// The session's only delegate: no redirects, server trust from the system or the pinned roots,
 /// and each task's remote addresses once its metrics are in.
 final class WebSessionDelegate: NSObject, URLSessionTaskDelegate, Sendable {
@@ -178,3 +182,4 @@ public struct URLSessionWebTransport: WebTransport {
         return WebResponse(status: http.statusCode, headers: out, body: body, url: http.url ?? url, remoteAddresses: reached)
     }
 }
+#endif

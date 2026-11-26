@@ -1,6 +1,7 @@
 #include "CLinuxHTTP.h"
 #include <libsoup/soup.h>
 #include <glib/gstdio.h>
+#include <arpa/inet.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -10,7 +11,7 @@ typedef struct {
     SoupMessage *message;
     GCancellable *cancel;
     GInputStream *stream;
-    GString *anchors, *headers;
+    GString *anchors, *headers, *peers;
     char *anchors_path;
     gboolean unsupported_tls_backend;
 } Request;
@@ -27,6 +28,7 @@ static void destroy_request(void *ptr) {
     g_clear_object(&r->cancel);
     g_string_free(r->anchors, TRUE);
     g_string_free(r->headers, TRUE);
+    g_string_free(r->peers, TRUE);
     if (r->anchors_path) { g_unlink(r->anchors_path); g_free(r->anchors_path); }
 }
 static void release_request(Request *r) { g_atomic_rc_box_release_full(r, destroy_request); }
@@ -49,8 +51,16 @@ static gboolean token(const char *s) {
     return TRUE;
 }
 static void configure_connection(SoupMessage *message, GSocketClientEvent event, GIOStream *stream, void *data) {
-    if (event != G_SOCKET_CLIENT_TLS_HANDSHAKING) return;
     Request *r = data;
+    if (event == G_SOCKET_CLIENT_CONNECTED) {
+        g_autoptr(GSocketAddress) address = G_IS_SOCKET_CONNECTION(stream) ?
+            g_socket_connection_get_remote_address(G_SOCKET_CONNECTION(stream), NULL) : NULL;
+        g_autofree char *peer = G_IS_INET_SOCKET_ADDRESS(address) ?
+            g_inet_address_to_string(g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(address))) : NULL;
+        // An unreported address must cause public destination validation to fail.
+        g_string_append_printf(r->peers, "%s\n", peer ? peer : "?");
+    }
+    if (event != G_SOCKET_CLIENT_TLS_HANDSHAKING) return;
     // Each request selects its own trust database. A cached TLS session for the
     // same hostname may have authenticated against a different database.
     GParamSpec *setting = g_object_class_find_property(G_OBJECT_GET_CLASS(stream), "session-resumption-enabled");
@@ -85,6 +95,7 @@ uint64_t serein_http_new(const uint8_t * __counted_by(url_size) url __attribute_
     g_signal_connect(r->message, "network-event", G_CALLBACK(configure_connection), r);
     r->anchors = g_string_new(NULL);
     r->headers = g_string_new(NULL);
+    r->peers = g_string_new(NULL);
     g_mutex_lock(&registry_lock);
     if (!requests) requests = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
     uint64_t *key = g_new(uint64_t, 1);
@@ -190,4 +201,35 @@ struct SereinHTTPRead serein_http_read(uint64_t id, uint8_t * __counted_by(size)
     const gssize count = g_input_stream_read(r->stream, bytes, size, r->cancel, &error);
     if (count < 0) return (struct SereinHTTPRead){failure(error)};
     return (struct SereinHTTPRead){SereinHTTPOK, (size_t)count};
+}
+
+enum SereinHTTPError serein_http_set_proxy(uint64_t id, const uint8_t *uri, size_t size) {
+    g_autoptr(Request) r = lookup(id);
+    g_autofree char *proxy = string(uri, size);
+    if (!r || !proxy || r->stream) return SereinHTTPInvalid;
+    g_autoptr(GProxyResolver) resolver = size ? g_simple_proxy_resolver_new(proxy, NULL) : NULL;
+    soup_session_set_proxy_resolver(r->session, resolver);
+    return SereinHTTPOK;
+}
+
+size_t serein_http_peers_size(uint64_t id) {
+    g_autoptr(Request) r = lookup(id);
+    return r ? r->peers->len : 0;
+}
+
+enum SereinHTTPError serein_http_peers(uint64_t id, uint8_t *bytes, size_t size) {
+    g_autoptr(Request) r = lookup(id);
+    if (!r || !bytes || size != r->peers->len) return SereinHTTPInvalid;
+    memcpy(bytes, r->peers->str, size);
+    return SereinHTTPOK;
+}
+
+int serein_parse_ip(const uint8_t *text, size_t size, uint8_t *out, size_t capacity) {
+    if (!text || !out || !size || size >= INET6_ADDRSTRLEN || capacity < 16 || memchr(text, 0, size)) return 0;
+    char address[INET6_ADDRSTRLEN];
+    memcpy(address, text, size);
+    address[size] = 0;
+    if (inet_pton(AF_INET, address, out) == 1) return 4;
+    if (inet_pton(AF_INET6, address, out) == 1) return 16;
+    return 0;
 }

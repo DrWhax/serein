@@ -1,5 +1,6 @@
 import Foundation
 import FoundationNetworking
+import WebFetch
 
 @main struct Check {
     enum Failure: Error { case unexpected(String) }
@@ -13,6 +14,20 @@ import FoundationNetworking
         let root = try Data(contentsOf: files.appendingPathComponent("root.der"))
         let other = try Data(contentsOf: files.appendingPathComponent("other.der"))
         func url(_ route: String) -> URL { base.appendingPathComponent(route) }
+        let direct = URLSessionWebTransport(proxy: .direct, rootCertificatesDER: [root])
+        let prefix = try await direct.get(url("chunked"), headers: [:], limit: 2)
+        try require(prefix.body == Data("abc".utf8), "limit plus one")
+        try require(prefix.remoteAddresses?.allSatisfy { ["127.0.0.1", "::1"].contains($0) } == true &&
+                    prefix.remoteAddresses?.isEmpty == false, "socket peer address")
+        let redirect = try await direct.get(url("redirect"), headers: [:], limit: 2)
+        try require(redirect.status == 302 && redirect.body.isEmpty && redirect.headers["location"] == "/bytes", "single hop")
+        let proxied = URLSessionWebTransport(proxy: .custom(host: "127.0.0.1", port: Int(args[3])!), rootCertificatesDER: [root])
+        let content = URL(string: "https://web-check.invalid/bytes")!
+        let head = try await proxied.request("HEAD", content, headers: [:], limit: 0)
+        try require(head.status == 200 && head.body.isEmpty && head.headers["content-length"] == "6", "proxy HEAD")
+        let ranged = try await proxied.get(content, headers: ["Range": "bytes=3-"], limit: 3)
+        try require(ranged.status == 206 && ranged.body == Data("def".utf8), "proxy range GET")
+        print("Web services passed direct peer, streaming limit, redirect, HTTPS tunnel and range checks.")
         let client = HTTPClient(rootCertificatesDER: [root])
         _ = try await client.send("GET", url("bytes"))
         // Reuse the hostname immediately with different trust settings.

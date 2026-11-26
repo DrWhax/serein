@@ -17,3 +17,9 @@ struct SereinHTTPResponse serein_http_send(uint64_t id);
 enum SereinHTTPError serein_http_headers(uint64_t id, uint8_t * __counted_by(size) bytes __attribute__((noescape)), size_t size);
 struct SereinHTTPRead { enum SereinHTTPError error; size_t count; };
 struct SereinHTTPRead serein_http_read(uint64_t id, uint8_t * __counted_by(size) bytes __attribute__((noescape)), size_t size);
+
+enum SereinHTTPError serein_http_set_proxy(uint64_t id, const uint8_t * __counted_by(size) uri __attribute__((noescape)), size_t size);
+size_t serein_http_peers_size(uint64_t id);
+enum SereinHTTPError serein_http_peers(uint64_t id, uint8_t * __counted_by(size) bytes __attribute__((noescape)), size_t size);
+int serein_parse_ip(const uint8_t * __counted_by(size) text __attribute__((noescape)), size_t size,
+                    uint8_t * __counted_by(capacity) out __attribute__((noescape)), size_t capacity);

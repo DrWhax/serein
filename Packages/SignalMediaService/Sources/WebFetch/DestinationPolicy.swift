@@ -15,15 +15,33 @@
 // it, and nothing it might answer is used.
 
 import Foundation
+#if os(Linux)
+import CLinuxHTTP
+#else
 import Network
+#endif
 
 public enum PublicAddress {
     /// True only for unicast addresses that are routed on the public internet.
     public static func isPublic(_ address: String) -> Bool {
+        #if os(Linux)
+        let bytes = packed(address)
+        return bytes.count == 4 ? isPublic(v4: bytes) : isPublic(v6: bytes)
+        #else
         if let v4 = IPv4Address(address) { return isPublic(v4: [UInt8](v4.rawValue)) }
         if !address.contains("%"), let v6 = IPv6Address(address) { return isPublic(v6: [UInt8](v6.rawValue)) }
         return false   // unparseable, or IPv6 with a zone (link-local)
+        #endif
     }
+
+    #if os(Linux)
+    static func packed(_ address: String) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        var buffer = bytes.mutableSpan
+        let size = serein_parse_ip(Array(address.utf8).span, &buffer)
+        return Array(bytes.prefix(Int(size)))
+    }
+    #endif
 
     /// RFC 6890 and the IANA special-purpose registry: everything but global unicast.
     static func isPublic(v4 b: [UInt8]) -> Bool {
@@ -75,7 +93,12 @@ public struct PublicDestinationTransport: WebTransport {
     public func request(_ method: String, _ url: URL, headers: [String: String], limit: Int) async throws -> WebResponse {
         guard let host = url.host(percentEncoded: false), !host.isEmpty, url.port == nil || url.port == 443 else { throw WebError.forbiddenDestination }
         let literal = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
-        let addresses = IPv4Address(literal) != nil || IPv6Address(literal) != nil ? [literal] : await resolve(host)
+        #if os(Linux)
+        let numeric = !PublicAddress.packed(literal).isEmpty
+        #else
+        let numeric = IPv4Address(literal) != nil || IPv6Address(literal) != nil
+        #endif
+        let addresses = numeric ? [literal] : await resolve(host)
         guard !addresses.isEmpty, addresses.allSatisfy(PublicAddress.isPublic) else { throw WebError.forbiddenDestination }
         let response = try await base.request(method, url, headers: headers, limit: limit)
         // Where the connections really went (the name may have been resolved differently since).

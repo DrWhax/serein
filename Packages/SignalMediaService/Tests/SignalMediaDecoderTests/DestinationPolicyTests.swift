@@ -58,6 +58,7 @@ import Testing
         #expect(try await fine.get(url, headers: [:], limit: 10).status == 200)
     }
 
+    #if !os(Linux)
     /// The transport's hand-off of a task's addresses: delivered before or after the wait, once
     /// (a later delivery is dropped), and none if they never come.
     @Test func metricsReachTheirRequest() async {
@@ -71,6 +72,8 @@ import Testing
         #expect(await later == ["10.0.0.1"])
         #expect(await d.addresses(3, timeout: .milliseconds(50)) == [])
     }
+
+    #endif
 
     @Test func systemResolverFindsAddresses() async {
         // localhost resolves on every machine, and is refused.

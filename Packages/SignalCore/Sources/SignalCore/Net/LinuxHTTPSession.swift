@@ -1,89 +1,7 @@
 #if os(Linux)
-import CLinuxHTTP
 import Foundation
 import FoundationNetworking
-
-/// A request owns one SoupSession and one cancellable. GIO performs certificate
-/// chain and hostname verification before handing back response headers.
-private final class LinuxHTTPRequest: Sendable {
-    let id: UInt64
-
-    init(_ request: URLRequest, roots: [Data]) throws {
-        guard let address = request.url?.absoluteString else { throw URLError(.badURL) }
-        let url = Array(address.utf8), method = Array((request.httpMethod ?? "GET").utf8)
-        let timeout = request.timeoutInterval
-        guard timeout.isFinite, timeout > 0 else { throw URLError(.timedOut) }
-        let seconds = UInt32(min(Double(UInt32.max), timeout.rounded(.up)))
-        id = serein_http_new(url.span, method.span, seconds)
-        guard id != 0 else { throw URLError(.badURL) }
-        for root in roots { try Self.check(serein_http_add_root(id, Array(root).span)) }
-        if let body = request.httpBody { try Self.check(serein_http_set_body(id, Array(body).span)) }
-        for (key, value) in request.allHTTPHeaderFields ?? [:] {
-            try Self.check(serein_http_add_header(id, Array(key.utf8).span, Array(value.utf8).span))
-        }
-    }
-
-    deinit { serein_http_release(id) }
-    func cancel() { serein_http_cancel(id) }
-
-    private static func check(_ status: SereinHTTPError) throws {
-        switch status {
-        case SereinHTTPOK: return
-        case SereinHTTPTLS: throw URLError(.serverCertificateUntrusted)
-        case SereinHTTPTimeout: throw URLError(.timedOut)
-        case SereinHTTPCancelled: throw CancellationError()
-        case SereinHTTPInvalid: throw HTTPError.invalidResponse
-        default: throw URLError(.networkConnectionLost)
-        }
-    }
-
-    // GIO's blocking calls run on the dispatch I/O worker pool. Task cancellation
-    // interrupts the native connect, TLS handshake, header wait or stream read.
-    private func io<Result: Sendable>(_ work: @escaping @Sendable (UInt64) throws -> Result) async throws -> Result {
-        try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .utility).async {
-                    continuation.resume(with: Swift.Result { try work(self.id) })
-                }
-            }
-        } onCancel: { cancel() }
-    }
-
-    func send(url: URL) async throws -> HTTPURLResponse {
-        let (status, fields) = try await io { id in
-            let reply = serein_http_send(id)
-            try Self.check(reply.error)
-            var bytes = [UInt8](repeating: 0, count: reply.headers_size)
-            var buffer = bytes.mutableSpan
-            try Self.check(serein_http_headers(id, &buffer))
-            var fields = [String: String]()
-            for line in String(decoding: bytes, as: UTF8.self).split(separator: "\n") {
-                guard let colon = line.firstIndex(of: ":") else { throw HTTPError.invalidResponse }
-                let name = line[..<colon].lowercased()
-                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                if let previous = fields[name] { fields[name] = previous + ", " + value }
-                else { fields[name] = value }
-            }
-            return (Int(reply.status), fields)
-        }
-        guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: fields) else {
-            throw HTTPError.invalidResponse
-        }
-        return response
-    }
-
-    func read() async throws -> [UInt8] {
-        try await io { id in
-            var bytes = [UInt8](repeating: 0, count: 64 << 10)
-            var buffer = bytes.mutableSpan
-            let result = serein_http_read(id, &buffer)
-            try Self.check(result.error)
-            bytes.removeLast(bytes.count - result.count)
-            return bytes
-        }
-    }
-}
+import LinuxHTTP
 
 struct LinuxHTTPBytes: AsyncSequence {
     typealias Element = UInt8
@@ -115,7 +33,7 @@ struct LinuxHTTPSession: Sendable {
         var request = original
         for redirect in 0...10 {
             guard let url = request.url, url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
-            let transfer = try LinuxHTTPRequest(request, roots: roots)
+            let transfer = try LinuxHTTPRequest(request, roots: roots, invalidResponse: HTTPError.invalidResponse)
             let response = try await transfer.send(url: url)
             guard [301, 302, 303, 307, 308].contains(response.statusCode), let location = response.value(forHTTPHeaderField: "Location")
             else { return (LinuxHTTPBytes(transfer: transfer), response) }
