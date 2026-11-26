@@ -2,7 +2,6 @@
 // five-digit blocks, mark as verified / clear verification), the hint, and automatic key
 // verification (key transparency) with its result popups.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -24,6 +23,7 @@ public struct SafetyNumber: Sendable {
 public enum KeyTransparencyStatus: String, Sendable { case idle, running, ok, fail, unavailable }
 
 public struct SafetyNumberViewer: View {
+    @Environment(\.openURL) private var openURL
     let contactTitle: String
     let isVerified: Bool
     let safetyNumber: SafetyNumber?
@@ -106,7 +106,7 @@ public struct SafetyNumberViewer: View {
         var link = CSSTextRun(i18n(key), color: .labelPrimary, action: action)
         link.underline = true
         return CSSText(runs: runs + [CSSTextRun("\u{2002}"), link], style: CSSTextStyle(AxoType.bodySmall), alignment: alignment, color: color) {
-            if $0 == action { NSWorkspace.shared.open(url) }
+            if $0 == action { openURL(url) }
         }
         .environment(\.cssTextWrapWidth, hintWidth)
     }

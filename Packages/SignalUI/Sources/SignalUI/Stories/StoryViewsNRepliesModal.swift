@@ -11,7 +11,6 @@
 // Differences: the tabs scroll with the content instead of sticking to the top; the
 // confirm-discard dialog is not shown; avatar badges are not drawn.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -285,9 +284,7 @@ public struct StoryViewsNRepliesModal: View {
         }
         if isInternalUser {
             Button(i18n("icu:StoryViewsNRepliesModal__copy-reply-timestamp")) {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(String(Int64(reply.timestamp.timeIntervalSince1970 * 1000)), forType: .string)
+                DesktopDisplay.copy(String(Int64(reply.timestamp.timeIntervalSince1970 * 1000)))
             }
         }
     }

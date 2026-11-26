@@ -2,11 +2,11 @@
 // row (opening LinkedDevicesOnboardingDialog); without a phone number, the Signal login
 // (account keys) list.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
 public struct PreferencesAccountPage: View {
+    @Environment(\.openURL) private var openURL
     let weArePrimaryDevice: Bool
     let hasPhoneNumber: Bool
     let onOpenLinkedDevicesOnboarding: () -> Void
@@ -54,7 +54,7 @@ public struct PreferencesAccountPage: View {
                         AxoList.Footer {
                             CSSText(runs: CSSTextRun.runs(i18n.richText("icu:Preferences--signal-login-description"),
                                                           tags: ["learnMoreLink": I18nTagStyle(color: .labelPrimary, action: "learn-more")]),
-                                    style: CSSTextStyle(AxoType.bodySmall), color: .labelSecondary) { _ in NSWorkspace.shared.open(Self.restoreAccountURL) }
+                                    style: CSSTextStyle(AxoType.bodySmall), color: .labelSecondary) { _ in openURL(Self.restoreAccountURL) }
                         }
                     }
                 }

@@ -61,6 +61,9 @@ public struct CompositionRecording: View {
     let startedAt: Date
     @Environment(\.i18n) var i18n
     @Environment(\.conversationListNow) var fixedNow
+    #if os(Linux)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
 
     public init(peaks: [RecordingPeak], errorDialog: ErrorDialogAudioRecorderType? = nil, startedAt: Date = .now,
                 onCancel: @escaping () -> Void = {}, onSend: @escaping () -> Void = {},
@@ -87,7 +90,13 @@ public struct CompositionRecording: View {
             levels
         }
         .onKeyPress(.escape) { onCancel(); return .handled }
+        #if os(Linux)
+        .onChange(of: scenePhase) { previous, current in
+            if previous == .active && current != .active { saveDraftRecordingIfNeeded() }
+        }
+        #else
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in saveDraftRecordingIfNeeded() }
+        #endif
         .task(id: startedAt) {
             // Recordings stop at an hour.
             let remaining = 3600 - Date.now.timeIntervalSince(startedAt)

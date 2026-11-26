@@ -2,7 +2,6 @@
 // message (marked Edited) under its date, a divider, then "Edit history" with the earlier
 // versions (date headers between days); each message offers Copy timestamp.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -26,8 +25,7 @@ public struct EditHistoryMessagesModal: View {
         return Message(props: p)
             .contextMenu {
                 SwiftUI.Button(i18n("icu:EditHistoryMessagesModal__Message__ContextMenu__CopyTimestamp")) {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(String(Int64(ts.timeIntervalSince1970 * 1000)), forType: .string)
+                    DesktopDisplay.copy(String(Int64(ts.timeIntervalSince1970 * 1000)))
                 }
             }
     }

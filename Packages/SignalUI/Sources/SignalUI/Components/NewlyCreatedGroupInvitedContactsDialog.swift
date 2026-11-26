@@ -1,11 +1,11 @@
 // Port of ts/components/NewlyCreatedGroupInvitedContactsDialog.dom.tsx: after creating a
 // group, the members who could only be invited (who they are, what that means, learn more).
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
 public struct NewlyCreatedGroupInvitedContactsDialog: View {
+    @Environment(\.openURL) private var openURL
     public struct Contact: Identifiable, Sendable {
         public var id: String
         public var title: String
@@ -73,7 +73,7 @@ public struct NewlyCreatedGroupInvitedContactsDialog: View {
             AxoDialog.Footer {
                 AxoDialog.Actions {
                     AxoDialog.Action(i18n("icu:NewlyCreatedGroupInvitedContactsDialog--body--learn-more"), variant: .subtleSecondary, arrow: .externalLink) {
-                        NSWorkspace.shared.open(Self.learnMoreURL)
+                        openURL(Self.learnMoreURL)
                     }
                     AxoDialog.Action(i18n("icu:ok"), variant: .strongPrimary, autoFocus: true, action: onClose)
                 }

@@ -2,7 +2,6 @@
 // title, author, count, copy link / remove, the 5-column sticker grid with placeholders for
 // stickers not downloaded yet), the error and initial-download states, and the install footer.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -38,8 +37,7 @@ public struct StickerPreviewModal: View {
 
     func copyLink() {
         guard let pack else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.link(packId: pack.id, packKey: pack.key), forType: .string)
+        DesktopDisplay.copy(Self.link(packId: pack.id, packKey: pack.key))
         showCopiedLinkToast()
     }
 

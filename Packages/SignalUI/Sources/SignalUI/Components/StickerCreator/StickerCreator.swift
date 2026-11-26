@@ -7,7 +7,6 @@
 // sticker-creator/src/routes/art/* and elements/*; the sign-in and unsupported-browser pages
 // (the web app's) don't apply to a window opened from Signal.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 import UniformTypeIdentifiers
@@ -131,6 +130,7 @@ public final class StickerCreatorModel {
 }
 
 public struct StickerCreator: View {
+    @Environment(\.openURL) private var openURL
     @Bindable var model: StickerCreatorModel
     let onClose: () -> Void
     @Environment(\.i18n) var i18n
@@ -186,7 +186,7 @@ public struct StickerCreator: View {
                     wrap: .nowrap, color: Self.primaryText)
             Spacer()
             Button {
-                if let url = URL(string: "https://support.signal.org/hc/articles/360031836512") { NSWorkspace.shared.open(url) }
+                if let url = URL(string: "https://support.signal.org/hc/articles/360031836512") { openURL(url) }
             } label: {
                 CSSText(i18n("StickerCreator--guidelines"), style: Self.text, wrap: .nowrap, color: AxoColor(LegacyColor.ultramarine))
                     .padding(.vertical, 12).padding(.horizontal, 16)
@@ -277,8 +277,7 @@ public struct StickerCreator: View {
                             .padding(8)
                             .background(RoundedRectangle(cornerRadius: 4).strokeBorder(AxoColor(light: LegacyColor.gray25, dark: LegacyColor.gray60)))
                         LegacyButton(i18n("StickerCreator--CopyText--button"), variant: .secondary) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            DesktopDisplay.copy(url.absoluteString)
                             model.toast = i18n("StickerCreator--Toasts--linkedCopied")
                         }
                         .fixedSize()
@@ -326,6 +325,7 @@ struct ArtGrid: View {
     let mode: Mode
     @State private var pickerFor: UUID?
     @State private var dropActive = false
+    @State private var pickingFiles = false
     @Environment(\.i18n) var i18n
 
     var body: some View {
@@ -362,7 +362,7 @@ struct ArtGrid: View {
 
     /// `DropZone`: click to choose files, or drop them.
     var dropZone: some View {
-        Button(action: choose) {
+        Button { pickingFiles = true } label: {
             VStack(spacing: 16) {
                 SignalIcon("v3/plus/plus", size: 24, color: AxoColor(light: LegacyColor.gray60, dark: LegacyColor.gray45), mask: true).frame(width: 24, height: 24)
                 CSSBlockText(dropActive ? i18n("StickerCreator--DropZone--activeText") : i18n("StickerCreator--DropStage--dragDrop--sticker"),
@@ -376,20 +376,26 @@ struct ArtGrid: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(UndimmedButtonStyle())
+        .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.png, .webP, .jpeg, .gif], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { _ = addFiles(urls) }
+        }
         .dropDestination(for: URL.self) { urls, _ in
-            let files = urls.compactMap { url in (try? Data(contentsOf: url)).map { (name: url.lastPathComponent, data: $0) } }
-            model.add(files, i18n: i18n)
-            return !files.isEmpty
+            addFiles(urls)
         } isTargeted: { dropActive = $0 }
     }
 
-    func choose() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.png, .webP, .jpeg, .gif]
-        guard panel.runModal() == .OK else { return }
-        let files = panel.urls.compactMap { url in (try? Data(contentsOf: url)).map { (name: url.lastPathComponent, data: $0) } }
+    private func addFiles(_ urls: [URL]) -> Bool {
+        let files = urls.compactMap { url -> (name: String, data: Data)? in
+            guard url.isFileURL else { return nil }
+            #if os(macOS)
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            #endif
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return (url.lastPathComponent, data)
+        }
         model.add(files, i18n: i18n)
+        return !files.isEmpty
     }
 }
 

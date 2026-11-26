@@ -88,9 +88,7 @@ public struct MessageDetail: View {
                             }
                             AxoTextItem.Root(label: i18n("icu:sent"), description: long(sentAt)) {
                                 AxoItem.IconAction(label: i18n("icu:StoryDetailsModal__copy-timestamp"), variant: .impliedSecondary, symbol: "copy") {
-                                    let pb = NSPasteboard.general
-                                    pb.clearContents()
-                                    pb.setString(String(Int64(sentAt.timeIntervalSince1970 * 1000)), forType: .string)
+                                    DesktopDisplay.copy(String(Int64(sentAt.timeIntervalSince1970 * 1000)))
                                 }
                             }
                             if let receivedAt, receivedAt.timeIntervalSince1970 > 0, message.direction == .incoming {

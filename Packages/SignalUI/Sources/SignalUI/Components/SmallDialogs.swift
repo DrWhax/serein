@@ -1,7 +1,6 @@
 // Ports of small confirmation / alert dialogs: ErrorModal, TerminateGroupFailedModal,
 // DeleteAttachmentConfirmationDialog, TapToViewNotAvailableModal, BackfillFailureModal.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -98,6 +97,7 @@ public struct BackfillFailureModal: View {
 
 /// `NotePreviewModal`: the contact's note (linkified, emoji) with Edit and Done.
 public struct NotePreviewModal: View {
+    @Environment(\.openURL) private var openURL
     let note: String
     let onClose: () -> Void
     let onEdit: () -> Void
@@ -117,7 +117,7 @@ public struct NotePreviewModal: View {
                 // <p dir="auto" class="text-primary"> in a selectable body: white-space collapses.
                 let collapsed = note.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
                 CSSText(runs: Linkify.runs(collapsed, emojify: true), style: CSSTextStyle(AxoType.bodyMedium), color: .labelPrimary) { url in
-                    if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+                    if let u = URL(string: url) { openURL(u) }
                 }
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,6 +135,7 @@ public struct NotePreviewModal: View {
 /// `CriticalIdlePrimaryDeviceModal`: a 48px destructive error icon, title, the description
 /// with its "Learn more" link.
 public struct CriticalIdlePrimaryDeviceModal: View {
+    @Environment(\.openURL) private var openURL
     static let supportPage = URL(string: "https://support.signal.org/hc/articles/8997185514138-Re-connect-your-primary-device-to-continue-using-Signal-Desktop")!
     let onClose: () -> Void
     @Environment(\.i18n) var i18n
@@ -147,7 +148,7 @@ public struct CriticalIdlePrimaryDeviceModal: View {
                 AxoAlertDialog.Title(i18n("icu:CriticalIdlePrimaryDeviceModal__title"))
                 AxoAlertDialog.Description(runs: CSSTextRun.runs(i18n.richText("icu:CriticalIdlePrimaryDeviceModal__description"),
                                                                 tags: ["learnMoreLink": I18nTagStyle(action: "learn-more")])) { _ in
-                    NSWorkspace.shared.open(Self.supportPage)
+                    openURL(Self.supportPage)
                 }
             }
             AxoAlertDialog.Footer { AxoAlertDialog.Ok(i18n("icu:ok"), action: onClose) }
@@ -309,6 +310,7 @@ public struct SignalConnectionsModal: View {
 
 /// `SafetyNumberModal`: the safety number viewer, or (no safety number yet) a not-ready note.
 public struct SafetyNumberModal<Viewer: View>: View {
+    @Environment(\.openURL) private var openURL
     let isAvailable: Bool
     let onClose: () -> Void
     let viewer: Viewer
@@ -339,7 +341,7 @@ public struct SafetyNumberModal<Viewer: View>: View {
                 AxoDialog.Footer {
                     AxoDialog.Actions {
                         AxoDialog.Action(i18n("icu:SafetyNumberNotReady__learn-more"), variant: .subtleSecondary, arrow: .externalLink) {
-                            NSWorkspace.shared.open(Self.learnMoreURL)
+                            openURL(Self.learnMoreURL)
                         }
                         AxoDialog.Action(i18n("icu:ok"), variant: .strongPrimary, autoFocus: true, action: onClose)
                     }

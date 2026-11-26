@@ -76,7 +76,9 @@ public struct CallScreenActions {
     public var batchUserAction: (CallingPendingParticipants.BatchAction, [String]) -> Void = { _, _ in }
     public var showPendingParticipant: (CallingParticipant) -> Void = { _ in }
     public var toggleScreenRecordingPermissionsDialog: (Bool) -> Void = { _ in }
+    #if canImport(AppKit)
     public var openSystemPreferences: @MainActor () -> Void = { ScreenRecordingPermission.openSystemSettings() }
+    #endif
     public init() {}
 }
 
@@ -429,8 +431,12 @@ public struct CallScreen: View {
             // A modal in the app's theme (the call itself is always dark).
             if model.showNeedsScreenRecordingPermissionsWarning {
                 AxoBaseDialog.Host {
+                    #if canImport(AppKit)
                     NeedsScreenRecordingPermissionsModal(openSystemPreferencesAction: actions.openSystemPreferences,
                                                          toggleScreenRecordingPermissionsDialog: actions.toggleScreenRecordingPermissionsDialog)
+                    #else
+                    NeedsScreenRecordingPermissionsModal(toggleScreenRecordingPermissionsDialog: actions.toggleScreenRecordingPermissionsDialog)
+                    #endif
                 }
             }
         }

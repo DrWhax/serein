@@ -14,6 +14,14 @@ import AppKit
         #endif
     }
 
+    public static var isShiftPressed: Bool {
+        #if canImport(AppKit)
+        NSEvent.modifierFlags.contains(.shift)
+        #else
+        QtDesktop.keyboardModifiers.contains(.shift)
+        #endif
+    }
+
     public static func copy(_ string: String) {
         #if canImport(AppKit)
         NSPasteboard.general.clearContents()

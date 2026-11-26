@@ -4,7 +4,6 @@
 // 110×110, and Tailwind's `img { height: auto }` keeps
 // its aspect ratio (110×107.08).
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -98,6 +97,7 @@ struct KeyTransparencyIllustration: View {
 
 /// `KeyTransparencyOnboardingDialog`
 public struct KeyTransparencyOnboardingDialog: View {
+    @Environment(\.openURL) private var openURL
     static let url = URL(string: "https://support.signal.org/hc/articles/10223569377562")!
     let onClose: () -> Void
     let onContinue: () -> Void
@@ -124,7 +124,7 @@ public struct KeyTransparencyOnboardingDialog: View {
             AxoDialog.Footer {
                 AxoDialog.Actions {
                     AxoDialog.Action(i18n("icu:KeyTransparencyOnboardingDialog__LearnMore"), variant: .subtleSecondary, arrow: .externalLink) {
-                        NSWorkspace.shared.open(Self.url)
+                        openURL(Self.url)
                     }
                     AxoDialog.Action(i18n("icu:KeyTransparencyOnboardingDialog__Continue"), variant: .strongPrimary, action: onContinue)
                 }

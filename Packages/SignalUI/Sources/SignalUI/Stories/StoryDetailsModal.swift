@@ -7,7 +7,6 @@
 //
 // Avatar badges are not drawn (donor badges are out of scope).
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -164,9 +163,7 @@ public struct StoryDetailsModal: View {
             .onChange(of: focus.focused) { _, now in if !now { focus.autoFocusConsumed = true } }
         } items: {
             AxoDropdownMenu.Item(i18n("icu:StoryDetailsModal__copy-timestamp"), symbol: "copy") {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(String(Int64(timestamp.timeIntervalSince1970 * 1000)), forType: .string)
+                DesktopDisplay.copy(String(Int64(timestamp.timeIntervalSince1970 * 1000)))
             }
             if isInternalUser && attachmentSize != nil {
                 AxoDropdownMenu.Item(i18n("icu:StoryDetailsModal__download-attachment"), symbol: "download", action: onSaveAttachment)

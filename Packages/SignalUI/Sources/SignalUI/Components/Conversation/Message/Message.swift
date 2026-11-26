@@ -175,7 +175,7 @@ struct SelectModeWrapper: ViewModifier {
                 .background(isSelected ? AxoColor(RGBA(LegacyColor.ultramarine.r, LegacyColor.ultramarine.g, LegacyColor.ultramarine.b, 0.08))
                                        : AxoColor(RGBA(0, 0, 0, 0)))
                 .contentShape(Rectangle())
-                .onTapGesture { toggle?(NSEvent.modifierFlags.contains(.shift), !isSelected) }
+                .onTapGesture { toggle?(DesktopDisplay.isShiftPressed, !isSelected) }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isToggle)
                 .accessibilityValue(isSelected ? "1" : "0")

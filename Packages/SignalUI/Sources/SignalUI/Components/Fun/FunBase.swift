@@ -5,7 +5,9 @@
 // footer sub-nav of 32px category buttons (the selected one on fill-primary-pressed).
 
 import SignalI18n
+#if canImport(AppKit)
 import AppKit
+#endif
 import SwiftUI
 
 public enum FunMetrics {
@@ -144,7 +146,9 @@ public struct FunScroller<Content: View>: View {
     /// The system's scroller style: SwiftUI keeps the content at the width it had when the
     /// style changes under an open panel (a mouse plugged in or out), 17pt off what shows, so
     /// the scroller is made again for the new style.
+    #if canImport(AppKit)
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
+    #endif
     @Environment(\.axoStaticRendering) var staticRendering
     @Environment(\.colorScheme) var scheme
 
@@ -168,10 +172,12 @@ public struct FunScroller<Content: View>: View {
                 Color.clear.overlay(alignment: .top) { inner.fixedSize(horizontal: false, vertical: true) }.clipped()
             } else {
                 ScrollView(.vertical) { inner }
+                    #if canImport(AppKit)
                     .id(scrollerStyle)
                     .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
                         scrollerStyle = NSScroller.preferredScrollerStyle
                     }
+                    #endif
                     .scrollIndicators(.automatic)
                     .onScrollGeometryChange(for: [Bool].self) { g in
                         [g.contentOffset.y <= 0, g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 0.5]

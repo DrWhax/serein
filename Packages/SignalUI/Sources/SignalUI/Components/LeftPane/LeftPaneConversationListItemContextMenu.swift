@@ -3,7 +3,6 @@
 // read / unread, pin, mute, add to / remove from chat folders, archive, delete, and the
 // internal copy-ID items. (No upstream story: covered by unit tests.)
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -126,8 +125,7 @@ public struct LeftPaneConversationListItemContextMenu<Row: View>: View {
                 AxoContextMenu.Label("Internal")
                 ForEach(m.internalIds, id: \.0) { label, value in
                     AxoContextMenu.Item(label, symbol: "copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(value, forType: .string)
+                        DesktopDisplay.copy(value)
                     }
                 }
             }

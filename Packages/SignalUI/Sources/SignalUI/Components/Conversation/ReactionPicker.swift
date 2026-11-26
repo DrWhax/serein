@@ -7,7 +7,11 @@
 //
 // The "More" button opens the Fun emoji picker (ported with the composer, step 5).
 
+#if canImport(AppKit)
 import AppKit
+#elseif os(Linux)
+@_spi(Qt) import SwiftUI
+#endif
 import SignalI18n
 import SwiftUI
 
@@ -145,10 +149,14 @@ public struct ReactionPickerPickerEmojiButton: View {
 extension ReactionPickerPickerEmojiButton {
     /// Chromium's focus-visible heuristic: the last input event was a key press.
     @MainActor static var lastInputWasKeyboard: Bool {
+        #if os(Linux)
+        QtDesktop.keyboardFocusVisible
+        #else
         switch NSApp?.currentEvent?.type {
         case .keyDown?, .keyUp?, .flagsChanged?: true
         default: false
         }
+        #endif
     }
 }
 

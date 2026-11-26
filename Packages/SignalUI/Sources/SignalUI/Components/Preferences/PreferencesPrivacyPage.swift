@@ -2,7 +2,6 @@
 // receipts and typing, the default disappearing timer (with the custom-time dialog), screen
 // security, stories on / off, and the sealed-sender and key-transparency switches.
 
-import AppKit
 import SignalI18n
 import SwiftUI
 
@@ -23,6 +22,7 @@ public struct PrivacySettings: Sendable, Hashable {
 }
 
 public struct PreferencesPrivacyPage: View {
+    @Environment(\.openURL) private var openURL
     @Binding var settings: PrivacySettings
     let onOpenPNP: () -> Void
     let onOpenBlocked: () -> Void
@@ -112,7 +112,7 @@ public struct PreferencesPrivacyPage: View {
                                                checked: Binding { !settings.hasKeyTransparencyDisabled } set: { settings.hasKeyTransparencyDisabled = !$0 })
                                 .descriptionRuns([CSSTextRun(i18n("icu:Preferences__PrivacyPage__KeyTransparency__Description") + "\u{00A0}"),
                                                   CSSTextRun(i18n("icu:Preferences__PrivacyPage__KeyTransparency__LearnMore"), color: .labelPrimary, action: link)]) {
-                                    if $0 == link { NSWorkspace.shared.open(Self.keyTransparencyURL) }
+                                    if $0 == link { openURL(Self.keyTransparencyURL) }
                                 }
                         }
                     }

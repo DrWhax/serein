@@ -320,10 +320,16 @@ struct TimeStickerPreview: View {
                     let f = DateFormatter()
                     f.setLocalizedDateFormatFromTemplate("jmm")
                     let text = f.string(from: t.date)
+                    #if os(Linux)
+                    var textContext = c
+                    textContext.translateBy(x: 256, y: 256 - 16)
+                    MediaEditorText.draw(text, fontSize: 256, fontName: DigitalClockLayout.timeFont, fill: RGBA(1, 1, 1), stroke: nil, background: nil, in: textContext)
+                    #else
                     c.withCGContext { cg in
                         cg.translateBy(x: 256, y: 256 - 16)
                         MediaEditorText.draw(text, fontSize: 256, fontName: DigitalClockLayout.timeFont, fill: RGBA(1, 1, 1), stroke: nil, background: nil, in: cg)
                     }
+                    #endif
                 }
             }
         }

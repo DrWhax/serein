@@ -28,7 +28,7 @@ public struct InlineNotificationWrapper<Content: View>: View {
             .background(isSelectMode && isSelected ? AxoColor(RGBA(LegacyColor.ultramarine.r, LegacyColor.ultramarine.g, LegacyColor.ultramarine.b, 0.08)) : AxoColor(RGBA(0, 0, 0, 0)))
             .contentShape(Rectangle())
             .onTapGesture {
-                if isSelectMode { toggleSelectMessage(NSEvent.modifierFlags.contains(.shift), !isSelected) }
+                if isSelectMode { toggleSelectMessage(DesktopDisplay.isShiftPressed, !isSelected) }
             }
             .focusable(interactions: .activate)
             .accessibilityAddTraits(isSelectMode ? .isToggle : [])
