@@ -31,8 +31,9 @@ import SignalUI
     var zoomFactor: CGFloat { CGFloat(pow(1.2, zoomLevel)) }
 
     // macOS integration (SignalSafeSystem): settings drive the services directly.
-    let contentProtection = ContentProtectionController(enabled: UserDefaults.standard.bool(forKey: "hasContentProtection"))
     let displaySleep = PreventDisplaySleepService()
+    #if os(macOS)
+    let contentProtection = ContentProtectionController(enabled: UserDefaults.standard.bool(forKey: "hasContentProtection"))
     /// Privacy → Screen security (`setContentProtection` on every window).
     var hasContentProtection = UserDefaults.standard.bool(forKey: "hasContentProtection") {
         didSet {
@@ -40,17 +41,23 @@ import SignalUI
             contentProtection.setEnabled(hasContentProtection)
         }
     }
+    #endif
     /// Chats → spell check; applies at the next launch, as upstream ("will be enabled…").
     let spellCheckAtLaunch = UserDefaults.standard.object(forKey: "spellCheck") as? Bool ?? true
     var spellCheck = UserDefaults.standard.object(forKey: "spellCheck") as? Bool ?? true {
         didSet { UserDefaults.standard.set(spellCheck, forKey: "spellCheck") }
     }
     /// General → start at login (SMAppService); nil while unsupported (unbundled runs).
+    #if os(Linux)
+    // The Docker app has no host login session to register itself with.
+    var openAtLogin: Bool? { nil }
+    #else
     var openAtLogin: Bool? = Bundle.main.bundleIdentifier != nil ? LoginItem.isEnabled : nil
     func setOpenAtLogin(_ on: Bool) {
         try? LoginItem.setEnabled(on)
         openAtLogin = LoginItem.isEnabled
     }
+    #endif
     /// A call is in progress: the display may not sleep (`preventDisplaySleepService`).
     var isCallActive = false {
         didSet { displaySleep.setEnabled(isCallActive) }

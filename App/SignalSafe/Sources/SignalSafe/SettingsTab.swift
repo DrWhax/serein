@@ -251,7 +251,9 @@ struct SettingsTab: View {
             s.isAutoDownloadUpdatesSupported = false    // no auto-updater (user decision)
             return s
         } set: { s in
+            #if os(macOS)
             if let on = s.hasAutoLaunch, on != model.openAtLogin { model.setOpenAtLogin(on) }
+            #endif
         }
     }
 
@@ -301,13 +303,20 @@ struct SettingsTab: View {
             s.hasReadReceipts = a.readReceipts
             s.hasTypingIndicators = a.typingIndicators
             s.universalExpireTimer = a.universalExpireTimer
+            #if os(Linux)
+            s.isContentProtectionSupported = false
+            s.hasContentProtection = nil
+            #else
             s.hasContentProtection = model.hasContentProtection
+            #endif
             s.hasSealedSenderIndicators = a.sealedSenderIndicators
             s.hasStoriesDisabled = a.storiesDisabled
             s.isKeyTransparencyAvailable = false
             return s
         } set: { s in
+            #if os(macOS)
             if let on = s.hasContentProtection { model.hasContentProtection = on }
+            #endif
             if s.hasStoriesDisabled != session.accountSettings.storiesDisabled { session.setStoriesDisabled(s.hasStoriesDisabled) }
             session.updateAccountSettings {
                 $0.readReceipts = s.hasReadReceipts

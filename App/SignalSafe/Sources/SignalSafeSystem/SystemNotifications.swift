@@ -4,10 +4,8 @@
 // (name and message / name only / no name or message), the pop sound unless sounds are off,
 // "draw attention" bouncing the Dock icon, and the Dock badge with the unread count.
 
-import AppKit
 import SignalCore
 import SignalI18n
-import UserNotifications
 
 /// What a click opens (`NotificationClickData`).
 public struct NotificationClick: Sendable, Hashable {
@@ -66,6 +64,10 @@ public enum NotificationContent {
         }
     }
 }
+
+#if os(macOS)
+import AppKit
+import UserNotifications
 
 @MainActor
 public final class SystemNotifications: NSObject, UNUserNotificationCenterDelegate {
@@ -185,3 +187,4 @@ public final class SystemNotifications: NSObject, UNUserNotificationCenterDelega
         [.banner, .sound]
     }
 }
+#endif

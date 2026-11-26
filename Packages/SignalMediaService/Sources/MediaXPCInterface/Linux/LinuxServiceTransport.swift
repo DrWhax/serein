@@ -38,6 +38,15 @@ private enum Route: Int32 {
 
 public enum XPCPeer: String, Sendable, CaseIterable {
     case app, decoder, parser, fetcher, gifs, voice, calling, messageParser = "messages"
+    public static var hasAppServiceRoutes: Bool {
+        let services: [Route] = [.decoder, .parser, .fetcher, .gifs, .voice, .calling, .messages]
+        return services.allSatisfy { route in
+            let copy = serein_duplicate_route(route.rawValue)
+            guard copy >= 0 else { return false }
+            close(copy)
+            return true
+        }
+    }
     public static func requirement(_ peer: XPCPeer) -> XPCPeerRequirement? { peer }
     public static func required(_ peer: XPCPeer, by service: String) -> XPCPeerRequirement { peer }
 }

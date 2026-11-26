@@ -68,11 +68,19 @@ let package = Package(
 )
 
 #if os(Linux)
+package.targets.append(.systemLibrary(name: "CLinuxGIO", pkgConfig: "gio-2.0"))
+package.targets.append(.target(name: "CLinuxDesktop", dependencies: ["CLinuxGIO"],
+                               linkerSettings: [.linkedLibrary("seccomp")]))
+if let system = package.targets.first(where: { $0.name == "SignalSafeSystem" }) {
+    system.dependencies += ["CLinuxDesktop", .product(name: "MediaXPCInterface", package: "SignalMediaService")]
+    system.exclude += ["AppSandbox.swift", "ContentProtection.swift", "LoginItem.swift", "PreventDisplaySleep.swift"]
+}
 package.dependencies.append(.package(path: "../../../QtSwiftUI"))
 if let target = package.targets.first(where: { $0.name == "SignalSafe" }) {
     target.dependencies.append(.product(name: "SwiftUI", package: "QtSwiftUI"))
     target.exclude += ["main.swift", "AppDelegate.swift"]
 }
 #else
+package.targets.first { $0.name == "SignalSafeSystem" }?.exclude.append("Linux")
 package.targets.first { $0.name == "SignalSafe" }?.exclude.append("Linux")
 #endif
