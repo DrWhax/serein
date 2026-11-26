@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import Network
+#endif
 import Synchronization
 
 /// Owns the ICE, SRTP and audio devices for one V4 signaling leg.

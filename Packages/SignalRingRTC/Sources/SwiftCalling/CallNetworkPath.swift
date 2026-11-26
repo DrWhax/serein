@@ -1,4 +1,6 @@
+#if !os(Linux)
 import Network
+#endif
 
 /// Report the WebRTC adapter flags used at Serein's calling API boundary.
 struct CallNetworkPath: Equatable, Sendable {
@@ -14,7 +16,12 @@ struct CallNetworkPath: Equatable, Sendable {
         interfaces = active.map(\.name).sorted()
         ipv4 = path.supportsIPv4
         ipv6 = path.supportsIPv6
-        if active.contains(where: { $0.name.hasPrefix("utun") || $0.name.hasPrefix("ppp") }) { adapter = 8 }
+        #if os(Linux)
+        let vpn = path.usesInterfaceType(.vpn)
+        #else
+        let vpn = active.contains { $0.name.hasPrefix("utun") || $0.name.hasPrefix("ppp") }
+        #endif
+        if vpn { adapter = 8 }
         else if path.usesInterfaceType(.wiredEthernet) { adapter = 1 }
         else if path.usesInterfaceType(.wifi) { adapter = 2 }
         else if path.usesInterfaceType(.cellular) { adapter = 4 }

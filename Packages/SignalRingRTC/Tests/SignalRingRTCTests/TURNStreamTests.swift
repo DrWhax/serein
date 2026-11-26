@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Linux)
 import Security
+#endif
 import Testing
 @testable import SwiftCalling
 
@@ -7,7 +9,11 @@ enum TURNTestRelay {
     static var peerURI: String {
         let env = ProcessInfo.processInfo.environment
         // Tools/with-calling-turn.py's coturn when it set these, else the in-process Swift server.
+        #if os(Linux)
+        return env["SEREIN_TEST_TURN_URI"] ?? ""
+        #else
         return env["SEREIN_TEST_TURN_URI"] ?? "turn:127.0.0.1:\(env["SEREIN_TEST_TURN_PORT"] ?? String(TURNTestServer.shared.port))?transport=udp"
+        #endif
     }
 
     static func open(tlsHostname: String = "localhost", trustTestRoot: Bool = true) async throws -> TURNAllocation {
@@ -19,7 +25,11 @@ enum TURNTestRelay {
             if trustTestRoot {
                 let file = try #require(env["SEREIN_TEST_TURN_CA"])
                 let der = try Data(contentsOf: URL(fileURLWithPath: file))
+                #if os(Linux)
+                anchor = der
+                #else
                 anchor = try #require(SecCertificateCreateWithData(nil, der as CFData))
+                #endif
             }
         } else { endpoint = try #require(TURNServerEndpoint(peerURI)) }
         return try await TURNAllocation.open(server: endpoint, username: "serein", password: "serein-test-relay", trustAnchor: anchor)

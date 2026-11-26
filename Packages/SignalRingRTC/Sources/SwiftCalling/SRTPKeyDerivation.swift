@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import simd
+#endif
 
 /// AES-CM PRF for the GCM profiles, with a zero key derivation rate (RFC 3711/6188/7714).
 /// Serein ships on Apple Silicon. The SDK exposes its AES rounds as by-value SIMD operations.
@@ -41,6 +43,7 @@ struct SRTPKeyDerivation {
     }
 }
 
+#if !os(Linux)
 /// AES encryption for the calling protocols, using the Apple Silicon AES instructions.
 struct AESBlockCipher {
     private let roundKeys: [SIMD16<UInt8>]
@@ -86,3 +89,4 @@ struct AESBlockCipher {
     }
 
 }
+#endif

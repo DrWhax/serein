@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Linux)
 import Network
+#endif
 
 /// The transport from Serein to the TURN server. The requested peer-facing allocation is UDP.
 enum TURNClientTransport: Hashable, Sendable { case udp, tcp, tls }

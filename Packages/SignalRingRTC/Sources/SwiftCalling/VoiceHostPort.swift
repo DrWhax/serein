@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Linux)
 import Network
+#endif
 
 /// Reserve an ephemeral UDP port while trickling candidates. A connected UDP socket on
 /// the same port handles the selected remote tuple, including its authenticated ICE checks.
@@ -16,7 +18,13 @@ final class VoiceHostPort: Sendable {
 
     static func gather(timeoutAfter: Duration = .seconds(10), keepPortOnLookupTimeout: Bool = false,
                        inbound: @escaping @Sendable (NWConnection) -> Void = { $0.cancel() },
-                       localAddresses: @escaping @Sendable () -> [String] = { Host.current().addresses }) async throws -> VoiceHostPort {
+                       localAddresses: @escaping @Sendable () -> [String] = {
+                           #if os(Linux)
+                           NWPath.localAddresses
+                           #else
+                           Host.current().addresses
+                           #endif
+                       }) async throws -> VoiceHostPort {
         let settings = NWParameters.udp
         settings.allowLocalEndpointReuse = true
         let listener = try NWListener(using: settings)

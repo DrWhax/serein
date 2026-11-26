@@ -1,7 +1,9 @@
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import Network
 import Security
+#endif
 import Synchronization
 
 /// Relay addresses can enter ICE signaling and TURN messages. They never open a socket.

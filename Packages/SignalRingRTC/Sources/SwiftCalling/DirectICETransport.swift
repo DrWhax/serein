@@ -1,7 +1,9 @@
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import Security
 import Network
+#endif
 import Synchronization
 
 /// The socket is chosen once per call leg. A relay leg wraps every datagram, including

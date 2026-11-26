@@ -1,6 +1,8 @@
 import Foundation
+#if !os(Linux)
 import Security
 import Network
+#endif
 
 struct GroupICERoutes: Sendable {
     struct Address: Hashable, Sendable {

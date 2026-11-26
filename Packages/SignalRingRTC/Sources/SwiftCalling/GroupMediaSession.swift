@@ -1,8 +1,10 @@
 import CodecCore
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import Security
 import Network
+#endif
 import Synchronization
 
 package protocol GroupMediaProtection: Sendable {

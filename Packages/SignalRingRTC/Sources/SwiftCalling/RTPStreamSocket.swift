@@ -1,6 +1,8 @@
 import Foundation
+#if !os(Linux)
 import Network
 import Security
+#endif
 import Synchronization
 
 /// ICE-TCP carries STUN, RTP and RTCP in RFC 4571 network-order length frames.

@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Linux)
 import Network
+#endif
 
 /// Server-reflexive candidates for direct calls. Probe a configured STUN or UDP TURN
 /// server from the same UDP port the ICE listener uses (RFC 8445 §5.1.1.2).
@@ -37,7 +39,9 @@ enum STUNDiscovery {
         guard let request = try? TURNMessage.packet(0x0001, id: id, attributes: []) else { return nil }
         let parameters = NWParameters.udp
         let host: NWEndpoint.Host = ipv6 ? .ipv6(.any) : .ipv4(.any)
+        #if !os(Linux)
         (parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = ipv6 ? .v6 : .v4
+        #endif
         parameters.requiredLocalEndpoint = .hostPort(host: host, port: port)
         parameters.allowLocalEndpointReuse = true
         let socket = NWConnection(to: server.address, using: parameters)

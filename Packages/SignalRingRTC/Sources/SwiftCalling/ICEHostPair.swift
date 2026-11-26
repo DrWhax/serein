@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+#if !os(Linux)
 import Network
+#endif
 import Synchronization
 
 /// RFC 8445 regular nomination. A controlling agent may check multiple pairs
