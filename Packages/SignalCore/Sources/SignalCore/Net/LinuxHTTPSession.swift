@@ -11,7 +11,10 @@ private final class LinuxHTTPRequest: Sendable {
     init(_ request: URLRequest, roots: [Data]) throws {
         guard let address = request.url?.absoluteString else { throw URLError(.badURL) }
         let url = Array(address.utf8), method = Array((request.httpMethod ?? "GET").utf8)
-        id = serein_http_new(url.span, method.span)
+        let timeout = request.timeoutInterval
+        guard timeout.isFinite, timeout > 0 else { throw URLError(.timedOut) }
+        let seconds = UInt32(min(Double(UInt32.max), timeout.rounded(.up)))
+        id = serein_http_new(url.span, method.span, seconds)
         guard id != 0 else { throw URLError(.badURL) }
         for root in roots { try Self.check(serein_http_add_root(id, Array(root).span)) }
         if let body = request.httpBody { try Self.check(serein_http_set_body(id, Array(body).span)) }

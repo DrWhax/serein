@@ -137,7 +137,7 @@ public struct HTTPClient: Sendable {
     public func sendWithHeaders(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                                 accept: Set<Int> = []) async throws -> (status: Int, body: Data, headers: [String: String]) {
         guard url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = method
         request.httpBody = body
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
@@ -163,7 +163,7 @@ public struct HTTPClient: Sendable {
         let handle = try FileHandle(forUpdating: file)
         defer { try? handle.close() }
         var offset = Int64(try handle.seekToEnd())
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = "GET"
         if offset > 0 { request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
         let (bytes, response) = try await session.bytes(for: request)
@@ -217,7 +217,7 @@ public struct HTTPClient: Sendable {
     public func send(_ method: String, _ url: URL, body: Data? = nil, headers: [String: String] = [:],
                      accept: Set<Int> = []) async throws -> (status: Int, body: Data) {
         guard url.scheme?.lowercased() == "https" else { throw HTTPError.insecureURL }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = method
         request.httpBody = body
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }

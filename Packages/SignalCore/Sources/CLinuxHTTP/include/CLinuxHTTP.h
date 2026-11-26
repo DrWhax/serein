@@ -5,7 +5,7 @@
 
 enum SereinHTTPError { SereinHTTPOK, SereinHTTPInvalid, SereinHTTPTLS, SereinHTTPTimeout, SereinHTTPCancelled, SereinHTTPNetwork };
 uint64_t serein_http_new(const uint8_t * __counted_by(url_size) url __attribute__((noescape)), size_t url_size,
-                         const uint8_t * __counted_by(method_size) method __attribute__((noescape)), size_t method_size);
+                         const uint8_t * __counted_by(method_size) method __attribute__((noescape)), size_t method_size, unsigned timeout_seconds);
 void serein_http_release(uint64_t id);
 void serein_http_cancel(uint64_t id);
 enum SereinHTTPError serein_http_add_root(uint64_t id, const uint8_t * __counted_by(size) der __attribute__((noescape)), size_t size);

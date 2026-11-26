@@ -1,4 +1,5 @@
 import Foundation
+import FoundationNetworking
 
 @main struct Check {
     enum Failure: Error { case unexpected(String) }
@@ -48,6 +49,13 @@ import Foundation
         try Data("old content".utf8).write(to: file)
         try await client.download(url("whole"), to: file, maxBytes: 6)
         try require(try Data(contentsOf: file) == Data("abcdef".utf8), "server ignores range")
+        let short = URLRequest(url: url("slow"), timeoutInterval: 1)
+        let start = ContinuousClock.now
+        do {
+            _ = try await LinuxHTTPSession(roots: [root]).bytes(for: short)
+            throw Failure.unexpected("ignored request timeout")
+        } catch let error as URLError { try require(error.code == .timedOut, "wrong timeout error") }
+        try require(start.duration(to: .now) < .seconds(4), "request timeout duration")
         let hanging = Task { try await client.send("GET", url("slow")) }
         try await Task.sleep(for: .milliseconds(200))
         hanging.cancel()

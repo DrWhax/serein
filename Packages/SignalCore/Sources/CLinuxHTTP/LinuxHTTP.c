@@ -69,7 +69,7 @@ static void configure_connection(SoupMessage *message, GSocketClientEvent event,
     }
 }
 uint64_t serein_http_new(const uint8_t * __counted_by(url_size) url __attribute__((noescape)), size_t url_size,
-                         const uint8_t * __counted_by(method_size) method __attribute__((noescape)), size_t method_size) {
+                         const uint8_t * __counted_by(method_size) method __attribute__((noescape)), size_t method_size, unsigned timeout_seconds) {
     g_autofree char *address = string(url, url_size), *verb = string(method, method_size);
     if (!address || !token(verb)) return 0;
     g_autoptr(GUri) uri = g_uri_parse(address, G_URI_FLAGS_ENCODED, NULL);
@@ -78,7 +78,7 @@ uint64_t serein_http_new(const uint8_t * __counted_by(url_size) url __attribute_
     if (!message) return 0;
     Request *r = g_atomic_rc_box_new0(Request);
     r->session = soup_session_new();
-    soup_session_set_timeout(r->session, 30);
+    soup_session_set_timeout(r->session, timeout_seconds);
     r->message = g_steal_pointer(&message);
     soup_message_add_flags(r->message, SOUP_MESSAGE_NO_REDIRECT);
     r->cancel = g_cancellable_new();
