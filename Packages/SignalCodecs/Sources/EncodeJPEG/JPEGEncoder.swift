@@ -150,12 +150,7 @@ public enum JPEGEncoder {
         }
         dqt(0, lumaQ)
         if ncomp == 3 { dqt(1, chromaQ) }
-        out += [0xFF, 0xC0]
-        out += be16(8 + 3 * ncomp)
-        out.append(8)
-        out += be16(H)
-        out += be16(W)
-        out.append(UInt8(ncomp))
+        out += [0xFF, 0xC0] + be16(8 + 3 * ncomp) + [8] + be16(H) + be16(W) + [UInt8(ncomp)]
         for c in 0..<ncomp { out += [UInt8(c + 1), UInt8(hs[c] << 4 | vs[c]), UInt8(qIndex[c])] }
         func dht(_ cls: Int, _ index: Int, _ spec: (counts: [Int], symbols: [UInt8])) {
             out += [0xFF, 0xC4] + be16(2 + 1 + 16 + spec.symbols.count) + [UInt8(cls << 4 | index)]

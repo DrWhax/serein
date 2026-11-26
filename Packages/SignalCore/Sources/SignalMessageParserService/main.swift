@@ -15,7 +15,13 @@ import Synchronization
 
 ServiceSandbox.requireConfinement("SignalMessageParser")
 
+#if os(Linux)
+// The Linux package installs the service and its child in the same directory.
+guard let executable = Bundle.main.executableURL else { exit(78) }
+let childExecutable = executable.deletingLastPathComponent().appendingPathComponent("SignalMessageParserChild")
+#else
 let childExecutable = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SignalMessageParserChild")
+#endif
 let pool = ParserChildPool { try ParserChildProcess.spawn(childExecutable) }
 /// Sessions open now; at most `maxSessions` (the app keeps one per parser client).
 let open = Atomic<Int>(0)
@@ -23,7 +29,7 @@ let maxSessions = 8
 /// Which idle spell the exit timer belongs to (a new session starts another).
 let idle = Atomic<Int>(0)
 
-func sessionEnded() {
+@Sendable func sessionEnded() {
     guard open.subtract(1, ordering: .relaxed).newValue == 0 else { return }
     pool.drain()
     let spell = idle.add(1, ordering: .relaxed).newValue

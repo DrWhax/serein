@@ -80,7 +80,7 @@ public final class ServiceWatchdog: Sendable {
 public final class RequestGate: Sendable {
     struct State {
         var running = 0
-        var waiting: [CheckedContinuation<Void, Never>] = []
+        var waiting: [CheckedContinuation<Void, any Error>] = []
     }
     let state = Mutex(State())
     public let maxRunning: Int
@@ -101,28 +101,23 @@ public final class RequestGate: Sendable {
 
     func acquire() async throws {
         enum Admission { case run, wait, refuse }
-        let admission = state.withLock { s -> Admission in
-            if s.running < maxRunning { s.running += 1; return .run }
-            return s.waiting.count < maxWaiting ? .wait : .refuse
-        }
-        switch admission {
-        case .run: return
-        case .refuse: throw XPCServiceError.busy
-        case .wait:
-            await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
-                let admitted = state.withLock { s -> Bool in
-                    // A slot may have opened since the first look.
-                    if s.running < maxRunning { s.running += 1; return true }
-                    s.waiting.append(k)
-                    return false
-                }
-                if admitted { k.resume() }
+        try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, any Error>) in
+            let admission = state.withLock { s -> Admission in
+                if s.running < maxRunning { s.running += 1; return .run }
+                guard s.waiting.count < maxWaiting else { return .refuse }
+                s.waiting.append(k)
+                return .wait
+            }
+            switch admission {
+            case .run: k.resume()
+            case .refuse: k.resume(throwing: XPCServiceError.busy)
+            case .wait: break
             }
         }
     }
 
     func release() {
-        let next = state.withLock { s -> CheckedContinuation<Void, Never>? in
+        let next = state.withLock { s -> CheckedContinuation<Void, any Error>? in
             if s.waiting.isEmpty { s.running -= 1; return nil }
             return s.waiting.removeFirst()   // its slot is handed over: `running` stays
         }

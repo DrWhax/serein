@@ -312,6 +312,7 @@ extension MediaDecoder {
     /// Closes idle videos when the system runs short of memory (the backstop for a process that
     /// cannot measure its own footprint without unsafe code): a warning closes those idle for a
     /// minute, a critical event those idle for five seconds. The source lives with the process.
+    #if !os(Linux)
     static let memoryPressure: any DispatchSourceMemoryPressure = {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
         source.setEventHandler {
@@ -321,6 +322,7 @@ extension MediaDecoder {
         source.activate()
         return source
     }()
+    #endif
 
     /// Starts watching for memory pressure (once; later calls do nothing).
     public static func shedVideosUnderMemoryPressure() { _ = memoryPressure }
@@ -350,8 +352,12 @@ actor VideoSessions {
 
     /// The longest side a video may have.
     static let maxSide = 8192
-    /// All open videos together: a quarter of the Mac's memory, at most 8 GB.
+    /// All open videos together use at most a quarter of available memory, capped at 8 GiB.
+    #if os(Linux)
+    static let defaultBudget = Int(min(UInt64(8) << 30, LinuxDecoderMemory.availableBytes / 4))
+    #else
     static let defaultBudget = Int(min(UInt64(8) << 30, ProcessInfo.processInfo.physicalMemory / 4))
+    #endif
 
     var sessions: [UUID: Entry] = [:]
     let budget: Int, evictableAfter: Duration, idleTimeout: Duration

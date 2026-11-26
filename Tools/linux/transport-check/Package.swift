@@ -5,6 +5,7 @@ let package = Package(
     name: "TransportCheck",
     dependencies: [.package(path: "../../../Packages/SignalMediaService")],
     targets: [.executableTarget(name: "TransportCheck", dependencies: [
-        .product(name: "MediaXPCInterface", package: "SignalMediaService")
+        .product(name: "MediaXPCInterface", package: "SignalMediaService"),
+        .product(name: "LinkPreviewParser", package: "SignalMediaService")
     ])]
 )
