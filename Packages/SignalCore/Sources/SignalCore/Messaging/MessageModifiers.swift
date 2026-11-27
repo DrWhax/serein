@@ -283,6 +283,7 @@ enum MessageModifiers {
             json["preview"] = nil
             if c.source != .someoneElse { json["readStatus"] = ReadStatus.read.rawValue }
         }
+        try MessageStore.replaceIncomingBodyAttachment(db, messageId: t.id, conversationId: t.conversationId, sentAt: t.sentAt, attachments: m.attachments)
         if !m.preview.isEmpty {
             try db.execute(sql: "DELETE FROM message_attachments WHERE messageId = ? AND attachmentType = 'preview'", arguments: [t.id])
             try MessageStore.storePreviews(db, messageId: t.id, conversationId: t.conversationId, sentAt: t.sentAt, messageType: t.type, body: m.body, m.preview)

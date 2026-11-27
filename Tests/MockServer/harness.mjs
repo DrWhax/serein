@@ -433,7 +433,7 @@ const commands = {
     return sent;
   },
   // One message with several attachments (an album): items [{ data (base64), contentType, fileName }].
-  async sendAttachments({ from, items, timestamp }) {
+  async sendAttachments({ from, items, timestamp, body = '' }) {
     const pointers = [], sent = [];
     for (const { data, contentType, fileName = null } of items) {
       const plaintext = Buffer.from(data, 'base64');
@@ -448,7 +448,7 @@ const commands = {
       pointers.push({ attachmentIdentifier: { cdnKey }, cdnNumber: 3, contentType, key: keys, digest, size: plaintext.length, fileName });
       sent.push({ cdnKey, digest: digest.toString('base64') });
     }
-    const message = { ...dataMessage('', timestamp), attachments: pointers };
+    const message = { ...dataMessage(body, timestamp), attachments: pointers };
     await account(from).sendRaw(needDesktop(), wrap({ dataMessage: message }), { timestamp });
     return sent;
   },

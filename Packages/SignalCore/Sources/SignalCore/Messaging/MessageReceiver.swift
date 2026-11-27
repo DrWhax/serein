@@ -651,8 +651,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                                                    serverTimestamp: e.serverTimestamp, unidentified: d.sealed, extra: extra))
         if let storyId { try db.execute(sql: "UPDATE messages SET storyId = ? WHERE id = ?", arguments: [storyId, id]) }
         if mentionsMe { try db.execute(sql: "UPDATE messages SET mentionsMe = 1 WHERE id = ?", arguments: [id]) }
-        try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
-                                                  attachments: Array(m.attachments.prefix(InboundLimits.maxAttachments)))
+        try MessageStore.storeIncomingBodyAndAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
+                                                          attachments: m.attachments)
         if m.hasQuote {
             try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(m.timestamp),
                                                       attachments: Self.quoteThumbnails(m.quote), type: .quote)
@@ -846,8 +846,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
             }
             try MessageStore.storePreviews(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp), messageType: "outgoing",
                                            body: m.body, m.preview)
-            try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
-                                                      attachments: Array(m.attachments.prefix(InboundLimits.maxAttachments)))
+            try MessageStore.storeIncomingBodyAndAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
+                                                          attachments: m.attachments)
             if let contact = m.contact.first, contact.hasAvatar, contact.avatar.hasAvatar {
                 try MessageStore.storeIncomingAttachments(db, messageId: id, conversationId: conversation, sentAt: Int64(sent.timestamp),
                                                           attachments: [contact.avatar.avatar], type: .contact)

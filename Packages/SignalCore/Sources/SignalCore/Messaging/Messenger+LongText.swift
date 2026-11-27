@@ -73,3 +73,55 @@ extension Messenger {
         return try await services.prepare(OutgoingAttachment(data: text, contentType: LongText.contentType), transcode: false)
     }
 }
+
+// Long message bodies on receive (partitionBodyAndNormalAttachments, AttachmentDownloads
+// addAttachmentToMessage 'long-message'): the first text/x-signal-plain attachment is the
+// message's bodyAttachment, not one of its attachments (others like it are dropped); once
+// downloaded, its text replaces the trimmed body.
+extension LongText {
+    static func partition(_ attachments: [Signalservice_AttachmentPointer]) -> (body: Signalservice_AttachmentPointer?, attachments: [Signalservice_AttachmentPointer]) {
+        let body = attachments.filter { $0.contentType == contentType }
+        if body.count > 1 { SignalClient.diagnose("received \(body.count) long message attachments, dropping \(body.count - 1)") }
+        return (body.first, attachments.filter { $0.contentType != contentType })
+    }
+}
+
+extension MessageStore {
+    /// Stores an incoming message's attachments with its long-message attachment apart.
+    static func storeIncomingBodyAndAttachments(_ db: Database, messageId: String, conversationId: String, sentAt: Int64,
+                                                attachments: [Signalservice_AttachmentPointer]) throws {
+        let (body, normal) = LongText.partition(attachments)
+        try storeIncomingAttachments(db, messageId: messageId, conversationId: conversationId, sentAt: sentAt,
+                                     attachments: Array(normal.prefix(InboundLimits.maxAttachments)))
+        if let body {
+            try storeIncomingAttachments(db, messageId: messageId, conversationId: conversationId, sentAt: sentAt, attachments: [body], type: .longMessage)
+        }
+    }
+
+    /// An edit's body attachment replaces the message's: the previous one (and its download,
+    /// if it has not finished) goes, so it cannot overwrite the edited body.
+    static func replaceIncomingBodyAttachment(_ db: Database, messageId: String, conversationId: String, sentAt: Int64,
+                                              attachments: [Signalservice_AttachmentPointer]) throws {
+        try db.execute(sql: "DELETE FROM attachment_downloads WHERE messageId = ? AND attachmentType = ?",
+                       arguments: [messageId, MessageAttachmentType.longMessage.rawValue])
+        try db.execute(sql: "DELETE FROM message_attachments WHERE messageId = ? AND attachmentType = ? AND editHistoryIndex = -1",
+                       arguments: [messageId, MessageAttachmentType.longMessage.rawValue])
+        if let body = LongText.partition(attachments).body {
+            try storeIncomingAttachments(db, messageId: messageId, conversationId: conversationId, sentAt: sentAt, attachments: [body], type: .longMessage)
+        }
+    }
+
+    /// The downloaded text of a message's long-message attachment becomes its body (and the
+    /// body of its current revision).
+    static func applyLongBody(_ db: Database, messageId: String, _ text: Data) throws {
+        let body = String(decoding: text, as: UTF8.self)
+        try updateJSON(db, messageId: messageId) { json in
+            json["body"] = body
+            if var history = json["editHistory"] as? [[String: Any]], !history.isEmpty {
+                history[0]["body"] = body
+                json["editHistory"] = history
+            }
+        }
+        try db.execute(sql: "UPDATE messages SET body = ? WHERE id = ?", arguments: [body, messageId])
+    }
+}
