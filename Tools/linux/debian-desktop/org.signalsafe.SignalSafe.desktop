@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Serein
+Comment=Private messenger
+Exec=/usr/bin/systemctl --user start serein.service
+Icon=org.signalsafe.SignalSafe
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=QtSwiftUI

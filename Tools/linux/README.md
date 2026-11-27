@@ -2,6 +2,8 @@
 
 The desktop and its seven socket-activated workers run as the unprivileged `serein` user. The application applies Landlock and seccomp before constructing its session. The minimum is Landlock ABI 6, available on Debian 13’s stock Linux 6.12 kernel. On ABI 6 and 7, the desktop, calling worker and calling socket broker apply their rules while single-threaded. Later threads inherit those rules. Startup fails if glibc cannot confirm single-threaded execution. ABI 8 and newer apply the same rules to all existing threads with `LANDLOCK_RESTRICT_SELF_TSYNC`.
 
+For a native desktop launch on Debian 13 ARM64, follow the [Debian setup instructions](debian-desktop/README.md).
+
 ## Build
 
 Use sibling Serein and QtSwiftUI checkouts. Initialize Serein’s pinned vendor dependencies and apply the project patches first. Populate the upstream Signal-Desktop sound assets or supply the generated WAVs in `App/SignalSafe/Resources/Sounds`. Build the toolchain from the Serein root.

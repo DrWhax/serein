@@ -1,0 +1,10 @@
+[Unit]
+Description=Serein desktop messenger
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/serein-linux/releases/abi6-desktop/run-session
+KillMode=mixed
+TimeoutStopSec=10
