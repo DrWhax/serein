@@ -1383,6 +1383,15 @@ import SignalUI
 
     func stage(_ data: Data, contentType type: String, fileName: String) {
         guard selectedConversationId != nil, editingMessageId == nil else { return }
+        // preProcessAttachment: no dangerous files, and only what receivers will show of a
+        // message (up to 32 photos and videos, or one other file).
+        if Self.isFileDangerous(fileName) { toast = .dangerousFileType; return }
+        switch AttachmentPolicy.draftRefusal(adding: type, fileName: fileName, to: staged.map { ($0.contentType, $0.fileName) }) {
+        case .maxAttachments?: toast = .maxAttachments; return
+        case .unsupportedMultiAttachment?: toast = .unsupportedMultiAttachment; return
+        case .cannotMixMultiAndNonMultiAttachments?: toast = .cannotMixMultiAndNonMultiAttachments; return
+        case nil: break
+        }
         let item = StagedAttachment(data: data, contentType: type, fileName: fileName)
         staged.append(item)
         let heic = AttachmentServices.isHeic(type, fileName: fileName)

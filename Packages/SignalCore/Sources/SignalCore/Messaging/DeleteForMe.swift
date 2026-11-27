@@ -9,6 +9,8 @@ import LibSignalClient
 import SignalProtos
 
 enum DeleteForMe {
+    /// `MAX_MESSAGE_COUNT` (ts/util/deleteForMe.types.std.ts): message deletes per sync message.
+    static let maxMessageCount = 500
     typealias ConversationIdentifier = Signalservice_ConversationIdentifier
     typealias AddressableMessage = Signalservice_AddressableMessage
 

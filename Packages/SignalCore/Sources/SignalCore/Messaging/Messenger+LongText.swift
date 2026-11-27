@@ -87,12 +87,15 @@ extension LongText {
 }
 
 extension MessageStore {
-    /// Stores an incoming message's attachments with its long-message attachment apart.
+    /// Stores an incoming message's attachments with its long-message attachment apart, keeping
+    /// only those upstream shows (`getValidMessageAttachments`, then `ATTACHMENT_MAX`).
     static func storeIncomingBodyAndAttachments(_ db: Database, messageId: String, conversationId: String, sentAt: Int64,
                                                 attachments: [Signalservice_AttachmentPointer]) throws {
         let (body, normal) = LongText.partition(attachments)
+        let valid = AttachmentPolicy.validMessageAttachments(normal)
+        if valid.count < normal.count { SignalClient.diagnose("message leads with \(valid.count) of \(normal.count) attachments it can show; dropping the rest") }
         try storeIncomingAttachments(db, messageId: messageId, conversationId: conversationId, sentAt: sentAt,
-                                     attachments: Array(normal.prefix(InboundLimits.maxAttachments)))
+                                     attachments: Array(valid.prefix(InboundLimits.maxAttachments)))
         if let body {
             try storeIncomingAttachments(db, messageId: messageId, conversationId: conversationId, sentAt: sentAt, attachments: [body], type: .longMessage)
         }

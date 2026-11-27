@@ -556,6 +556,8 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
         // past 2 KiB.
         if m.flags & ~InboundLimits.knownFlags != 0 || InboundLimits.bodyTooLong(m.body) { return [] }
         if try MessageStore.find(db, author: d.sender, sentAt: m.timestamp) != nil { return [] }   // duplicate
+        // handleDataMessage: a message with an invalid PollCreate is dropped (PollCreateSchema).
+        if m.hasPollCreate, MessageModifiers.pollJSON(m.pollCreate) == nil { return [] }
         // A legacy END_SESSION is kept as "Secure session reset", its body and attachments
         // cleared (processDataMessage).
         var m = m
@@ -816,6 +818,7 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 throw ReceiveError.invalidEnvelope("sent transcript without destination")
             }
             if try MessageStore.find(db, author: account.aci, sentAt: sent.timestamp) != nil { return [] }
+            if m.hasPollCreate, MessageModifiers.pollJSON(m.pollCreate) == nil { return [] }
             if m.flags & ConversationState.expirationTimerUpdateFlag != 0 {
                 try ConversationState.applyIncomingTimer(db, conversationId: conversation, seconds: m.expireTimer, version: m.expireTimerVersion,
                                                          from: account.aci, sentAt: sent.timestamp, isGroup: m.hasGroupV2, isUpdate: true)
@@ -832,12 +835,15 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
                 sendState[conversation] = ["status": "Sent", "updatedAt": MessageStore.now()]
                 _ = destination
             }
+            let ranges = Self.bodyRangesJSON(m.bodyRanges)
+            let sentRanges: [String: Any] = ranges.isEmpty ? [:] : ["bodyRanges": ranges]
             let id = try MessageStore.insert(db, .init(conversationId: conversation, type: "outgoing", body: m.body, sentAt: sent.timestamp,
                                                        source: account.aci, sourceDevice: d.senderDevice, serverGuid: nil, serverTimestamp: nil,
                                                        unidentified: false,
                                                        extra: ["sendStateByConversationId": sendState,
                                                                "expirationStartTimestamp": sent.hasExpirationStartTimestamp ? sent.expirationStartTimestamp : sent.timestamp]
                                                            .merging(m.isViewOnce ? ["isViewOnce": true] : [:]) { a, _ in a }
+                                                           .merging(sentRanges) { a, _ in a }
                                                            .merging(m.hasPollCreate ? ["poll": MessageModifiers.pollJSON(m.pollCreate) as Any] : [:]) { a, _ in a }
                                                            .merging(m.hasQuote ? Self.quoteJSON(m.quote).map { ["quote": $0] } ?? [:] : [:]) { a, _ in a }
                                                            .merging(m.contact.first.map { ["contact": [SharedContacts.json($0)]] } ?? [:]) { a, _ in a }))
@@ -870,15 +876,28 @@ public final class MessageReceiver: ChatConnectionListener, @unchecked Sendable 
 
 extension MessageReceiver {
     /// `processBodyRange`: mentions (by ACI) and styles, as upstream keeps them.
+    /// `MAX_PER_TYPE` (ts/util/BodyRange.node.ts): mentions, and ranges of each style, past
+    /// these are dropped.
+    static let maxBodyRangesPerType = 250
+
+    /// `filterAndClean`: mentions and styled ranges, at most 250 of each kind; a range with no
+    /// valid mention or with style NONE is dropped.
     static func bodyRangesJSON(_ ranges: [Signalservice_BodyRange]) -> [[String: Any]] {
-        ranges.compactMap { r in
+        var counts: [String: Int] = [:]
+        func admit(_ kind: String) -> Bool {
+            counts[kind, default: 0] += 1
+            return counts[kind]! <= maxBodyRangesPerType
+        }
+        return ranges.compactMap { r in
             var out: [String: Any] = ["start": r.start, "length": r.length]
             switch r.associatedValue {
             case .mentionAci?, .mentionAciBinary?:
                 guard let aci = serviceIdString(binary: r.mentionAciBinary.isEmpty ? nil : r.mentionAciBinary,
-                                                string: r.mentionAci.isEmpty ? nil : r.mentionAci) else { return nil }
+                                                string: r.mentionAci.isEmpty ? nil : r.mentionAci), admit("mention") else { return nil }
                 out["mentionAci"] = aci
-            case .style(let style)?: out["style"] = style.rawValue
+            case .style(let style)?:
+                guard style.rawValue != 0, admit("style:\(style.rawValue)") else { return nil }
+                out["style"] = style.rawValue
             case nil: return nil
             }
             return out

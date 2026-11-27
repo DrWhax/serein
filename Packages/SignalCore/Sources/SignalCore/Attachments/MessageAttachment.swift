@@ -320,6 +320,64 @@ public enum AttachmentPolicy {
     public static func autoDownload(_ db: Database) throws -> AutoDownload { try Items.get(db, "auto-download-attachment") ?? AutoDownload() }
 
     public static func isImage(_ t: String) -> Bool { t.hasPrefix("image/") }
+
+    /// `isImageTypeSupported` / `isVideoTypeSupported` (ts/util/GoogleChrome.std.ts).
+    public static func isSupportedImage(_ t: String) -> Bool { MessageContentKind.supportedImageTypes.contains(t) }
+    public static func isSupportedVideo(_ t: String) -> Bool { MessageContentKind.supportedVideoTypes.contains(t) }
+
+    /// `ATTACHMENT_MAX`: the most attachments a message carries (receivers drop the rest).
+    public static let maxAttachments = 32
+
+    public enum DraftRefusal: Equatable, Sendable { case maxAttachments, unsupportedMultiAttachment, cannotMixMultiAndNonMultiAttachments }
+
+    /// `preProcessAttachment` (after its dangerous-file check): why a file cannot join the
+    /// draft attachments. A message is either up to 32 photos and videos or one other file,
+    /// because receivers keep only that much of it (`getValidMessageAttachments`). A HEIC photo
+    /// and a pasted TIFF bitmap count as images: they are sent as JPEG and PNG.
+    public static func draftRefusal(adding contentType: String, fileName: String,
+                                    to drafts: [(contentType: String, fileName: String)]) -> DraftRefusal? {
+        func visual(_ type: String, _ name: String) -> Bool {
+            isSupportedImage(type) || isSupportedVideo(type) || AttachmentServices.isHeic(type, fileName: name) || (type == "image/tiff" && name.isEmpty)
+        }
+        if drafts.count >= maxAttachments { return .maxAttachments }
+        if drafts.contains(where: { !visual($0.contentType, $0.fileName) }) { return .unsupportedMultiAttachment }
+        if !visual(contentType, fileName), !drafts.isEmpty { return .cannotMixMultiAndNonMultiAttachments }
+        return nil
+    }
+
+    /// `MAX_INCREMENTAL_MAC_ATTACHMENTS`: an outgoing message carries incremental MACs (and
+    /// their chunk sizes) for its first 10 attachments that have one, to keep it small.
+    static let maxIncrementalMacAttachments = 10
+
+    static func limitingIncrementalMacs(_ pointers: [Signalservice_AttachmentPointer]) -> [Signalservice_AttachmentPointer] {
+        var included = 0
+        return pointers.map { p in
+            guard p.hasIncrementalMac else { return p }
+            guard included < maxIncrementalMacAttachments else {
+                var p = p
+                p.clearIncrementalMac()
+                p.clearChunkSize()
+                return p
+            }
+            included += 1
+            return p
+        }
+    }
+
+    /// `getValidMessageAttachments`: what of a received message's attachments is shown. A
+    /// message led by photos and videos keeps those up to the first other attachment; any other
+    /// keeps only its first.
+    static func validMessageAttachments(_ attachments: [Signalservice_AttachmentPointer]) -> [Signalservice_AttachmentPointer] {
+        guard attachments.count > 1 else { return attachments }
+        func visual(_ p: Signalservice_AttachmentPointer) -> Bool { isSupportedImage(p.contentType) || isSupportedVideo(p.contentType) }
+        // getMessageAttachmentClass: 'visual-media' when the first is an image or video that is
+        // neither a voice message nor a GIF (a video flagged GIF).
+        let first = attachments[0]
+        let voice = first.flags & UInt32(Signalservice_AttachmentPointer.Flags.voiceMessage.rawValue) != 0
+        let gif = first.flags & UInt32(Signalservice_AttachmentPointer.Flags.gif.rawValue) != 0 && isSupportedVideo(first.contentType)
+        if visual(first), !voice, !gif { return Array(attachments.prefix { visual($0) }) }
+        return [attachments[0]]
+    }
     public static func isVideo(_ t: String) -> Bool { t.hasPrefix("video/") }
     public static func isAudio(_ t: String) -> Bool { t.hasPrefix("audio/") }
 

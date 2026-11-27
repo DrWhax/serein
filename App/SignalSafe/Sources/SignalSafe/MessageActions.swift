@@ -484,9 +484,19 @@ struct PinMessageRequest {
         return ageOK && m.status != .pending
     }
 
-    /// Starts editing a message: its text goes into the composer.
-    func startEdit(_ messageId: String) {
+    /// `MESSAGE_MAX_EDIT_COUNT`: versions of a message (outside Note to Self) past which it
+    /// cannot be edited again.
+    static let maxEditCount = 10
+
+    /// Starts editing a message: its text goes into the composer. A message edited too often
+    /// (`isWithinMaxEdits`) shows MessageMaxEditsModal instead.
+    func startEdit(_ messageId: String, noteToSelf: Bool) {
         guard let m = messages.first(where: { $0.id == messageId }) else { return }
+        guard noteToSelf || m.editHistory.count <= Self.maxEditCount else {
+            composeError = ComposeError(key: "icu:MessageMaxEditsModal__Description", args: [:], titleKey: "icu:MessageMaxEditsModal__Title",
+                                        numbers: ["max": Double(Self.maxEditCount)])
+            return
+        }
         selectedMessageIds = nil
         quotedMessageId = nil
         editingMessageId = messageId
@@ -496,7 +506,7 @@ struct PinMessageRequest {
     /// ↑ in an empty composer: the newest message we can edit (`lastEditableMessageId`).
     func editLastMessage(noteToSelf: Bool) -> Bool {
         guard let m = messages.last(where: { $0.direction == .outgoing }), canEdit(m, noteToSelf: noteToSelf) else { return false }
-        startEdit(m.id)
+        startEdit(m.id, noteToSelf: noteToSelf)
         return true
     }
 

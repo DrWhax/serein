@@ -125,6 +125,7 @@ const summarizeSync = (sync) => {
     };
   }
   if (c.request) out.requestType = c.request.type;
+  if (c.deleteForMe) out.deleteForMe = { messageCounts: (c.deleteForMe.messageDeletes ?? []).map((d) => (d.messages ?? []).length) };
   if (c.callEvent) {
     out.callEvent = { conversationId: b64(c.callEvent.conversationId), callId: String(c.callEvent.callId), type: c.callEvent.type,
       direction: c.callEvent.direction, event: c.callEvent.event, timestamp: Number(c.callEvent.timestamp) };

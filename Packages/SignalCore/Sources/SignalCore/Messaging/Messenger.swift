@@ -421,7 +421,7 @@ public final class Messenger: Sendable {
         context.masterKey = group.keys.masterKey
         context.revision = UInt32(state.revision)
         data.groupV2 = context
-        data.attachments = try await longText + uploadAttachments(messageId: messageId)
+        data.attachments = AttachmentPolicy.limitingIncrementalMacs(try await longText + uploadAttachments(messageId: messageId))
         if let sticker = try await uploadSticker(messageId: messageId) { data.sticker = sticker }
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }
@@ -500,7 +500,7 @@ public final class Messenger: Sendable {
         data.bodyRanges = try await storedBodyRanges(messageId: messageId)
         data.timestamp = sentAt
         if let pk = account.profileKey { data.profileKey = pk }
-        data.attachments = try await longText + uploadAttachments(messageId: messageId)
+        data.attachments = AttachmentPolicy.limitingIncrementalMacs(try await longText + uploadAttachments(messageId: messageId))
         if let sticker = try await uploadSticker(messageId: messageId) { data.sticker = sticker }
         data.preview = try await uploadPreviews(messageId: messageId)
         if let poll = try await pollCreate(messageId: messageId) { data.pollCreate = poll }

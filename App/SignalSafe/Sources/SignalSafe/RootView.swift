@@ -79,7 +79,7 @@ struct RootView: View {
                             }
                         }
                     } else {
-                        ErrorModal(title: i18n(e.titleKey ?? "icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) })) { session.composeError = nil }
+                        ErrorModal(title: i18n(e.titleKey ?? "icu:error"), description: i18n(e.key, e.args.mapValues { .string($0) }.merging(e.numbers.mapValues { .number($0) }) { a, _ in a })) { session.composeError = nil }
                     }
                 }
                 // LeftPaneChooseGroupMembersHelper's size dialogs (each once while choosing).
