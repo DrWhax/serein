@@ -317,9 +317,15 @@ struct LiveVoicePairTests {
         let callerIdentity = Data(repeating: 0x11, count: 33), calleeIdentity = Data(repeating: 0x22, count: 33)
         try await caller.setRemote(callee.localParameters, callerIdentity: callerIdentity, calleeIdentity: calleeIdentity)
         try await callee.setRemote(caller.localParameters, callerIdentity: callerIdentity, calleeIdentity: calleeIdentity)
+        // Resolve the interface addresses before timing the ICE checklist. Local name service
+        // can take several seconds even when both peers run on the same Mac.
+        let addresses = Host.current().addresses
         let started = ContinuousClock.now
-        await callee.configure(relayOnly: false, servers: [])
-        await caller.configure(relayOnly: false, servers: [])
+        for session in [callee, caller] {
+            await session.configure(relayOnly: false, servers: []) { inbound in
+                try await VoiceHostPort.gather(inbound: inbound, localAddresses: { addresses })
+            }
+        }
         do {
             try await wait(seconds: 40) { first.ringing.withLock { $0 } && second.ringing.withLock { $0 } }
         } catch {
