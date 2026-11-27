@@ -189,31 +189,36 @@ extension Messenger {
     }
 
     /// `deleteForMe`: removes the messages here and tells our other devices (of those they can
-    /// address: notices such as calls or group changes are removed here only).
+    /// address: notices such as calls or group changes are removed here only), in sync messages
+    /// of at most `DeleteForMe.maxMessageCount` messages each, as upstream chunks them.
     public func deleteForMe(_ messageIds: [String]) async throws {
-        let ourAci = account.aci
-        let sync = try await database.pool.write { db -> Signalservice_SyncMessage.DeleteForMe in
+        let syncs = try await database.pool.write { db -> [Signalservice_SyncMessage.DeleteForMe] in
             var byConversation: [String: [Signalservice_AddressableMessage]] = [:]
             for id in messageIds {
                 guard let c = try String.fetchOne(db, sql: "SELECT conversationId FROM messages WHERE id = ?", arguments: [id]) else { continue }
                 if let a = try DeleteForMe.addressable(db, messageId: id) { byConversation[c, default: []].append(a) }
                 try DeleteForMe.deleteMessage(db, id)
             }
-            var d = Signalservice_SyncMessage.DeleteForMe()
-            d.messageDeletes = try byConversation.compactMap { c, msgs in
-                guard let ident = try DeleteForMe.identifier(db, conversationId: c) else { return nil }
-                var md = Signalservice_SyncMessage.DeleteForMe.MessageDeletes()
-                md.conversation = ident
-                md.messages = msgs
-                return md
+            var out: [Signalservice_SyncMessage.DeleteForMe] = []
+            for (c, msgs) in byConversation {
+                guard let ident = try DeleteForMe.identifier(db, conversationId: c) else { continue }
+                for start in stride(from: 0, to: msgs.count, by: DeleteForMe.maxMessageCount) {
+                    var md = Signalservice_SyncMessage.DeleteForMe.MessageDeletes()
+                    md.conversation = ident
+                    md.messages = Array(msgs[start..<min(start + DeleteForMe.maxMessageCount, msgs.count)])
+                    var d = Signalservice_SyncMessage.DeleteForMe()
+                    d.messageDeletes = [md]
+                    out.append(d)
+                }
             }
-            _ = ourAci
-            return d
+            return out
         }
-        guard !sync.messageDeletes.isEmpty else { return }
-        var s = Self.syncMessage()
-        s.deleteForMe = sync
-        try await sendToSelf(s, timestamp: UInt64(MessageStore.now()), urgent: false, messageIds: [])
+        let now = UInt64(MessageStore.now())
+        for (i, d) in syncs.enumerated() {
+            var s = Self.syncMessage()
+            s.deleteForMe = d
+            try await sendToSelf(s, timestamp: now + UInt64(i), urgent: false, messageIds: [])
+        }
     }
 
     // MARK: edits
@@ -223,17 +228,28 @@ extension Messenger {
         let t = try await targetInfo(messageId)
         guard t.author == account.aci, t.type == "outgoing" else { throw ModifierError.notAllowed("edit someone else's message") }
         guard abs(MessageStore.now() - (t.serverTimestamp ?? Int64(t.sentAt))) <= MessageModifiers.maxEditAge else { throw ModifierError.notAllowed("too old to edit") }
+        // isWithinMaxEdits: at most MESSAGE_MAX_EDIT_COUNT versions, outside Note to Self.
+        let ourAci = account.aci
+        let (versions, noteToSelf) = try await database.pool.read { db in
+            (try Int.fetchOne(db, sql: "SELECT COALESCE(json_array_length(json, '$.editHistory'), 0) FROM messages WHERE id = ?", arguments: [messageId]) ?? 0,
+             try String.fetchOne(db, sql: "SELECT serviceId FROM conversations WHERE id = ?", arguments: [t.conversationId]) == ourAci)
+        }
+        guard noteToSelf || versions <= MessageModifiers.maxEditCount else { throw ModifierError.notAllowed("edited too many times") }
         var data = baseDataMessage(t, timestamp: timestamp ?? UInt64(MessageStore.now()))
         data.body = newBody
         data.attachments = try await uploadAttachments(messageId: messageId)
         var edit = Signalservice_EditMessage()
         edit.targetSentTimestamp = t.sentAt
         edit.dataMessage = data
+        // Applied here with the whole body; sent trimmed, with the whole text attached first.
+        let editBytes = try edit.serializedBytes() as Data
+        let (sentBody, longText) = try await outgoingBody(newBody)
+        edit.dataMessage.body = sentBody
+        edit.dataMessage.attachments = AttachmentPolicy.limitingIncrementalMacs(longText + data.attachments)
         var content = Signalservice_Content()
         content.editMessage = edit
         let payload = try content.serializedBytes() as Data
-        let editBytes = try edit.serializedBytes() as Data
-        let ourAci = account.aci, editTimestamp = data.timestamp
+        let editTimestamp = data.timestamp
         try await database.pool.write { db in
             let ctx = ModifierContext(sender: ourAci, timestamp: editTimestamp, serverTimestamp: UInt64(MessageStore.now()), conversationId: t.conversationId,
                                       source: .thisDevice)

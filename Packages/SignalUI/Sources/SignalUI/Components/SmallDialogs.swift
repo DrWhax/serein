@@ -210,8 +210,8 @@ public struct WhatsNewModal: View {
     let onClose: () -> Void
     @Environment(\.i18n) var i18n
 
-    /// The current release's notes (`icu:WhatsNew__8.34--*`).
-    public static let featureKeys = ["icu:WhatsNew__8.34--0", "icu:WhatsNew__8.34--1"]
+    /// The current Signal Desktop release notes.
+    public static let featureKeys = ["icu:WhatsNew__8.36--0--fix"]
 
     public init(date: Date, version: String, features: [String]? = nil, onClose: @escaping () -> Void = {}) {
         self.date = date

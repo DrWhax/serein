@@ -494,9 +494,10 @@ import Testing
                 a.key = Data(repeating: 1, count: 64)
                 a.digest = Data(repeating: 2, count: 32)
                 a.size = 10
-                a.contentType = "application/pdf"
+                a.contentType = "image/jpeg"
                 return a
             }
+            // 40 photos: the first 32 are kept (ATTACHMENT_MAX).
             _ = try await text("many") { $0.attachments = (0..<40).map(pointer) }
             #expect(try await count(c, "SELECT count(*) FROM message_attachments WHERE messageId = (SELECT id FROM messages WHERE body = 'many')") == 32)
             _ = try await text("https://signal.org/a https://signal.org/b") { m in

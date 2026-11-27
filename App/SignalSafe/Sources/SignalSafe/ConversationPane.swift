@@ -232,7 +232,7 @@ struct ConversationPane: View {
         a.useEmoji = { session.recordEmojiUse($0) }
         if !m.isDeleted && !m.body.isEmpty { a.copy = { session.copyText(id) } }
         a.select = { session.toggleSelect(id, selected: true) }
-        if session.canEdit(m, noteToSelf: isNoteToSelf) { a.edit = { session.startEdit(id) } }
+        if session.canEdit(m, noteToSelf: isNoteToSelf) { a.edit = { [isNoteToSelf] in session.startEdit(id, noteToSelf: isNoteToSelf) } }
         if !m.isDeleted && session.canPinMessages {
             if m.isPinned { a.unpin = { session.unpin(id) } } else { a.pin = { session.requestPin(id) } }
         }

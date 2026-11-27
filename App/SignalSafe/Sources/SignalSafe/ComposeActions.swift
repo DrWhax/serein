@@ -14,6 +14,8 @@ struct ComposeError {
     var key: String
     var args: [String: String]
     var titleKey: String? = nil
+    /// Number arguments (`{max, number}`), beside the string ones.
+    var numbers: [String: Double] = [:]
     /// Upstream's untitled confirm dialog with just OK (an invalid phone number).
     var untitled = false
 

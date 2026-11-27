@@ -87,7 +87,7 @@ struct VoiceRecording {
             await task?.value
             do {
                 let note = try await media.finishVoiceNote(id)
-                stageRecording(note.data, conversationId: conversationId)
+                stageRecording(note, conversationId: conversationId)
             } catch {
                 Self.trace("voice note draft failed: \(error)")
             }
@@ -105,7 +105,8 @@ struct VoiceRecording {
             await task?.value
             do {
                 let note = try await media.finishVoiceNote(id)
-                let a = OutgoingAttachment(data: note.data, contentType: "audio/mpeg", flags: Self.voiceMessageFlag)
+                let a = OutgoingAttachment(data: note.data, contentType: "audio/mpeg", flags: Self.voiceMessageFlag,
+                                           audioWaveform: Data(note.waveform.map(UInt8.init(clamping:))), duration: note.duration)
                 if c.kind == .group, let key = c.masterKey {
                     _ = try await session.messenger.sendGroupMessage("", attachments: [a], quoting: quoting, masterKey: key)
                 } else if let to = c.serviceId {

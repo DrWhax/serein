@@ -11,6 +11,9 @@ import SignalProtos
 public typealias CredentialProvider = @Sendable (String) async throws -> ExpiringProfileKeyCredential?
 
 extension GroupsService {
+    /// `MAX_EMBEDDED_GROUP_CHANGE_BYTES` (ts/textsecure/SendMessage.preload.ts)
+    static let maxEmbeddedGroupChangeBytes = 2048
+
     public static let maxModifyAttempts = 5
 
     /// Wires the member-credential source (ProfileService.expiringCredential) and the sender.
@@ -74,7 +77,9 @@ extension GroupsService {
         var context = Signalservice_GroupContextV2()
         context.masterKey = keys.masterKey
         context.revision = UInt32(revision)
-        if let groupChange { context.groupChange = groupChange }
+        // MAX_EMBEDDED_GROUP_CHANGE_BYTES: a larger change is not embedded; members fetch it
+        // from the group server.
+        if let groupChange, groupChange.count <= Self.maxEmbeddedGroupChangeBytes { context.groupChange = groupChange }
         var data = Signalservice_DataMessage()
         data.groupV2 = context
         data.timestamp = timestamp

@@ -1277,6 +1277,8 @@ import SignalUI
         var preview: RGBAImage?
         var width: Int?
         var height: Int?
+        var audioWaveform: Data?
+        var duration: Double?
         /// AttachmentPointer flags (a saved recording is a voice message).
         var flags: Int?
     }
@@ -1384,6 +1386,15 @@ import SignalUI
 
     func stage(_ data: Data, contentType type: String, fileName: String) {
         guard selectedConversationId != nil, editingMessageId == nil else { return }
+        // preProcessAttachment: no dangerous files, and only what receivers will show of a
+        // message (up to 32 photos and videos, or one other file).
+        if Self.isFileDangerous(fileName) { toast = .dangerousFileType; return }
+        switch AttachmentPolicy.draftRefusal(adding: type, fileName: fileName, to: staged.map { ($0.contentType, $0.fileName) }) {
+        case .maxAttachments?: toast = .maxAttachments; return
+        case .unsupportedMultiAttachment?: toast = .unsupportedMultiAttachment; return
+        case .cannotMixMultiAndNonMultiAttachments?: toast = .cannotMixMultiAndNonMultiAttachments; return
+        case nil: break
+        }
         let item = StagedAttachment(data: data, contentType: type, fileName: fileName)
         staged.append(item)
         let heic = AttachmentServices.isHeic(type, fileName: fileName)
@@ -1474,8 +1485,9 @@ import SignalUI
 
     /// A finished recording as a draft voice message of `conversationId` (its composer's if it
     /// is open, else kept for when it is).
-    func stageRecording(_ data: Data, conversationId: String) {
-        let item = StagedAttachment(data: data, contentType: "audio/mpeg", fileName: "", flags: Self.voiceMessageFlag)
+    func stageRecording(_ note: VoiceNote, conversationId: String) {
+        let item = StagedAttachment(data: note.data, contentType: "audio/mpeg", fileName: "",
+                                    audioWaveform: Data(note.waveform.map(UInt8.init(clamping:))), duration: note.duration, flags: Self.voiceMessageFlag)
         if selectedConversationId == conversationId {
             staged.append(item)
         } else {
@@ -1806,7 +1818,7 @@ import SignalUI
         }
         guard !body.isEmpty || !staged.isEmpty, let session, let c = selectedConversation else { return }
         let attachments = staged.map { OutgoingAttachment(data: $0.data, contentType: $0.contentType, fileName: $0.fileName.isEmpty ? nil : $0.fileName,
-                                                          flags: $0.flags) }
+                                                          flags: $0.flags, audioWaveform: $0.audioWaveform, duration: $0.duration) }
         // `canSendInHighQuality` (an image among the drafts) and the HD choice.
         let highQuality = sendsHighQuality && staged.contains { AttachmentPolicy.isImage($0.contentType) }
         let coreRanges = Self.coreRanges(bodyRanges)

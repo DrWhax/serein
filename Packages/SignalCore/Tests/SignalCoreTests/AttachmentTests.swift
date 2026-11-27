@@ -158,6 +158,68 @@ import Testing
         }
     }
 
+    /// A body over 2 KiB (which receivers drop) goes trimmed at a grapheme, with the whole text
+    /// as a text/x-signal-plain attachment first; the message keeps the whole body.
+    @Test func sendsALongBodyAsALongTextAttachment() async throws {
+        try await LinkedClient.with { c in
+            let body = String(repeating: "Lorem ipsum dolor sit amet 👩‍👩‍👧‍👦 ", count: 60)
+            #expect(body.utf8.count > 2048)
+            let (messageId, _) = try await c.messenger.sendMessage(body, attachments: [], to: c.aliceAci)
+            let received = try await c.server.json("waitForMessage", ["account": "alice"])
+            let sentBody = try #require(received["body"] as? String)
+            #expect(sentBody == LongText.trim(body) && sentBody.utf8.count <= 2048 && body.hasPrefix(sentBody))
+            let p = try #require((received["attachments"] as? [[String: Any]])?.first)
+            #expect(p["contentType"] as? String == "text/x-signal-plain" && p["size"] as? Int == body.utf8.count)
+            let decrypted = try await c.server.json("fetchAndDecryptAttachment", ["cdnKey": p["cdnKey"] as! String, "key": p["key"] as! String,
+                                                                                    "digest": p["digest"] as! String, "size": body.utf8.count])
+            #expect(Data(base64Encoded: decrypted["plaintext"] as! String) == Data(body.utf8))
+            let (stored, rows) = try await c.database.pool.read { db in
+                (try String.fetchOne(db, sql: "SELECT body FROM messages WHERE id = ?", arguments: [messageId]),
+                 try MessageAttachments.fetch(db, messageId: messageId))
+            }
+            #expect(stored == body && rows.map(\.0.type) == [.longMessage] && rows.first?.1.cdnKey == p["cdnKey"] as? String)
+        }
+    }
+
+    /// alice → Desktop, the way phones send a long message: the text/x-signal-plain attachment
+    /// is kept apart from the others (a second one is dropped), and once downloaded its text
+    /// is the message's body.
+    @Test func receivesALongBodyFromItsAttachment() async throws {
+        try await LinkedClient.with { c in
+            try await c.acceptAlice()
+            let body = String(repeating: "Lorem ipsum dolor sit amet 👩‍👩‍👧‍👦 ", count: 60)
+            let image = Self.png()
+            let ts = TestClock.next()
+            _ = try await c.server.json("sendAttachments", ["from": "alice", "timestamp": ts, "body": LongText.trim(body), "items": [
+                ["data": Data(body.utf8).base64EncodedString(), "contentType": "text/x-signal-plain"],
+                ["data": image.base64EncodedString(), "contentType": "image/png", "fileName": "a.png"],
+                ["data": Data("another".utf8).base64EncodedString(), "contentType": "text/x-signal-plain"],
+            ]])
+            _ = try await c.log.waitFor { if case .message(_, _, _, _, let t, _, _, _) = $0 { return t == ts } else { return false } }
+            try await c.eventually("long body applied") { db in
+                try String.fetchOne(db, sql: "SELECT body FROM messages WHERE sent_at = ?", arguments: [Int64(ts)]) == body
+            }
+            let (jsonBody, rows, hasAttachments) = try await c.database.pool.read { db in
+                let id = try String.fetchOne(db, sql: "SELECT id FROM messages WHERE sent_at = ?", arguments: [Int64(ts)])!
+                return (try String.fetchOne(db, sql: "SELECT json ->> '$.body' FROM messages WHERE id = ?", arguments: [id]),
+                        try MessageAttachments.fetch(db, messageId: id).map { ($0.0.type, $0.1.contentType) },
+                        try Bool.fetchOne(db, sql: "SELECT hasAttachments FROM messages WHERE id = ?", arguments: [id]))
+            }
+            #expect(jsonBody == body && hasAttachments == true)
+            #expect(rows.map(\.0).sorted { $0.rawValue < $1.rawValue } == [.attachment, .longMessage])
+            #expect(rows.first { $0.0 == .attachment }?.1 == "image/png")
+        }
+    }
+
+    @Test func trimsLongBodiesAtGraphemes() {
+        #expect(LongText.trim("short") == "short")
+        #expect(LongText.trim("123456", maxBytes: 4) == "1234")
+        #expect(LongText.trim("€", maxBytes: 2) == "\u{FFFE}")
+        #expect(LongText.trim("a👩‍👩‍👧‍👦", maxBytes: 18) == "a")
+        let s = String(repeating: "é", count: 2000)
+        #expect(LongText.trim(s).utf8.count == 2048)
+    }
+
     /// alice → Desktop: the pointer is stored, the download job runs, and the file is kept
     /// re-encrypted at rest.
     @Test func downloadsAnIncomingAttachment() async throws {

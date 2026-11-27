@@ -269,7 +269,10 @@ struct PinMessageRequest {
     /// The media editor's sticker panel (it adds the time stickers and takes the selection).
     var mediaEditorStickers: FunPanelStickers {
         FunPanelStickers(packs: funStickerPacks, favorites: stickerState?.favorites.map(funSticker) ?? [],
-                         recents: stickerState?.recents.map(funSticker) ?? [], isFavoriteStickersEnabled: favoriteStickersEnabled)
+                         recents: stickerState?.recents.map(funSticker) ?? [], isFavoriteStickersEnabled: favoriteStickersEnabled,
+                         onMarkStickerAsFavorite: { sticker, favorite in
+                             self.setStickerFavorite(packId: sticker.packId, stickerId: sticker.id, favorite)
+                         })
     }
 
     /// A picker item for a sticker (its first frame, loaded on demand).
@@ -288,7 +291,7 @@ struct PinMessageRequest {
     /// The previewed pack, once something of it is known here.
     var previewedStickerPack: StickerPack? {
         guard let id = stickerPackPreview?.id, let s = stickerState else { return nil }
-        return (s.installed + s.received + s.blessed + s.known).first { $0.id == id }.map(uiStickerPack)
+        return s.packsById[id].map(uiStickerPack)
     }
 
     /// `markStickerAsFavorite` (storage sync follows in StickerService).
@@ -299,15 +302,12 @@ struct PinMessageRequest {
         }
     }
 
-    /// `showStickerPackPreview`: a pack not seen before downloads as ephemeral (kept only while
-    /// previewed unless installed).
+    /// `showStickerPackPreview`: the service chooses the download using the stored pack status.
     func showStickerPackPreview(packId: String, packKey: String) {
         stickerPackPreview = (packId, packKey)
         guard let session = signalSession else { return }
-        let known = stickerState.map { s in (s.installed + s.received + s.blessed + s.known).contains { $0.id == packId && !$0.stickers.isEmpty } } ?? false
-        guard !known else { return }
         Task {
-            do { try await session.stickers.download(packId: packId, packKey: packKey, finalStatus: .ephemeral, actionSource: .ui) } catch {
+            do { try await session.stickers.loadPackForPreview(packId: packId, packKey: packKey) } catch {
                 Self.trace("sticker pack preview failed: \(error)")
             }
         }
@@ -482,9 +482,19 @@ struct PinMessageRequest {
         return ageOK && m.status != .pending
     }
 
-    /// Starts editing a message: its text goes into the composer.
-    func startEdit(_ messageId: String) {
+    /// `MESSAGE_MAX_EDIT_COUNT`: versions of a message (outside Note to Self) past which it
+    /// cannot be edited again.
+    static let maxEditCount = 10
+
+    /// Starts editing a message: its text goes into the composer. A message edited too often
+    /// (`isWithinMaxEdits`) shows MessageMaxEditsModal instead.
+    func startEdit(_ messageId: String, noteToSelf: Bool) {
         guard let m = messages.first(where: { $0.id == messageId }) else { return }
+        guard noteToSelf || m.editHistory.count <= Self.maxEditCount else {
+            composeError = ComposeError(key: "icu:MessageMaxEditsModal__Description", args: [:], titleKey: "icu:MessageMaxEditsModal__Title",
+                                        numbers: ["max": Double(Self.maxEditCount)])
+            return
+        }
         selectedMessageIds = nil
         quotedMessageId = nil
         editingMessageId = messageId
@@ -494,7 +504,7 @@ struct PinMessageRequest {
     /// ↑ in an empty composer: the newest message we can edit (`lastEditableMessageId`).
     func editLastMessage(noteToSelf: Bool) -> Bool {
         guard let m = messages.last(where: { $0.direction == .outgoing }), canEdit(m, noteToSelf: noteToSelf) else { return false }
-        startEdit(m.id)
+        startEdit(m.id, noteToSelf: noteToSelf)
         return true
     }
 

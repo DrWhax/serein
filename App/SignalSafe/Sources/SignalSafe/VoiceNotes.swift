@@ -14,6 +14,9 @@ import SignalUI
     /// An audio attachment's waveform and duration (`computeWaveform`), once worked out.
     func audioWaveform(for a: SignalCore.MessageAttachment) -> AudioWaveform? {
         guard let path = a.path, a.isDownloaded, AttachmentPolicy.isAudio(a.contentType) else { return nil }
+        if let waveform = a.audioWaveform, !waveform.isEmpty, let duration = a.duration, duration > 0, duration < AudioLimits.maxDuration {
+            return AudioWaveform(waveform: waveform.map(Int.init), duration: duration)
+        }
         if let hit = audioWaveforms[path] { return hit }
         guard let session = signalSession, !audioWaveformLoading.contains(path) else { return nil }
         audioWaveformLoading.insert(path)

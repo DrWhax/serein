@@ -291,8 +291,13 @@ public actor AttachmentDownloadManager {
             // Cancelled (`cancelDownloads`) while finishing: the user stopped it; keep nothing.
             if Task.isCancelled { return }
             await beforePublication?()
+            let store = store
             try await db.write { db in
-                try Self.replace(db, job: job) { _ in updated }
+                let replacedCurrent = try Self.replace(db, job: job) { _ in updated }
+                // A long-message attachment is the whole body (`addAttachmentToMessage`).
+                if job.attachmentType == .longMessage, replacedCurrent, let text = try store.plaintext(of: updated) {
+                    try MessageStore.applyLongBody(db, messageId: job.messageId, text)
+                }
                 try Self.finish(db, job: job)
             }
             onUpdate?(job.messageId)
@@ -342,20 +347,25 @@ public actor AttachmentDownloadManager {
     }
 
     /// Finds the job's attachment on its message (by type and signature) and rewrites it.
-    static func replace(_ db: Database, job: AttachmentDownloadJob, _ change: (MessageAttachment) -> MessageAttachment) throws {
+    /// Returns whether it rewrote one of the message's current (not edit history) attachments.
+    @discardableResult
+    static func replace(_ db: Database, job: AttachmentDownloadJob, _ change: (MessageAttachment) -> MessageAttachment) throws -> Bool {
         if let lease = job.leaseId {
             guard try String.fetchOne(db, sql: "SELECT leaseId FROM attachment_downloads WHERE messageId = ? AND attachmentType = ? AND attachmentSignature = ?",
-                                      arguments: AttachmentDownloads.key(job)) == lease else { return }
+                                      arguments: AttachmentDownloads.key(job)) == lease else { return false }
         }
         guard let row = try Row.fetchOne(db, sql: "SELECT conversationId, sent_at, received_at, type FROM messages WHERE id = ? AND COALESCE(json ->> '$.isErased', 0) = 0 AND (expiresAt IS NULL OR expiresAt > ?)", arguments: [job.messageId, MessageStore.now()])
-        else { return }
+        else { return false }
+        var replacedCurrent = false
         for (loc, a) in try MessageAttachments.fetch(db, messageId: job.messageId) where loc.type == job.attachmentType && a.signature == job.signature {
             // Match all download/authentication inputs, not presentation metadata. One job
             // may serve duplicate pointers with different filenames, captions or flags.
             guard a.hasSameDownloadSource(as: job.attachment), a.pending == true, !a.isDownloaded else { continue }
             try MessageAttachments.upsert(db, loc, conversationId: row["conversationId"], sentAt: row["sent_at"], receivedAt: row["received_at"],
                                           messageType: row["type"] ?? "incoming", a.applyingDownloadResult(change(a)))
+            if loc.editHistoryIndex == -1 { replacedCurrent = true }
         }
+        return replacedCurrent
     }
 
     /// `downloadAttachment` + `decryptAndReencryptLocally` (+ a thumbnail for images, a screenshot for videos).

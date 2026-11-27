@@ -151,6 +151,24 @@ struct StickerUnitTests {
         }
     }
 
+    @Test func aPreviewCannotReplaceAReceivedPack() async throws {
+        try await LinkedClient.with { c in
+            let pack = try await makePack(c, images: [StickerFixtures.png()])
+            try await c.stickers.loadPackForPreview(packId: pack.id, packKey: pack.key)
+            let preview = try await c.database.pool.read { try Stickers.managerState($0) }
+            #expect(preview.packsById[pack.id]?.status == .ephemeral)
+            #expect(!preview.received.contains { $0.id == pack.id })
+
+            try await c.database.pool.write { db in
+                try Stickers.savePackMetadata(db, packId: pack.id, packKey: pack.key)
+            }
+            // A stale preview request must leave the message's pack intact, even with a bad link key.
+            try await c.stickers.download(packId: pack.id, packKey: Data(count: 32).base64EncodedString(), finalStatus: .ephemeral, actionSource: .ui)
+            let known = try await c.database.pool.read { try Stickers.managerState($0).known.first { $0.id == pack.id } }
+            #expect(known?.key == pack.key)
+        }
+    }
+
     @Test func incomingStickerMessages() async throws {
         try await LinkedClient.with { c in
             try await c.acceptAlice()
@@ -172,8 +190,13 @@ struct StickerUnitTests {
             }
             #expect(first.json.contains(pack.id) && first.json.contains("\"stickerId\":1") && first.status == .known && first.refs == 1)
 
+            // Opening a metadata-only pack keeps it in the manager, including after a second preview.
+            for _ in 0..<2 {
+                try await c.stickers.loadPackForPreview(packId: pack.id, packKey: pack.key)
+                let state = try await c.database.pool.read { try Stickers.managerState($0) }
+                #expect(state.received.first { $0.id == pack.id }?.status == .downloaded)
+            }
             // Once the pack is here, a new sticker message takes its image from the pack.
-            try await c.stickers.download(packId: pack.id, packKey: pack.key, actionSource: .ui)
             let t2 = TestClock.next()
             try await c.server.call("sendSticker", ["packId": pack.id, "packKey": pack.key, "stickerId": 0, "data": images[0].base64EncodedString(), "timestamp": t2])
             _ = try await c.log.waitFor { if case .message(_, _, _, _, let t, _, _, _) = $0 { return t == t2 } else { return false } }

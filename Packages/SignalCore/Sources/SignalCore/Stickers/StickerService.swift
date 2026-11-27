@@ -143,7 +143,10 @@ public enum Stickers {
     /// message's reference.
     static func savePackMetadata(_ db: Database, packId: String, packKey: String, messageId: String? = nil, stickerId: Int? = nil,
                                  isUnresolved: Bool = false, resetDownloadAttempts: Bool = false) throws {
-        if try status(db, packId) != nil {
+        if let status = try status(db, packId) {
+            if status == .ephemeral {
+                try db.execute(sql: "UPDATE sticker_packs SET status = 'known', key = ? WHERE id = ?", arguments: [packKey, packId])
+            }
             if resetDownloadAttempts { try db.execute(sql: "UPDATE sticker_packs SET downloadAttempts = 0 WHERE id = ?", arguments: [packId]) }
         } else {
             try db.execute(sql: """
@@ -286,6 +289,27 @@ public actor StickerService {
         return try await client.send("GET", cdn(path)).body
     }
 
+    /// A received pack downloads permanently when opened. Only an unfamiliar pack needs an ephemeral preview.
+    public func loadPackForPreview(packId: String, packKey: String) async throws {
+        let pack = try await database.pool.read { db in
+            try Row.fetchOne(db, sql: "SELECT status, key, attemptedStatus FROM sticker_packs WHERE id = ?", arguments: [packId])
+                .map { (status: StickerPackStatus(rawValue: $0["status"] ?? ""), key: $0["key"] as String,
+                        attempted: StickerPackStatus(rawValue: $0["attemptedStatus"] ?? "")) }
+        }
+        if let pack {
+            switch pack.status {
+            case .known:
+                return try await download(packId: packId, packKey: pack.key, actionSource: .ui)
+            case .error where pack.attempted == .downloaded || pack.attempted == .installed:
+                return try await download(packId: packId, packKey: pack.key, finalStatus: pack.attempted ?? .downloaded, actionSource: .ui)
+            case .installed, .downloaded, .pending, .ephemeral:
+                return
+            default: break
+            }
+        }
+        try await download(packId: packId, packKey: packKey, finalStatus: .ephemeral, actionSource: .ui)
+    }
+
     /// `downloadStickerPack` / `doDownloadStickerPack`. `favoriteStickerIds` limits the
     /// download to those stickers (a favourite from a pack we do not have, status `known`).
     public func download(packId: String, packKey: String, finalStatus: StickerPackStatus = .downloaded, position: Int? = nil,
@@ -296,6 +320,10 @@ public actor StickerService {
                 .map { (status: StickerPackStatus(rawValue: $0["status"] ?? "") , count: $0["stickerCount"] as Int? ?? 0,
                         attempts: $0["downloadAttempts"] as Int? ?? 0, position: $0["position"] as Int?) }
         }
+        @Sendable func mayUpdate(_ status: StickerPackStatus?) -> Bool {
+            finalStatus != .ephemeral || status == nil || status == .ephemeral || status == .error
+        }
+        guard mayUpdate(existing?.status) else { return }
         var wanted = favoriteStickerIds
         if let existing, existing.status == .installed || existing.status == .downloaded, existing.count > 0 {
             // doesPackNeedDownload false: only missing favourites are fetched.
@@ -313,6 +341,7 @@ public actor StickerService {
         let attempts = (existing?.attempts ?? 0) + 1
         if attempts > Stickers.maxDownloadAttempts {
             try await database.pool.write { db in
+                guard mayUpdate(try Stickers.status(db, packId)) else { return }
                 try db.execute(sql: "UPDATE sticker_packs SET status = 'error' WHERE id = ? AND status != 'error'", arguments: [packId])
             }
             return
@@ -325,14 +354,18 @@ public actor StickerService {
             manifest = try Stickers.parseManifest(proto)
         } catch {
             try await database.pool.write { db in
+                guard mayUpdate(try Stickers.status(db, packId)) else { return }
                 try self.upsertPack(db, packId: packId, packKey: packKey, status: .error, attempted: finalStatus, attempts: attempts, position: position)
             }
             throw error
         }
-        try await database.pool.write { db in
-            try self.upsertPack(db, packId: packId, packKey: packKey, status: .pending, attempted: finalStatus, attempts: attempts, position: position,
-                                manifest: manifest)
+        let started = try await database.pool.write { db in
+            guard mayUpdate(try Stickers.status(db, packId)) else { return false }
+            try self.upsertPack(db, packId: packId, packKey: packKey, status: finalStatus == .ephemeral ? .ephemeral : .pending,
+                                attempted: finalStatus, attempts: attempts, position: position, manifest: manifest)
+            return true
         }
+        guard started else { return }
 
         var toFetch: [Signalservice_StickerPack.Sticker]
         if let wanted {
@@ -348,6 +381,7 @@ public actor StickerService {
         }
         if fetched.isEmpty && !manifest.nonCover.isEmpty {
             try await database.pool.write { db in
+                guard mayUpdate(try Stickers.status(db, packId)) else { return }
                 try db.execute(sql: "UPDATE sticker_packs SET status = 'error', attemptedStatus = ? WHERE id = ?", arguments: [finalStatus.rawValue, packId])
             }
             throw StickerError.allStickersFailed
@@ -355,6 +389,7 @@ public actor StickerService {
         let done = fetched
         try await database.pool.write { db in
             let current = try Stickers.status(db, packId)
+            guard mayUpdate(current) else { return }
             if current == .installed {
                 // stays installed
             } else if finalStatus == .installed {

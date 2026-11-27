@@ -249,6 +249,8 @@ enum MessageModifiers {
     // MARK: edits (handleEditMessage)
 
     static let maxEditAge: Int64 = 2 * 86_400_000
+    /// `MESSAGE_MAX_EDIT_COUNT` (ts/util/canEditMessage.dom.ts)
+    public static let maxEditCount = 10
 
     /// `handleEditMessage`: an edit is made by the message's author, in its conversation (from
     /// any device), to a message not deleted for everyone, erased, view-once, a contact share
@@ -279,10 +281,14 @@ enum MessageModifiers {
         // last to arrive win.)
         guard m.timestamp > shownRevision(t) else { return false }
         guard try MessageStore.applyEdit(db, author: c.sender, targetSentAt: UInt64(t.sentAt), newBody: m.body, editSentAt: m.timestamp) != nil else { return false }
+        let ranges = MessageReceiver.bodyRangesJSON(m.bodyRanges)
         try MessageStore.updateJSON(db, messageId: t.id) { json in
             json["preview"] = nil
+            // The edit's mentions and styles replace the previous revision's.
+            json["bodyRanges"] = ranges.isEmpty ? nil : ranges
             if c.source != .someoneElse { json["readStatus"] = ReadStatus.read.rawValue }
         }
+        try MessageStore.replaceIncomingBodyAttachment(db, messageId: t.id, conversationId: t.conversationId, sentAt: t.sentAt, attachments: m.attachments)
         if !m.preview.isEmpty {
             try db.execute(sql: "DELETE FROM message_attachments WHERE messageId = ? AND attachmentType = 'preview'", arguments: [t.id])
             try MessageStore.storePreviews(db, messageId: t.id, conversationId: t.conversationId, sentAt: t.sentAt, messageType: t.type, body: m.body, m.preview)
@@ -420,9 +426,16 @@ enum MessageModifiers {
     }
 
     /// `PollCreate` on a new message: its `poll` attribute (2–10 options, non-empty question).
+    /// `PollCreateSchema` (ts/types/Polls.dom.ts): a question of at most 200 characters and
+    /// 2 KiB, 2–10 options of at most 100 characters and 2 KiB each.
+    static let pollQuestionMaxLengthReceive = 200
+    static let pollOptionMaxLength = 100
+
     static func pollJSON(_ p: Signalservice_DataMessage.PollCreate) -> [String: Any]? {
         let options = p.options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard !p.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (2...10).contains(options.count), options.allSatisfy({ !$0.isEmpty })
+        guard !p.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (2...10).contains(options.count), options.allSatisfy({ !$0.isEmpty }),
+              p.question.count <= pollQuestionMaxLengthReceive, !LongText.isTooLong(p.question),
+              p.options.allSatisfy({ $0.count <= pollOptionMaxLength && !LongText.isTooLong($0) })
         else { return nil }
         return ["question": p.question, "options": options, "allowMultiple": p.allowMultiple, "votes": [[String: Any]]()]
     }
