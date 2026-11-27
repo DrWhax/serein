@@ -4,6 +4,7 @@
 
 import Foundation
 import GRDB
+import MediaXPCInterface
 import SignalProtos
 
 /// `message_attachments.attachmentType`
@@ -52,6 +53,14 @@ public struct MessageAttachment: Codable, Sendable, Equatable {
     public var thumbnail: LocalFile?
     /// A video's first frame (PNG, display size).
     public var screenshot: LocalFile?
+    /// Up to 100 waveform samples. An empty protobuf bytes field means no waveform.
+    public var audioWaveform: Data?
+
+    static func waveform(_ bytes: Data?) -> Data? {
+        guard let bytes, !bytes.isEmpty else { return nil }
+        return Data(bytes.prefix(WaveformBuilder.maxSize))
+    }
+
     /// A video's (or audio's) length in seconds.
     public var duration: Double?
 
@@ -129,6 +138,8 @@ public struct MessageAttachment: Codable, Sendable, Equatable {
         height = p.hasHeight ? Int(p.height) : nil
         caption = p.hasCaption ? p.caption : nil
         blurHash = p.hasBlurHash ? p.blurHash : nil
+        audioWaveform = Self.waveform(p.audioWaveform)
+        if p.hasAudioDurationSeconds { setAudioDuration(p.audioDurationSeconds) }
         clientUuid = p.hasClientUuid ? UUID(data: p.clientUuid)?.uuidString.lowercased() : nil
     }
 
@@ -150,8 +161,20 @@ public struct MessageAttachment: Codable, Sendable, Equatable {
         if let height { p.height = UInt32(height) }
         if let caption { p.caption = caption }
         if let blurHash { p.blurHash = blurHash }
+        if let waveform = Self.waveform(audioWaveform) { p.audioWaveform = waveform }
+        if let audioDurationSeconds { p.audioDurationSeconds = audioDurationSeconds }
         if let clientUuid, let u = UUID(uuidString: clientUuid) { p.clientUuid = u.data }
         return p
+    }
+
+    mutating func setAudioDuration(_ seconds: Float) {
+        guard AttachmentPolicy.isAudio(contentType), seconds >= 0, Double(seconds) < AudioLimits.maxDuration else { return }
+        duration = Double(seconds)
+    }
+
+    var audioDurationSeconds: Float? {
+        guard AttachmentPolicy.isAudio(contentType), let duration, duration > 0, duration < AudioLimits.maxDuration else { return nil }
+        return Float(duration)
     }
 
     public init(uploaded u: UploadedAttachment, contentType: String) {
@@ -202,9 +225,9 @@ public enum MessageAttachments {
                 size, contentType, path, plaintextHash, localKey, caption, fileName, blurHash, height, width, digest, key, version,
                 incrementalMac, incrementalMacChunkSize, transitCdnKey, transitCdnNumber, transitCdnUploadTimestamp, backupCdnNumber,
                 thumbnailPath, thumbnailSize, thumbnailContentType, thumbnailLocalKey, thumbnailVersion,
-                screenshotPath, screenshotSize, screenshotContentType, screenshotLocalKey, screenshotVersion, duration,
+                screenshotPath, screenshotSize, screenshotContentType, screenshotLocalKey, screenshotVersion, duration, audioWaveform,
                 flags, error, wasTooBig, pending, messageType, receivedAt, receivedAtMs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (messageId, editHistoryIndex, attachmentType, orderInMessage) DO UPDATE SET
                 clientUuid = excluded.clientUuid, size = excluded.size, contentType = excluded.contentType, path = excluded.path,
                 plaintextHash = excluded.plaintextHash, localKey = excluded.localKey, caption = excluded.caption, fileName = excluded.fileName,
@@ -217,14 +240,14 @@ public enum MessageAttachments {
                 thumbnailLocalKey = excluded.thumbnailLocalKey, thumbnailVersion = excluded.thumbnailVersion,
                 screenshotPath = excluded.screenshotPath, screenshotSize = excluded.screenshotSize,
                 screenshotContentType = excluded.screenshotContentType, screenshotLocalKey = excluded.screenshotLocalKey,
-                screenshotVersion = excluded.screenshotVersion, duration = excluded.duration, flags = excluded.flags,
+                screenshotVersion = excluded.screenshotVersion, duration = excluded.duration, audioWaveform = excluded.audioWaveform, flags = excluded.flags,
                 error = excluded.error, wasTooBig = excluded.wasTooBig, pending = excluded.pending
             """, arguments: [
                 loc.messageId, loc.editHistoryIndex, loc.type.rawValue, loc.order, conversationId, sentAt, a.clientUuid,
                 a.size, a.contentType, a.path, a.plaintextHash, a.localKey, a.caption, a.fileName, a.blurHash, a.height, a.width, a.digest, a.key,
                 a.version, a.incrementalMac, a.chunkSize, a.cdnKey, a.cdnNumber, a.uploadTimestamp.map { Int64($0) }, a.backupCdnNumber,
                 a.thumbnail?.path, a.thumbnail?.size, a.thumbnail?.contentType, a.thumbnail?.localKey, a.thumbnail?.version,
-                a.screenshot?.path, a.screenshot?.size, a.screenshot?.contentType, a.screenshot?.localKey, a.screenshot?.version, a.duration,
+                a.screenshot?.path, a.screenshot?.size, a.screenshot?.contentType, a.screenshot?.localKey, a.screenshot?.version, a.duration, MessageAttachment.waveform(a.audioWaveform),
                 a.flags, bool(a.error), bool(a.wasTooBig), bool(a.pending), messageType, receivedAt, receivedAt,
             ])
     }
@@ -263,6 +286,7 @@ public enum MessageAttachments {
             a.screenshot = .init(path: path, localKey: key, size: row["screenshotSize"] ?? 0, contentType: row["screenshotContentType"] ?? "image/png",
                                  version: row["screenshotVersion"] ?? 2)
         }
+        a.audioWaveform = MessageAttachment.waveform(row["audioWaveform"])
         a.duration = row["duration"]
         return a
     }

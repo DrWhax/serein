@@ -333,6 +333,42 @@ struct BackupFixture {
                 pniRegistrationId: 2, profileKey: nil, masterKey: nil, accountEntropyPool: nil, readReceipts: false)
     }
 
+    @Test func waveformsRoundTripThroughMessagesAndBackups() throws {
+        let (database, url) = try LinkedClient.temporaryDatabase()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let account = Self.account()
+        try database.pool.write { db in
+            try account.save(db)
+            let importer = try BackupImporter(db: db, account: account, now: 1)
+            let exporter = FrameBuilder(db: db, account: account, now: Date())
+            try db.execute(sql: "INSERT INTO messages (id, json, conversationId) VALUES ('voice', '{}', 'chat')")
+            let location = MessageAttachments.Location(messageId: "voice", type: .attachment, order: 0)
+            let cases: [Data?] = [nil, Data(), Data([0, 63, 255]), Data(0...100)]
+            for input in cases {
+                var pointer = Signalservice_AttachmentPointer()
+                pointer.contentType = "audio/mpeg"
+                pointer.audioDurationSeconds = 1.5
+                if let input { pointer.audioWaveform = input }
+                let expected = input.flatMap { $0.isEmpty ? nil : Data($0.prefix(100)) }
+
+                let attachment = MessageAttachment(pointer: pointer)
+                try MessageAttachments.upsert(db, location, conversationId: "chat", sentAt: 1, receivedAt: 1, messageType: "incoming", attachment)
+                let stored = try #require(try MessageAttachments.fetch(db, location))
+                #expect(stored.audioWaveform == expected)
+                let backup = exporter.pointer(stored)
+                #expect(backup.hasAudioWaveform == (expected != nil))
+                #expect(backup.audioWaveform == expected ?? Data())
+
+                var incomingBackup = backup
+                if let input { incomingBackup.audioWaveform = input }
+                let restored = importer.attachment(incomingBackup).pointer()
+                #expect(restored.hasAudioWaveform == (expected != nil))
+                #expect(restored.audioWaveform == expected ?? Data())
+                #expect(restored.audioDurationSeconds == 1.5)
+            }
+        }
+    }
+
     /// The frames land as upstream's import writes them.
     @Test func importsTheFrames() async throws {
         let (db, url) = try LinkedClient.temporaryDatabase()

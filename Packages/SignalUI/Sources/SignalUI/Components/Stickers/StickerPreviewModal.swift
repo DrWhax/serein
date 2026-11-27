@@ -93,10 +93,6 @@ public struct StickerPreviewModal: View {
                 AxoDialog.Close(action: closeStickerPackPreview)
             }
         }
-        .onAppear {
-            // Known packs download on open (`useEffect(…, [])`).
-            if let pack, pack.status == .known { downloadStickerPack(pack.id, pack.key, nil) }
-        }
     }
 
     /// `renderBody`

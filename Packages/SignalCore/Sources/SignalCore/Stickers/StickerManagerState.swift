@@ -34,6 +34,8 @@ public struct StickerManagerState: Sendable, Equatable {
     public var received: [StickerPackSummary]
     public var blessed: [StickerPackSummary]
     public var known: [StickerPackSummary]
+    /// Includes ephemeral and failed packs so the open preview can display their state.
+    public var packsById: [String: StickerPackSummary]
     public var recents: [StickerSummary]
     public var favorites: [StickerSummary]
 }
@@ -67,6 +69,7 @@ extension Stickers {
             received: packs.filter { [.downloaded, .pending, .installed].contains($0.status) && !$0.isBlessed }.sorted(by: newestFirst),
             blessed: packs.filter(\.isBlessed).sorted(by: newestFirst),
             known: packs.filter { !$0.isBlessed && $0.status == .known }.sorted(by: newestFirst),
+            packsById: Dictionary(uniqueKeysWithValues: packs.map { ($0.id, $0) }),
             recents: recents, favorites: favorites)
     }
 }
