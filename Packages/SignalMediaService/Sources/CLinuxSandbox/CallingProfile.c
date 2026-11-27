@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "CLinuxSandbox.h"
+#include "CLinuxLandlock.h"
 #include "WorkerFilter.h"
 #include <dirent.h>
 #include <errno.h>
@@ -18,9 +19,6 @@
 
 #ifndef LANDLOCK_ACCESS_FS_IOCTL_DEV
 #define LANDLOCK_ACCESS_FS_IOCTL_DEV (1ULL << 15)
-#endif
-#ifndef LANDLOCK_RESTRICT_SELF_TSYNC
-#define LANDLOCK_RESTRICT_SELF_TSYNC (1U << 3)
 #endif
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int installed;
@@ -77,7 +75,6 @@ static int audio(int rules) {
     return ok;
 }
 static int restrict_files(enum WorkerRole role) {
-    if (syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) < 8) return 0;
     // No filesystem writes (except PCM I/O), execution or TCP listening.
     // Scope signals and abstract Unix sockets to this Landlock domain.
     struct { uint64_t fs, net, scope; } policy = {(LANDLOCK_ACCESS_FS_IOCTL_DEV << 1) - 1, 1, 3};
@@ -101,7 +98,7 @@ static int restrict_files(enum WorkerRole role) {
             ok = allow_path(rules, media[i], read_access);
         if (ok) ok = audio(rules);
     }
-    if (ok) ok = syscall(SYS_landlock_restrict_self, rules, LANDLOCK_RESTRICT_SELF_TSYNC) == 0;
+    if (ok) ok = serein_landlock_restrict_all(rules);
     close(rules);
     return ok;
 }

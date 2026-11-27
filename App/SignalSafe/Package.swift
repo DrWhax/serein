@@ -69,7 +69,7 @@ let package = Package(
 
 #if os(Linux)
 package.targets.append(.systemLibrary(name: "CLinuxGIO", pkgConfig: "gio-2.0"))
-package.targets.append(.target(name: "CLinuxDesktop", dependencies: ["CLinuxGIO"],
+package.targets.append(.target(name: "CLinuxDesktop", dependencies: ["CLinuxGIO", .product(name: "CLinuxLandlock", package: "SignalMediaService")],
                                linkerSettings: [.linkedLibrary("seccomp")]))
 if let system = package.targets.first(where: { $0.name == "SignalSafeSystem" }) {
     system.dependencies += ["CLinuxDesktop", .product(name: "MediaXPCInterface", package: "SignalMediaService")]

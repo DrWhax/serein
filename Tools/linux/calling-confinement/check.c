@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <linux/landlock.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -50,8 +52,11 @@ int main(int argc, char **argv) {
     CHECK(g_file_get_contents(argv[5], &root, &size, NULL));
     CHECK(call_net_start_broker());
     pthread_t before, after;
-    CHECK(!pthread_barrier_init(&barrier, NULL, 2) && !pthread_create(&before, NULL, restricted, &before));
+    long abi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    CHECK(abi >= 6 && !pthread_barrier_init(&barrier, NULL, 2));
+    if (abi >= 8) CHECK(!pthread_create(&before, NULL, restricted, &before));
     CHECK(serein_confine_call_worker() && serein_is_call_worker_confined());
+    if (abi < 8) CHECK(!pthread_create(&before, NULL, restricted, &before));
     pthread_barrier_wait(&barrier);
     CHECK(!pthread_join(before, NULL) && !pthread_create(&after, NULL, restricted, NULL) && !pthread_join(after, NULL));
     restricted(NULL);

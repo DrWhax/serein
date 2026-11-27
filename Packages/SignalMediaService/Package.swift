@@ -124,7 +124,9 @@ if let web = package.targets.first(where: { $0.name == "WebFetch" }) {
 }
 package.products.append(.library(name: "LinuxServiceTransport", targets: ["LinuxServiceTransport"]))
 package.targets.append(.target(name: "CLinuxServiceSocket"))
-package.targets.append(.target(name: "CLinuxSandbox", linkerSettings: [.linkedLibrary("seccomp")]))
+package.products.append(.library(name: "CLinuxLandlock", targets: ["CLinuxLandlock"]))
+package.targets.append(.target(name: "CLinuxLandlock"))
+package.targets.append(.target(name: "CLinuxSandbox", dependencies: ["CLinuxLandlock"], linkerSettings: [.linkedLibrary("seccomp")]))
 package.targets.append(.target(name: "CLinuxMicrophone", linkerSettings: [.linkedLibrary("asound")]))
 if let voice = package.targets.first(where: { $0.name == "VoiceNoteService" }) {
     voice.dependencies.append("CLinuxMicrophone")

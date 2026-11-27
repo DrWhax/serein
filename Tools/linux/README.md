@@ -1,6 +1,6 @@
 # Serein in Ubuntu Docker
 
-The desktop and its seven socket-activated workers run as the unprivileged `serein` user. The application applies Landlock and seccomp before constructing its session. Use a Linux kernel with Landlock ABI 8 and synchronized thread restriction support.
+The desktop and its seven socket-activated workers run as the unprivileged `serein` user. The application applies Landlock and seccomp before constructing its session. The minimum is Landlock ABI 6, available on Debian 13’s stock Linux 6.12 kernel. On ABI 6 and 7, the desktop, calling worker and calling socket broker apply their rules while single-threaded. Later threads inherit those rules. Startup fails if glibc cannot confirm single-threaded execution. ABI 8 and newer apply the same rules to all existing threads with `LANDLOCK_RESTRICT_SELF_TSYNC`.
 
 ## Build
 

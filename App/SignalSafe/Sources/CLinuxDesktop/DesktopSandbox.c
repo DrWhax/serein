@@ -2,6 +2,7 @@
 // directory. Install kernel restrictions before constructing the session or UI.
 #define _GNU_SOURCE
 #include "CLinuxDesktop.h"
+#include "CLinuxLandlock.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/landlock.h>
@@ -20,9 +21,6 @@
 // Stable kernel UAPI constants added after Ubuntu 24.04's build headers.
 #ifndef LANDLOCK_ACCESS_FS_IOCTL_DEV
 #define LANDLOCK_ACCESS_FS_IOCTL_DEV (1ULL << 15)
-#endif
-#ifndef LANDLOCK_RESTRICT_SELF_TSYNC
-#define LANDLOCK_RESTRICT_SELF_TSYNC (1U << 3)
 #endif
 
 static _Atomic int confined;
@@ -50,8 +48,7 @@ static int permit(int ruleset, const char *path, uint64_t access, int private_di
 }
 
 static int restrict_files(void) {
-    if (syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) < 8) return 0;
-    // ABI 8 provides all-thread enforcement. Handle all filesystem access bits
+    // Handle all filesystem access bits
     // through IOCTL_DEV, TCP bind, and signals sent outside the app's domain.
     struct { uint64_t fs, net, scope; } rules = {(LANDLOCK_ACCESS_FS_IOCTL_DEV << 1) - 1, 1, 2};
     int fd = (int)syscall(SYS_landlock_create_ruleset, &rules, sizeof(rules), 0);
@@ -69,7 +66,7 @@ static int restrict_files(void) {
         && permit(fd, "/dev/null", LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
     for (size_t i = 0; ok && i < sizeof(public_files) / sizeof(public_files[0]); ++i)
         ok = permit(fd, public_files[i], readable, 0);
-    if (ok) ok = syscall(SYS_landlock_restrict_self, fd, LANDLOCK_RESTRICT_SELF_TSYNC) == 0;
+    if (ok) ok = serein_landlock_restrict_all(fd);
     close(fd);
     return ok;
 }
