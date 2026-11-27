@@ -229,10 +229,14 @@ extension Messenger {
         var edit = Signalservice_EditMessage()
         edit.targetSentTimestamp = t.sentAt
         edit.dataMessage = data
+        // Applied here with the whole body; sent trimmed, with the whole text attached first.
+        let editBytes = try edit.serializedBytes() as Data
+        let (sentBody, longText) = try await outgoingBody(newBody)
+        edit.dataMessage.body = sentBody
+        edit.dataMessage.attachments = longText + data.attachments
         var content = Signalservice_Content()
         content.editMessage = edit
         let payload = try content.serializedBytes() as Data
-        let editBytes = try edit.serializedBytes() as Data
         let ourAci = account.aci, editTimestamp = data.timestamp
         try await database.pool.write { db in
             let ctx = ModifierContext(sender: ourAci, timestamp: editTimestamp, serverTimestamp: UInt64(MessageStore.now()), conversationId: t.conversationId,

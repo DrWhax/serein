@@ -296,7 +296,9 @@ extension Messenger {
             reaction.targetSentTimestamp = target.storySentAt
             data.reaction = reaction
         } else {
-            data.body = body
+            let (sentBody, longText) = try await outgoingBody(messageId: replyId, body: body)
+            data.body = sentBody
+            data.attachments = longText
         }
         if let group = target.group, let state = group.state {
             var context = Signalservice_GroupContextV2()
