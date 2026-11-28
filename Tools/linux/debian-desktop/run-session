@@ -24,4 +24,6 @@ set -- /usr/bin/bwrap --unshare-user --uid "$(id -u)" --gid "$(id -g)" --cap-dro
 if [ -d "$runtime/doc" ]; then set -- "$@" --bind "$runtime/doc" /run/serein/doc; fi
 if [ -S /run/dbus/system_bus_socket ]; then set -- "$@" --ro-bind /run/dbus/system_bus_socket /run/dbus/system_bus_socket; fi
 if [ -d /dev/snd ]; then set -- "$@" --dev-bind /dev/snd /dev/snd; fi
+# Opt-in diagnostics (event kinds, counts and error kinds; never message content) on stderr.
+if [ "${SIGNALSAFE_TRACE:-}" = 1 ]; then set -- "$@" --setenv SIGNALSAFE_TRACE 1; fi
 exec "$@" -- /usr/bin/python3 /opt/serein/serein-session.py

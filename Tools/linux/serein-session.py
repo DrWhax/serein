@@ -30,7 +30,7 @@ def environment(name):
     env = {"PATH": "/usr/bin:/bin", "LANG": os.environ.get("LANG", "C.UTF-8")}
     if name == APP:
         for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
-                    "LC_ALL", "LC_MESSAGES", "LC_CTYPE", "TZ"):
+                    "LC_ALL", "LC_MESSAGES", "LC_CTYPE", "TZ", "SIGNALSAFE_TRACE"):
             if key in os.environ:
                 env[key] = os.environ[key]
         env.update(HOME="/var/lib/serein", XDG_RUNTIME_DIR="/run/serein", TMPDIR="/run/serein",

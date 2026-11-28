@@ -30,3 +30,13 @@ systemctl --user daemon-reload
 ```
 
 Open **Serein** from the desktop menu or run `~/.local/bin/serein`. Both start the same user service. On first launch, scan the QR code from **Linked Devices** on your phone. The host login keyring holds the database key. The encrypted database lives under `~/.local/share/serein-linux/data` across launches.
+
+To diagnose a problem, turn on tracing. It logs event kinds, counts and error kinds, never message content, names or numbers. The launcher clears the environment, so set the variable on the service, which `run-session` passes to the app:
+
+```sh
+systemctl --user edit serein.service     # add: [Service] Environment=SIGNALSAFE_TRACE=1
+systemctl --user restart serein.service
+journalctl --user -u serein.service -f
+```
+
+Remove the override with `systemctl --user revert serein.service` when done.
