@@ -8,10 +8,11 @@ import Foundation
 import MediaXPCInterface
 import MessageParsing
 
-/// Link-and-sync backups are inflated as they stream in (BackupStreaming.swift).
+/// Link-and-sync backups are inflated as they stream in (BackupStreaming.swift). Primaries pad
+/// the gzip member with zeros to hide its length.
 extension GzipStream: BackupInflater {}
 
 ServiceSandbox.requireConfinement("SignalMessageParserChild")
-let handler = MessageParserXPCHandler(inflater: { GzipStream() })
+let handler = MessageParserXPCHandler(inflater: { GzipStream(allowsZeroPadding: true) })
 ParserChild.serve(input: .standardInput, output: .standardOutput, handler: handler)
 exit(0)

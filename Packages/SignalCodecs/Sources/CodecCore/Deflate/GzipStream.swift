@@ -27,12 +27,18 @@ public struct GzipStream: Sendable {
     /// Bytes handed out so far.
     public private(set) var outputCount = 0
     let maxOutput: Int, maxBlockInput: Int, maxBlockOutput: Int
+    /// Zero bytes may follow the member (and are dropped): a Signal backup's padding, which hides
+    /// its compressed length (libsignal message-backup padding.rs; upstream encoding.node.ts).
+    let allowsZeroPadding: Bool
 
     /// - Parameter maxOutput: the whole member's output; more is `limitExceeded`.
-    public init(maxOutput: Int = .max, maxBlockInput: Int = defaultMaxBlockInput, maxBlockOutput: Int = defaultMaxBlockOutput) {
+    /// - Parameter allowsZeroPadding: zeros after the member are padding, not trailing bytes.
+    public init(maxOutput: Int = .max, maxBlockInput: Int = defaultMaxBlockInput, maxBlockOutput: Int = defaultMaxBlockOutput,
+                allowsZeroPadding: Bool = false) {
         self.maxOutput = maxOutput
         self.maxBlockInput = maxBlockInput
         self.maxBlockOutput = maxBlockOutput
+        self.allowsZeroPadding = allowsZeroPadding
     }
 
     /// The member and its trailer have been read (and checked).
@@ -41,7 +47,10 @@ public struct GzipStream: Sendable {
     /// More of the stream.
     public mutating func append(_ bytes: [UInt8]) throws(ParseFailure) {
         guard !bytes.isEmpty else { return }
-        guard stage != .done else { throw ParseFailure(offset: outputCount, rule: "gzip", reason: .trailingBytes(bytes.count)) }
+        if stage == .done {
+            if allowsZeroPadding, !bytes.contains(where: { $0 != 0 }) { return }
+            throw ParseFailure(offset: outputCount, rule: "gzip", reason: .trailingBytes(bytes.count))
+        }
         if start > 0 {
             input.removeFirst(start)
             start = 0
@@ -67,7 +76,11 @@ public struct GzipStream: Sendable {
         history = Array(out[max(0, n - Self.window)..<n])
         if stage == .trailer { try trailer() }
         if stage == .done, start < input.count {
-            throw ParseFailure(offset: outputCount, rule: "gzip", reason: .trailingBytes(input.count - start))
+            guard allowsZeroPadding, !input[start...].contains(where: { $0 != 0 }) else {
+                throw ParseFailure(offset: outputCount, rule: "gzip", reason: .trailingBytes(input.count - start))
+            }
+            input = []
+            start = 0
         }
         return produced
     }

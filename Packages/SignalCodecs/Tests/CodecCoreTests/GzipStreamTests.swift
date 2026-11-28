@@ -8,8 +8,9 @@ import Testing
 @Suite struct GzipStreamTests {
     /// The whole output of `gzip` fed in pieces of `piece` bytes (read after each).
     static func stream(_ gzip: [UInt8], piece: Int, atLeast: Int = 1 << 20, maxOutput: Int = .max,
-                       maxBlockInput: Int = GzipStream.defaultMaxBlockInput, maxBlockOutput: Int = GzipStream.defaultMaxBlockOutput) throws(ParseFailure) -> [UInt8] {
-        var s = GzipStream(maxOutput: maxOutput, maxBlockInput: maxBlockInput, maxBlockOutput: maxBlockOutput)
+                       maxBlockInput: Int = GzipStream.defaultMaxBlockInput, maxBlockOutput: Int = GzipStream.defaultMaxBlockOutput,
+                       allowsZeroPadding: Bool = false) throws(ParseFailure) -> [UInt8] {
+        var s = GzipStream(maxOutput: maxOutput, maxBlockInput: maxBlockInput, maxBlockOutput: maxBlockOutput, allowsZeroPadding: allowsZeroPadding)
         var out: [UInt8] = []
         var i = 0
         while i < gzip.count {
@@ -82,6 +83,28 @@ import Testing
             #expect(throws: ParseFailure.self, "trailer byte \(at)") { _ = try Self.stream(bad, piece: 4096) }
         }
         #expect(throws: ParseFailure.self) { _ = try Self.stream([0x1F, 0x8C] + gz.dropFirst(2), piece: 4096) }
+    }
+
+    /// A Signal backup's zero padding after the member: dropped when allowed, in whatever pieces
+    /// it comes (with the trailer, or after it); anything else after the member is still refused.
+    @Test func zeroPaddingWhenAllowed() throws {
+        let data = Array(String(repeating: "abcdefgh", count: 20_000).utf8)
+        let gz = Gzip.compress(data)
+        for padding in [1, 7, 189_346] {
+            let padded = gz + [UInt8](repeating: 0, count: padding)
+            #expect(throws: ParseFailure.self, "\(padding) zeros, not allowed") { _ = try Self.stream(padded, piece: 1000) }
+            for piece in [3, 1000, gz.count, padded.count] {
+                #expect(try Self.stream(padded, piece: piece, allowsZeroPadding: true) == data, "\(padding) zeros in pieces of \(piece)")
+            }
+        }
+        for tail: [UInt8] in [[1], [0, 0, 0, 2], [0x1F, 0x8B]] + [[UInt8](repeating: 0, count: 5000) + [9]] {
+            for piece in [1000, gz.count + tail.count] {
+                #expect(throws: ParseFailure.self, "\(tail.count)-byte tail in pieces of \(piece)") {
+                    _ = try Self.stream(gz + tail, piece: piece, allowsZeroPadding: true)
+                }
+            }
+        }
+        #expect(throws: ParseFailure.self) { _ = try Self.stream(gz + gz, piece: gz.count, allowsZeroPadding: true) }
     }
 
     @Test func limits() throws {

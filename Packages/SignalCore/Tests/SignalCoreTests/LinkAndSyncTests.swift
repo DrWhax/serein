@@ -17,7 +17,7 @@ extension GzipStream: BackupInflater {}
 
 extension InProcessMessageParser {
     /// With the child's streaming gunzip (CodecCore), for backups.
-    static func withGzip() -> InProcessMessageParser { InProcessMessageParser(inflater: { GzipStream() }) }
+    static func withGzip() -> InProcessMessageParser { InProcessMessageParser(inflater: { GzipStream(allowsZeroPadding: true) }) }
 }
 
 /// A file of `data` in a fresh folder (removed with `remove()`).
@@ -168,7 +168,8 @@ struct BackupFixture {
         return out
     }
 
-    /// BackupInfo, then the frames, delimited and gzipped, then encrypted for `ephemeralKey`.
+    /// BackupInfo, then the frames, delimited and gzipped, zero-padded as primaries pad it
+    /// (upstream encoding.node.ts), then encrypted for `ephemeralKey`.
     func archive(ephemeralKey: Data) throws -> Data {
         var info = BackupProto_BackupInfo()
         info.version = 1
@@ -179,7 +180,8 @@ struct BackupFixture {
             plain += PlaintextExport.varint(UInt64(record.count)) + record
         }
         let keys = try LinkAndSync.keys(ephemeralKey: ephemeralKey, aci: ourAci)
-        return try LinkAndSync.encrypt(Data(Gzip.compress([UInt8](plain))), mac: keys.mac, aes: keys.aes)
+        let padded = Data(Gzip.compress([UInt8](plain))) + Data(count: LinkAndSync.pieceBytes + 4321)
+        return try LinkAndSync.encrypt(padded, mac: keys.mac, aes: keys.aes)
     }
 }
 
@@ -316,10 +318,12 @@ struct BackupFixture {
             } catch { return error is MessageParserError }
         }
         #expect(!refused(gzip))
+        #expect(!refused(gzip + Data(count: 189_346)))        // primaries' zero padding
         #expect(refused(Data(Gzip.compress([5, 1]))))        // a record cut short
         #expect(refused(Data([1, 2, 3])))                     // not gzip
         #expect(refused(gzip.prefix(gzip.count - 4)))         // the trailer cut short
-        #expect(refused(gzip + Data([0])))                    // something after it
+        #expect(refused(gzip + Data([1])))                    // something after it
+        #expect(refused(gzip + Data(count: 100) + Data([1]))) // padding that is not all zeros
         #expect(throws: MessageParserError.self) { _ = try InProcessMessageParser().backupRecords(gzip.prefix(100), infoRead: false, source: "backup:x") }
         #expect(throws: MessageParserError.self) { try InProcessMessageParser.withGzip().backupEnd(source: "backup:x") }      // none open
         #expect(throws: MessageParserError.self) {
