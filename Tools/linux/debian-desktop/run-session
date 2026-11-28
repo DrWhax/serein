@@ -8,19 +8,23 @@ umask 077
 mkdir -p "$state" "$private"
 test -n "${DISPLAY:-}" || { echo "Start Serein from your graphical desktop." >&2; exit 1; }
 authority="${XAUTHORITY:-$HOME/.Xauthority}"
-test -r "$authority"
 test -S "$runtime/bus"
 set -- /usr/bin/bwrap --unshare-user --uid "$(id -u)" --gid "$(id -g)" --cap-drop ALL \
     --ro-bind "$release/root" / --proc /proc --dev /dev --tmpfs /dev/shm \
     --ro-bind /sys/devices/system/cpu /sys/devices/system/cpu \
     --tmpfs /tmp --ro-bind /tmp/.X11-unix /tmp/.X11-unix \
     --bind "$state" /var/lib/serein --bind "$private" /run/serein \
-    --ro-bind "$authority" /run/serein/Xauthority --ro-bind "$runtime/bus" /run/serein/bus \
+    --ro-bind "$runtime/bus" /run/serein/bus \
     --ro-bind /etc/resolv.conf /etc/resolv.conf --ro-bind /etc/hosts /etc/hosts \
     --ro-bind /etc/machine-id /etc/machine-id --ro-bind /etc/localtime /etc/localtime \
     --clearenv --setenv PATH /usr/bin:/bin --setenv HOME /var/lib/serein --setenv LANG "${LANG:-C.UTF-8}" \
-    --setenv XDG_RUNTIME_DIR /run/serein --setenv DISPLAY "$DISPLAY" --setenv XAUTHORITY /run/serein/Xauthority \
+    --setenv XDG_RUNTIME_DIR /run/serein --setenv DISPLAY "$DISPLAY" \
     --setenv DBUS_SESSION_BUS_ADDRESS unix:path=/run/serein/bus --chdir /var/lib/serein
+# Rootless Xwayland under compositors such as niri runs without an auth file, and
+# grants access through the socket's own permissions instead.
+if [ -r "$authority" ]; then
+    set -- "$@" --ro-bind "$authority" /run/serein/Xauthority --setenv XAUTHORITY /run/serein/Xauthority
+fi
 if [ -d "$runtime/doc" ]; then set -- "$@" --bind "$runtime/doc" /run/serein/doc; fi
 if [ -S /run/dbus/system_bus_socket ]; then set -- "$@" --ro-bind /run/dbus/system_bus_socket /run/dbus/system_bus_socket; fi
 if [ -d /dev/snd ]; then set -- "$@" --dev-bind /dev/snd /dev/snd; fi
